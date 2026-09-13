@@ -232,7 +232,7 @@ async def sequence_start(
     file_path: str,
     frame_type: FrameType = "lights",
 ) -> str:
-    """start a sequence from a JSON observation plan file.
+    """Load a sequence from a JSON observation plan file and start it.
     Args:
         file_path: Path to a JSON observation plan file.
         frame_type: Type of sequence to construct. Allowed values:
@@ -263,21 +263,21 @@ async def sequence_start(
 
 @mcp.tool()
 async def sequence_resume() -> str:
-    """resume a stopped sequence, keeping exposure counts."""
+    """Resume a stopped sequence, keeping exposure counts the same."""
     await _api_get("/sequence/start?skipValidation=true")
     return "Sequence resumed."
 
 
 @mcp.tool()
 async def sequence_stop() -> str:
-    """stop sequence"""
+    """Stop a running sequence."""
     await _api_get("/sequence/stop")
     return "Sequence stopped."
 
 
 @mcp.tool()
 async def sequence_skip() -> str:
-    """skip to end sequence to park when observatory closes"""
+    """Skip to sequence end to stop imaging and park when observatory closes"""
     await _api_get("/sequence/skip?type=toEnd")
     return "Sequence skipped to end."
 
@@ -287,21 +287,21 @@ async def sequence_skip() -> str:
 
 @mcp.tool()
 async def park_telescope() -> str:
-    """park the telescope"""
+    """Park the telescope."""
     await _api_get("/equipment/mount/park")
     return "Telescope parked."
 
 
 @mcp.tool()
 async def home_telescope() -> str:
-    """home the telescope"""
+    """Home the telescope."""
     await _api_get("/equipment/mount/home")
     return "Telescope homed."
 
 
 @mcp.tool()
 async def warm_camera() -> str:
-    """warm the camera"""
+    """Warm the camera."""
     await _api_get("/equipment/camera/warm?minutes=0")
     return "Camera warmed."
 
@@ -311,19 +311,19 @@ async def warm_camera() -> str:
 
 @mcp.tool()
 async def get_event_history() -> Any:
-    """get latest observatory event history"""
+    """Get latest observatory event history."""
     return await _api_get("/event-history")
 
 
 @mcp.tool()
 async def get_application_logs() -> Any:
-    """get latest info, error, and warning logs"""
+    """Get latest info, error, and warning logs."""
     return await _api_get("/application/logs?lineCount=100")
 
 
 @mcp.tool()
 async def sequence_state() -> Any:
-    """get current state of sequence"""
+    """Get current state of the loaded sequence."""
     return await _api_get("/sequence/json")
 
 
