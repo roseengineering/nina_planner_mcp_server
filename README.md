@@ -150,7 +150,7 @@ Each call to `sequence_load` stops any running sequence, builds the appropriate 
 At session end:
 - `sequence_stop()` — stops whatever sequence is running immediately
 - `sequence_skip()` — skips to the end of whatever sequence is running
-- `park_telescope()`, `warm_camera()` — only needed if end sequence fails to park and warm camera when observatory closes.
+- `park_telescope()`, `warm_camera()` — only needed if end sequence fails to park when observatory closes.
 
 ---
 
