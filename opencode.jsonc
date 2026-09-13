@@ -4,7 +4,7 @@
     "./nina-plugin.ts"
   ],
   "mcp": {
-    "nina_planner": {
+    "nina-planner": {
       "type": "local",
       "command": [
         "bash", 

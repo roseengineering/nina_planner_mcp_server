@@ -8,6 +8,5 @@ dependencies = [
     "mcp>=1.0,<2",
     "httpx>=0.27",
 ]
-
-[tool.mypy]
-ignore_missing_imports = true
+[project.scripts]
+nina_planner = "nina_planner.__main__:main"

@@ -228,11 +228,11 @@ FrameType = Literal["lights", "darks", "bias", "dawn_flats", "dusk_flats"]
 
 
 @mcp.tool()
-async def sequence_start(
+async def sequence_load(
     file_path: str,
     frame_type: FrameType = "lights",
 ) -> str:
-    """Load a sequence from a JSON observation plan file and start it.
+    """Load an observation plan from a JSON file.
     Args:
         file_path: Path to a JSON observation plan file.
         frame_type: Type of sequence to construct. Allowed values:
@@ -257,27 +257,30 @@ async def sequence_start(
         raise ValueError(f"Unsupported frame type: {frame_type}")
     await _api_get("/sequence/stop")
     await _api_post("/sequence/load", seq)
-    await _api_get("/sequence/start?skipValidation=true")
-    return f"`{frame_type}` sequence started."
+    return f"`{frame_type}` sequence loaded."
 
 
 @mcp.tool()
-async def sequence_resume() -> str:
-    """Resume a stopped sequence, keeping exposure counts the same."""
+async def sequence_start(reset: bool = False) -> str:
+    """Start or resume the acquisition sequence.
+    Args:
+        reset: If True, resets exposure counts before starting. Defaults to False."""
+    if reset:
+        await _api_get("/sequence/reset")
     await _api_get("/sequence/start?skipValidation=true")
-    return "Sequence resumed."
+    return "Sequence started."
 
 
 @mcp.tool()
 async def sequence_stop() -> str:
-    """Stop a running sequence."""
+    """stop sequence"""
     await _api_get("/sequence/stop")
     return "Sequence stopped."
 
 
 @mcp.tool()
 async def sequence_skip() -> str:
-    """Skip to sequence end to stop imaging and park when observatory closes"""
+    """skip to end sequence to wait for observatory to close before tearing down"""
     await _api_get("/sequence/skip?type=toEnd")
     return "Sequence skipped to end."
 
@@ -287,21 +290,21 @@ async def sequence_skip() -> str:
 
 @mcp.tool()
 async def park_telescope() -> str:
-    """Park the telescope."""
+    """park the telescope"""
     await _api_get("/equipment/mount/park")
     return "Telescope parked."
 
 
 @mcp.tool()
 async def home_telescope() -> str:
-    """Home the telescope."""
+    """home the telescope"""
     await _api_get("/equipment/mount/home")
     return "Telescope homed."
 
 
 @mcp.tool()
 async def warm_camera() -> str:
-    """Warm the camera."""
+    """warm the camera"""
     await _api_get("/equipment/camera/warm?minutes=0")
     return "Camera warmed."
 
@@ -311,19 +314,19 @@ async def warm_camera() -> str:
 
 @mcp.tool()
 async def get_event_history() -> Any:
-    """Get latest observatory event history."""
+    """get latest observatory event history"""
     return await _api_get("/event-history")
 
 
 @mcp.tool()
 async def get_application_logs() -> Any:
-    """Get latest info, error, and warning logs."""
+    """get latest info, error, and warning logs"""
     return await _api_get("/application/logs?lineCount=100")
 
 
 @mcp.tool()
 async def sequence_state() -> Any:
-    """Get current state of the loaded sequence."""
+    """get current state of sequence"""
     return await _api_get("/sequence/json")
 
 
