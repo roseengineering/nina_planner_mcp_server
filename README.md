@@ -1,0 +1,214 @@
+# nina_planner — Observatory Operations Guide
+
+`nina_planner` is an MCP tool server for N.I.N.A. (Nighttime Imaging 'N' Astronomy). It lets you inspect equipment, write observation plans, load sequences, and control the telescope — all through tool calls in your AI client.
+
+---
+
+## Available Tools
+
+### Equipment & Telemetry
+
+| Tool | Purpose |
+|---|---|
+| `get_site_equipment()` | List connected hardware (mount, camera, focuser, guider, safety monitor, weather, dome, filter wheel, rotator). Auto-connects any device that is present but disconnected. |
+| `get_site_profile()` | Observatory location (lat/lon/elevation), optics details, filter list, plate solver type, and image save path. |
+| `get_event_history()` | Latest observatory event log entries. |
+| `get_application_logs()` | Lastest N.I.N.A. application log entries. |
+| `sequence_state()` | Current state of the loaded sequence. |
+
+### Hardware Control
+
+| Tool | Purpose |
+|---|---|
+| `park_telescope()` | Park the mount to its safe position. |
+| `home_telescope()` | Home the mount. |
+| `warm_camera()` | Warm the camera to ambient (safe shutdown). |
+
+### Sequence Management
+
+| Tool | Purpose |
+|---|---|
+| `write_plan_file(plan)` | Write an observation plan JSON file. |
+| `sequence_load(file_path, frame_type)` | Load a plan file as a sequence (lights, darks, bias, dawn_flats, or dusk_flats). |
+| `sequence_start(reset)` | Start or resume the loaded sequence. Pass `reset=True` to zero exposure counters. |
+| `sequence_skip()` | Skip to the end of the sequence (for teardown/shutdown). |
+
+---
+
+## The Observation Plan
+
+A plan is a JSON document that describes one complete imaging session. It encodes the **target**, **exposure settings** for all four frame types, and **equipment configuration** (cooler, autofocus, guiding, constraints).
+
+### Plan structure
+
+```json
+{
+  "target": "Veil Nebula",
+  "intent": "Widefield supernova remnant",
+  "description": "Veil Nebula complex centered between Western NGC 6960 and Eastern NGC 6992",
+  "ra_hours": 20.85,
+  "dec_deg": 31.22,
+  "batch_size": 5,
+
+  "cooler": {
+    "on": true,
+    "setpoint_celsius": -10.0
+  },
+  "constraints": {
+    "min_altitude": 30.0,
+    "horizon_offset_degrees": 2.0
+  },
+  "autofocus": {
+    "reference_filter_name": "LP",
+    "hfr_increase_sample_size": 3,
+    "hfr_increase_threshold_percent": 15.0,
+    "every_n_exposures": 10,
+    "threshold_celsius": 1.0
+  },
+  "guiding": {
+    "dither_every_n_exposures": 2,
+    "check_drift_every_n_exposures": 6,
+    "max_drift_arcmin": 1.5
+  },
+
+  "lights": [
+    { "filter_name": "LP", "exposure_time_seconds": 60.0, "total_count": 60 }
+  ],
+  "flats": [
+    { "filter_name": "LP", "exposure_time_seconds": 5.0, "total_count": 30 }
+  ],
+  "darks": [
+    { "exposure_time_seconds": 60.0, "total_count": 20 }
+  ],
+  "bias": [
+    { "total_count": 30 }
+  ]
+}
+```
+
+### Fields
+
+| Field | Required | Description |
+|---|---|---|
+| `target` | no | Catalog designation, e.g. "M31", "NGC 7000" |
+| `intent` | no | 2-3 words describing the goal |
+| `ra_hours` | **yes** | J2000 right ascension in hours `[0, 24)` |
+| `dec_deg` | **yes** | J2000 declination in degrees `[-90, +90]` |
+| `batch_size` | no | Exposures per batch (0 = no batching, default 5) |
+| `cooler` | no | Target setpoint (default -10°C) |
+| `constraints` | no | Minimum altitude and horizon safety buffer |
+| `autofocus` | **yes** | Reference filter, HFR and temperature thresholds, interval |
+| `guiding` | no | Dither and drift-recenter settings |
+| `lights` | **yes** | Light exposure groups (filter + time + count) |
+| `flats` | **yes** | Flat exposure groups (filter + time + count) |
+| `darks` | **yes** | Dark exposure groups (time + count) — match light exposure times |
+| `bias` | **yes** | Bias frame count (single exposure, no filter needed) |
+
+---
+
+## Workflow: A Complete Imaging Run
+
+### 1. Write the plan
+
+Use `write_plan_file` with the plan object. This validates the filter names against your active N.I.N.A. profile and writes a JSON file named like `veil-nebula_widefield-supernova-remnant_20260913T080623.json`.
+
+### 2. Load and run each calibration type, then lights
+
+Each call to `sequence_load` stops any running sequence, builds the appropriate container (lights, darks, flats, or bias), and posts it to N.I.N.A.
+
+**Suggested order:**
+
+1. **Load darks** (done during the day or while flats are not possible):
+   `sequence_load(file_path="<plan>.json", frame_type="darks")`
+   `sequence_start(reset=True)`
+   _(wait for completion)_
+
+2. **Load bias** (also done during the day):
+   `sequence_load(file_path="<plan>.json", frame_type="bias")`
+   `sequence_start(reset=True)`
+   _(wait for completion)_
+
+3. **Load dusk flats** (as evening twilight begins):
+   `sequence_load(file_path="<plan>.json", frame_type="dusk_flats")`
+   `sequence_start(reset=True)`
+   _(wait for completion, or skip with `sequence_skip()` at dawn)_
+
+4. **Load lights** (main imaging overnight):
+   `sequence_load(file_path="<plan>.json", frame_type="lights")`
+   `sequence_start(reset=True)`
+   _(runs all night; autofocus and guiding triggers are built in)_
+
+5. **Load dawn flats** (morning twilight):
+   `sequence_load(file_path="<plan>.json", frame_type="dawn_flats")`
+   `sequence_start(reset=True)`
+
+### 3. Teardown
+
+At session end:
+- `sequence_skip()` — skips to the end of whatever sequence is running
+- `park_telescope()`, `warm_camera()` — only needed if end sequence fails to park and warm camera when observatory closes.
+
+---
+
+## Notes
+
+- **Filter validation:** `write_plan_file` and `sequence_load` check that every filter name in the plan (lights, flats, autofocus reference) matches a filter in your active N.I.N.A. profile. Unknown filters will be rejected with an error listing what is available.
+- **The plan file is persistent:** — written to the current working directory. You can inspect, edit, and reuse it across sessions.
+- **Experimental:** This code is highly experimental.  At the moment I am testing it at my observatory.  However I don't have a camera cooler.  So those operations are untest.  The agent generates an advanced sequence that it loads into N.I.N.A.  This sequence is still in alpha.  
+
+---
+
+## `nina-plugin.ts` — OpenCode Autonomous Plugin
+
+`nina-plugin.ts` is an [opencode](https://opencode.ai) plugin (not compatible with Claude Code or other MCP clients). Once registered in `opencode.jsonc`, it runs as a background server inside opencode and does two things:
+
+1. **Websocket event monitoring** — Connects to the N.I.N.A. event socket (`ws://<host>/v2/socket`), subscribes to all events, and forwards them to the active agent as intervention prompts. Events are batched with a 1-second debounce to avoid flooding the conversation.
+
+2. **Interval check** — Every `NINA_INTERVAL_MINUTES` (default 10) it prompts the agent to query observatory status (`sequence_state`, `get_site_equipment`) and decide what to do next, even when no N.I.N.A. events are firing.
+
+The plugin auto-reconnects on websocket disconnection with a 5-second retry. On server dispose, it cleans up all timers and the socket.
+
+---
+
+## `opencode.jsonc` — Sample Configuration
+
+```jsonc
+{
+  "$schema": "https://opencode.ai/config.json",
+  "plugin": [
+    "./nina-plugin.ts"
+  ],
+  "mcp": {
+    "nina_planner": {
+      "type": "local",
+      "command": [
+        "bash",
+        "-c",
+        "python -m nina_planner 2>> /tmp/opencode_nina_planner.log"
+      ]
+    }
+  }
+}
+```
+
+Registers the opencode plugin and the `nina_planner` MCP server so both run together. The MCP server provides the tools (`sequence_load`, `get_site_equipment`, etc.) that the plugin-prompted agent calls.
+
+---
+
+## Environment Variables
+
+### `nina-plugin.ts` (opencode plugin)
+
+| Variable | Default | Description |
+|---|---|---|
+| `NINA_ENDPOINT` | `localhost:1888` | N.I.N.A. host and port for the websocket event stream |
+| `NINA_INTERVAL_MINUTES` | `10` | Interval between autonomous status checks (float) |
+
+### `nina_planner` (MCP server)
+
+| Variable | Default | Description |
+|---|---|---|
+| `NINA_ENDPOINT` | `localhost:1888` | N.I.N.A. host and port for the REST API (`host:port`) |
+| `NINA_FLATS_ALTITUDE` | `80` | Altitude in degrees for flat panel calibration frames |
+| `NINA_FLATS_AZIMUTH_DAWN` | `270` | Azimuth in degrees pointing west for dawn flats |
+| `NINA_FLATS_AZIMUTH_DUSK` | `90` | Azimuth in degrees pointing east for dusk flats |

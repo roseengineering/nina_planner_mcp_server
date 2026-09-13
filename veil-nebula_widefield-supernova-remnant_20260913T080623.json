@@ -1,0 +1,53 @@
+{
+  "target": "Veil Nebula",
+  "intent": "Widefield supernova remnant",
+  "description": "Veil Nebula complex centered between Western NGC 6960 and Eastern NGC 6992",
+  "ra_hours": 20.85,
+  "dec_deg": 31.22,
+  "batch_size": 5,
+  "cooler": {
+    "on": true,
+    "setpoint_celsius": -10.0
+  },
+  "constraints": {
+    "min_altitude": 30.0,
+    "horizon_offset_degrees": 2.0
+  },
+  "autofocus": {
+    "reference_filter_name": "LP",
+    "hfr_increase_sample_size": 3,
+    "hfr_increase_threshold_percent": 15.0,
+    "every_n_exposures": 10,
+    "threshold_celsius": 1.0
+  },
+  "guiding": {
+    "dither_every_n_exposures": 2,
+    "check_drift_every_n_exposures": 6,
+    "max_drift_arcmin": 1.5
+  },
+  "lights": [
+    {
+      "filter_name": "LP",
+      "exposure_time_seconds": 60.0,
+      "total_count": 60
+    }
+  ],
+  "flats": [
+    {
+      "filter_name": "LP",
+      "exposure_time_seconds": 5.0,
+      "total_count": 30
+    }
+  ],
+  "darks": [
+    {
+      "exposure_time_seconds": 60.0,
+      "total_count": 20
+    }
+  ],
+  "bias": [
+    {
+      "total_count": 30
+    }
+  ]
+}
