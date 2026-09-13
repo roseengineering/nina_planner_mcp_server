@@ -166,7 +166,7 @@ At session end:
 
 `nina-plugin.ts` is an [opencode](https://opencode.ai) plugin (not compatible with Claude Code or other MCP clients). Once registered in `opencode.jsonc`, it runs as a background server inside opencode and does two things:
 
-1. **Websocket event monitoring** — Connects to the N.I.N.A. event socket (`ws://<host>/v2/socket`), subscribes to all events, and forwards them to the active agent as intervention prompts. Events are batched with a 1-second debounce to avoid flooding the conversation.
+1. **Websocket event monitoring** — Connects to the N.I.N.A. event socket (`ws://<host:port>/v2/socket`), subscribes to all events, and forwards them to the active agent as intervention prompts. Events are batched with a 1-second debounce to avoid flooding the conversation.
 
 2. **Interval check** — Every `NINA_INTERVAL_MINUTES` (default 10) it prompts the agent to query observatory status (`sequence_state`, `get_site_equipment`) and decide what to do next, even when no N.I.N.A. events are firing.
 
