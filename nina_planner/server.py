@@ -228,11 +228,11 @@ FrameType = Literal["lights", "darks", "bias", "dawn_flats", "dusk_flats"]
 
 
 @mcp.tool()
-async def sequence_load(
+async def sequence_start(
     file_path: str,
     frame_type: FrameType = "lights",
 ) -> str:
-    """Load an observation plan from a JSON file.
+    """start a sequence from a JSON observation plan file.
     Args:
         file_path: Path to a JSON observation plan file.
         frame_type: Type of sequence to construct. Allowed values:
@@ -257,18 +257,15 @@ async def sequence_load(
         raise ValueError(f"Unsupported frame type: {frame_type}")
     await _api_get("/sequence/stop")
     await _api_post("/sequence/load", seq)
-    return f"`{frame_type}` sequence loaded."
+    await _api_get("/sequence/start?skipValidation=true")
+    return f"`{frame_type}` sequence started."
 
 
 @mcp.tool()
-async def sequence_start(reset: bool = False) -> str:
-    """Start or resume the acquisition sequence.
-    Args:
-        reset: If True, resets exposure counts before starting. Defaults to False."""
-    if reset:
-        await _api_get("/sequence/reset")
+async def sequence_resume() -> str:
+    """resume a stopped sequence, keeping exposure counts."""
     await _api_get("/sequence/start?skipValidation=true")
-    return "Sequence started."
+    return "Sequence resumed."
 
 
 @mcp.tool()
@@ -280,7 +277,7 @@ async def sequence_stop() -> str:
 
 @mcp.tool()
 async def sequence_skip() -> str:
-    """skip to end sequence to wait for observatory to close before tearing down"""
+    """skip to end sequence to park when observatory closes"""
     await _api_get("/sequence/skip?type=toEnd")
     return "Sequence skipped to end."
 
