@@ -100,7 +100,7 @@ A plan is a JSON document that describes one complete imaging session. It encode
 | `batch_size` | no | Exposures per batch (0 = no batching, default 5) |
 | `cooler` | no | Target setpoint (default -10°C) |
 | `constraints` | no | Minimum altitude and horizon safety buffer |
-| `autofocus` | **yes** | Reference filter, HFR and temperature thresholds, interval |
+| `autofocus` | no | Reference filter, HFR and temperature thresholds, interval |
 | `guiding` | no | Dither and drift-recenter settings |
 | `lights` | **yes** | Light exposure groups (filter + time + count) |
 | `flats` | **yes** | Flat exposure groups (filter + time + count) |

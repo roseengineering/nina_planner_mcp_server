@@ -23,7 +23,7 @@ class BiasExposurePlan(BaseModel):
 
 
 class AutofocusConfig(BaseModel):
-    reference_filter_name: str
+    reference_filter_name: str = Field(default="L")
     hfr_increase_sample_size: int = Field(default=3, ge=1)
     hfr_increase_threshold_percent: float = Field(default=15.0, gt=0)
     every_n_exposures: int = Field(default=10, ge=1)
