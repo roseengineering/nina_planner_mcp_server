@@ -120,27 +120,27 @@ Each call to `sequence_load` stops any running sequence, builds the appropriate 
 
 1. **Load darks** (done during the day or while flats are not possible):
    `sequence_load(file_path="<plan>.json", frame_type="darks")`
-   `sequence_start(reset=True)`
+   `sequence_start()`
    _(wait for completion)_
 
 2. **Load bias** (also done during the day):
    `sequence_load(file_path="<plan>.json", frame_type="bias")`
-   `sequence_start(reset=True)`
+   `sequence_start()`
    _(wait for completion)_
 
 3. **Load dusk flats** (as evening twilight begins):
    `sequence_load(file_path="<plan>.json", frame_type="dusk_flats")`
-   `sequence_start(reset=True)`
+   `sequence_start()`
    _(wait for completion, or skip with `sequence_skip()` at dawn)_
 
 4. **Load lights** (main imaging overnight):
    `sequence_load(file_path="<plan>.json", frame_type="lights")`
-   `sequence_start(reset=True)`
+   `sequence_start()`
    _(runs all night; autofocus and guiding triggers are built in)_
 
 5. **Load dawn flats** (morning twilight):
    `sequence_load(file_path="<plan>.json", frame_type="dawn_flats")`
-   `sequence_start(reset=True)`
+   `sequence_start()`
 
 ### 3. Teardown
 
@@ -154,7 +154,7 @@ At session end:
 
 - **Filter validation:** `write_plan_file` and `sequence_load` check that every filter name in the plan (lights, flats, autofocus reference) matches a filter in your active N.I.N.A. profile. Unknown filters will be rejected with an error listing what is available.
 - **The plan file is persistent:** — written to the current working directory. You can inspect, edit, and reuse it across sessions.
-- **Experimental:** This code is highly experimental.  At the moment I am testing it at my observatory.  However I don't have a camera cooler.  So those operations are untest.  The agent generates an advanced sequence that it loads into N.I.N.A.  This sequence is still in alpha.  
+- **Experimental:** This code is highly experimental.  At the moment I am testing it at my observatory.  However I don't have a camera cooler.  So those operations are untested.  The agent generates an advanced sequence that it loads into N.I.N.A.  This sequence is still in alpha.  
 
 ---
 
