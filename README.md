@@ -31,6 +31,7 @@
 | `write_plan_file(plan)` | Write an observation plan JSON file. |
 | `sequence_load(file_path, frame_type)` | Load a plan file as a sequence (lights, darks, bias, dawn_flats, or dusk_flats). |
 | `sequence_start(reset)` | Start or resume the loaded sequence. Pass `reset=True` to zero exposure counters. |
+| `sequence_stop()` | Stop the running sequence. |
 | `sequence_skip()` | Skip to the end of the sequence (for teardown/shutdown). |
 
 ---
@@ -145,6 +146,7 @@ Each call to `sequence_load` stops any running sequence, builds the appropriate 
 ### 3. Teardown
 
 At session end:
+- `sequence_stop()` — stops whatever sequence is running immediately
 - `sequence_skip()` — skips to the end of whatever sequence is running
 - `park_telescope()`, `warm_camera()` — only needed if end sequence fails to park and warm camera when observatory closes.
 

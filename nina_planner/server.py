@@ -271,6 +271,7 @@ async def sequence_start(reset: bool = False) -> str:
     return "Sequence started."
 
 
+@mcp.tool()
 async def sequence_stop() -> str:
     """stop sequence"""
     await _api_get("/sequence/stop")

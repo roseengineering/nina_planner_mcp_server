@@ -1,3 +1,6 @@
+import os
+
+
 def _add_refs(data):
     ident = 0
 
@@ -722,8 +725,12 @@ def build_sequence_base(instructions):
 
 def build_sequence_flats(plan, profile, dusk: bool = False):
     NINA_FLATS_ALTITUDE = float(os.environ.get("NINA_FLATS_ALTITUDE ", 80))
-    NINA_FLATS_AZIMUTH_DAWN = float(os.environ.get("NINA_FLATS_AZIMUTH_DAWN", 270)) # 270:west
-    NINA_FLATS_AZIMUTH_DUSK = float(os.environ.get("NINA_FLATS_AZIMUTH_DUSK", 90))  # 90:east
+    NINA_FLATS_AZIMUTH_DAWN = float(
+        os.environ.get("NINA_FLATS_AZIMUTH_DAWN", 270)
+    )  # 270:west
+    NINA_FLATS_AZIMUTH_DUSK = float(
+        os.environ.get("NINA_FLATS_AZIMUTH_DUSK", 90)
+    )  # 90:east
     return build_sequence_base(
         [
             sequence_safetynet(
@@ -750,8 +757,8 @@ def build_sequence_flats(plan, profile, dusk: bool = False):
                 instructions=[
                     set_tracking(0),  # 0=sidereal
                     slew_to_azalt(
-                       az=NINA_FLATS_AZIMUTH_DUSK if dusk else NINA_FLATS_AZIMUTH_DAWN,
-                       alt=NINA_FLATS_ALTITUDE
+                        az=NINA_FLATS_AZIMUTH_DUSK if dusk else NINA_FLATS_AZIMUTH_DAWN,
+                        alt=NINA_FLATS_ALTITUDE,
                     ),
                 ]
                 + [
