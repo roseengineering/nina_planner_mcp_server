@@ -3,6 +3,7 @@ declare const process: { env: Record<string, string | undefined> };
 
 const NINA_INTERVAL_MINUTES = +(process.env.NINA_INTERVAL_MINUTES || 10)
 const NINA_ENDPOINT = process.env.NINA_ENDPOINT || "localhost:1888"
+const INTERVENTION_AGENT = "controller"
 
 const plugin: PluginModule = {
   id: 'nina-plug',
@@ -11,13 +12,20 @@ const plugin: PluginModule = {
       const sessions = await ctx.client.session.list().catch(() => null)
       if (!sessions?.data?.length) return
       const session = sessions.data[0]
+      const { data: agents } = await ctx.client.app.agents()
+      const exists = agents.some((a: any) => a.name === INTERVENTION_AGENT)
 
-      await ctx.client.session.prompt({
+      const payload = {
         path: { id: session.id },
         body: {
-          parts: [{ type: "text", text: `[TRIGGER: ${reason}] Autonomous intervention invoked. Action required due to: ${reason}` }],
+          ...(exists && { agent: INTERVENTION_AGENT }),
+          parts: [{ 
+              type: "text", 
+              text: `[TRIGGER: ${reason}] Autonomous intervention invoked. Action required due to: ${reason}` 
+          }],
         },
-      })
+      }
+      await ctx.client.session.prompt(payload)
     }
 
     let eventBatch: string[] = []
