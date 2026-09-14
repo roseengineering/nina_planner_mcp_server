@@ -3,7 +3,7 @@ declare const process: { env: Record<string, string | undefined> };
 
 const NINA_INTERVAL_MINUTES = +(process.env.NINA_INTERVAL_MINUTES || 10)
 const NINA_ENDPOINT = process.env.NINA_ENDPOINT || "localhost:1888"
-const NINA_API_URL = f"ws://{NINA_ENDPOINT}/v2/socket"
+const NINA_API_URL = `ws://${NINA_ENDPOINT}/v2/socket`
 
 const plugin: PluginModule = {
   id: 'nina-plug',
