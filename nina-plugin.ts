@@ -70,7 +70,6 @@ const plugin: PluginModule = {
       }
     }
 
-    console.log('nina plugin loaded')
     connect()
 
     const intervalId = setInterval(() => {
