@@ -96,6 +96,34 @@ async def get_site_equipment() -> ObservatoryEquipment:
     from .models.weather import Weather
 
     raw = await _api_get("/equipment/info")
+    profile = await _api_get("/profile/show?active=true")
+
+    def _exists(
+        section: dict, field: str, skip: set = frozenset({"No_Device"})
+    ) -> bool:
+        value = section.get(field)
+        return value is not None and value not in skip and value != ""
+
+    EXISTS = {
+        "Mount": lambda: (
+            _exists(profile.get("TelescopeSettings", {}), "MountName")
+            or _exists(profile.get("TelescopeSettings", {}), "Name")
+        ),
+        "Camera": lambda: _exists(profile.get("CameraSettings", {}), "Id"),
+        "Focuser": lambda: _exists(profile.get("FocuserSettings", {}), "Id"),
+        "FilterWheel": lambda: _exists(profile.get("FilterWheelSettings", {}), "Id"),
+        "Guider": lambda: _exists(
+            profile.get("GuiderSettings", {}),
+            "GuiderName",
+            {"Direct_Guider", "No_Guider"},
+        ),
+        "Rotator": lambda: _exists(profile.get("RotatorSettings", {}), "Id"),
+        "Dome": lambda: _exists(profile.get("DomeSettings", {}), "Id"),
+        "WeatherData": lambda: _exists(profile.get("WeatherDataSettings", {}), "Id"),
+        "SafetyMonitor": lambda: _exists(
+            profile.get("SafetyMonitorSettings", {}), "Id"
+        ),
+    }
 
     DEVICE_MAP = {
         "Mount": (MountDevice, "/equipment/mount"),
@@ -109,15 +137,24 @@ async def get_site_equipment() -> ObservatoryEquipment:
         "Rotator": (RotatorDevice, "/equipment/rotator"),
     }
 
+    devices_connecting: list[str] = []
+
     for key, (_, path) in DEVICE_MAP.items():
+        if not EXISTS[key]():
+            continue
         data = raw.get(key, {})
         if data and not data.get("Connected"):
-            name = data.get("Name") or data.get("DisplayName")
-            if name:
-                try:
-                    await _api_get(path + "/connect")
-                except (httpx.HTTPError, RuntimeError):
-                    logger.warning("Failed to connect %s", name)
+            try:
+                await _api_get(path + "/connect")
+                devices_connecting.append(key)
+            except (httpx.HTTPError, RuntimeError):
+                logger.warning("Failed to connect %s", key)
+
+    if devices_connecting:
+        raise RuntimeError(
+            f"Equipment connecting: {', '.join(devices_connecting)}. "
+            "Please try again in a few seconds."
+        )
 
     raw = await _api_get("/equipment/info")
 
