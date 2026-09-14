@@ -594,7 +594,7 @@ def round_robin(exposures, batch_size=0, reverse=False):
                 else 0
             )
             count = min(d.total_count - current_count, batch_size)
-            if batch_size == 0:
+            if batch_size == 0 or len(exposures) == 1:
                 result.append((d.total_count, exposure_time_seconds, filter_name))
             elif count > 0:
                 result.append((count, exposure_time_seconds, filter_name))
