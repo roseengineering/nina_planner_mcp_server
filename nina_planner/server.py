@@ -1,10 +1,9 @@
 import json
-import logging
 import os
+import sys
 import re
 from datetime import datetime
 
-logger = logging.getLogger(__name__)
 from typing import Any, Literal
 
 import httpx
@@ -19,7 +18,9 @@ from .models.profile import (
     SiteLocationInfo,
 )
 from .nina_utils import ascom_float, ascom_int
-from .sequence import build_sequence_darks, build_sequence_flats, build_sequence_lights
+from .sequence import (
+    build_sequence_darks, build_sequence_flats, build_sequence_lights,
+    build_sequence_teardown)
 
 mcp = FastMCP("nina-planner")
 
@@ -47,6 +48,7 @@ async def _api_get(path: str) -> dict[str, Any]:
         data = resp.json()
         if not data.get("Success", False):
             raise RuntimeError(data.get("Error", "API request failed"))
+        print("_api_get:", json.dumps(data, indent=2), file=sys.stderr)
         return data.get("Response", {})
 
 
@@ -144,11 +146,8 @@ async def get_site_equipment() -> ObservatoryEquipment:
             continue
         data = raw.get(key, {})
         if data and not data.get("Connected"):
-            try:
-                await _api_get(path + "/connect")
-                devices_connecting.append(key)
-            except (httpx.HTTPError, RuntimeError):
-                logger.warning("Failed to connect %s", key)
+            await _api_get(path + "/connect")
+            devices_connecting.append(key)
 
     if devices_connecting:
         raise RuntimeError(
@@ -181,7 +180,7 @@ async def get_site_equipment() -> ObservatoryEquipment:
         filter_wheel=_build(raw.get("FilterWheel", {}), FilterWheelDevice),
         rotator=_build(raw.get("Rotator", {}), RotatorDevice),
     )
-    logger.info("Equipment: %s", equipment.model_dump_json(indent=2))
+    print("Equipment:", equipment.model_dump_json(indent=2), file=sys.stderr)
     return equipment
 
 
@@ -241,7 +240,7 @@ async def get_site_profile() -> ObservatoryProfile:
         blind_plate_solver=plate_solve.get("BlindSolverType"),
         image_save_path=image_file.get("FilePath", ""),
     )
-    logger.info("Profile: %s", profile.model_dump_json(indent=2))
+    print("Profile:", profile.model_dump_json(indent=2), file=sys.stderr)
     return profile
 
 
@@ -322,28 +321,16 @@ async def sequence_skip() -> str:
     return "Sequence skipped to end."
 
 
-## other functions
-
-
 @mcp.tool()
-async def park_telescope() -> str:
-    """park the telescope"""
-    await _api_get("/equipment/mount/park")
-    return "Telescope parked."
-
-
-@mcp.tool()
-async def home_telescope() -> str:
-    """home the telescope"""
-    await _api_get("/equipment/mount/home")
-    return "Telescope homed."
-
-
-@mcp.tool()
-async def warm_camera() -> str:
-    """warm the camera"""
-    await _api_get("/equipment/camera/warm?minutes=0")
-    return "Camera warmed."
+async def sequence_teardown(home: bool = False) -> str:
+    """Teardown observatory, parking telescope.
+    Args:
+        home: If True, homes the telescope instead of parking it. Defaults to False."""
+    seq = build_sequence_teardown(home=home)
+    await _api_get("/sequence/stop")
+    await _api_post("/sequence/load", seq)
+    await _api_get("/sequence/start?skipValidation=true")
+    return f"Parking sequence started."
 
 
 ## returns json

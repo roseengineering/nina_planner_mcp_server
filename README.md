@@ -18,14 +18,6 @@
 | `get_application_logs()` | Lastest N.I.N.A. application log entries. |
 | `sequence_state()` | Current state of the loaded sequence. |
 
-### Hardware Control
-
-| Tool | Purpose |
-|---|---|
-| `park_telescope()` | Park the mount to its safe position. |
-| `home_telescope()` | Home the mount. |
-| `warm_camera()` | Warm the camera to ambient (safe shutdown). |
-
 ### Sequence Management
 
 | Tool | Purpose |
@@ -35,6 +27,7 @@
 | `sequence_start(reset)` | Start or resume the loaded sequence. Pass `reset=True` to zero exposure counters. |
 | `sequence_stop()` | Stop the running sequence. |
 | `sequence_skip()` | Skip to the end of the sequence (for teardown/shutdown). |
+| `sequence_teardown(home)` | Teardown observatory and park scope. Pass `home=True` to home scope instead. |
 
 ---
 
@@ -150,7 +143,7 @@ Each call to `sequence_load` stops any running sequence, builds the appropriate 
 At session end:
 - `sequence_stop()` — stops whatever sequence is running immediately
 - `sequence_skip()` — skips to the end of whatever sequence is running
-- `park_telescope()`, `warm_camera()` — only needed if end sequence fails to park when observatory closes.
+- `park_telescope()` — only needed if end sequence fails to park.
 
 ---
 
@@ -169,6 +162,8 @@ At session end:
 1. **Websocket event monitoring** — Connects to the N.I.N.A. event socket (`ws://<host:port>/v2/socket`), subscribes to all events, and forwards them to the active agent as intervention prompts. Events are batched with a 1-second debounce to avoid flooding the conversation.
 
 2. **Interval check** — Every `NINA_INTERVAL_MINUTES` (default 10) it prompts the agent to query observatory status (`sequence_state`, `get_site_equipment`) and decide what to do next, even when no N.I.N.A. events are firing.
+
+3. **Agents** — Two different opencode "agents", if they are configured, are used for the plugin.  One is called `event` for responding to event and and the other is `check` for responding to the interval check.
 
 The plugin auto-reconnects on websocket disconnection with a 5-second retry. On server dispose, it cleans up all timers and the socket.
 

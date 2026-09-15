@@ -266,6 +266,10 @@ def park_scope():
     return _child("NINA.Sequencer.SequenceItem.Telescope.ParkScope, NINA.Sequencer")
 
 
+def home_scope():
+    return _child("NINA.Sequencer.SequenceItem.Telescope.FindHome, NINA.Sequencer")
+
+
 def warm_camera():
     return _child("NINA.Sequencer.SequenceItem.Camera.WarmCamera, NINA.Sequencer") | {
         "Duration": 0,
@@ -802,3 +806,25 @@ def build_sequence_darks(plan, bias=False):
             container_end(),
         ]
     )
+
+def build_sequence_teardown(home=False):
+    return container_root(
+        [
+            container_start(),
+            container_target(),
+            container_end([
+                connect_all_equipment(),
+            ] + [ 
+                home_scope() if home else park_scope()
+            ] + [
+                warm_camera(),
+            ]),
+        ]
+    )
+
+
+
+
+
+
+
