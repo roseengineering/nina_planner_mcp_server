@@ -16,7 +16,6 @@
 | `get_site_profile()` | Observatory location (lat/lon/elevation), optics details, filter list, plate solver type, and image save path. |
 | `get_event_history()` | Latest observatory event log entries. |
 | `get_application_logs()` | Lastest N.I.N.A. application log entries. |
-| `sequence_state()` | Current state of the loaded sequence. |
 
 ### Sequence Management
 
@@ -28,6 +27,7 @@
 | `sequence_stop()` | Stop the running sequence. |
 | `sequence_skip()` | Skip to the end of the sequence (for teardown/shutdown). |
 | `sequence_teardown(home)` | Teardown observatory and park scope. Pass `home=True` to home scope instead. |
+| `sequence_state()` | Current state of the loaded sequence. |
 
 ---
 
