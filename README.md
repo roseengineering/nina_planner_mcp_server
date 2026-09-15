@@ -1,8 +1,8 @@
-# nina_planner — Observatory Operations Guide
+# nina_planner — An Observatory Operator Agent
 
 ![Banner for repository](banner.png)
 
-`nina_planner` is an MCP tool server for N.I.N.A. (Nighttime Imaging 'N' Astronomy). It lets you inspect equipment, write observation plans, load sequences, and control the telescope — all through tool calls in your AI client.
+`nina_planner` is an MCP tool server for N.I.N.A. (Nighttime Imaging 'N' Astronomy). It lets you inspect equipment, write observation plans, load sequences, and control the telescope — all through tool calls in your AI client.  The focus is on tools to generate and manage sequences on N.I.N.A. rather than issuing real-time raw Advanced API commands.  This mcp server can generate "plans", in the style of ACP plans but in json, which then can be loaded and run as Advanced sequences.
 
 ---
 
