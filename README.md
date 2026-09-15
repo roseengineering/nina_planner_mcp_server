@@ -157,7 +157,7 @@ At session end:
 
 ## `nina-plugin.ts` — OpenCode Autonomous Plugin
 
-`nina-plugin.ts` is an [opencode](https://opencode.ai) plugin (not compatible with Claude Code or other MCP clients). Once registered in `opencode.jsonc`, it runs as a background server inside opencode and does two things:
+`nina-plugin.ts` is an [opencode](https://opencode.ai) plugin (not compatible with Claude Code or other MCP clients). Once registered in `opencode.json`, it runs as a background server inside opencode and does two things:
 
 1. **Websocket event monitoring** — Connects to the N.I.N.A. event socket (`ws://<host:port>/v2/socket`), subscribes to all events, and forwards them to the active agent as intervention prompts. Events are batched with a 1-second debounce to avoid flooding the conversation.
 
@@ -169,7 +169,7 @@ The plugin auto-reconnects on websocket disconnection with a 5-second retry. On 
 
 ---
 
-## `opencode.jsonc` — Sample Configuration
+## `opencode.json` — Sample Configuration
 
 ```jsonc
 {
