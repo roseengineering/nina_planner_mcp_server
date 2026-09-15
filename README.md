@@ -163,7 +163,7 @@ At session end:
 
 2. **Interval check** — Every `NINA_INTERVAL_MINUTES` (default 10) it prompts the agent to query observatory status (`sequence_state`, `get_site_equipment`) and decide what to do next, even when no N.I.N.A. events are firing.
 
-3. **Agents** — Two different opencode "agents", if they are configured, are used for the plugin.  One is called `event` for responding to incoming N.I.N.A. events and and the other is `check` for responding to the interval check.
+The plugin uses two different opencode "agents", if they are configured.  One is called `event` for responding to incoming N.I.N.A. events over websocket and and the other is `check` for responding to the interval check.
 
 The plugin auto-reconnects on websocket disconnection with a 5-second retry. On server dispose, it cleans up all timers and the socket.
 
