@@ -16,12 +16,12 @@
 | `get_site_profile()` | Observatory location (lat/lon/elevation), optics details, filter list, plate solver type, and image save path. |
 | `get_event_history()` | Latest observatory event log entries. |
 | `get_application_logs()` | Lastest N.I.N.A. application log entries. |
+| `write_plan_file(plan)` | Write an observation plan JSON file. |
 
 ### Sequence Management
 
 | Tool | Purpose |
 |---|---|
-| `write_plan_file(plan)` | Write an observation plan JSON file. |
 | `sequence_load(file_path, frame_type)` | Load a plan file as a sequence (lights, darks, bias, dawn_flats, or dusk_flats). |
 | `sequence_start(reset)` | Start or resume the loaded sequence. Pass `reset=True` to zero exposure counters. |
 | `sequence_stop()` | Stop the running sequence. |
