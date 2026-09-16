@@ -12,22 +12,22 @@
 
 | Tool | Purpose |
 |---|---|
-| `get_site_equipment()` | List connected hardware (mount, camera, focuser, guider, safety monitor, weather, dome, filter wheel, rotator). Auto-connects any device that is present but disconnected. |
+| `get_site_equipment_status()` | List connected hardware (mount, camera, focuser, guider, safety monitor, weather, dome, filter wheel, rotator). Auto-connects any device that is present but disconnected. |
 | `get_site_profile()` | Observatory location (lat/lon/elevation), optics details, filter list, plate solver type, and image save path. |
-| `get_event_history()` | Latest observatory event log entries. |
-| `get_application_logs()` | Lastest N.I.N.A. application log entries. |
-| `write_plan_file(plan)` | Write an observation plan JSON file. |
+| `event_history_get_recent()` | Latest observatory event log entries. |
+| `application_logs_get_recent()` | Latest N.I.N.A. application log entries. |
+| `observation_plan_write_file(plan, frame_type)` | Write an observation plan JSON file. |
 
 ### Sequence Management
 
 | Tool | Purpose |
 |---|---|
-| `sequence_load(file_path, frame_type)` | Load a plan file as a sequence (lights, darks, bias, dawn_flats, or dusk_flats). |
-| `sequence_start(reset)` | Start or resume the loaded sequence. Pass `reset=True` to zero exposure counters. |
+| `sequence_load_plan(file_path, frame_type)` | Load a plan file as a sequence (lights, darks, bias, dawn_flats, or dusk_flats). |
+| `sequence_start()` | Start or resume the loaded sequence. |
 | `sequence_stop()` | Stop the running sequence. |
-| `sequence_skip()` | Skip to the end of the sequence (for teardown/shutdown). |
-| `sequence_teardown(home)` | Teardown observatory and park scope. Pass `home=True` to home scope instead. |
-| `sequence_state()` | Current state of the loaded sequence. |
+| `sequence_enter_safety_standby()` | Run non-imaging sequence with safety guardrails. |
+| `sequence_execute_teardown(seestar)` | Teardown observatory and park scope. Pass `seestar=True` for a Seestar telescope. |
+| `sequence_get_state()` | Current state of the loaded sequence. |
 
 ---
 
@@ -106,51 +106,52 @@ A plan is a JSON document that describes one complete imaging session. It encode
 
 ### 1. Write the plan
 
-Use `write_plan_file` with the plan object. This validates the filter names against your active N.I.N.A. profile and writes a JSON file named like `veil-nebula_widefield-supernova-remnant_20260913T080623.json`.
+Use `observation_plan_write_file` with the plan object. This validates the filter names against your active N.I.N.A. profile and writes a JSON file named like `veil-nebula_widefield-supernova-remnant_20260913T080623.json`.
 
 ### 2. Load and run each calibration type, then lights
 
-Each call to `sequence_load` stops any running sequence, builds the appropriate container (lights, darks, flats, or bias), and posts it to N.I.N.A.
+Each call to `sequence_load_plan` stops any running sequence, builds the appropriate container (lights, darks, flats, or bias), and posts it to N.I.N.A.
 
-**Suggested order:**
+**Example order:**
 
-1. **Load darks** (done during the day or while flats are not possible):
-   `sequence_load(file_path="<plan>.json", frame_type="darks")`
-   `sequence_start()`
-   _(wait for completion)_
-
-2. **Load bias** (also done during the day):
-   `sequence_load(file_path="<plan>.json", frame_type="bias")`
-   `sequence_start()`
-   _(wait for completion)_
-
-3. **Load dusk flats** (as evening twilight begins):
-   `sequence_load(file_path="<plan>.json", frame_type="dusk_flats")`
-   `sequence_start()`
-   _(wait for completion, or skip with `sequence_skip()` at dawn)_
-
-4. **Load lights** (main imaging overnight):
-   `sequence_load(file_path="<plan>.json", frame_type="lights")`
+1. **Load lights** (main imaging overnight):
+   `sequence_load_plan(file_path="<plan>.json", frame_type="lights")`
    `sequence_start()`
    _(runs all night; autofocus and guiding triggers are built in)_
 
-5. **Load dawn flats** (morning twilight):
-   `sequence_load(file_path="<plan>.json", frame_type="dawn_flats")`
+2. **Load darks** (done during the day or while flats are not possible):
+   `sequence_load_plan(file_path="<plan>.json", frame_type="darks")`
    `sequence_start()`
+   _(wait for completion)_
+
+3. **Load bias** (also done during the day):
+   `sequence_load_plan(file_path="<plan>.json", frame_type="bias")`
+   `sequence_start()`
+   _(wait for completion)_
+
+5. **Load dawn flats** (morning twilight):
+   `sequence_load_plan(file_path="<plan>.json", frame_type="dawn_flats")`
+   `sequence_start()`
+   _(wait for completion)_
+
+4. **Load dusk flats** (as evening twilight begins):
+   `sequence_load_plan(file_path="<plan>.json", frame_type="dusk_flats")`
+   `sequence_start()`
+   _(wait for completion)_
 
 ### 3. Teardown
 
 At session end:
-- `sequence_skip()` — skips to the end of whatever sequence is running
-- `sequence_teardown()` — only needed if end sequence fails to park or no sequence is running.
+- The sequence should teardown automatically at dawn.
+- `sequence_execute_teardown` — only needed if end sequence fails to park or no sequence is running.
 
-Note, `sequence_stop()` stops whatever sequence is running, so it cannot teardown and park scope.  Either wait for the sequence to finish, skip to end, or load and run the teardown sequence.
+Note, `sequence_stop` stops whatever sequence is running, so it cannot teardown and park scope.  Either wait for the sequence to finish, skip to end, or load and run the teardown sequence.
 
 ---
 
 ## Notes
 
-- **Filter validation:** `write_plan_file` and `sequence_load` check that every filter name in the plan (lights, flats, autofocus reference) matches a filter in your active N.I.N.A. profile. Unknown filters will be rejected with an error listing what is available.
+- **Filter validation:** `observation_plan_write_file` and `sequence_load_plan` check that every filter name in the plan (lights, flats, autofocus reference) matches a filter in your active N.I.N.A. profile. Unknown filters will be rejected with an error listing what is available.
 - **The plan file is persistent:** — written to the current working directory. You can inspect, edit, and reuse it across sessions.
 - **Experimental:** This code is highly experimental.  At the moment I am testing it at my observatory.  However I don't have a camera cooler.  So those operations are untested.  The agent generates an advanced sequence that it loads into N.I.N.A.  This sequence is still in alpha.  
 
@@ -162,7 +163,7 @@ Note, `sequence_stop()` stops whatever sequence is running, so it cannot teardow
 
 1. **Websocket event monitoring** — Connects to the N.I.N.A. event socket (`ws://<host:port>/v2/socket`), subscribes to all events, and forwards them to the active agent as intervention prompts. Events are batched with a 1-second debounce to avoid flooding the conversation.
 
-2. **Interval check** — Every `NINA_INTERVAL_MINUTES` (default 10) it prompts the agent to query observatory status (`sequence_state`, `get_site_equipment`) and decide what to do next, even when no N.I.N.A. events are firing.
+2. **Interval check** — Every `NINA_INTERVAL_MINUTES` (default 10) it prompts the agent to query observatory status (`sequence_get_state`, `get_site_equipment`) and decide what to do next, even when no N.I.N.A. events are firing.
 
 The plugin uses two different active opencode "agents", if they are configured.  One is called `event` for responding to incoming N.I.N.A. events over websocket and and the other is `check` for responding to the interval check.
 
@@ -191,7 +192,7 @@ The plugin auto-reconnects on websocket disconnection with a 5-second retry. On 
 }
 ```
 
-Registers the opencode plugin and the `nina_planner` MCP server so both run together. The MCP server provides the tools (`sequence_load`, `get_site_equipment`, etc.) that the plugin-prompted agent calls.
+Registers the opencode plugin and the `nina_planner` MCP server so both run together. The MCP server provides the tools (`sequence_load_plan`, `get_site_equipment_status`, etc.) that the plugin-prompted agent calls.
 
 ---
 

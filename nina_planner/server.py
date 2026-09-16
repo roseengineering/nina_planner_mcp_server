@@ -19,7 +19,10 @@ from .models.profile import (
 )
 from .nina_utils import ascom_float, ascom_int
 from .sequence import (
-    build_sequence_darks, build_sequence_flats, build_sequence_lights,
+    build_sequence_darks, 
+    build_sequence_flats, 
+    build_sequence_lights,
+    build_sequence_standby,
     build_sequence_teardown)
 
 mcp = FastMCP("nina-planner")
@@ -85,8 +88,8 @@ async def _validate_filters(plan: ObservationPlan, profile: ObservatoryProfile):
 
 
 @mcp.tool()
-async def get_site_equipment() -> ObservatoryEquipment:
-    """List active equipment (telescope mount, camera, focuser, guider, safety monitor)."""
+async def get_site_equipment_status() -> ObservatoryEquipment:
+    """Returns the current connection, operating state, measurements, and capabilities of active observatory equipment, including weather and safety-monitor status. Use it for live operational and safety checks. This tool is read-only and takes no action."""
     from .models.camera import CameraDevice
     from .models.dome import DomeDevice
     from .models.filter_wheel import FilterWheelDevice
@@ -155,8 +158,6 @@ async def get_site_equipment() -> ObservatoryEquipment:
             "Please try again in a few seconds."
         )
 
-    raw = await _api_get("/equipment/info")
-
     def _build(data: dict, model_cls: type) -> Any:
         if not data:
             return None
@@ -186,7 +187,7 @@ async def get_site_equipment() -> ObservatoryEquipment:
 
 @mcp.tool()
 async def get_site_profile() -> ObservatoryProfile:
-    """Get static observatory profile: latitude, longitude, elevation, and metadata of site."""
+    """Returns the active NINA observatory profile and static configuration, including site location, optics, camera geometry, filters, plate solvers, and image-save path. Use get_site_equipment for live equipment state. This tool is read-only and takes no action."""
     raw = await _api_get("/profile/show?active=true")
 
     astrometry = raw.get("AstrometrySettings", {})
@@ -244,12 +245,21 @@ async def get_site_profile() -> ObservatoryProfile:
     return profile
 
 
-# plan calls
+@mcp.tool()
+async def event_history_get_recent() -> Any:
+    """Returns recent timestamped NINA observatory events and their event-specific details. Use it to reconstruct sequence, equipment, safety, imaging, and error activity. This tool is read-only; use sequence_get_state and get_site_equipment for current status."""
+    return await _api_get("/event-history")
 
 
 @mcp.tool()
-async def write_plan_file(plan: ObservationPlan) -> str:
-    """Write observation plan to a JSON file."""
+async def application_logs_get_recent() -> Any:
+    """Returns recent NINA application log entries, including informational messages, warnings, and errors with source and timestamp details. Use it to diagnose sequence failures, equipment communication problems, and unexpected behavior. This tool is read-only and takes no action."""
+    return await _api_get("/application/logs?lineCount=100")
+
+
+@mcp.tool()
+async def observation_plan_write_file(plan: ObservationPlan) -> str:
+    """Validates and writes an observation plan to a JSON file for later use by sequence_load_plan. The plan defines target coordinates, acquisition intent, light and calibration frames, batching, cooling, autofocus, guiding, and observing constraints. This tool only creates the plan file; it does not load or start a sequence."""
     profile = await get_site_profile()
     await _validate_filters(plan, profile)
     timestamp = datetime.now().strftime("%Y%m%dT%H%M%S")
@@ -260,20 +270,15 @@ async def write_plan_file(plan: ObservationPlan) -> str:
     return f"Plan successfully written to {filename}"
 
 
+# sequence
+
 FrameType = Literal["lights", "darks", "bias", "dawn_flats", "dusk_flats"]
-
-
 @mcp.tool()
-async def sequence_load(
+async def sequence_load_plan(
     file_path: str,
     frame_type: FrameType = "lights",
 ) -> str:
-    """Load an observation plan from a JSON file.
-    Args:
-        file_path: Path to a JSON observation plan file.
-        frame_type: Type of sequence to construct. Allowed values:
-            'lights', 'darks', 'bias', 'dawn_flats', 'dusk_flats'. Defaults to 'lights'.
-    """
+    """Loads an acquisition sequence with safety guardrails from an observation-plan JSON file. Select the frame type: lights, darks, bias, dawn_flats, or dusk_flats. This tool only loads the sequence; call sequence_start afterward. Stop any running standby or acquisition sequence before loading a new one."""
     with open(file_path, "r", encoding="utf-8") as f:
         data = json.loads(f.read())
     plan = ObservationPlan.model_validate(data)
@@ -297,60 +302,42 @@ async def sequence_load(
 
 
 @mcp.tool()
-async def sequence_start(reset: bool = False) -> str:
-    """Start or resume the acquisition sequence.
-    Args:
-        reset: If True, resets exposure counts before starting. Defaults to False."""
-    if reset:
-        await _api_get("/sequence/reset")
+async def sequence_execute_teardown(seestar: bool = False) -> str:
+    """Loads and starts the non-acquisition teardown sequence, safely parking the telescope while NINA’s sequence-level safety guardrails remain active. Allow it to complete without interruption. Use when ending operations or before leaving the observatory unattended. Set seestar to true for a Seestar telescope."""
+    seq = build_sequence_teardown(home=seestar)
+    await _api_get("/sequence/stop")
+    await _api_post("/sequence/load", seq)
+    await _api_get("/sequence/start?skipValidation=true")
+    return f"Teardown sequence started."
+
+
+@mcp.tool()
+async def sequence_enter_safety_standby() -> str:
+    """Loads a non-acquisition standby sequence that keeps NINA sequence-level safety and parking guardrails active while the observatory is idle. After loading, call sequence_start. Stop it before loading an acquisition or teardown sequence. Use whenever equipment is deployed and no other sequence is running."""
+    seq = build_sequence_standby()
+    await _api_get("/sequence/stop")
+    await _api_post("/sequence/load", seq)
+    await _api_get("/sequence/start?skipValidation=true")
+    return f"Safety standby sequence started."
+
+
+@mcp.tool()
+async def sequence_start() -> str:
+    """Starts or resumes the currently loaded sequence, activating its acquisition or safety workflow. Call sequence_get_state afterward to verify that it is running."""
     await _api_get("/sequence/start?skipValidation=true")
     return "Sequence started."
 
 
 @mcp.tool()
 async def sequence_stop() -> str:
-    """stop sequence"""
+    """Stops the currently running sequence. Use before loading a different sequence or when an immediate halt is required. Avoid stopping teardown during parking unless necessary for safety."""
     await _api_get("/sequence/stop")
     return "Sequence stopped."
 
 
 @mcp.tool()
-async def sequence_skip() -> str:
-    """skip to end sequence to wait for observatory to close before tearing down"""
-    await _api_get("/sequence/skip?type=toEnd")
-    return "Sequence skipped to end."
-
-
-@mcp.tool()
-async def sequence_teardown(home: bool = False) -> str:
-    """Teardown observatory, parking telescope.
-    Args:
-        home: If True, homes the telescope instead of parking it. Defaults to False."""
-    seq = build_sequence_teardown(home=home)
-    await _api_get("/sequence/stop")
-    await _api_post("/sequence/load", seq)
-    await _api_get("/sequence/start?skipValidation=true")
-    return f"Parking sequence started."
-
-
-## returns json
-
-
-@mcp.tool()
-async def get_event_history() -> Any:
-    """get latest observatory event history"""
-    return await _api_get("/event-history")
-
-
-@mcp.tool()
-async def get_application_logs() -> Any:
-    """get latest info, error, and warning logs"""
-    return await _api_get("/application/logs?lineCount=100")
-
-
-@mcp.tool()
-async def sequence_state() -> Any:
-    """get current state of sequence"""
+async def sequence_get_state() -> Any:
+    """Returns the loaded sequence structure and the current status of its containers, instructions, conditions, and triggers. Use it to determine whether a sequence is loaded, running, completed, failed, or waiting. This tool is read-only and takes no action."""
     return await _api_get("/sequence/json")
 
 

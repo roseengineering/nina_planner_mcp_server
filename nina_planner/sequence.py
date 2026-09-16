@@ -615,69 +615,6 @@ def sequence_cool_camera(plan):
     )
 
 
-def sequence_deepsky(plan):
-    return container_deepsky(
-        name="Deep Sky Target Sequence",
-        target=plan.target,
-        ra=plan.ra_hours,
-        dec=plan.dec_deg,
-        instructions=[
-            sequence_safetynet(
-                name="Wait For Object",
-                instructions=[
-                    sequence_cool_camera(plan),
-                    wait_until_dusk(),
-                    wait_until_above_horizon(plan.constraints.horizon_offset_degrees),
-                    wait_until_above_altitude(plan.constraints.min_altitude),
-                ],
-            ),
-            sequence_safetynet(
-                name="Image Object",
-                conditions=[
-                    loop_until_dawn(),
-                    loop_while_above_horizon(plan.constraints.horizon_offset_degrees),
-                    loop_while_above_altitude(plan.constraints.min_altitude),
-                ],
-                triggers=[
-                    trigger_meridian_flip(),
-                    trigger_center_after_drift(
-                        after_exposures=plan.guiding.check_drift_every_n_exposures,
-                        distance_arcmin=plan.guiding.max_drift_arcmin,
-                    ),
-                    trigger_autofocus_after_filter_change(),
-                    trigger_autofocus_after_exposures(plan.autofocus.every_n_exposures),
-                    trigger_autofocus_after_temperature_change(
-                        plan.autofocus.threshold_celsius
-                    ),
-                    trigger_autofocus_after_hfr_increase(
-                        samples=plan.autofocus.hfr_increase_sample_size,
-                        amount=plan.autofocus.hfr_increase_threshold_percent,
-                    ),
-                    trigger_restore_guiding(),
-                ],
-                instructions=[
-                    set_tracking(0),  # 0=sidereal
-                    switch_filter_plus(plan.autofocus.reference_filter_name),
-                    slew_and_center(),
-                    run_autofocus(),
-                    start_guiding(),
-                ]
-                + [
-                    smart_exposure_plus(
-                        count=d[0],
-                        exposure=d[1],
-                        filter_name=d[2],
-                        dither=plan.guiding.dither_every_n_exposures,
-                        image_type="LIGHT",
-                    )
-                    for d in round_robin(plan.lights, plan.batch_size)
-                ]
-                + [stop_guiding()],
-            ),
-        ],
-    )
-
-
 def sequence_safetynet(name, instructions=None, conditions=None, triggers=None):
     if instructions is None:
         instructions = []
@@ -706,7 +643,7 @@ def sequence_safetynet(name, instructions=None, conditions=None, triggers=None):
     )
 
 
-def build_sequence_base(instructions):
+def build_sequence_base(instructions=[]):
     return container_root(
         [
             container_start([sequence_safetynet("While Unsafe")]),
@@ -725,6 +662,9 @@ def build_sequence_base(instructions):
             ),
         ]
     )
+
+
+###
 
 
 def build_sequence_flats(plan, profile, dusk: bool = False):
@@ -781,7 +721,76 @@ def build_sequence_flats(plan, profile, dusk: bool = False):
 
 
 def build_sequence_lights(plan):
-    return build_sequence_base([sequence_deepsky(plan)])
+    return build_sequence_base(
+        [
+            container_deepsky(
+                name="Deep Sky Target Sequence",
+                target=plan.target,
+                ra=plan.ra_hours,
+                dec=plan.dec_deg,
+                instructions=[
+                    sequence_safetynet(
+                        name="Wait For Object",
+                        instructions=[
+                            sequence_cool_camera(plan),
+                            wait_until_dusk(),
+                            wait_until_above_horizon(
+                                plan.constraints.horizon_offset_degrees
+                            ),
+                            wait_until_above_altitude(plan.constraints.min_altitude),
+                        ],
+                    ),
+                    sequence_safetynet(
+                        name="Image Object",
+                        conditions=[
+                            loop_until_dawn(),
+                            loop_while_above_horizon(
+                                plan.constraints.horizon_offset_degrees
+                            ),
+                            loop_while_above_altitude(plan.constraints.min_altitude),
+                        ],
+                        triggers=[
+                            trigger_meridian_flip(),
+                            trigger_center_after_drift(
+                                after_exposures=plan.guiding.check_drift_every_n_exposures,
+                                distance_arcmin=plan.guiding.max_drift_arcmin,
+                            ),
+                            trigger_autofocus_after_filter_change(),
+                            trigger_autofocus_after_exposures(
+                                plan.autofocus.every_n_exposures
+                            ),
+                            trigger_autofocus_after_temperature_change(
+                                plan.autofocus.threshold_celsius
+                            ),
+                            trigger_autofocus_after_hfr_increase(
+                                samples=plan.autofocus.hfr_increase_sample_size,
+                                amount=plan.autofocus.hfr_increase_threshold_percent,
+                            ),
+                            trigger_restore_guiding(),
+                        ],
+                        instructions=[
+                            set_tracking(0),  # 0=sidereal
+                            switch_filter_plus(plan.autofocus.reference_filter_name),
+                            slew_and_center(),
+                            run_autofocus(),
+                            start_guiding(),
+                        ]
+                        + [
+                            smart_exposure_plus(
+                                count=d[0],
+                                exposure=d[1],
+                                filter_name=d[2],
+                                dither=plan.guiding.dither_every_n_exposures,
+                                image_type="LIGHT",
+                            )
+                            for d in round_robin(plan.lights, plan.batch_size)
+                        ]
+                        + [stop_guiding()],
+                    ),
+                ],
+            )
+        ]
+    )
 
 
 def build_sequence_darks(plan, bias=False):
@@ -807,24 +816,24 @@ def build_sequence_darks(plan, bias=False):
         ]
     )
 
+
+def build_sequence_standby():
+    return build_sequence_base()
+
+
 def build_sequence_teardown(home=False):
     return container_root(
         [
             container_start(),
             container_target(),
-            container_end([
-                connect_all_equipment(),
-            ] + [ 
-                home_scope() if home else park_scope()
-            ] + [
-                warm_camera(),
-            ]),
+            container_end(
+                [
+                    connect_all_equipment(),
+                ]
+                + [home_scope() if home else park_scope()]
+                + [
+                    warm_camera(),
+                ]
+            ),
         ]
     )
-
-
-
-
-
-
-
