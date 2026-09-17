@@ -14,8 +14,8 @@
 |---|---|
 | `get_site_equipment_status()` | List connected hardware (mount, camera, focuser, guider, safety monitor, weather, dome, filter wheel, rotator). Auto-connects any device that is present but disconnected. |
 | `get_site_profile()` | Get observatory location (lat/lon/elevation), optics details, filter list, plate solver type, and image save path. |
-| `event_history_get_recent()` | Get latest observatory event log entries. |
-| `application_logs_get_recent()` | Get latest N.I.N.A. application log entries. |
+| `get_events(since)` | Get latest observatory event log entries from `since` seconds. |
+| `get_logs(since)` | Get latest N.I.N.A. application log entries from `since` seconds. |
 | `observation_plan_write_file(plan)` | Write out an observation plan JSON file. |
 
 ### Sequence Management
