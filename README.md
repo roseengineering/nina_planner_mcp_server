@@ -12,7 +12,7 @@
 
 | Tool | Purpose |
 |---|---|
-| `get_site_equipment_status()` | List connected hardware (mount, camera, focuser, guider, safety monitor, weather, dome, filter wheel, rotator). Auto-connects any device that is present but disconnected. |
+| `get_site_equipment_status()` | Return the current connection state, operating state, measurements, and capabilities of active observatory equipment (mount, camera, focuser, guider, safety monitor, weather, dome, filter wheel, rotator). Auto-connects any device that is present but disconnected; if any device is mid-connect the call will error and the agent should retry after a few seconds. |
 | `get_site_profile()` | Get observatory location (lat/lon/elevation), optics details, filter list, plate solver type, and image save path. |
 | `get_events(since)` | Get latest observatory event log entries from `since` seconds. |
 | `get_logs(since)` | Get latest N.I.N.A. application log entries from `since` seconds. |
@@ -27,7 +27,7 @@
 | `sequence_stop()` | Stop any running sequence. |
 | `sequence_enter_safety_standby()` | Start a non-imaging sequence with safety guardrails. |
 | `sequence_execute_teardown(seestar)` | Start a teardown sequence, parking scope. Pass `seestar=True` for a Seestar telescope. |
-| `sequence_get_state()` | Get the state of the currently loaded sequence, running or not. |
+| `sequence_get_state()` | Return the loaded sequence structure and the current status of its containers, instructions, conditions, and triggers (whether loaded, running, completed, failed, or waiting). |
 
 ---
 
@@ -130,12 +130,12 @@ Each call to `sequence_load_plan` stops any running sequence, builds the appropr
    `sequence_start()`
    _(wait for completion)_
 
-5. **Load dawn flats** (morning twilight):
+4. **Load dawn flats** (morning twilight):
    `sequence_load_plan(file_path="<plan>.json", frame_type="dawn_flats")`
    `sequence_start()`
    _(wait for completion)_
 
-4. **Load dusk flats** (as evening twilight begins):
+5. **Load dusk flats** (as evening twilight begins):
    `sequence_load_plan(file_path="<plan>.json", frame_type="dusk_flats")`
    `sequence_start()`
    _(wait for completion)_
