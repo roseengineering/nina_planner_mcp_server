@@ -88,6 +88,7 @@ A plan is a JSON document that describes one complete imaging session. It encode
 |---|---|---|
 | `target` | no | Catalog designation, e.g. "M31", "NGC 7000" |
 | `intent` | no | 2-3 words describing the goal |
+| `description` | no | explanation of the observation plan, including rationale, exposure goals, equipment, or sky constraints |
 | `ra_hours` | **yes** | J2000 right ascension in hours `[0, 24)` |
 | `dec_deg` | **yes** | J2000 declination in degrees `[-90, +90]` |
 | `batch_size` | no | Exposures per batch (0 = no batching, default 5) |
@@ -108,7 +109,7 @@ A plan is a JSON document that describes one complete imaging session. It encode
 
 Use `observation_plan_write_file` with the plan object. This validates the filter names against your active N.I.N.A. profile and writes a JSON file named like `veil-nebula_widefield-supernova-remnant_20260913T080623.json`.
 
-### 2. Load and run each calibration type, then lights
+### 2. Load and run each calibration type, including lights
 
 Each call to `sequence_load_plan` stops any running sequence, builds the appropriate container (lights, darks, flats, or bias), and posts it to N.I.N.A.
 
@@ -142,10 +143,8 @@ Each call to `sequence_load_plan` stops any running sequence, builds the appropr
 ### 3. Teardown
 
 At session end:
-- The sequence should teardown automatically at dawn.
-- `sequence_execute_teardown` — only needed if end sequence fails to park or no sequence is running.
-
-Note, `sequence_stop` stops whatever sequence is running, so it cannot teardown and park scope.  Either wait for the sequence to finish, skip to end, or load and run the teardown sequence.
+- The running sequence should teardown automatically at dawn.
+- `sequence_execute_teardown` — only needed if want to immediately close for the night or the running sequence fails to park.
 
 ---
 
@@ -165,7 +164,7 @@ Note, `sequence_stop` stops whatever sequence is running, so it cannot teardown 
 
 2. **Interval check** — Every `NINA_INTERVAL_MINUTES` (default 10) it prompts the agent to query observatory status (`sequence_get_state`, `get_site_equipment`) and decide what to do next, even when no N.I.N.A. events are firing.
 
-The plugin uses two different active opencode "agents", if they are configured.  One is called `event` for responding to incoming N.I.N.A. events over websocket and and the other is `check` for responding to the interval check.
+The plugin uses two different active opencode "agents", if they are configured, otherwise it uses the main session model.  One agent is called `event` for responding to incoming N.I.N.A. events over websocket and and the other is `check` for responding to the interval check.
 
 The plugin auto-reconnects on websocket disconnection with a 5-second retry. On server dispose, it cleans up all timers and the socket.
 
