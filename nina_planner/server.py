@@ -245,16 +245,57 @@ async def get_site_profile() -> ObservatoryProfile:
     return profile
 
 
-@mcp.tool()
-async def event_history_get_recent() -> Any:
-    """Returns recent timestamped NINA observatory events and their event-specific details. Use it to reconstruct sequence, equipment, safety, imaging, and error activity. This tool is read-only; use sequence_get_state and get_site_equipment for current status."""
-    return await _api_get("/event-history")
+def convert_to_met(data, since, now, name):
+    timestamp = 'timestamp'
+    tzinfo = now.tzinfo
+    res = []
+    for d in data:
+        value = d[name]
+        d = { k: v.lower() if isinstance(v, str) else v 
+              for k,v in d.items() if k != name }
+        ts = datetime.fromisoformat(value)
+        if ts.tzinfo is None:
+            ts = ts.replace(tzinfo=tzinfo)
+        tzinfo = ts.tzinfo
+        d = _convert_keys(d)
+        d[timestamp] = ts
+        res.append(d)
+    # sort on datetimes 
+    data = sorted(res, key=lambda d: d[timestamp])
+    res = []
+    for d in data:
+        ts = d[timestamp]
+        elapsed = (ts - now).total_seconds()
+        if since + elapsed > 0:
+            d[timestamp] = ts.replace(microsecond=0).isoformat()
+            res.append(d)
+    return res
 
 
 @mcp.tool()
-async def application_logs_get_recent() -> Any:
-    """Returns recent NINA application log entries, including informational messages, warnings, and errors with source and timestamp details. Use it to diagnose sequence failures, equipment communication problems, and unexpected behavior. This tool is read-only and takes no action."""
-    return await _api_get("/application/logs?lineCount=100")
+async def get_events(since: int = 300) -> Any:
+    """Returns recent timestamped NINA observatory events and their event-specific details from the last `since` seconds. Use it to reconstruct sequence, equipment, safety, imaging, and error activity. This tool is read-only; use sequence_get_state and get_site_equipment for current status."""
+    timestamp = await _api_get("/time")
+    now = datetime.fromisoformat(timestamp)
+    res = await _api_get("/event-history")
+    res = convert_to_met(res, since=since, now=now, name='Time')
+    print("Events:", json.dumps(res, indent=2), file=sys.stderr)
+    return res
+
+
+@mcp.tool()
+async def get_logs(since: int = 300) -> Any:
+    """Returns recent NINA application log entries, including informational messages, warnings, and errors with source and timestamp details from the last `since` seconds. Use it to diagnose sequence failures, equipment communication problems, and unexpected behavior. This tool is read-only and takes no action."""
+    timestamp = await _api_get("/time")
+    now = datetime.fromisoformat(timestamp)
+    res = await _api_get("/application/logs?lineCount=200")
+    res = convert_to_met(res, since=since, now=now, name='Timestamp')
+    for d in res:
+        if 'line' in d: del d['line']
+        if 'member' in d: del d['member']
+        if 'source' in d: del d['source']
+    print("Logs:", json.dumps(res, indent=2), file=sys.stderr)
+    return res
 
 
 @mcp.tool()

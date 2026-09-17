@@ -13,27 +13,27 @@
 | Tool | Purpose |
 |---|---|
 | `get_site_equipment_status()` | List connected hardware (mount, camera, focuser, guider, safety monitor, weather, dome, filter wheel, rotator). Auto-connects any device that is present but disconnected. |
-| `get_site_profile()` | Observatory location (lat/lon/elevation), optics details, filter list, plate solver type, and image save path. |
-| `event_history_get_recent()` | Latest observatory event log entries. |
-| `application_logs_get_recent()` | Latest N.I.N.A. application log entries. |
-| `observation_plan_write_file(plan, frame_type)` | Write an observation plan JSON file. |
+| `get_site_profile()` | Get observatory location (lat/lon/elevation), optics details, filter list, plate solver type, and image save path. |
+| `event_history_get_recent()` | Get latest observatory event log entries. |
+| `application_logs_get_recent()` | Get latest N.I.N.A. application log entries. |
+| `observation_plan_write_file(plan)` | Write out an observation plan JSON file. |
 
 ### Sequence Management
 
 | Tool | Purpose |
 |---|---|
 | `sequence_load_plan(file_path, frame_type)` | Load a plan file as a sequence (lights, darks, bias, dawn_flats, or dusk_flats). |
-| `sequence_start()` | Start or resume the loaded sequence. |
-| `sequence_stop()` | Stop the running sequence. |
-| `sequence_enter_safety_standby()` | Run non-imaging sequence with safety guardrails. |
-| `sequence_execute_teardown(seestar)` | Teardown observatory and park scope. Pass `seestar=True` for a Seestar telescope. |
-| `sequence_get_state()` | Current state of the loaded sequence. |
+| `sequence_start()` | Start or resume a stopped sequence. |
+| `sequence_stop()` | Stop any running sequence. |
+| `sequence_enter_safety_standby()` | Start a non-imaging sequence with safety guardrails. |
+| `sequence_execute_teardown(seestar)` | Start a teardown sequence, parking scope. Pass `seestar=True` for a Seestar telescope. |
+| `sequence_get_state()` | Get the state of the currently loaded sequence, running or not. |
 
 ---
 
 ## The Observation Plan
 
-A plan is a JSON document that describes one complete imaging session. It encodes the **target**, **exposure settings** for all four frame types, and **equipment configuration** (cooler, autofocus, guiding, constraints).
+A plan is a JSON document that describes one complete imaging session. It encodes the **target**, **exposure settings** for all five frame types, and **equipment configuration** (cooler, autofocus, guiding, constraints).
 
 ### Plan structure
 
@@ -162,7 +162,7 @@ At session end:
 
 1. **Websocket event monitoring** — Connects to the N.I.N.A. event socket (`ws://<host:port>/v2/socket`), subscribes to all events, and forwards them to the active agent as intervention prompts. Events are batched with a 1-second debounce to avoid flooding the conversation.
 
-2. **Interval check** — Every `NINA_INTERVAL_MINUTES` (default 10) it prompts the agent to query observatory status (`sequence_get_state`, `get_site_equipment`) and decide what to do next, even when no N.I.N.A. events are firing.
+2. **Interval check** — Every `NINA_INTERVAL_MINUTES` (default 10) it prompts the agent to query observatory status (`sequence_get_state`, `get_site_equipment_status`) and decide what to do next, even when no N.I.N.A. events are firing.
 
 The plugin uses two different active opencode "agents", if they are configured, otherwise it uses the main session model.  One agent is called `event` for responding to incoming N.I.N.A. events over websocket and and the other is `check` for responding to the interval check.
 
@@ -212,3 +212,4 @@ Registers the opencode plugin and the `nina_planner` MCP server so both run toge
 | `NINA_FLATS_ALTITUDE` | `80` | Altitude in degrees for flat panel calibration frames |
 | `NINA_FLATS_AZIMUTH_DAWN` | `270` | Azimuth in degrees pointing west for dawn flats |
 | `NINA_FLATS_AZIMUTH_DUSK` | `90` | Azimuth in degrees pointing east for dusk flats |
+
