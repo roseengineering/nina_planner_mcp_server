@@ -18,6 +18,12 @@
 | `get_logs(since)` | Get latest N.I.N.A. application log entries from `since` seconds. |
 | `observation_plan_write_file(plan)` | Write out an observation plan JSON file. |
 
+### Hardware
+
+| Tool | Purpose |
+|---|---|
+| `home_telescope` | Home the telescope.  Use to tell the Seestar to look down and close. |
+
 ### Sequence Management
 
 | Tool | Purpose |
@@ -26,7 +32,7 @@
 | `sequence_start()` | Start or resume a stopped sequence. |
 | `sequence_stop()` | Stop any running sequence. |
 | `sequence_enter_safety_standby()` | Start a non-imaging sequence with safety guardrails. |
-| `sequence_execute_teardown(seestar)` | Start a teardown sequence, parking scope. Pass `seestar=True` for a Seestar telescope. |
+| `sequence_execute_teardown()` | Start a teardown sequence, parking scope. |
 | `sequence_get_state()` | Return the loaded sequence structure and the current status of its containers, instructions, conditions, and triggers (whether loaded, running, completed, failed, or waiting). |
 
 ---

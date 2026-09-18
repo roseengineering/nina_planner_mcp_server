@@ -311,6 +311,15 @@ async def observation_plan_write_file(plan: ObservationPlan) -> str:
     return f"Plan successfully written to {filename}"
 
 
+# hardware
+
+mcp.tool()
+async def home_telescope() -> str:
+    """Home the telescope.  Use to tell the Seestar to look down and close."""
+    await _api_get("/equipment/mount/home")
+    return "Telescope homed."
+
+
 # sequence
 
 FrameType = Literal["lights", "darks", "bias", "dawn_flats", "dusk_flats"]
@@ -343,9 +352,9 @@ async def sequence_load_plan(
 
 
 @mcp.tool()
-async def sequence_execute_teardown(seestar: bool = False) -> str:
-    """Loads and starts the non-acquisition teardown sequence, safely parking the telescope while NINA’s sequence-level safety guardrails remain active. Allow it to complete without interruption. Use when ending operations or before leaving the observatory unattended. Set seestar to true for a Seestar telescope."""
-    seq = build_sequence_teardown(home=seestar)
+async def sequence_execute_teardown() -> str:
+    """Loads and starts the non-acquisition teardown sequence, safely parking the telescope while NINA’s sequence-level safety guardrails remain active. Allow it to complete without interruption. Use when ending operations or before leaving the observatory unattended."""
+    seq = build_sequence_teardown()
     await _api_get("/sequence/stop")
     await _api_post("/sequence/load", seq)
     await _api_get("/sequence/start?skipValidation=true")
