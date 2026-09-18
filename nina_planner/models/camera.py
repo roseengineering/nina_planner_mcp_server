@@ -159,12 +159,7 @@ class CameraDevice(BaseModel):
             data["thermal"] = ThermalInfo(
                 temperature_c=ascom_float(data.get("temperature")),
                 temperature_settable=bool(data.get("can_set_temperature", False)),
-                has_cooler=bool(
-                    data.get("can_set_temperature")
-                    or data.get("cooler_power") is not None
-                    or data.get("cooler_on") is not None
-                    or data.get("has_cooler", False)
-                ),
+                has_cooler=bool(data.get("can_set_temperature", False)),
                 cooler_on=bool(data.get("cooler_on", False)),
                 target_temperature_c=ascom_float(data.get("target_temp")),
                 cooler_power_pct=ascom_float(data.get("cooler_power")),
