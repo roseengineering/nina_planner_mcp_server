@@ -17,6 +17,18 @@ class SiteLocationInfo(BaseModel):
     elevation_m: float | None = None
 
 
+class EquipmentConfig(BaseModel):
+    has_mount: bool
+    has_camera: bool
+    has_focuser: bool
+    has_guider: bool
+    has_filter_wheel: bool
+    has_rotator: bool
+    has_dome: bool
+    has_weather: bool
+    has_safety_monitor: bool
+
+
 class OpticalTrainInfo(BaseModel):
     telescope_name: str | None = None
     focal_length_mm: float | None = None
@@ -65,3 +77,4 @@ class ObservatoryProfile(BaseModel):
     plate_solver: str | None = None
     blind_plate_solver: str | None = None
     image_save_path: str
+    equipment: EquipmentConfig

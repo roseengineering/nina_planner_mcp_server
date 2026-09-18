@@ -605,12 +605,6 @@ def round_robin(exposures, batch_size=0, reverse=False):
     return reversed(result) if reverse else result
 
 
-def sequence_cool_camera(plan):
-    return (
-        cool_camera(plan.cooler.setpoint_celsius) if plan.cooler.on else warm_camera()
-    )
-
-
 def sequence_safetynet(name, instructions=None, conditions=None, triggers=None):
     if instructions is None:
         instructions = []
@@ -639,7 +633,24 @@ def sequence_safetynet(name, instructions=None, conditions=None, triggers=None):
     )
 
 
-def build_sequence_base(instructions=[]):
+###
+
+
+def build_sequence_warm_camera(equipment):
+    return [warm_camera()] if equipment.camera.thermal.has_cooler else []
+
+
+def build_sequence_cool_camera(plan, equipment):
+    return (
+        [cool_camera(plan.cooler.setpoint_celsius) if plan.cooler.on else warm_camera()]
+        if equipment.camera.thermal.has_cooler
+        else []
+    )
+
+
+def build_sequence_base(equipment, instructions=None):
+    if instructions is None:
+        instructions = []
     return container_root(
         [
             container_start([sequence_safetynet("While Unsafe")]),
@@ -653,8 +664,8 @@ def build_sequence_base(instructions=[]):
                     ),
                     connect_all_equipment(),
                     park_scope(),
-                    warm_camera(),
                 ]
+                + build_sequence_warm_camera(equipment)
             ),
         ]
     )
@@ -662,21 +673,17 @@ def build_sequence_base(instructions=[]):
 
 ###
 
-
-def build_sequence_flats(plan, profile, dusk: bool = False):
-    NINA_FLATS_ALTITUDE = float(os.environ.get("NINA_FLATS_ALTITUDE ", 80))
-    NINA_FLATS_AZIMUTH_DAWN = float(
-        os.environ.get("NINA_FLATS_AZIMUTH_DAWN", 270)
-    )  # 270:west
-    NINA_FLATS_AZIMUTH_DUSK = float(
-        os.environ.get("NINA_FLATS_AZIMUTH_DUSK", 90)
-    )  # 90:east
+def build_sequence_flats(plan, equipment, profile, dusk: bool = False):
+    NINA_FLATS_ALTITUDE = float(os.environ.get("NINA_FLATS_ALTITUDE ", "80"))
+    NINA_FLATS_AZIMUTH_DAWN = float(os.environ.get("NINA_FLATS_AZIMUTH_DAWN", "270"))  # 270:west
+    NINA_FLATS_AZIMUTH_DUSK = float( os.environ.get("NINA_FLATS_AZIMUTH_DUSK", "90"))  # 90:east
     return build_sequence_base(
-        [
+        equipment=equipment,
+        instructions=[
             sequence_safetynet(
                 name="Wait For Time",
-                instructions=[
-                    sequence_cool_camera(plan),
+                instructions=build_sequence_cool_camera(plan, equipment)
+                + [
                     (wait_until_sunset() if dusk else wait_until_dawn()),
                     (
                         wait_if_sun_altitude_above(0)
@@ -712,13 +719,14 @@ def build_sequence_flats(plan, profile, dusk: bool = False):
                     for d in round_robin(plan.flats, reverse=dusk)
                 ],
             ),
-        ]
+        ],
     )
 
 
-def build_sequence_lights(plan):
+def build_sequence_lights(plan, equipment):
     return build_sequence_base(
-        [
+        equipment=equipment,
+        instructions=[
             container_deepsky(
                 name="Deep Sky Target Sequence",
                 target=plan.target,
@@ -727,8 +735,8 @@ def build_sequence_lights(plan):
                 instructions=[
                     sequence_safetynet(
                         name="Wait For Object",
-                        instructions=[
-                            sequence_cool_camera(plan),
+                        instructions=build_sequence_cool_camera(plan, equipment)
+                        + [
                             wait_until_dusk(),
                             wait_until_above_horizon(
                                 plan.constraints.horizon_offset_degrees
@@ -785,20 +793,17 @@ def build_sequence_lights(plan):
                     ),
                 ],
             )
-        ]
+        ],
     )
 
 
-def build_sequence_darks(plan, bias=False):
+def build_sequence_darks(plan, equipment, bias=False):
     return container_root(
         [
             container_start(),
             container_target(
-                [
-                    connect_all_equipment(),
-                    park_scope(),
-                    sequence_cool_camera(plan),
-                ]
+                [connect_all_equipment(), park_scope()]
+                + build_sequence_cool_camera(plan, equipment)
                 + [
                     smart_exposure_plus(
                         count=d[0],
@@ -813,19 +818,21 @@ def build_sequence_darks(plan, bias=False):
     )
 
 
-def build_sequence_standby():
-    return build_sequence_base()
+def build_sequence_standby(equipment):
+    return build_sequence_base(equipment)
 
 
-def build_sequence_teardown():
+def build_sequence_teardown(equipment):
     return container_root(
         [
             container_start(),
             container_target(),
-            container_end([
-                connect_all_equipment(),
-                park_scope(),
-                warm_camera(),
-            ]),
+            container_end(
+                [
+                    connect_all_equipment(),
+                    park_scope(),
+                ]
+                + build_sequence_warm_camera(equipment)
+            ),
         ]
     )

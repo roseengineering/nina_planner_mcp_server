@@ -1,9 +1,8 @@
 import json
 import os
-import sys
 import re
+import sys
 from datetime import datetime
-
 from typing import Any, Literal
 
 import httpx
@@ -12,6 +11,7 @@ from mcp.server.fastmcp import FastMCP
 from .models.observatory import ObservatoryEquipment
 from .models.plan import ObservationPlan
 from .models.profile import (
+    EquipmentConfig,
     FilterInfo,
     ObservatoryProfile,
     OpticalTrainInfo,
@@ -19,11 +19,12 @@ from .models.profile import (
 )
 from .nina_utils import ascom_float, ascom_int
 from .sequence import (
-    build_sequence_darks, 
-    build_sequence_flats, 
+    build_sequence_darks,
+    build_sequence_flats,
     build_sequence_lights,
     build_sequence_standby,
-    build_sequence_teardown)
+    build_sequence_teardown,
+)
 
 mcp = FastMCP("nina-planner")
 
@@ -84,12 +85,35 @@ async def _validate_filters(plan: ObservationPlan, profile: ObservatoryProfile):
         )
 
 
-# mcp tools
+def _convert_to_met(data, since, now, name):
+    timestamp = "timestamp"
+    tzinfo = now.tzinfo
+    res = []
+    for d in data:
+        value = d[name]
+        d = {
+            k: v.lower() if isinstance(v, str) else v for k, v in d.items() if k != name
+        }
+        ts = datetime.fromisoformat(value)
+        if ts.tzinfo is None:
+            ts = ts.replace(tzinfo=tzinfo)
+        tzinfo = ts.tzinfo
+        d = _convert_keys(d)
+        d[timestamp] = ts
+        res.append(d)
+    # sort on datetimes
+    data = sorted(res, key=lambda d: d[timestamp])
+    res = []
+    for d in data:
+        ts = d[timestamp]
+        elapsed = (ts - now).total_seconds()
+        if since + elapsed > 0:
+            d[timestamp] = ts.replace(microsecond=0).isoformat()
+            res.append(d)
+    return res
 
 
-@mcp.tool()
-async def get_site_equipment_status() -> ObservatoryEquipment:
-    """Returns the current connection, operating state, measurements, and capabilities of active observatory equipment, including weather and safety-monitor status. Use it for live operational and safety checks. This tool is read-only and takes no action."""
+async def _get_site_equipment_status(profile) -> ObservatoryEquipment:
     from .models.camera import CameraDevice
     from .models.dome import DomeDevice
     from .models.filter_wheel import FilterWheelDevice
@@ -101,34 +125,6 @@ async def get_site_equipment_status() -> ObservatoryEquipment:
     from .models.weather import Weather
 
     raw = await _api_get("/equipment/info")
-    profile = await _api_get("/profile/show?active=true")
-
-    def _exists(
-        section: dict, field: str, skip: set = frozenset({"No_Device"})
-    ) -> bool:
-        value = section.get(field)
-        return value is not None and value not in skip and value != ""
-
-    EXISTS = {
-        "Mount": lambda: (
-            _exists(profile.get("TelescopeSettings", {}), "MountName")
-            or _exists(profile.get("TelescopeSettings", {}), "Name")
-        ),
-        "Camera": lambda: _exists(profile.get("CameraSettings", {}), "Id"),
-        "Focuser": lambda: _exists(profile.get("FocuserSettings", {}), "Id"),
-        "FilterWheel": lambda: _exists(profile.get("FilterWheelSettings", {}), "Id"),
-        "Guider": lambda: _exists(
-            profile.get("GuiderSettings", {}),
-            "GuiderName",
-            {"Direct_Guider", "No_Guider"},
-        ),
-        "Rotator": lambda: _exists(profile.get("RotatorSettings", {}), "Id"),
-        "Dome": lambda: _exists(profile.get("DomeSettings", {}), "Id"),
-        "WeatherData": lambda: _exists(profile.get("WeatherDataSettings", {}), "Id"),
-        "SafetyMonitor": lambda: _exists(
-            profile.get("SafetyMonitorSettings", {}), "Id"
-        ),
-    }
 
     DEVICE_MAP = {
         "Mount": (MountDevice, "/equipment/mount"),
@@ -142,10 +138,22 @@ async def get_site_equipment_status() -> ObservatoryEquipment:
         "Rotator": (RotatorDevice, "/equipment/rotator"),
     }
 
+    EXISTS = {
+        "Mount": profile.equipment.has_mount,
+        "Camera": profile.equipment.has_camera,
+        "Focuser": profile.equipment.has_focuser,
+        "FilterWheel": profile.equipment.has_filter_wheel,
+        "Guider": profile.equipment.has_guider,
+        "Rotator": profile.equipment.has_rotator,
+        "Dome": profile.equipment.has_dome,
+        "WeatherData": profile.equipment.has_weather,
+        "SafetyMonitor": profile.equipment.has_safety_monitor,
+    }
+
     devices_connecting: list[str] = []
 
     for key, (_, path) in DEVICE_MAP.items():
-        if not EXISTS[key]():
+        if not EXISTS[key]:
             continue
         data = raw.get(key, {})
         if data and not data.get("Connected"):
@@ -170,7 +178,7 @@ async def get_site_equipment_status() -> ObservatoryEquipment:
         converted.setdefault("description", "")
         return model_cls(**converted)
 
-    equipment = ObservatoryEquipment(
+    return ObservatoryEquipment(
         mount=_build(raw.get("Mount", {}), MountDevice),
         camera=_build(raw.get("Camera", {}), CameraDevice),
         focuser=_build(raw.get("Focuser", {}), FocuserDevice),
@@ -181,6 +189,16 @@ async def get_site_equipment_status() -> ObservatoryEquipment:
         filter_wheel=_build(raw.get("FilterWheel", {}), FilterWheelDevice),
         rotator=_build(raw.get("Rotator", {}), RotatorDevice),
     )
+
+
+# mcp tools
+
+
+@mcp.tool()
+async def get_site_equipment_status() -> ObservatoryEquipment:
+    """Returns the current connection, operating state, measurements, and capabilities of active observatory equipment, including weather and safety-monitor status. Use it for live operational and safety checks. This tool is read-only and takes no action."""
+    profile = await get_site_profile()
+    equipment = await _get_site_equipment_status(profile)
     print("Equipment:", equipment.model_dump_json(indent=2), file=sys.stderr)
     return equipment
 
@@ -196,8 +214,13 @@ async def get_site_profile() -> ObservatoryProfile:
     filter_wheel = raw.get("FilterWheelSettings", {})
     image_file = raw.get("ImageFileSettings", {})
     plate_solve = raw.get("PlateSolveSettings", {})
-
     framing = raw.get("FramingAssistantSettings", {})
+    guider = raw.get("GuiderSettings", {})
+    rotator = raw.get("RotatorSettings", {})
+    dome = raw.get("DomeSettings", {})
+    weather = raw.get("WeatherDataSettings", {})
+    safety = raw.get("SafetyMonitorSettings", {})
+    focuser = raw.get("FocuserSettings", {})
 
     pixel_size = ascom_float(camera.get("PixelSize")) or 0
     gain = ascom_int(camera.get("Gain")) or 0
@@ -230,6 +253,24 @@ async def get_site_profile() -> ObservatoryProfile:
         if f.get("Name")
     ]
 
+    def _exists(
+        section: dict, field: str, skip: set = frozenset({"No_Device"})
+    ) -> bool:
+        value = section.get(field)
+        return value is not None and value not in skip and value != ""
+
+    equipment = EquipmentConfig(
+        has_mount=_exists(telescope, "MountName") or _exists(telescope, "Name"),
+        has_guider=_exists(guider, "GuiderName", {"Direct_Guider", "No_Guider"}),
+        has_camera=_exists(camera, "Id"),
+        has_focuser=_exists(focuser, "Id"),
+        has_filter_wheel=_exists(filter_wheel, "Id"),
+        has_rotator=_exists(rotator, "Id"),
+        has_dome=_exists(dome, "Id"),
+        has_weather=_exists(weather, "Id"),
+        has_safety_monitor=_exists(safety, "Id"),
+    )
+
     profile = ObservatoryProfile(
         profile_name=raw.get("Name", ""),
         profile_id=raw.get("Id", ""),
@@ -240,36 +281,10 @@ async def get_site_profile() -> ObservatoryProfile:
         plate_solver=plate_solve.get("PlateSolverType"),
         blind_plate_solver=plate_solve.get("BlindSolverType"),
         image_save_path=image_file.get("FilePath", ""),
+        equipment=equipment,
     )
     print("Profile:", profile.model_dump_json(indent=2), file=sys.stderr)
     return profile
-
-
-def convert_to_met(data, since, now, name):
-    timestamp = 'timestamp'
-    tzinfo = now.tzinfo
-    res = []
-    for d in data:
-        value = d[name]
-        d = { k: v.lower() if isinstance(v, str) else v 
-              for k,v in d.items() if k != name }
-        ts = datetime.fromisoformat(value)
-        if ts.tzinfo is None:
-            ts = ts.replace(tzinfo=tzinfo)
-        tzinfo = ts.tzinfo
-        d = _convert_keys(d)
-        d[timestamp] = ts
-        res.append(d)
-    # sort on datetimes 
-    data = sorted(res, key=lambda d: d[timestamp])
-    res = []
-    for d in data:
-        ts = d[timestamp]
-        elapsed = (ts - now).total_seconds()
-        if since + elapsed > 0:
-            d[timestamp] = ts.replace(microsecond=0).isoformat()
-            res.append(d)
-    return res
 
 
 @mcp.tool()
@@ -278,7 +293,7 @@ async def get_events(since: int = 300) -> Any:
     timestamp = await _api_get("/time")
     now = datetime.fromisoformat(timestamp)
     res = await _api_get("/event-history")
-    res = convert_to_met(res, since=since, now=now, name='Time')
+    res = _convert_to_met(res, since=since, now=now, name="Time")
     print("Events:", json.dumps(res, indent=2), file=sys.stderr)
     return res
 
@@ -289,11 +304,14 @@ async def get_logs(since: int = 300) -> Any:
     timestamp = await _api_get("/time")
     now = datetime.fromisoformat(timestamp)
     res = await _api_get("/application/logs?lineCount=200")
-    res = convert_to_met(res, since=since, now=now, name='Timestamp')
+    res = _convert_to_met(res, since=since, now=now, name="Timestamp")
     for d in res:
-        if 'line' in d: del d['line']
-        if 'member' in d: del d['member']
-        if 'source' in d: del d['source']
+        if "line" in d:
+            del d["line"]
+        if "member" in d:
+            del d["member"]
+        if "source" in d:
+            del d["source"]
     print("Logs:", json.dumps(res, indent=2), file=sys.stderr)
     return res
 
@@ -303,7 +321,7 @@ async def observation_plan_write_file(plan: ObservationPlan) -> str:
     """Validates and writes an observation plan to a JSON file for later use by sequence_load_plan. The plan defines target coordinates, acquisition intent, light and calibration frames, batching, cooling, autofocus, guiding, and observing constraints. This tool only creates the plan file; it does not load or start a sequence."""
     profile = await get_site_profile()
     await _validate_filters(plan, profile)
-    timestamp = datetime.now().strftime("%Y%m%dT%H%M%S")
+    timestamp = datetime.now(tz=datetime.UTC).astimezone().strftime("%Y%m%dT%H%M%S")
     filename = f"{plan.target.lower()}_{plan.intent.lower()}_{timestamp}.json"
     filename = filename.replace(" ", "-")
     with open(filename, "w", encoding="utf-8") as f:
@@ -313,7 +331,8 @@ async def observation_plan_write_file(plan: ObservationPlan) -> str:
 
 # hardware
 
-mcp.tool()
+
+@mcp.tool()
 async def home_telescope() -> str:
     """Home the telescope."""
     await _api_get("/equipment/mount/home")
@@ -323,6 +342,8 @@ async def home_telescope() -> str:
 # sequence
 
 FrameType = Literal["lights", "darks", "bias", "dawn_flats", "dusk_flats"]
+
+
 @mcp.tool()
 async def sequence_load_plan(
     file_path: str,
@@ -334,16 +355,17 @@ async def sequence_load_plan(
     plan = ObservationPlan.model_validate(data)
     profile = await get_site_profile()
     await _validate_filters(plan, profile)
+    equipment = await _get_site_equipment_status(profile)
     if frame_type == "lights":
-        seq = build_sequence_lights(plan)
+        seq = build_sequence_lights(plan, equipment)
     elif frame_type == "darks":
-        seq = build_sequence_darks(plan)
+        seq = build_sequence_darks(plan, equipment)
     elif frame_type == "bias":
-        seq = build_sequence_darks(plan, bias=True)
+        seq = build_sequence_darks(plan, equipment, bias=True)
     elif frame_type == "dawn_flats":
-        seq = build_sequence_flats(plan, profile)
+        seq = build_sequence_flats(plan, equipment, profile=profile)
     elif frame_type == "dusk_flats":
-        seq = build_sequence_flats(plan, profile, dusk=True)
+        seq = build_sequence_flats(plan, equipment, profile=profile, dusk=True)
     else:
         raise ValueError(f"Unsupported frame type: {frame_type}")
     await _api_get("/sequence/stop")
@@ -358,7 +380,7 @@ async def sequence_execute_teardown() -> str:
     await _api_get("/sequence/stop")
     await _api_post("/sequence/load", seq)
     await _api_get("/sequence/start?skipValidation=true")
-    return f"Teardown sequence started."
+    return "Teardown sequence started."
 
 
 @mcp.tool()
@@ -368,7 +390,7 @@ async def sequence_enter_safety_standby() -> str:
     await _api_get("/sequence/stop")
     await _api_post("/sequence/load", seq)
     await _api_get("/sequence/start?skipValidation=true")
-    return f"Safety standby sequence started."
+    return "Safety standby sequence started."
 
 
 @mcp.tool()
