@@ -315,7 +315,7 @@ async def observation_plan_write_file(plan: ObservationPlan) -> str:
 
 mcp.tool()
 async def home_telescope() -> str:
-    """Home the telescope.  Use to tell the Seestar to look down and close."""
+    """Home the telescope."""
     await _api_get("/equipment/mount/home")
     return "Telescope homed."
 

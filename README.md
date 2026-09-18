@@ -22,7 +22,7 @@
 
 | Tool | Purpose |
 |---|---|
-| `home_telescope` | Home the telescope.  Use to tell the Seestar to look down and close. |
+| `home_telescope` | Force the telescope to home. |
 
 ### Sequence Management
 
