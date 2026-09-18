@@ -376,7 +376,8 @@ async def sequence_load_plan(
 @mcp.tool()
 async def sequence_execute_teardown() -> str:
     """Loads and starts the non-acquisition teardown sequence, safely parking the telescope while NINA’s sequence-level safety guardrails remain active. Allow it to complete without interruption. Use when ending operations or before leaving the observatory unattended."""
-    seq = build_sequence_teardown()
+    equipment = await get_site_equipment_status()
+    seq = build_sequence_teardown(equipment)
     await _api_get("/sequence/stop")
     await _api_post("/sequence/load", seq)
     await _api_get("/sequence/start?skipValidation=true")
@@ -386,7 +387,8 @@ async def sequence_execute_teardown() -> str:
 @mcp.tool()
 async def sequence_enter_safety_standby() -> str:
     """Loads a non-acquisition standby sequence that keeps NINA sequence-level safety and parking guardrails active while the observatory is idle. After loading, call sequence_start. Stop it before loading an acquisition or teardown sequence. Use whenever equipment is deployed and no other sequence is running."""
-    seq = build_sequence_standby()
+    equipment = await get_site_equipment_status()
+    seq = build_sequence_standby(equipment)
     await _api_get("/sequence/stop")
     await _api_post("/sequence/load", seq)
     await _api_get("/sequence/start?skipValidation=true")
