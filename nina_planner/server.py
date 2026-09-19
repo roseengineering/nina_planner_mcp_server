@@ -28,7 +28,7 @@ from .sequence import (
 
 mcp = FastMCP(
     name="nina-planner",
-    instructions="""Provides tools for controlling NINA (Nighttime Imaging 'N' Astronomy) software run observatories. Lets you inspect equipment, get observatory setup, write observation plans, and run NINA sequences generated from the plans.  Lets you focus on orchestrating observation plans at a high level through NINA sequences, without having to manage the individual commands that make up those sequences.""",
+    instructions="""Provides tools for controlling NINA (Nighttime Imaging 'N' Astronomy) software run observatories. Lets you inspect equipment, get observatory setup, write observation plans, and run NINA sequences generated from the plans. Focuses on orchestrating observation plans at a high level through NINA sequences rather than managing the individual commands that make up those sequences. Safety semantics: the safety monitor's is_safe field reflects whether the observatory enclosure (roof/dome) is open and it is safe to unpark and expose. is_safe=true means the enclosure is open and the scope may be unparked and acquisition may proceed; is_safe=false means the enclosure is closed, so the scope must remain stowed and acquisition is gated until it becomes safe. This is distinct from weather conditions, which are reported separately by the weather device. Stow behavior is capability-driven: sequences emit Park Scope only when the mount reports can_park=true, otherwise they use Find home when the mount reports can_find_home=true.""",
 )
 
 NINA_ENDPOINT = os.environ.get("NINA_ENDPOINT", "localhost:1888")
@@ -199,7 +199,7 @@ async def _get_site_equipment_status(profile) -> ObservatoryEquipment:
 
 @mcp.tool()
 async def get_site_equipment_status() -> ObservatoryEquipment:
-    """Returns the current connection, operating state, measurements, and capabilities of active observatory equipment, including weather and safety-monitor status. Use it for live operational and safety checks. This tool is read-only and takes no action."""
+    """Returns the current connection, operating state, measurements, and capabilities of active observatory equipment, including weather and safety-monitor status (whether the enclosure is open and it is safe to unpark). Use it for live operational and safety checks. This tool is read-only and takes no action."""
     profile = await get_site_profile()
     equipment = await _get_site_equipment_status(profile)
     print("Equipment:", equipment.model_dump_json(indent=2), file=sys.stderr)
