@@ -178,6 +178,7 @@ The plugin auto-reconnects on websocket disconnection with a 5-second retry. On 
 2. Ensures the scope is stowed when the safety monitor reports unsafe or weather limits are violated. Stow is capability-driven: park only if the mount reports `can_park=true`, otherwise home if `can_find_home=true`.
 3. Keeps logs structured and concise, using `get_events` and `get_logs` to reconstruct what happened before acting.
 4. Starts the next lights observation plan when safe — `observation_plan_write_file`, `sequence_load_plan`, then `sequence_start` — and never starts acquisition while `is_safe=false`.
+5. When night is over writes report.md as a concise end-of-night summary: night date, per-target frames actually completed (from sequence state/events, not the plan) with filter and exposure, calibration counts, any failures/interventions with timestamps, and a wrap-up line. 
 
 It reads `progress.md` on start and appends a timestamped entry after each action (see [`progress.md`](#progressmd--shared-progress-file)).
 
