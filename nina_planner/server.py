@@ -397,7 +397,7 @@ async def sequence_start() -> str:
 
 @mcp.tool()
 async def sequence_stop() -> str:
-    """Stops the currently running NINA sequence immediately. Use for an urgent halt or to interrupt a stuck/looping sequence. Note that sequence_load_plan and the teardown/standby entry tools already stop any running sequence before loading, so an explicit stop is only needed when you want to halt without loading anything new. Avoid stopping an in-progress teardown during the stow maneuver unless safety requires it, since interrupting mid-slew can leave the scope in an unsafe position. Call sequence_get_state afterward to confirm the sequence has stopped."""
+    """Stops the currently running NINA sequence immediately, leaving the telescope where it currently is — it does not stow the scope. Use for an urgent halt, to interrupt a stuck/looping sequence, or when the running sequence isn't what you wanted. If you then want to park/home the telescope, run sequence_execute_teardown separately. Note that sequence_load_plan and the teardown/standby entry tools already stop any running sequence before loading, so an explicit stop is only needed when you want to halt without loading anything new. Avoid stopping an in-progress teardown during the stow maneuver unless safety requires it, since interrupting mid-slew can leave the scope in an unsafe position. Call sequence_get_state afterward to confirm the sequence has stopped."""
     await _api_get("/sequence/stop")
     return "Sequence stopped."
 
