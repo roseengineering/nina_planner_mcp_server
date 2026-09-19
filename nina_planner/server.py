@@ -368,7 +368,7 @@ async def sequence_load_plan(
 
 @mcp.tool()
 async def sequence_execute_teardown() -> str:
-    """Loads and starts the non-acquisition teardown sequence, safely stowing the telescope (park or home, per mount capability) while NINA's sequence-level safety guardrails remain active. Allow it to complete without interruption. Use when ending operations or before leaving the observatory unattended."""
+    """Loads and starts the non-acquisition teardown sequence, safely stowing the telescope (park or home, per mount capability) while NINA's sequence-level safety guardrails remain active. Use for end-of-observation close-down — when you are done observing and want to shut down the scope — or before leaving the observatory unattended. Allow it to complete without interruption. This is separate from sequence_stop, which halts the current sequence but does not stow the scope."""
     equipment = await get_site_equipment_status()
     seq = build_sequence_teardown(equipment)
     await _api_get("/sequence/stop")
