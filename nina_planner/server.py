@@ -28,13 +28,14 @@ from .sequence import (
 
 mcp = FastMCP(
     name="nina-planner",
-    instructions="""Provides tools for controlling NINA (Nighttime Imaging 'N' Astronomy) software run observatories. Lets you inspect equipment, get observatory setup, write observation plans, and run NINA sequences generated from the plans. Focuses on orchestrating observation plans at a high level through NINA sequences rather than managing the individual commands that make up those sequences. Safety semantics: the safety monitor's is_safe field reflects whether the observatory enclosure (roof/dome) is open and it is safe to unpark and expose. is_safe=true means the enclosure is open and the scope may be unparked and acquisition may proceed; is_safe=false means the enclosure is closed, so the scope must remain stowed and acquisition is gated until it becomes safe. This is distinct from weather conditions, which are reported separately by the weather device. Stow behavior is capability-driven: sequences emit Park Scope only when the mount reports can_park=true, otherwise they use Find home when the mount reports can_find_home=true.""",
+    instructions="""Provides tools for controlling NINA (Nighttime Imaging 'N' Astronomy) software run observatories. Lets you inspect equipment, get observatory setup, write observation plans, and run NINA sequences generated from the plans. Focuses on orchestrating observation plans at a high level through NINA sequences rather than managing the individual commands that make up those sequences. Safety semantics: the safety monitor's is_safe field reflects whether the observatory enclosure (roof/dome) is open and it is safe to unpark and expose. is_safe=true means the enclosure is open and the scope may be unparked and acquisition may proceed; is_safe=false means the enclosure is closed, so the scope must remain stowed and acquisition is gated until it becomes safe. This is distinct from weather conditions, which are reported separately by the weather device. Stow behavior is capability-driven: sequences emit Park Scope only when the mount reports can_park=true, otherwise they use Find home when the mount reports can_find_home=true. Progress tracking: maintain an observatory progress file (PROGRESS.md in the project directory). On session start, read it to restore context before acting. After significant actions — status checks, plan writes, sequence loads/starts/stops, errors, and interventions — append a short timestamped entry recording what was done, the observed equipment and safety state, and any decisions. Both the active session and automated worker sessions append to this file so history is shared across sessions.""",
 )
 
 NINA_ENDPOINT = os.environ.get("NINA_ENDPOINT", "localhost:1888")
 NINA_API_URL = f"http://{NINA_ENDPOINT}/v2/api"
 
 FrameType = Literal["lights", "darks", "bias", "dawn_flats", "dusk_flats"]
+
 
 def _to_snake(name: str) -> str:
     s = re.sub(r"(.)([A-Z][a-z]+)", r"\1_\2", name)
@@ -197,6 +198,7 @@ async def _get_site_equipment_status(profile) -> ObservatoryEquipment:
 
 # status tools
 
+
 @mcp.tool()
 async def get_site_equipment_status() -> ObservatoryEquipment:
     """Returns the current connection, operating state, measurements, and capabilities of active observatory equipment, including weather and safety-monitor status (whether the enclosure is open and it is safe to unpark), and mount capabilities (`can_park`, `can_find_home`) that determine how the scope can be stowed. Use it for live operational and safety checks. This tool is read-only and takes no action."""
@@ -327,6 +329,7 @@ async def sequence_get_state() -> Any:
 
 # plan tools
 
+
 @mcp.tool()
 async def observation_plan_write_file(plan: ObservationPlan) -> str:
     """Validates and writes an observation plan to a JSON file for later use by sequence_load_plan. The plan defines target coordinates, acquisition intent, light and calibration frames, batching, cooling, autofocus, guiding, and observing constraints. This tool only creates the plan file; it does not load or start a sequence."""
@@ -370,6 +373,7 @@ async def sequence_load_plan(
 
 
 ### exceptional tools
+
 
 @mcp.tool()
 async def sequence_execute_teardown() -> str:
