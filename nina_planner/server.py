@@ -26,7 +26,10 @@ from .sequence import (
     build_sequence_teardown,
 )
 
-mcp = FastMCP("nina-planner")
+mcp = FastMCP(
+    name="nina-planner",
+    instructions="""Provides tools for controlling NINA (Nighttime Imaging 'N' Astronomy) software run observatories. Lets you inspect equipment, get observatory setup, write observation plans, and run NINA sequences generated from the plans.  It lets you work at the level of running observation plans via NINA sequences rather than the commands individually that make up the sequence.""",
+)
 
 NINA_ENDPOINT = os.environ.get("NINA_ENDPOINT", "localhost:1888")
 NINA_API_URL = f"http://{NINA_ENDPOINT}/v2/api"

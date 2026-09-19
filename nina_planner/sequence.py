@@ -251,6 +251,7 @@ def trigger_restore_guiding():
 
 # instructions
 
+
 def unpark_scope():
     return _child("NINA.Sequencer.SequenceItem.Telescope.UnparkScope, NINA.Sequencer")
 
@@ -624,6 +625,7 @@ def sequence_safetynet(name, instructions=None, conditions=None, triggers=None):
         ],
     )
 
+
 def sequence_warm_camera(equipment):
     return [warm_camera()] if equipment.camera.thermal.has_cooler else []
 
@@ -652,6 +654,7 @@ def container_end_park_when_unsafe(equipment):
 
 #########################################
 
+
 def build_sequence_teardown(equipment):
     return container_root(
         [
@@ -660,8 +663,9 @@ def build_sequence_teardown(equipment):
             container_end(
                 [
                     park_scope(),
-                ] + sequence_warm_camera(equipment)
-            )
+                ]
+                + sequence_warm_camera(equipment)
+            ),
         ]
     )
 
@@ -673,7 +677,7 @@ def build_sequence_standby(equipment, instructions=None):
         [
             container_start([sequence_safetynet("While Unsafe")]),
             container_target(instructions),
-            container_end_park_when_unsafe(equipment)
+            container_end_park_when_unsafe(equipment),
         ]
     )
 
@@ -681,11 +685,7 @@ def build_sequence_standby(equipment, instructions=None):
 def build_sequence_darks(plan, equipment, bias=False):
     return container_root(
         [
-            container_start(
-                [ 
-                    park_scope()
-                ] + sequence_cool_camera(plan, equipment)
-            ),
+            container_start([park_scope()] + sequence_cool_camera(plan, equipment)),
             container_target(
                 [
                     smart_exposure_plus(
@@ -696,7 +696,7 @@ def build_sequence_darks(plan, equipment, bias=False):
                     for d in round_robin(plan.bias if bias else plan.darks)
                 ]
             ),
-            container_end_park_when_unsafe(equipment)
+            container_end_park_when_unsafe(equipment),
         ]
     )
 
@@ -821,5 +821,3 @@ def build_sequence_flats(plan, equipment, profile, dusk: bool = False):
             ),
         ],
     )
-
-
