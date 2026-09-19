@@ -44,7 +44,6 @@ class BinningInfo(BaseModel):
 
 class ThermalInfo(BaseModel):
     temperature_c: float | None = None
-    temperature_settable: bool | None = None
     has_cooler: bool = False
     cooler_on: bool = False
     target_temperature_c: float | None = None
@@ -158,7 +157,6 @@ class CameraDevice(BaseModel):
 
             data["thermal"] = ThermalInfo(
                 temperature_c=ascom_float(data.get("temperature")),
-                temperature_settable=bool(data.get("can_set_temperature", False)),
                 has_cooler=bool(data.get("can_set_temperature", False)),
                 cooler_on=bool(data.get("cooler_on", False)),
                 target_temperature_c=ascom_float(data.get("target_temp")),

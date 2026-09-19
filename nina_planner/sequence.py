@@ -1,5 +1,9 @@
 import os
 
+NINA_FLATS_ALTITUDE = float(os.environ.get("NINA_FLATS_ALTITUDE ", "80"))
+NINA_FLATS_AZIMUTH_DAWN = float(os.environ.get("NINA_FLATS_AZIMUTH_DAWN", "270"))
+NINA_FLATS_AZIMUTH_DUSK = float(os.environ.get("NINA_FLATS_AZIMUTH_DUSK", "90"))
+
 
 def _add_refs(data):
     ident = 0
@@ -282,6 +286,10 @@ def unpark_scope():
 
 def park_scope():
     return _child("NINA.Sequencer.SequenceItem.Telescope.ParkScope, NINA.Sequencer")
+
+
+def home_scope():
+    return _child("NINA.Sequencer.SequenceItem.Telescope.FindHome, NINA.Sequencer")
 
 
 def warm_camera():
@@ -611,7 +619,7 @@ def sequence_cool_camera(plan, equipment):
 def sequence_park_scope(equipment):
     return (
         [ park_scope() ] if equipment.mount.can_park else 
-        ([ home_scope() ] if equipment.mount.can_home else [])
+        ([ home_scope() ] if equipment.mount.can_find_home else [])
     )
 
 
@@ -637,8 +645,9 @@ def sequence_safetynet(name, equipment, instructions=None, conditions=None, trig
                 instructions=sequence_unpark_scope(equipment)
                 + instructions
                 + [end_instruction(name)],
-            ),
-            park_scope(),
+            )]
+        + sequence_park_scope(equipment)
+        + [
             wait_until_safe(),
         ],
     )
@@ -792,9 +801,6 @@ def build_sequence_lights(plan, equipment):
 
 
 def build_sequence_flats(plan, equipment, profile, dusk: bool = False):
-    NINA_FLATS_ALTITUDE = float(os.environ.get("NINA_FLATS_ALTITUDE ", "80"))
-    NINA_FLATS_AZIMUTH_DAWN = float(os.environ.get("NINA_FLATS_AZIMUTH_DAWN", "270"))
-    NINA_FLATS_AZIMUTH_DUSK = float(os.environ.get("NINA_FLATS_AZIMUTH_DUSK", "90"))
     return container_root_standby(
         equipment=equipment,
         instructions=[
