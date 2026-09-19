@@ -742,13 +742,19 @@ def build_sequence_lights(plan, equipment):
                 dec=plan.dec_deg,
                 instructions=[
                     sequence_safetynet(
+                        name="Wait For Dusk",
+                        equipment=equipment,
+                        instructions=sequence_cool_camera(plan, equipment) + [
+                            wait_until_dusk(),
+                        ],
+                    ),
+                    sequence_safetynet(
                         name="Wait For Object",
                         equipment=equipment,
                         conditions=[
                             loop_until_meridian(),
                         ],
-                        instructions=sequence_cool_camera(plan, equipment) + [
-                            wait_until_dusk(),
+                        instructions=[
                             wait_until_above_horizon(
                                 plan.constraints.horizon_offset_degrees
                             ),
