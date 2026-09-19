@@ -37,12 +37,12 @@ const plugin: PluginModule = {
           parts: [
             {
               type: "text",
-              text: `Please check on the observatory.  The latest N.I.N.A. events follow:\n\n\`\`\`json\n${JSON.stringify(events)}\n\`\`\``,
+              text: `Please check on the observatory.  The latest N.I.N.A. events follow:\n\n\`\`\`json\n${events}\n\`\`\``,
             },
           ],
         },
       };
-      if (DEBUG) console.error("prompt:", payload);
+      if (DEBUG) console.error("prompt:", JSON.stringify(payload, null, 2));
       await ctx.client.session.prompt(payload);
       await ctx.client.session.delete({ path: { id: newSession.data.id } });
     }
