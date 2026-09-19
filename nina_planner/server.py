@@ -34,6 +34,7 @@ mcp = FastMCP(
 NINA_ENDPOINT = os.environ.get("NINA_ENDPOINT", "localhost:1888")
 NINA_API_URL = f"http://{NINA_ENDPOINT}/v2/api"
 
+FrameType = Literal["lights", "darks", "bias", "dawn_flats", "dusk_flats"]
 
 def _to_snake(name: str) -> str:
     s = re.sub(r"(.)([A-Z][a-z]+)", r"\1_\2", name)
@@ -194,8 +195,7 @@ async def _get_site_equipment_status(profile) -> ObservatoryEquipment:
     )
 
 
-# mcp tools
-
+# status tools
 
 @mcp.tool()
 async def get_site_equipment_status() -> ObservatoryEquipment:
@@ -320,6 +320,14 @@ async def get_logs(since: int = 300) -> Any:
 
 
 @mcp.tool()
+async def sequence_get_state() -> Any:
+    """Returns the loaded sequence structure and the current status of its containers, instructions, conditions, and triggers. Use it to determine whether a sequence is loaded, running, completed, failed, or waiting. This tool is read-only and takes no action."""
+    return await _api_get("/sequence/json")
+
+
+# plan tools
+
+@mcp.tool()
 async def observation_plan_write_file(plan: ObservationPlan) -> str:
     """Validates and writes an observation plan to a JSON file for later use by sequence_load_plan. The plan defines target coordinates, acquisition intent, light and calibration frames, batching, cooling, autofocus, guiding, and observing constraints. This tool only creates the plan file; it does not load or start a sequence."""
     profile = await get_site_profile()
@@ -330,11 +338,6 @@ async def observation_plan_write_file(plan: ObservationPlan) -> str:
     with open(filename, "w", encoding="utf-8") as f:
         f.write(plan.model_dump_json(indent=2))
     return f"Plan successfully written to {filename}"
-
-
-# sequence
-
-FrameType = Literal["lights", "darks", "bias", "dawn_flats", "dusk_flats"]
 
 
 @mcp.tool()
@@ -365,6 +368,8 @@ async def sequence_load_plan(
     await _api_post("/sequence/load", seq)
     return f"`{frame_type}` sequence loaded."
 
+
+### exceptional tools
 
 @mcp.tool()
 async def sequence_execute_teardown() -> str:
@@ -400,12 +405,6 @@ async def sequence_stop() -> str:
     """Stops the currently running NINA sequence immediately, leaving the telescope where it currently is — it does not stow the scope. Use for an urgent halt, to interrupt a stuck/looping sequence, or when the running sequence isn't what you wanted. If you then want to park/home the telescope, run sequence_execute_teardown separately. Note that sequence_load_plan and the teardown/standby entry tools already stop any running sequence before loading, so an explicit stop is only needed when you want to halt without loading anything new. Avoid stopping an in-progress teardown during the stow maneuver unless safety requires it, since interrupting mid-slew can leave the scope in an unsafe position. Call sequence_get_state afterward to confirm the sequence has stopped."""
     await _api_get("/sequence/stop")
     return "Sequence stopped."
-
-
-@mcp.tool()
-async def sequence_get_state() -> Any:
-    """Returns the loaded sequence structure and the current status of its containers, instructions, conditions, and triggers. Use it to determine whether a sequence is loaded, running, completed, failed, or waiting. This tool is read-only and takes no action."""
-    return await _api_get("/sequence/json")
 
 
 if __name__ == "__main__":
