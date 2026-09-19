@@ -9,7 +9,7 @@ const DEBUG = process.env.DEBUG;
 const plugin: PluginModule = {
   id: "nina-plug",
   server: async (ctx: PluginInput) => {
-    async function triggerIntervention(events: string) {
+    async function triggerIntervention(events: string | null = null) {
       // does agent exist?
       const { data: agents } = await ctx.client.app.agents();
       const exists = agents.some((a: any) => a.name === WORKER_AGENT);
@@ -30,6 +30,11 @@ const plugin: PluginModule = {
       if (!newSession?.data?.id) return;
 
       // target the new session ID, ignoring the user's active console
+      const text =
+        events == null
+          ? "Trigger: Routine interval check. No new N.I.N.A. events. Review observatory status and take action if needed."
+          : `Trigger: The latest N.I.N.A. events follow:\n\n\`\`\`json\n${events}\n\`\`\``;
+
       const payload = {
         path: { id: newSession.data.id },
         body: {
@@ -37,7 +42,7 @@ const plugin: PluginModule = {
           parts: [
             {
               type: "text",
-              text: `Please check on the observatory.  The latest N.I.N.A. events follow:\n\n\`\`\`json\n${events}\n\`\`\``,
+              text,
             },
           ],
         },
@@ -107,7 +112,7 @@ const plugin: PluginModule = {
 
     const intervalId = setInterval(() => {
       if (DEBUG) console.error("nina-plugin: interval check");
-      triggerIntervention("[]");
+      triggerIntervention();
     }, INTERVAL_CHECK_MINUTES * 60_000);
 
     return {
