@@ -28,7 +28,7 @@ from .sequence import (
 
 mcp = FastMCP(
     name="nina-planner",
-    instructions="""Provides tools for controlling NINA (Nighttime Imaging 'N' Astronomy) software run observatories. Lets you inspect equipment, get observatory setup, write observation plans, and run NINA sequences generated from the plans.  It lets you work at the level of running observation plans via NINA sequences rather than the commands individually that make up the sequence.""",
+    instructions="""Provides tools for controlling NINA (Nighttime Imaging 'N' Astronomy) software run observatories. Lets you inspect equipment, get observatory setup, write observation plans, and run NINA sequences generated from the plans.  Lets you focus on orchestrating observation plans at a high level through NINA sequences, without having to manage the individual commands that make up those sequences.""",
 )
 
 NINA_ENDPOINT = os.environ.get("NINA_ENDPOINT", "localhost:1888")
@@ -330,16 +330,6 @@ async def observation_plan_write_file(plan: ObservationPlan) -> str:
     with open(filename, "w", encoding="utf-8") as f:
         f.write(plan.model_dump_json(indent=2))
     return f"Plan successfully written to {filename}"
-
-
-# hardware
-
-
-@mcp.tool()
-async def home_telescope() -> str:
-    """Home the telescope."""
-    await _api_get("/equipment/mount/home")
-    return "Telescope homed."
 
 
 # sequence

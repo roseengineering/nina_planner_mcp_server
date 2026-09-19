@@ -12,6 +12,8 @@ class MountDevice(BaseModel):
     name: str
     description: str | None = None
     alignment_mode: str | None = None
+    can_park: bool | None = None
+    can_home: bool | None = None
     is_parked: bool | None = None
     is_homed: bool | None = None
     mount_status: str | None = None

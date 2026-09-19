@@ -18,12 +18,6 @@
 | `get_logs(since)` | Get latest N.I.N.A. application log entries from `since` seconds. |
 | `observation_plan_write_file(plan)` | Write out an observation plan JSON file. |
 
-### Hardware
-
-| Tool | Purpose |
-|---|---|
-| `home_telescope` | Force the telescope to home. |
-
 ### Sequence Management
 
 | Tool | Purpose |

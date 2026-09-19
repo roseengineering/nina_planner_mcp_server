@@ -71,6 +71,32 @@ def _azalt_coordinates(az, alt):
     }
 
 
+def _round_robin(exposures, batch_size=0, reverse=False):
+    current_count = 0
+    result = []
+    while True:
+        done = True
+        for d in exposures:
+            filter_name = d.filter_name if "filter_name" in d.model_fields else None
+            exposure_time_seconds = (
+                d.exposure_time_seconds
+                if "exposure_time_seconds" in d.model_fields
+                else 0
+            )
+            count = min(d.total_count - current_count, batch_size)
+            if batch_size == 0 or len(exposures) == 1:
+                result.append((d.total_count, exposure_time_seconds, filter_name))
+            elif count > 0:
+                result.append((count, exposure_time_seconds, filter_name))
+                done = False
+        if done:
+            break
+        current_count += batch_size
+    return reversed(result) if reverse else result
+
+
+### containers
+
 def _container_base(
     ctype,
     name=None,
@@ -203,8 +229,7 @@ def container_deepsky(
     }
 
 
-# triggers
-
+### triggers
 
 def trigger_meridian_flip():
     return _child(
@@ -249,8 +274,7 @@ def trigger_restore_guiding():
     return _child("NINA.Sequencer.Trigger.Guider.RestoreGuiding, NINA.Sequencer")
 
 
-# instructions
-
+### instructions
 
 def unpark_scope():
     return _child("NINA.Sequencer.SequenceItem.Telescope.UnparkScope, NINA.Sequencer")
@@ -357,8 +381,7 @@ def sky_flats(count, filter_name, position):
     }
 
 
-# wait
-
+### wait until
 
 def wait_until_safe():
     return _child(
@@ -435,8 +458,7 @@ def wait_if_sun_altitude_below(degrees):
     return wait_if_sun_altitude(degrees, 1)
 
 
-# conditions
-
+### conditions
 
 def loop_until_sun_altitude(degrees, comparator):
     return _child("NINA.Sequencer.Conditions.SunAltitudeCondition, NINA.Sequencer") | {
@@ -495,8 +517,7 @@ def loop_for_iterations(count):
     }
 
 
-# plugin
-
+### plugin
 
 def loop_while(expression):
     return _child("WhenPlugin.When.LoopWhile, WhenPlugin") | {
@@ -575,31 +596,30 @@ def smart_exposure_plus(count, exposure, image_type, filter_name=None, dither=No
 ####################################
 
 
-def round_robin(exposures, batch_size=0, reverse=False):
-    current_count = 0
-    result = []
-    while True:
-        done = True
-        for d in exposures:
-            filter_name = d.filter_name if "filter_name" in d.model_fields else None
-            exposure_time_seconds = (
-                d.exposure_time_seconds
-                if "exposure_time_seconds" in d.model_fields
-                else 0
-            )
-            count = min(d.total_count - current_count, batch_size)
-            if batch_size == 0 or len(exposures) == 1:
-                result.append((d.total_count, exposure_time_seconds, filter_name))
-            elif count > 0:
-                result.append((count, exposure_time_seconds, filter_name))
-                done = False
-        if done:
-            break
-        current_count += batch_size
-    return reversed(result) if reverse else result
+def sequence_warm_camera(equipment):
+    return [warm_camera()] if equipment.camera.thermal.has_cooler else []
 
 
-def sequence_safetynet(name, instructions=None, conditions=None, triggers=None):
+def sequence_cool_camera(plan, equipment):
+    return (
+        [cool_camera(plan.cooler.setpoint_celsius) if plan.cooler.on else warm_camera()]
+        if equipment.camera.thermal.has_cooler
+        else []
+    )
+
+
+def sequence_park_scope(equipment):
+    return (
+        [ park_scope() ] if equipment.mount.can_park else 
+        ([ home_scope() ] if equipment.mount.can_home else [])
+    )
+
+
+def sequence_unpark_scope(equipment):
+    return [ unpark_scope() ] if equipment.mount.can_park else []
+
+
+def sequence_safetynet(name, equipment, instructions=None, conditions=None, triggers=None):
     if instructions is None:
         instructions = []
     if conditions is None:
@@ -614,27 +634,13 @@ def sequence_safetynet(name, instructions=None, conditions=None, triggers=None):
             container_sequential(
                 name="On Safe",
                 conditions=[loop_while_safe()],
-                instructions=[
-                    unpark_scope(),
-                ]
+                instructions=sequence_unpark_scope(equipment)
                 + instructions
                 + [end_instruction(name)],
             ),
             park_scope(),
             wait_until_safe(),
         ],
-    )
-
-
-def sequence_warm_camera(equipment):
-    return [warm_camera()] if equipment.camera.thermal.has_cooler else []
-
-
-def sequence_cool_camera(plan, equipment):
-    return (
-        [cool_camera(plan.cooler.setpoint_celsius) if plan.cooler.on else warm_camera()]
-        if equipment.camera.thermal.has_cooler
-        else []
     )
 
 
@@ -646,13 +652,33 @@ def container_end_park_when_unsafe(equipment):
                 conditions=[loop_while_safe()],
                 instructions=[wait_indefinitely()],
             ),
-            park_scope(),
         ]
+        + sequence_park_scope(equipment)
         + sequence_warm_camera(equipment)
+    )
+
+def container_start_unpark_when_safe(equipment):
+    return container_start([
+        sequence_safetynet(
+            name="While Unsafe", 
+            equipment=equipment)
+    ])
+
+
+def container_root_standby(equipment, instructions=None):
+    return container_root(
+        [
+            container_start_unpark_when_safe(equipment),
+            container_target(instructions),
+            container_end_park_when_unsafe(equipment),
+        ]
     )
 
 
 #########################################
+
+def build_sequence_standby(equipment):
+    return container_root_standby(equipment)
 
 
 def build_sequence_teardown(equipment):
@@ -661,23 +687,9 @@ def build_sequence_teardown(equipment):
             container_start(),
             container_target(),
             container_end(
-                [
-                    park_scope(),
-                ]
-                + sequence_warm_camera(equipment)
-            ),
-        ]
-    )
-
-
-def build_sequence_standby(equipment, instructions=None):
-    if instructions is None:
-        instructions = []
-    return container_root(
-        [
-            container_start([sequence_safetynet("While Unsafe")]),
-            container_target(instructions),
-            container_end_park_when_unsafe(equipment),
+                sequence_park_scope(equipment) + 
+                sequence_warm_camera(equipment)
+            )
         ]
     )
 
@@ -685,15 +697,18 @@ def build_sequence_standby(equipment, instructions=None):
 def build_sequence_darks(plan, equipment, bias=False):
     return container_root(
         [
-            container_start([park_scope()] + sequence_cool_camera(plan, equipment)),
+            container_start(
+                sequence_park_scope(equipment)
+            ),
             container_target(
+                sequence_cool_camera(plan, equipment) +
                 [
                     smart_exposure_plus(
                         count=d[0],
                         exposure=d[1],
                         image_type="BIAS" if bias else "DARK",
                     )
-                    for d in round_robin(plan.bias if bias else plan.darks)
+                    for d in _round_robin(plan.bias if bias else plan.darks)
                 ]
             ),
             container_end_park_when_unsafe(equipment),
@@ -702,7 +717,7 @@ def build_sequence_darks(plan, equipment, bias=False):
 
 
 def build_sequence_lights(plan, equipment):
-    return build_sequence_standby(
+    return container_root_standby(
         equipment=equipment,
         instructions=[
             container_deepsky(
@@ -713,7 +728,8 @@ def build_sequence_lights(plan, equipment):
                 instructions=[
                     sequence_safetynet(
                         name="Wait For Object",
-                        instructions=[
+                        equipment=equipment,
+                        instructions=sequence_cool_camera(plan, equipment) + [
                             wait_until_dusk(),
                             wait_until_above_horizon(
                                 plan.constraints.horizon_offset_degrees
@@ -723,6 +739,7 @@ def build_sequence_lights(plan, equipment):
                     ),
                     sequence_safetynet(
                         name="Image Object",
+                        equipment=equipment,
                         conditions=[
                             loop_until_dawn(),
                             loop_while_above_horizon(
@@ -764,7 +781,7 @@ def build_sequence_lights(plan, equipment):
                                 dither=plan.guiding.dither_every_n_exposures,
                                 image_type="LIGHT",
                             )
-                            for d in round_robin(plan.lights, plan.batch_size)
+                            for d in _round_robin(plan.lights, plan.batch_size)
                         ]
                         + [stop_guiding()],
                     ),
@@ -778,12 +795,13 @@ def build_sequence_flats(plan, equipment, profile, dusk: bool = False):
     NINA_FLATS_ALTITUDE = float(os.environ.get("NINA_FLATS_ALTITUDE ", "80"))
     NINA_FLATS_AZIMUTH_DAWN = float(os.environ.get("NINA_FLATS_AZIMUTH_DAWN", "270"))
     NINA_FLATS_AZIMUTH_DUSK = float(os.environ.get("NINA_FLATS_AZIMUTH_DUSK", "90"))
-    return build_sequence_standby(
+    return container_root_standby(
         equipment=equipment,
         instructions=[
             sequence_safetynet(
                 name="Wait For Time",
-                instructions=[
+                equipment=equipment,
+                instructions=sequence_cool_camera(plan, equipment) + [
                     (wait_until_sunset() if dusk else wait_until_dawn()),
                     (
                         wait_if_sun_altitude_above(0)
@@ -794,6 +812,7 @@ def build_sequence_flats(plan, equipment, profile, dusk: bool = False):
             ),
             sequence_safetynet(
                 name="Image Flats",
+                equipment=equipment,
                 conditions=[
                     (
                         loop_until_sun_altitude_below(-8)
@@ -816,7 +835,7 @@ def build_sequence_flats(plan, equipment, profile, dusk: bool = False):
                             f.position for f in profile.filters if f.name == d[2]
                         ),
                     )
-                    for d in round_robin(plan.flats, reverse=dusk)
+                    for d in _round_robin(plan.flats, reverse=dusk)
                 ],
             ),
         ],
