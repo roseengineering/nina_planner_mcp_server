@@ -485,13 +485,19 @@ def loop_until_sun_altitude_below(degrees):
     return loop_until_sun_altitude(degrees, 1)
 
 
-def loop_until_dawn():
+def loop_until_time(source):
     return _child("NINA.Sequencer.Conditions.TimeCondition, NINA.Sequencer") | {
         "MinutesOffset": 0,
-        "SelectedProvider": _child(
-            "NINA.Sequencer.Utility.DateTimeProvider.DawnProvider, NINA.Sequencer"
-        ),
+        "SelectedProvider": _child(source),
     }
+
+
+def loop_until_dawn():
+    return loop_until_time("NINA.Sequencer.Utility.DateTimeProvider.DawnProvider, NINA.Sequencer")
+
+
+def loop_until_meridian():
+    return loop_until_time("NINA.Sequencer.Utility.DateTimeProvider.MeridianProvider, NINA.Sequencer")
 
 
 def loop_while_safe():
@@ -738,6 +744,9 @@ def build_sequence_lights(plan, equipment):
                     sequence_safetynet(
                         name="Wait For Object",
                         equipment=equipment,
+                        conditions=[
+                            loop_until_meridian(),
+                        ],
                         instructions=sequence_cool_camera(plan, equipment) + [
                             wait_until_dusk(),
                             wait_until_above_horizon(
