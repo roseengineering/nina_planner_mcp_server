@@ -164,9 +164,28 @@ At session end:
 
 2. **Interval check** — Every `NINA_INTERVAL_MINUTES` (default 10) it prompts the agent to query observatory status (`sequence_get_state`, `get_site_equipment_status`) and decide what to do next, even when no N.I.N.A. events are firing.
 
-The plugin uses two different active opencode "agents", if they are configured, otherwise it uses the main session model.  One agent is called `event` for responding to incoming N.I.N.A. events over websocket and and the other is `check` for responding to the interval check.
+The plugin triggers a dedicated opencode "agent" called `worker` (see [`worker.md`](#workermd--opencode-worker-agent)), if it is configured, otherwise it uses the main session model. Both websocket-event triggers and interval checks prompt the same `worker` agent in an isolated session, which checks observatory status and takes action.
 
 The plugin auto-reconnects on websocket disconnection with a 5-second retry. On server dispose, it cleans up all timers and the socket.
+
+---
+
+## `worker.md` — OpenCode Worker Agent
+
+`worker.md` (in `.opencode/agents/`) defines the `worker` agent that `nina-plugin.ts` triggers for automated safety interrupts, sequence halts, and recovery routines. It:
+
+1. Checks current mount, dome, and weather status via `get_site_equipment_status` and confirms sequence state with `sequence_get_state`.
+2. Ensures the scope is stowed when the safety monitor reports unsafe or weather limits are violated. Stow is capability-driven: park only if the mount reports `can_park=true`, otherwise home if `can_find_home=true`.
+3. Keeps logs structured and concise, using `get_events` and `get_logs` to reconstruct what happened before acting.
+4. Starts the next lights observation plan when safe — `observation_plan_write_file`, `sequence_load_plan`, then `sequence_start` — and never starts acquisition while `is_safe=false`.
+
+It reads `progress.md` on start and appends a timestamped entry after each action (see [`progress.md`](#progressmd--shared-progress-file)).
+
+---
+
+## `progress.md` — Shared Progress File
+
+`progress.md` is a shared observatory progress file in the project directory. Both the active session and the automated `worker` sessions read it on start to restore context before acting, and append a short ISO-8601-timestamped entry after each significant action (status checks, plan writes, sequence loads/starts/stops, errors, and interventions), recording what was done, the observed equipment and safety state, and any decisions. This keeps history shared across sessions.
 
 ---
 
