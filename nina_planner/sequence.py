@@ -755,8 +755,7 @@ def build_sequence_lights(plan, equipment):
                     sequence_safetynet(
                         name="Wait For Dusk",
                         equipment=equipment,
-                        instructions=sequence_cool_camera(plan, equipment)
-                        + [
+                        instructions=[
                             wait_until_dusk(),
                         ],
                     ),
@@ -803,8 +802,9 @@ def build_sequence_lights(plan, equipment):
                             ),
                             trigger_restore_guiding(),
                         ],
-                        instructions=[
-                            set_tracking(0),  # 0=sidereal
+                        instructions=sequence_cool_camera(plan, equipment)
+                        + [
+                            set_tracking(0),
                             switch_filter_plus(plan.autofocus.reference_filter_name),
                             slew_and_center(),
                             run_autofocus(),
@@ -835,8 +835,7 @@ def build_sequence_flats(plan, equipment, profile, dusk: bool = False):
             sequence_safetynet(
                 name="Wait For Time",
                 equipment=equipment,
-                instructions=sequence_cool_camera(plan, equipment)
-                + [
+                instructions=[
                     (wait_until_sunset() if dusk else wait_until_dawn()),
                     (
                         wait_if_sun_altitude_above(0)
@@ -855,7 +854,8 @@ def build_sequence_flats(plan, equipment, profile, dusk: bool = False):
                         else loop_until_sun_altitude_above(0)
                     )
                 ],
-                instructions=[
+                instructions=sequence_cool_camera(plan, equipment)
+                + [
                     set_tracking(0),
                     slew_to_azalt(
                         az=NINA_FLATS_AZIMUTH_DUSK if dusk else NINA_FLATS_AZIMUTH_DAWN,
