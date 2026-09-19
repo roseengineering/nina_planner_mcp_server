@@ -199,7 +199,7 @@ async def _get_site_equipment_status(profile) -> ObservatoryEquipment:
 
 @mcp.tool()
 async def get_site_equipment_status() -> ObservatoryEquipment:
-    """Returns the current connection, operating state, measurements, and capabilities of active observatory equipment, including weather and safety-monitor status (whether the enclosure is open and it is safe to unpark). Use it for live operational and safety checks. This tool is read-only and takes no action."""
+    """Returns the current connection, operating state, measurements, and capabilities of active observatory equipment, including weather and safety-monitor status (whether the enclosure is open and it is safe to unpark), and mount capabilities (`can_park`, `can_find_home`) that determine how the scope can be stowed. Use it for live operational and safety checks. This tool is read-only and takes no action."""
     profile = await get_site_profile()
     equipment = await _get_site_equipment_status(profile)
     print("Equipment:", equipment.model_dump_json(indent=2), file=sys.stderr)
@@ -292,7 +292,7 @@ async def get_site_profile() -> ObservatoryProfile:
 
 @mcp.tool()
 async def get_events(since: int = 300) -> Any:
-    """Returns recent timestamped NINA observatory events and their event-specific details from the last `since` seconds. Use it to reconstruct sequence, equipment, safety, imaging, and error activity. This tool is read-only; use sequence_get_state and get_site_equipment for current status."""
+    """Returns recent timestamped NINA observatory events and their event-specific details from the last `since` seconds. Use it to reconstruct sequence, equipment, safety, imaging, and error activity. This tool is read-only; use get_site_equipment_status and sequence_get_state for current status."""
     timestamp = await _api_get("/time")
     now = datetime.fromisoformat(timestamp)
     res = await _api_get("/event-history")
@@ -342,7 +342,7 @@ async def sequence_load_plan(
     file_path: str,
     frame_type: FrameType = "lights",
 ) -> str:
-    """Loads an acquisition sequence with safety guardrails from an observation-plan JSON file. Select the frame type: lights, darks, bias, dawn_flats, or dusk_flats. This tool only loads the sequence; call sequence_start afterward. Stop any running standby or acquisition sequence before loading a new one."""
+    """Loads an acquisition sequence with safety guardrails from an observation-plan JSON file. Select the frame type: lights, darks, bias, dawn_flats, or dusk_flats. This tool only loads the sequence; call sequence_start afterward. Loading stops any currently running standby or acquisition sequence first."""
     with open(file_path, "r", encoding="utf-8") as f:
         data = json.loads(f.read())
     plan = ObservationPlan.model_validate(data)
@@ -368,7 +368,7 @@ async def sequence_load_plan(
 
 @mcp.tool()
 async def sequence_execute_teardown() -> str:
-    """Loads and starts the non-acquisition teardown sequence, safely parking the telescope while NINA’s sequence-level safety guardrails remain active. Allow it to complete without interruption. Use when ending operations or before leaving the observatory unattended."""
+    """Loads and starts the non-acquisition teardown sequence, safely stowing the telescope (park or home, per mount capability) while NINA's sequence-level safety guardrails remain active. Allow it to complete without interruption. Use when ending operations or before leaving the observatory unattended."""
     equipment = await get_site_equipment_status()
     seq = build_sequence_teardown(equipment)
     await _api_get("/sequence/stop")
@@ -379,7 +379,7 @@ async def sequence_execute_teardown() -> str:
 
 @mcp.tool()
 async def sequence_enter_safety_standby() -> str:
-    """Loads a non-acquisition standby sequence that keeps NINA sequence-level safety and parking guardrails active while the observatory is idle. After loading, call sequence_start. Stop it before loading an acquisition or teardown sequence. Use whenever equipment is deployed and no other sequence is running."""
+    """Loads a non-acquisition standby sequence that keeps NINA sequence-level safety and stow guardrails active while the observatory is idle. After loading, call sequence_start. Stop it before loading an acquisition or teardown sequence. Use whenever equipment is deployed and no other sequence is running."""
     equipment = await get_site_equipment_status()
     seq = build_sequence_standby(equipment)
     await _api_get("/sequence/stop")
@@ -397,7 +397,7 @@ async def sequence_start() -> str:
 
 @mcp.tool()
 async def sequence_stop() -> str:
-    """Stops the currently running sequence. Use before loading a different sequence or when an immediate halt is required. Avoid stopping teardown during parking unless necessary for safety."""
+    """Stops the currently running NINA sequence immediately. Use for an urgent halt or to interrupt a stuck/looping sequence. Note that sequence_load_plan and the teardown/standby entry tools already stop any running sequence before loading, so an explicit stop is only needed when you want to halt without loading anything new. Avoid stopping an in-progress teardown during the stow maneuver unless safety requires it, since interrupting mid-slew can leave the scope in an unsafe position. Call sequence_get_state afterward to confirm the sequence has stopped."""
     await _api_get("/sequence/stop")
     return "Sequence stopped."
 
