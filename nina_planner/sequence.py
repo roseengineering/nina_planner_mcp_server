@@ -251,13 +251,6 @@ def trigger_restore_guiding():
 
 # instructions
 
-
-def connect_all_equipment():
-    return _child(
-        "NINA.Sequencer.SequenceItem.Connect.ConnectAllEquipment, NINA.Sequencer"
-    )
-
-
 def unpark_scope():
     return _child("NINA.Sequencer.SequenceItem.Telescope.UnparkScope, NINA.Sequencer")
 
@@ -621,7 +614,6 @@ def sequence_safetynet(name, instructions=None, conditions=None, triggers=None):
                 name="On Safe",
                 conditions=[loop_while_safe()],
                 instructions=[
-                    connect_all_equipment(),
                     unpark_scope(),
                 ]
                 + instructions
@@ -632,15 +624,11 @@ def sequence_safetynet(name, instructions=None, conditions=None, triggers=None):
         ],
     )
 
-
-###
-
-
-def build_sequence_warm_camera(equipment):
+def sequence_warm_camera(equipment):
     return [warm_camera()] if equipment.camera.thermal.has_cooler else []
 
 
-def build_sequence_cool_camera(plan, equipment):
+def sequence_cool_camera(plan, equipment):
     return (
         [cool_camera(plan.cooler.setpoint_celsius) if plan.cooler.on else warm_camera()]
         if equipment.camera.thermal.has_cooler
@@ -648,83 +636,73 @@ def build_sequence_cool_camera(plan, equipment):
     )
 
 
-def build_sequence_base(equipment, instructions=None):
+def container_end_park_when_unsafe(equipment):
+    return container_end(
+        [
+            container_sequential(
+                name="While Safe",
+                conditions=[loop_while_safe()],
+                instructions=[wait_indefinitely()],
+            ),
+            park_scope(),
+        ]
+        + sequence_warm_camera(equipment)
+    )
+
+
+#########################################
+
+def build_sequence_teardown(equipment):
+    return container_root(
+        [
+            container_start(),
+            container_target(),
+            container_end(
+                [
+                    park_scope(),
+                ] + sequence_warm_camera(equipment)
+            )
+        ]
+    )
+
+
+def build_sequence_standby(equipment, instructions=None):
     if instructions is None:
         instructions = []
     return container_root(
         [
             container_start([sequence_safetynet("While Unsafe")]),
             container_target(instructions),
-            container_end(
-                [
-                    container_sequential(
-                        name="While Safe",
-                        conditions=[loop_while_safe()],
-                        instructions=[wait_indefinitely()],
-                    ),
-                    connect_all_equipment(),
-                    park_scope(),
-                ]
-                + build_sequence_warm_camera(equipment)
-            ),
+            container_end_park_when_unsafe(equipment)
         ]
     )
 
 
-###
-
-def build_sequence_flats(plan, equipment, profile, dusk: bool = False):
-    NINA_FLATS_ALTITUDE = float(os.environ.get("NINA_FLATS_ALTITUDE ", "80"))
-    NINA_FLATS_AZIMUTH_DAWN = float(os.environ.get("NINA_FLATS_AZIMUTH_DAWN", "270"))  # 270:west
-    NINA_FLATS_AZIMUTH_DUSK = float( os.environ.get("NINA_FLATS_AZIMUTH_DUSK", "90"))  # 90:east
-    return build_sequence_base(
-        equipment=equipment,
-        instructions=[
-            sequence_safetynet(
-                name="Wait For Time",
-                instructions=build_sequence_cool_camera(plan, equipment)
-                + [
-                    (wait_until_sunset() if dusk else wait_until_dawn()),
-                    (
-                        wait_if_sun_altitude_above(0)
-                        if dusk
-                        else wait_if_sun_altitude_below(-8)
-                    ),
-                ],
+def build_sequence_darks(plan, equipment, bias=False):
+    return container_root(
+        [
+            container_start(
+                [ 
+                    park_scope()
+                ] + sequence_cool_camera(plan, equipment)
             ),
-            sequence_safetynet(
-                name="Image Flats",
-                conditions=[
-                    (
-                        loop_until_sun_altitude_below(-8)
-                        if dusk
-                        else loop_until_sun_altitude_above(0)
-                    )
-                ],
-                instructions=[
-                    set_tracking(0),  # 0=sidereal
-                    slew_to_azalt(
-                        az=NINA_FLATS_AZIMUTH_DUSK if dusk else NINA_FLATS_AZIMUTH_DAWN,
-                        alt=NINA_FLATS_ALTITUDE,
-                    ),
-                ]
-                + [
-                    sky_flats(
+            container_target(
+                [
+                    smart_exposure_plus(
                         count=d[0],
-                        filter_name=d[2],
-                        position=next(
-                            f.position for f in profile.filters if f.name == d[2]
-                        ),
+                        exposure=d[1],
+                        image_type="BIAS" if bias else "DARK",
                     )
-                    for d in round_robin(plan.flats, reverse=dusk)
-                ],
+                    for d in round_robin(plan.bias if bias else plan.darks)
+                ]
             ),
-        ],
+            container_end_park_when_unsafe(equipment)
+        ]
     )
 
 
 def build_sequence_lights(plan, equipment):
-    return build_sequence_base(
+    return build_sequence_standby(
         equipment=equipment,
         instructions=[
             container_deepsky(
@@ -735,8 +713,7 @@ def build_sequence_lights(plan, equipment):
                 instructions=[
                     sequence_safetynet(
                         name="Wait For Object",
-                        instructions=build_sequence_cool_camera(plan, equipment)
-                        + [
+                        instructions=[
                             wait_until_dusk(),
                             wait_until_above_horizon(
                                 plan.constraints.horizon_offset_degrees
@@ -797,42 +774,52 @@ def build_sequence_lights(plan, equipment):
     )
 
 
-def build_sequence_darks(plan, equipment, bias=False):
-    return container_root(
-        [
-            container_start(),
-            container_target(
-                [connect_all_equipment(), park_scope()]
-                + build_sequence_cool_camera(plan, equipment)
-                + [
-                    smart_exposure_plus(
-                        count=d[0],
-                        exposure=d[1],
-                        image_type="BIAS" if bias else "DARK",
+def build_sequence_flats(plan, equipment, profile, dusk: bool = False):
+    NINA_FLATS_ALTITUDE = float(os.environ.get("NINA_FLATS_ALTITUDE ", "80"))
+    NINA_FLATS_AZIMUTH_DAWN = float(os.environ.get("NINA_FLATS_AZIMUTH_DAWN", "270"))
+    NINA_FLATS_AZIMUTH_DUSK = float(os.environ.get("NINA_FLATS_AZIMUTH_DUSK", "90"))
+    return build_sequence_standby(
+        equipment=equipment,
+        instructions=[
+            sequence_safetynet(
+                name="Wait For Time",
+                instructions=[
+                    (wait_until_sunset() if dusk else wait_until_dawn()),
+                    (
+                        wait_if_sun_altitude_above(0)
+                        if dusk
+                        else wait_if_sun_altitude_below(-8)
+                    ),
+                ],
+            ),
+            sequence_safetynet(
+                name="Image Flats",
+                conditions=[
+                    (
+                        loop_until_sun_altitude_below(-8)
+                        if dusk
+                        else loop_until_sun_altitude_above(0)
                     )
-                    for d in round_robin(plan.bias if bias else plan.darks)
+                ],
+                instructions=[
+                    set_tracking(0),
+                    slew_to_azalt(
+                        az=NINA_FLATS_AZIMUTH_DUSK if dusk else NINA_FLATS_AZIMUTH_DAWN,
+                        alt=NINA_FLATS_ALTITUDE,
+                    ),
                 ]
+                + [
+                    sky_flats(
+                        count=d[0],
+                        filter_name=d[2],
+                        position=next(
+                            f.position for f in profile.filters if f.name == d[2]
+                        ),
+                    )
+                    for d in round_robin(plan.flats, reverse=dusk)
+                ],
             ),
-            container_end(),
-        ]
+        ],
     )
 
 
-def build_sequence_standby(equipment):
-    return build_sequence_base(equipment)
-
-
-def build_sequence_teardown(equipment):
-    return container_root(
-        [
-            container_start(),
-            container_target(),
-            container_end(
-                [
-                    connect_all_equipment(),
-                    park_scope(),
-                ]
-                + build_sequence_warm_camera(equipment)
-            ),
-        ]
-    )
