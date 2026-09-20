@@ -56,7 +56,6 @@ const plugin: PluginModule = {
     let debounceTimer: ReturnType<typeof setTimeout> | null = null;
 
     function flushBatch() {
-      if (DEBUG) console.error(`nina-plugin: eventBatch ${eventBatch}`);
       if (eventBatch.length === 0) return;
       const payload = JSON.stringify(eventBatch);
       eventBatch = [];
@@ -64,7 +63,6 @@ const plugin: PluginModule = {
     }
 
     function pushEvent(response: string) {
-      if (DEBUG) console.error(`nina-plugin: push event ${response}`);
       eventBatch.push(response);
       if (debounceTimer) clearTimeout(debounceTimer);
       debounceTimer = setTimeout(flushBatch, 1_000);
@@ -111,7 +109,6 @@ const plugin: PluginModule = {
     connect();
 
     const intervalId = setInterval(() => {
-      if (DEBUG) console.error("nina-plugin: interval check");
       triggerIntervention();
     }, INTERVAL_CHECK_MINUTES * 60_000);
 
