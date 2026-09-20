@@ -1,4 +1,6 @@
+# plan.md 
 
+<!--
 ## `plan.md` — the living wishlist
 
 A markdown file at the project root, **edited by the user at any time** (before or during the night). It is intentionally lightweight — entries can be as simple as a target name:
@@ -17,7 +19,6 @@ A markdown file at the project root, **edited by the user at any time** (before 
 
 Example shapes (illustrative — both are valid):
 
-```markdown
 # Tonight
 
 - M31          "before the moon comes up"
@@ -29,5 +30,5 @@ Rules:
 - horizon_offset_degrees: 2
 - tie_break: priority, then altitude
 ```
+-->
 
-The user can add/remove/reorder lines at any moment. `[ ]` checkboxes are optional for tracking; the worker can mark targets complete in progress.md instead and leave plan.md untouched, so the user's editing isn't fought over.
