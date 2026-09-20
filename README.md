@@ -156,9 +156,9 @@ At session end:
 
 ---
 
-## `nina-plugin.ts` — OpenCode Autonomous Plugin
+## `nina-plugin.ts` — OpenCode v1 Autonomous Plugin
 
-`nina-plugin.ts` is an [opencode](https://opencode.ai) plugin (not compatible with Claude Code or other MCP clients). Once registered in `opencode.json`, it runs as a background server inside opencode and does two things:
+`nina-plugin.ts` is an [opencode](https://opencode.ai) v1 plugin (not compatible with Claude Code or other MCP clients). Once registered in `opencode.json`, it runs as a background server inside opencode and does two things:
 
 1. **Websocket event monitoring** — Connects to the N.I.N.A. event socket (`ws://<host:port>/v2/socket`), subscribes to all events, and forwards them to the active agent as intervention prompts. Events are batched with a 1-second debounce to avoid flooding the conversation.
 
@@ -172,15 +172,7 @@ The plugin auto-reconnects on websocket disconnection with a 5-second retry. On 
 
 ## `worker.md` — OpenCode Worker Agent
 
-`worker.md` (in `.opencode/agents/`) defines the `worker` agent that `nina-plugin.ts` triggers for automated safety interrupts, sequence halts, and recovery routines. It:
-
-1. Checks current mount, dome, and weather status via `get_site_equipment_status` and confirms sequence state with `sequence_get_state`.
-2. Ensures the scope is stowed when the safety monitor reports unsafe or weather limits are violated. Stow is capability-driven: park only if the mount reports `can_park=true`, otherwise home if `can_find_home=true`.
-3. Keeps logs structured and concise, using `get_events` and `get_logs` to reconstruct what happened before acting.
-4. Starts the next lights observation plan when safe — `observation_plan_write_file`, `sequence_load_plan`, then `sequence_start` — and never starts acquisition while `is_safe=false`.
-5. When night is over writes report.md as a concise end-of-night summary: night date, per-target frames actually completed (from sequence state/events, not the plan) with filter and exposure, calibration counts, any failures/interventions with timestamps, and a wrap-up line. 
-
-It reads `progress.md` on start and appends a timestamped entry after each action (see [`progress.md`](#progressmd--shared-progress-file)).
+`worker.md` (in `.opencode/agents/`) defines the `worker` agent that `nina-plugin.ts` triggers for automated safety interrupts, sequence halts, and recovery routines.
 
 ---
 
@@ -190,7 +182,7 @@ It reads `progress.md` on start and appends a timestamped entry after each actio
 
 ---
 
-## `opencode.json` — Sample Configuration
+## `opencode.json` — Opencode v1 Sample Configuration
 
 ```jsonc
 {
@@ -217,7 +209,7 @@ Registers the opencode plugin and the `nina_planner` MCP server so both run toge
 
 ## Environment Variables
 
-### `nina-plugin.ts` (opencode plugin)
+### `nina-plugin.ts` (opencode v1 plugin)
 
 | Variable | Default | Description |
 |---|---|---|
