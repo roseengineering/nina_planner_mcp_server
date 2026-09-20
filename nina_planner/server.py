@@ -348,7 +348,7 @@ async def sequence_load_plan(
     file_path: str,
     frame_type: FrameType = "lights",
 ) -> str:
-    """Loads an acquisition sequence with safety guardrails from an observation-plan JSON file. Select the frame type: lights, darks, bias, dawn_flats, or dusk_flats. This tool only loads the sequence; call sequence_start afterward. Loading stops any currently running standby or acquisition sequence first."""
+    """Loads an acquisition sequence with safety guardrails from an observation-plan JSON file. Select the frame type: lights, darks, bias, dawn_flats, or dusk_flats. This tool only loads the sequence; call sequence_start afterward."""
     with open(file_path, "r", encoding="utf-8") as f:
         data = json.loads(f.read())
     plan = ObservationPlan.model_validate(data)
@@ -367,7 +367,6 @@ async def sequence_load_plan(
         seq = build_sequence_flats(plan, equipment, profile=profile, dusk=True)
     else:
         raise ValueError(f"Unsupported frame type: {frame_type}")
-    await _api_get("/sequence/stop")
     await _api_post("/sequence/load", seq)
     return f"`{frame_type}` sequence loaded."
 
@@ -380,7 +379,6 @@ async def sequence_execute_teardown() -> str:
     """Loads and starts the non-acquisition teardown sequence, safely stowing the telescope (park or home, per mount capability) while NINA's sequence-level safety guardrails remain active. Use for end-of-observation close-down — when you are done observing and want to shut down the scope — or before leaving the observatory unattended. Allow it to complete without interruption. This is separate from sequence_stop, which halts the current sequence but does not stow the scope."""
     equipment = await get_site_equipment_status()
     seq = build_sequence_teardown(equipment)
-    await _api_get("/sequence/stop")
     await _api_post("/sequence/load", seq)
     await _api_get("/sequence/start?skipValidation=true")
     return "Teardown sequence started."
@@ -391,7 +389,6 @@ async def sequence_enter_safety_standby() -> str:
     """Loads a non-acquisition standby sequence that keeps NINA sequence-level safety and stow guardrails active while the observatory is idle. After loading, call sequence_start. Stop it before loading an acquisition or teardown sequence. Use whenever equipment is deployed and no other sequence is running."""
     equipment = await get_site_equipment_status()
     seq = build_sequence_standby(equipment)
-    await _api_get("/sequence/stop")
     await _api_post("/sequence/load", seq)
     await _api_get("/sequence/start?skipValidation=true")
     return "Safety standby sequence started."

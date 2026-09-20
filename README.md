@@ -111,7 +111,7 @@ Use `observation_plan_write_file` with the plan object. This validates the filte
 
 ### 2. Load and run each calibration type, including lights
 
-Each call to `sequence_load_plan` stops any running sequence, builds the appropriate container (lights, darks, flats, or bias), and posts it to N.I.N.A.
+Each call to `sequence_load_plan` builds the appropriate container (lights, darks, flats, or bias), and posts it to N.I.N.A.
 
 **Example order:**
 
