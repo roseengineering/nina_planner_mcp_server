@@ -1,73 +1,55 @@
-import { Plugin } from "@opencode/plugin";
+import type { PluginInput, PluginModule } from "@opencode-ai/plugin";
+declare const process: { env: Record<string, string | undefined> };
 
 const NINA_ENDPOINT = process.env.NINA_ENDPOINT || "localhost:1888";
-const intervalMinutesValue = +(
-  process.env.NINA_INTERVAL_MINUTES ??
-  process.env.INTERVAL_CHECK_MINUTES ??
-  10
-);
-const INTERVAL_CHECK_MINUTES =
-  Number.isFinite(intervalMinutesValue) && intervalMinutesValue > 0
-    ? intervalMinutesValue
-    : 10;
+const INTERVAL_CHECK_MINUTES = +(process.env.INTERVAL_CHECK_MINUTES || 10);
 const WORKER_AGENT = "worker";
 const DEBUG = process.env.DEBUG;
 
-export default Plugin.define({
-  id: "nina",
-  async setup(ctx) {
-    async function workerAgentExists(): Promise<boolean> {
-      try {
-        const agents = await ctx.agent.list();
-        return agents.some(
-          (a) => a.id === WORKER_AGENT || a.name === WORKER_AGENT,
-        );
-      } catch (err) {
-        console.error("nina-plugin: failed to list agents:", err);
-        return false;
-      }
-    }
-
-    async function triggerIntervention(
-      events: string | null = null,
-    ): Promise<void> {
-      if (!(await workerAgentExists())) {
+const plugin: PluginModule = {
+  id: "nina-plug",
+  server: async (ctx: PluginInput) => {
+    async function triggerIntervention(events: string | null = null) {
+      // does agent exist?
+      const { data: agents } = await ctx.client.app.agents();
+      const exists = agents.some((a: any) => a.name === WORKER_AGENT);
+      if (!exists) {
         console.error(`nina-plugin: agent ${WORKER_AGENT} does not exist.`);
-        return;
+        return null;
       }
 
+      // create a brand new session
+      const newSession = await ctx.client.session
+        .create()
+        .catch((err: unknown) => {
+          console.error("nina-plugin: failed to create isolated session:", err);
+          return null;
+        });
+
+      // ensure the session was created successfully
+      if (!newSession?.data?.id) return;
+
+      // target the new session ID, ignoring the user's active console
       const text =
         events == null
           ? "Trigger: Routine interval check. No new N.I.N.A. events. Review observatory status and take action if needed."
           : `Trigger: The latest N.I.N.A. events follow:\n\n\`\`\`json\n${events}\n\`\`\``;
 
-      try {
-        const session = await ctx.session.create({
-          title: "nina-intervention",
-        });
-        if (!session?.id) return;
-
-        await ctx.session.switchAgent({
-          sessionID: session.id,
+      const payload = {
+        path: { id: newSession.data.id },
+        body: {
           agent: WORKER_AGENT,
-        });
-        if (DEBUG)
-          console.error(
-            "nina-plugin: prompting",
-            JSON.stringify({ sessionID: session.id, text }),
-          );
-
-        await ctx.session.prompt({ sessionID: session.id, text });
-
-        // Best-effort cleanup of the throwaway session.
-        try {
-          await ctx.session.delete({ sessionID: session.id });
-        } catch (err) {
-          if (DEBUG) console.error("nina-plugin: session cleanup failed:", err);
-        }
-      } catch (err) {
-        console.error("nina-plugin: intervention failed:", err);
-      }
+          parts: [
+            {
+              type: "text",
+              text,
+            },
+          ],
+        },
+      };
+      if (DEBUG) console.error("prompt:", JSON.stringify(payload, null, 2));
+      await ctx.client.session.prompt(payload);
+      await ctx.client.session.delete({ path: { id: newSession.data.id } });
     }
 
     let eventBatch: string[] = [];
@@ -77,7 +59,7 @@ export default Plugin.define({
       if (eventBatch.length === 0) return;
       const payload = JSON.stringify(eventBatch);
       eventBatch = [];
-      void triggerIntervention(payload);
+      triggerIntervention(payload);
     }
 
     function pushEvent(response: string) {
@@ -105,7 +87,9 @@ export default Plugin.define({
         try {
           if (DEBUG) console.error("nina-plugin: ws onmessage");
           const msg = JSON.parse(event.data as string);
-          if (msg.Response) pushEvent(msg.Response);
+          if (msg.Response) {
+            pushEvent(msg.Response);
+          }
         } catch {}
       };
 
@@ -125,15 +109,19 @@ export default Plugin.define({
     connect();
 
     const intervalId = setInterval(() => {
-      void triggerIntervention();
+      triggerIntervention();
     }, INTERVAL_CHECK_MINUTES * 60_000);
 
-    return () => {
-      closed = true;
-      clearInterval(intervalId);
-      if (debounceTimer) clearTimeout(debounceTimer);
-      if (reconnectTimer) clearTimeout(reconnectTimer);
-      ws?.close();
+    return {
+      dispose: async () => {
+        closed = true;
+        clearInterval(intervalId);
+        if (debounceTimer) clearTimeout(debounceTimer);
+        if (reconnectTimer) clearTimeout(reconnectTimer);
+        ws?.close();
+      },
     };
   },
-});
+};
+
+export default plugin;

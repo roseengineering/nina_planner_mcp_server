@@ -1,12 +1,15 @@
 {
   "$schema": "https://opencode.ai/config.json",
+  "plugin": [
+    "./nina-plugin.ts"
+  ],
   "mcp": {
     "nina-planner": {
       "type": "local",
       "command": [
         "bash", 
         "-c", 
-        "PYTHONPATH=$HOME/share/nina $HOME/.local/share/venvs/nina/bin/python -m nina_planner 2>> /tmp/opencode_nina_planner.log"
+        "python -m nina_planner 2>> /tmp/opencode_nina_planner.log"
       ]
     }
   }
