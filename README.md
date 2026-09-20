@@ -176,6 +176,48 @@ The plugin auto-reconnects on websocket disconnection with a 5-second retry. On 
 
 ---
 
+## `plan.md` — Planning a Night's Session
+
+`plan.md` is the user's **living wishlist** for the night — a markdown file at the project root that you edit at any time (before or during the night). It is deliberately lightweight: entries can be as simple as a target name. The `worker` agent reads it fresh on each trigger to decide which target to image next, so no `observation_plan_write_file` call is needed up front.
+
+### Structure
+
+1. **Metadata** — night date, overall intent (optional).
+2. **Candidate targets** — each with:
+   - name / catalog designation (minimum required — everything else optional)
+   - optional: coordinates, filter + exposure + count (if you want specifics)
+   - optional: reference to an existing plan JSON file, or let the worker generate one
+   - priority (1 = highest, optional)
+   - optional time window / note
+3. **Selection rules** — how the worker picks among candidates:
+   - `min_altitude` floor (default e.g. 30°)
+   - `horizon_offset_degrees` safety buffer (default 2°)
+   - tie-break order (priority, then highest current altitude, then earliest available)
+
+### Example
+
+```markdown
+# Tonight
+
+- M31          "before the moon comes up"
+- Veil Nebula  plan=veil-nebula_..._20260913.json   prio 1
+- M33          "if high targets done"
+
+Rules:
+- min_altitude: 30
+- horizon_offset_degrees: 2
+- tie_break: priority, then altitude
+```
+
+### How the night runs
+
+- The worker evaluates each un-imaged candidate, computes its current altitude (or loads its plan sequence and lets N.I.N.A. report it), and picks the best target: highest priority, then highest current altitude, then earliest available. It never interrupts a running observation — re-selection only happens after a sequence finishes.
+- For the chosen target, the worker loads the referenced plan JSON if given, otherwise generates one via `observation_plan_write_file` (using coords/filter/count from `plan.md`, or sensible defaults), then `sequence_load_plan(frame_type="lights")` and `sequence_start()`.
+- When no candidate is viable (all below the altitude floor, or the night is over), the worker writes `report.md` (overwriting any previous one) with the night's results, stows the scope, and stops. Editing `plan.md` later triggers re-evaluation.
+- You can add/remove/reorder lines at any moment. The worker records completion in `progress.md` instead and leaves `plan.md` untouched, so your editing isn't fought over.
+
+---
+
 ## `progress.md` — Shared Progress File
 
 `progress.md` is a shared observatory progress file in the project directory. Both the active session and the automated `worker` sessions read it on start to restore context before acting, and append a short ISO-8601-timestamped entry after each significant action (status checks, plan writes, sequence loads/starts/stops, errors, and interventions), recording what was done, the observed equipment and safety state, and any decisions. This keeps history shared across sessions.
