@@ -25,21 +25,21 @@
     "check_drift_every_n_exposures": 6,
     "max_drift_arcmin": 1.5
   },
-  "lights": [
+  "light": [
     {
       "filter_name": "LP",
       "exposure_time_seconds": 60.0,
       "total_count": 60
     }
   ],
-  "flats": [
+  "flat": [
     {
       "filter_name": "LP",
       "exposure_time_seconds": 5.0,
       "total_count": 30
     }
   ],
-  "darks": [
+  "dark": [
     {
       "exposure_time_seconds": 60.0,
       "total_count": 20

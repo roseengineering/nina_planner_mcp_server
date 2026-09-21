@@ -758,7 +758,7 @@ def build_sequence_darks(plan, equipment, bias=False):
                         exposure=d[1],
                         image_type="BIAS" if bias else "DARK",
                     )
-                    for d in _round_robin(plan.bias if bias else plan.darks)
+                    for d in _round_robin(plan.bias if bias else plan.dark)
                 ]
             ),
             container_end_park_when_unsafe(equipment),
@@ -842,7 +842,7 @@ def build_sequence_lights(plan, equipment):
                                 dither=plan.guiding.dither_every_n_exposures,
                                 image_type="LIGHT",
                             )
-                            for d in _round_robin(plan.lights, plan.batch_size)
+                            for d in _round_robin(plan.light, plan.batch_size)
                         ]
                         + [stop_guiding()],
                     ),
@@ -894,7 +894,7 @@ def build_sequence_flats(plan, equipment, profile, dusk: bool = False):
                             f.position for f in profile.filters if f.name == d[2]
                         ),
                     )
-                    for d in _round_robin(plan.flats, reverse=dusk)
+                    for d in _round_robin(plan.flat, reverse=dusk)
                 ],
             ),
         ],

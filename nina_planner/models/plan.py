@@ -98,9 +98,9 @@ class ObservationPlan(BaseModel):
     guiding: GuidingConfig = Field(default_factory=GuidingConfig)
 
     # exposures
-    lights: list[LightExposurePlan] = Field(min_length=1)
-    flats: list[FlatExposurePlan] = Field(min_length=1)
-    darks: list[DarkExposurePlan] = Field(min_length=1)
+    light: list[LightExposurePlan] = Field(min_length=1)
+    flat: list[FlatExposurePlan] = Field(min_length=1)
+    dark: list[DarkExposurePlan] = Field(min_length=1)
     bias: list[BiasExposurePlan] = Field(min_length=1)
 
     def effective_plan_id(self) -> str:

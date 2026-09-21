@@ -18,12 +18,13 @@
 | `get_logs(since)` | Get latest N.I.N.A. application log entries from `since` seconds. |
 | `get_imaging_metadata(date?, image_type="light")` | Return image metadata for a date and image type (light, dark, bias, flat — case-insensitive). Defaults to `light`; pass another type to pull that folder's `ImageMetaData.csv`. When an `AcquisitionDetails.csv` sits next to it, its fields (e.g. `TargetName`, `FocalLength`) are injected into each row. |
 | `observation_plan_write_file(plan)` | Write out an observation plan JSON file. |
+| `observation_plan_get_progress(file_path, max_hfr?, min_detected_stars?)` | Report per-frame-type progress: total, acquired (attributed to this plan), and remaining for each exposure group. Quality thresholds exclude light frames that fail them. |
 
 ### Sequence Management
 
 | Tool | Purpose |
 |---|---|
-| `sequence_load_plan(file_path, frame_type)` | Load a plan file as a sequence (light, dark, bias, dawn_flat, or dusk_flat). |
+| `sequence_load_plan(file_path, frame_type, mode="remaining", max_hfr?, min_detected_stars?)` | Load a plan file as a sequence (light, dark, bias, dawn_flat, or dusk_flat). Default `remaining` mode acquires only frames not yet attributed to the plan; `mode="full"` acquires the whole plan. Quality thresholds exclude light frames that fail them from the acquired count. Reports "plan complete" and loads nothing when nothing remains. |
 | `sequence_start()` | Start or resume a stopped sequence. |
 | `sequence_stop()` | Stop any running sequence. |
 | `sequence_enter_safety_standby()` | Start a non-imaging sequence with safety guardrails. |
@@ -68,13 +69,13 @@ A plan is a JSON document that describes one complete imaging session. It encode
     "max_drift_arcmin": 1.5
   },
 
-  "lights": [
+  "light": [
     { "filter_name": "LP", "exposure_time_seconds": 60.0, "total_count": 60 }
   ],
-  "flats": [
+  "flat": [
     { "filter_name": "LP", "exposure_time_seconds": 5.0, "total_count": 30 }
   ],
-  "darks": [
+  "dark": [
     { "exposure_time_seconds": 60.0, "total_count": 20 }
   ],
   "bias": [
@@ -98,9 +99,9 @@ A plan is a JSON document that describes one complete imaging session. It encode
 | `constraints` | no | Minimum altitude and horizon safety buffer |
 | `autofocus` | no | Reference filter, HFR and temperature thresholds, interval |
 | `guiding` | no | Dither and drift-recenter settings |
-| `lights` | **yes** | Light exposure groups (filter + time + count) |
-| `flats` | **yes** | Flat exposure groups (filter + time + count) |
-| `darks` | **yes** | Dark exposure groups (time + count) — match light exposure times |
+| `light` | **yes** | Light exposure groups (filter + time + count) |
+| `flat` | **yes** | Flat exposure groups (filter + time + count) |
+| `dark` | **yes** | Dark exposure groups (time + count) — match light exposure times |
 | `bias` | **yes** | Bias frame count (single exposure, no filter needed) |
 
 ---
@@ -118,12 +119,12 @@ Each call to `sequence_load_plan` builds the appropriate container (lights, dark
 **Example order:**
 
 1. **Load lights** (main imaging overnight):
-   `sequence_load_plan(file_path="<plan>.json", frame_type="lights")`
+   `sequence_load_plan(file_path="<plan>.json", frame_type="light")`
    `sequence_start()`
    _(runs all night; autofocus and guiding triggers are built in)_
 
 2. **Load darks** (done during the day or while flats are not possible):
-   `sequence_load_plan(file_path="<plan>.json", frame_type="darks")`
+   `sequence_load_plan(file_path="<plan>.json", frame_type="dark")`
    `sequence_start()`
    _(wait for completion)_
 
@@ -133,12 +134,12 @@ Each call to `sequence_load_plan` builds the appropriate container (lights, dark
    _(wait for completion)_
 
 4. **Load dawn flats** (morning twilight):
-   `sequence_load_plan(file_path="<plan>.json", frame_type="dawn_flats")`
+   `sequence_load_plan(file_path="<plan>.json", frame_type="dawn_flat")`
    `sequence_start()`
    _(wait for completion)_
 
 5. **Load dusk flats** (as evening twilight begins):
-   `sequence_load_plan(file_path="<plan>.json", frame_type="dusk_flats")`
+   `sequence_load_plan(file_path="<plan>.json", frame_type="dusk_flat")`
    `sequence_start()`
    _(wait for completion)_
 
@@ -154,6 +155,8 @@ At session end:
 
 - **Filter validation:** `observation_plan_write_file` and `sequence_load_plan` check that every filter name in the plan (lights, flats, autofocus reference) matches a filter in your active N.I.N.A. profile. Unknown filters will be rejected with an error listing what is available.
 - **Frame attribution:** each light sequence names its target `<target> [<plan_id>]`. This appears as `TargetName` in `AcquisitionDetails.csv` and as `OBJECT` in FITS headers, so every acquired light frame can be attributed to the plan that requested it.
+- **Resuming a plan:** call `observation_plan_get_progress` to see what a plan has already acquired, then `sequence_load_plan(..., mode="remaining")` to acquire only the deficit. Lights are attributed by the embedded `plan_id` (or, for frames taken before this feature existed, by target name + filter + exposure). Flats, darks, and bias are matched by image type/filter/exposure and can be shared across plans. Pass `mode="full"` to deliberately re-acquire.
+- **Quality thresholds:** `max_hfr` and `min_detected_stars` (optional) exclude light frames that fail the thresholds from the acquired count. Frames missing the quality fields are excluded whenever a threshold is set (fail-closed). Thresholds are applied only to light frames — calibration frames have no star quality.
 - **The plan file is persistent:** — written to the current working directory. You can inspect, edit, and reuse it across sessions.
 - **Experimental:** This code is highly experimental.  At the moment I am testing it at my observatory.  However I don't have a camera cooler.  So those operations are untested.  The agent generates an advanced sequence that it loads into N.I.N.A.  This sequence is still in alpha.  
 
@@ -215,7 +218,7 @@ Rules:
 ### How the night runs
 
 - The worker evaluates each un-imaged candidate, computes its current altitude (or loads its plan sequence and lets N.I.N.A. report it), and picks the best target: highest priority, then highest current altitude, then earliest available. It never interrupts a running observation — re-selection only happens after a sequence finishes.
-- For the chosen target, the worker loads the referenced plan JSON if given, otherwise generates one via `observation_plan_write_file` (using coords/filter/count from `plan.md`, or sensible defaults), then `sequence_load_plan(frame_type="lights")` and `sequence_start()`.
+- For the chosen target, the worker loads the referenced plan JSON if given, otherwise generates one via `observation_plan_write_file` (using coords/filter/count from `plan.md`, or sensible defaults), then `sequence_load_plan(frame_type="light")` and `sequence_start()`.
 - When no candidate is viable (all below the altitude floor, or the night is over), the worker writes `report.md` (overwriting any previous one) with the night's results, stows the scope, and stops. Editing `plan.md` later triggers re-evaluation.
 - You can add/remove/reorder lines at any moment. The worker records completion in `progress.md` instead and leaves `plan.md` untouched, so your editing isn't fought over.
 

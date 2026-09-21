@@ -22,6 +22,7 @@ from .models.profile import (
     SiteLocationInfo,
 )
 from .nina_utils import ascom_float, ascom_int
+from .progress import plan_progress, plan_with_remaining
 from .sequence import (
     build_sequence_darks,
     build_sequence_flats,
@@ -80,10 +81,10 @@ async def _api_post(path: str, body: Any) -> dict[str, Any]:
 async def _validate_filters(plan: ObservationPlan, profile: ObservatoryProfile):
     profile_filter_names = {f.name for f in profile.filters}
     plan_filter_names: set[str] = set()
-    for light in plan.lights:
+    for light in plan.light:
         if light.filter_name:
             plan_filter_names.add(light.filter_name)
-    for flat in plan.flats:
+    for flat in plan.flat:
         if flat.filter_name:
             plan_filter_names.add(flat.filter_name)
     if plan.autofocus.reference_filter_name:
@@ -112,7 +113,6 @@ def _convert_to_met(data, since, now, name):
         d = _convert_keys(d)
         d[timestamp] = ts
         res.append(d)
-    # sort on datetimes
     data = sorted(res, key=lambda d: d[timestamp])
     res = []
     for d in data:
@@ -137,6 +137,25 @@ async def _resolve_imaging_root() -> Path:
         "NINA_IMAGING_DIR (or NINA_DRIVE_MOUNT) must be set on Linux and WSL to "
         "resolve the imaging directory for get_imaging_metadata."
     )
+
+
+async def _load_plan(file_path: str) -> ObservationPlan:
+    path = Path(file_path)
+    if not path.is_absolute():
+        path = PROJECT_DIR / path
+    async with await anyio.open_file(path, "r", encoding="utf-8") as f:
+        data = json.loads(await f.read())
+    return ObservationPlan.model_validate(data)
+
+
+async def _read_metadata(image_type: str | None = None) -> list[dict[str, Any]]:
+    root = await _resolve_imaging_root()
+    if image_type is not None:
+        return read_imaging_csv(date=None, root=root, image_type=image_type)
+    rows: list[dict[str, Any]] = []
+    for t in ("light", "dark", "bias", "flat"):
+        rows += read_imaging_csv(date=None, root=root, image_type=t)
+    return rows
 
 
 @mcp.tool()
@@ -381,20 +400,67 @@ async def observation_plan_write_file(plan: ObservationPlan) -> str:
 
 
 @mcp.tool()
+async def observation_plan_get_progress(
+    file_path: str,
+    max_hfr: float | None = None,
+    min_detected_stars: int | None = None,
+) -> dict[str, Any]:
+    """Returns per-frame-type acquisition progress for an observation-plan JSON file: for each exposure group, the total_count from the plan, the acquired_count attributed to this plan from the imaging metadata (ImageMetaData.csv + AcquisitionDetails.csv), and the remaining_count. Lights are attributed via the plan_id embedded in the sequence target name (falling back to the target name for legacy frames); flats/darks/bias are matched by image type, filter, and exposure. Pass max_hfr and/or min_detected_stars to exclude light frames that fail quality thresholds (frames missing the quality fields are excluded when a threshold is set). Use this before sequence_load_plan to decide what still needs acquiring."""
+    plan = await _load_plan(file_path)
+    rows = await _read_metadata()
+    return {
+        "plan_id": plan.effective_plan_id(),
+        "target": plan.target,
+        "frame_types": plan_progress(
+            plan, rows, max_hfr=max_hfr, min_detected_stars=min_detected_stars
+        ),
+    }
+
+
+@mcp.tool()
 async def sequence_load_plan(
     file_path: str,
     frame_type: FrameType = "light",
+    mode: str = "remaining",
+    max_hfr: float | None = None,
+    min_detected_stars: int | None = None,
 ) -> str:
-    """Loads an acquisition sequence with safety guardrails from an observation-plan JSON file. Select the frame type: light, dark, bias, dawn_flat, or dusk_flat. This tool only loads the sequence; call sequence_start afterward."""
-    path = Path(file_path)
-    if not path.is_absolute():
-        path = PROJECT_DIR / path
-    async with await anyio.open_file(path, "r", encoding="utf-8") as f:
-        data = json.loads(await f.read())
-    plan = ObservationPlan.model_validate(data)
+    """Loads an acquisition sequence with safety guardrails from an observation-plan JSON file. Select the frame type: light, dark, bias, dawn_flat, or dusk_flat. In the default `remaining` mode the sequence only acquires frames still needed (total minus frames already attributed to this plan in the imaging metadata); if nothing remains it reports the plan as complete and loads nothing. max_hfr and/or min_detected_stars exclude light frames failing quality thresholds from the acquired count. Pass `mode="full"` to acquire the entire plan again. This tool only loads the sequence; call sequence_start afterward."""
+    plan = await _load_plan(file_path)
     profile = await get_site_profile()
     await _validate_filters(plan, profile)
     equipment = await _get_site_equipment_status(profile)
+
+    group_key = {
+        "light": "light",
+        "dark": "dark",
+        "bias": "bias",
+        "dawn_flat": "flat",
+        "dusk_flat": "flat",
+    }[frame_type]
+
+    if mode == "remaining":
+        try:
+            rows = await _read_metadata(group_key)
+        except RuntimeError as e:
+            raise ValueError(
+                f"Cannot compute remaining frames: {e}. Pass mode='full' to "
+                "load the whole plan regardless."
+            ) from e
+        progress = plan_progress(
+            plan, rows, max_hfr=max_hfr, min_detected_stars=min_detected_stars
+        )
+        items = progress[group_key]
+        if all(item["remaining_count"] == 0 for item in items):
+            total = sum(item["total_count"] for item in items)
+            return (
+                f"`{frame_type}` plan is complete — {total} of {total} frames "
+                "already acquired; nothing to load."
+            )
+        plan = plan_with_remaining(plan, progress)
+    elif mode != "full":
+        raise ValueError(f"Unsupported mode: {mode} (use 'remaining' or 'full')")
+
     if frame_type == "light":
         seq = build_sequence_lights(plan, equipment)
     elif frame_type == "dark":
