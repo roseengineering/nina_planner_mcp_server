@@ -16,7 +16,7 @@
 | `get_site_profile()` | Get observatory location (lat/lon/elevation), optics details, filter list, plate solver type, and image save path. |
 | `get_events(since)` | Get latest observatory event log entries from `since` seconds. |
 | `get_logs(since)` | Get latest N.I.N.A. application log entries from `since` seconds. |
-| `get_imaging_metadata(date?, image_type="light")` | Return image metadata for a date and image type (light, dark, bias, flat — case-insensitive). Defaults to `light`; pass another type to pull that folder's `ImageMetaData.csv`. When an `AcquisitionDetails.csv` sits next to it, its fields (e.g. `TargetName`, `FocalLength`) are injected into each row. |
+| `get_imaging_metadata(date?, image_type="light")` | Return image metadata for a date and image type (light, dark, bias, flat — case-insensitive). Defaults to `light`; pass another type to pull that folder's `ImageMetaData.csv`. When an `AcquisitionDetails.csv` sits next to it, its fields (e.g. `TargetName`, `FocalLength`) are injected into each row. Rows whose recorded image file has been deleted/moved are omitted. |
 | `observation_plan_write_file(plan)` | Write out an observation plan JSON file. |
 | `observation_plan_get_progress(file_path, max_hfr?, min_detected_stars?)` | Report per-frame-type progress: total, acquired (attributed to this plan), and remaining for each exposure group. Quality thresholds exclude light frames that fail them. |
 
@@ -157,6 +157,7 @@ At session end:
 - **Frame attribution:** each light sequence names its target `<target> [<plan_id>]`. This appears as `TargetName` in `AcquisitionDetails.csv` and as `OBJECT` in FITS headers, so every acquired light frame can be attributed to the plan that requested it.
 - **Resuming a plan:** call `observation_plan_get_progress` to see what a plan has already acquired, then `sequence_load_plan(..., mode="remaining")` to acquire only the deficit. Lights are attributed by the embedded `plan_id` (or, for frames taken before this feature existed, by target name + filter + exposure). Flats, darks, and bias are matched by image type/filter/exposure and can be shared across plans. Pass `mode="full"` to deliberately re-acquire.
 - **Quality thresholds:** `max_hfr` and `min_detected_stars` (optional) exclude light frames that fail the thresholds from the acquired count. Frames missing the quality fields are excluded whenever a threshold is set (fail-closed). Thresholds are applied only to light frames — calibration frames have no star quality.
+- **Manually failing a frame:** delete (or move) the image file on disk — e.g. a bad `.fits`/`.tif`. The metadata row stays in the CSV (the plugin only appends), but it is omitted when the metadata is read, so progress no longer counts that frame as acquired and the next `mode="remaining"` load re-acquires it.
 - **The plan file is persistent:** — written to the current working directory. You can inspect, edit, and reuse it across sessions.
 - **Experimental:** This code is highly experimental.  At the moment I am testing it at my observatory.  However I don't have a camera cooler.  So those operations are untested.  The agent generates an advanced sequence that it loads into N.I.N.A.  This sequence is still in alpha.  
 

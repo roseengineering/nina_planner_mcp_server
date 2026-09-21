@@ -84,6 +84,8 @@ def read_imaging_csv(
                 row_image_type = (row.get("ImageType") or "").upper()
                 if row_image_type and row_image_type != frame:
                     continue
+                if not _image_file_exists(frame_dir, row.get("FilePath")):
+                    continue
                 rows.append(
                     {
                         "Date": folder.name,
@@ -93,3 +95,10 @@ def read_imaging_csv(
                     }
                 )
     return rows
+
+
+def _image_file_exists(frame_dir: Path, file_path: str | None) -> bool:
+    if not file_path:
+        return True
+    name = PureWindowsPath(file_path).name
+    return bool(name) and (frame_dir / name).is_file()
