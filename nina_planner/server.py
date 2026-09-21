@@ -11,6 +11,7 @@ import anyio
 import httpx
 from mcp.server.fastmcp import FastMCP
 
+from .imaging import imaging_root, read_imaging_csv, windows_to_local
 from .models.observatory import ObservatoryEquipment
 from .models.plan import ObservationPlan
 from .models.profile import (
@@ -39,7 +40,7 @@ NINA_API_URL = f"http://{NINA_ENDPOINT}/v2/api"
 
 PROJECT_DIR = Path(__file__).resolve().parent.parent
 
-FrameType = Literal["lights", "darks", "bias", "dawn_flats", "dusk_flats"]
+FrameType = Literal["light", "dark", "bias", "dawn_flat", "dusk_flat"]
 
 
 def _to_snake(name: str) -> str:
@@ -123,6 +124,22 @@ def _convert_to_met(data, since, now, name):
     return res
 
 
+async def _resolve_imaging_root() -> Path:
+    if os.environ.get("NINA_IMAGING_DIR"):
+        return imaging_root()
+    profile = await get_site_profile()
+    drive_mount = os.environ.get("NINA_DRIVE_MOUNT")
+    if drive_mount:
+        return windows_to_local(profile.image_save_path, drive_mount)
+    if sys.platform == "win32":
+        return Path(profile.image_save_path)
+    raise RuntimeError(
+        "NINA_IMAGING_DIR (or NINA_DRIVE_MOUNT) must be set on Linux and WSL to "
+        "resolve the imaging directory for get_imaging_metadata."
+    )
+
+
+@mcp.tool()
 async def _get_site_equipment_status(profile) -> ObservatoryEquipment:
     from .models.camera import CameraDevice
     from .models.dome import DomeDevice
@@ -327,6 +344,17 @@ async def get_logs(since: int = 300) -> Any:
 
 
 @mcp.tool()
+async def get_imaging_metadata(
+    date: str | None = None, image_type: str = "light"
+) -> list[dict[str, Any]]:
+    """Returns imaging metadata parsed from the ImageMetaData.csv files in the frame folders (LIGHT, DARK, BIAS, FLAT, etc.) of the mounted N.I.N.A imaging directory. Each row is tagged with Date, FrameType, and Source. Defaults to lights frames for star-quality checks; pass another image type (light, dark, bias, flat — case-insensitive). Optionally filter to a single YYYY-MM-DD date."""
+    data = read_imaging_csv(
+        date=date, root=await _resolve_imaging_root(), image_type=image_type
+    )
+    print("Metadata:", json.dumps(data, indent=2), file=sys.stderr)
+    return data
+
+
 async def sequence_get_state() -> Any:
     """Returns the loaded sequence structure and the current status of its containers, instructions, conditions, and triggers. Use it to determine whether a sequence is loaded, running, completed, failed, or waiting. This tool is read-only and takes no action."""
     return await _api_get("/sequence/json")

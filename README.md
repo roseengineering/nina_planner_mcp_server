@@ -16,6 +16,7 @@
 | `get_site_profile()` | Get observatory location (lat/lon/elevation), optics details, filter list, plate solver type, and image save path. |
 | `get_events(since)` | Get latest observatory event log entries from `since` seconds. |
 | `get_logs(since)` | Get latest N.I.N.A. application log entries from `since` seconds. |
+| `get_imaging_metadata(date?, image_type="light")` | Return image metadata for a date and image type (light, dark, bias, flat — case-insensitive). Defaults to `light`; pass another type to pull that folder's `ImageMetaData.csv`. |
 | `observation_plan_write_file(plan)` | Write out an observation plan JSON file. |
 
 ### Sequence Management
@@ -263,7 +264,8 @@ Registers the opencode plugin and the `nina_planner` MCP server so both run toge
 | Variable | Default | Description |
 |---|---|---|
 | `NINA_ENDPOINT` | `localhost:1888` | N.I.N.A. host and port for the REST API (`host:port`) |
+| `NINA_IMAGING_DIR` | — | Filesystem path to the mounted N.I.N.A. imaging directory (e.g. `/mnt/Users/george/Documents/N.I.N.A`). If set, overrides the profile `image_save_path` for `get_imaging_metadata`. |
+| `NINA_DRIVE_MOUNT` | — | Local mount root for the drive letter in the profile's `image_save_path`, used by `get_imaging_metadata` when `NINA_IMAGING_DIR` is unset (e.g. `/mnt` on a Mac with C: mounted there, `/mnt/c` in WSL). |
 | `NINA_FLATS_ALTITUDE` | `80` | Altitude in degrees for flat panel calibration frames |
 | `NINA_FLATS_AZIMUTH_DAWN` | `270` | Azimuth in degrees pointing west for dawn flats |
 | `NINA_FLATS_AZIMUTH_DUSK` | `90` | Azimuth in degrees pointing east for dusk flats |
-
