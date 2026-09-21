@@ -772,7 +772,7 @@ def build_sequence_lights(plan, equipment):
         instructions=[
             container_deepsky(
                 name="Deep Sky Target Sequence",
-                target=plan.target,
+                target=f"{plan.target} [{plan.effective_plan_id()}]",
                 ra=plan.ra_hours,
                 dec=plan.dec_deg,
                 instructions=[

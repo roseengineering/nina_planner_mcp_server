@@ -1,3 +1,6 @@
+import hashlib
+import json
+
 from pydantic import BaseModel, Field
 
 
@@ -69,6 +72,11 @@ class ObservationPlan(BaseModel):
     intent: str = Field(
         default="", description="2 to 3 words describing the primary observation goal"
     )
+    plan_id: str = Field(
+        default="",
+        description="stable identifier for this acquisition goal; stamped on write, "
+        "derived from plan content if absent",
+    )
     description: str = Field(
         default="",
         description="explanation of the observation plan, including rationale, exposure goals, equipment, or sky constraints",
@@ -94,3 +102,10 @@ class ObservationPlan(BaseModel):
     flats: list[FlatExposurePlan] = Field(min_length=1)
     darks: list[DarkExposurePlan] = Field(min_length=1)
     bias: list[BiasExposurePlan] = Field(min_length=1)
+
+    def effective_plan_id(self) -> str:
+        if self.plan_id:
+            return self.plan_id
+        data = self.model_dump(exclude={"plan_id"})
+        canonical = json.dumps(data, sort_keys=True, separators=(",", ":"))
+        return "plan-" + hashlib.sha1(canonical.encode()).hexdigest()[:12]

@@ -369,6 +369,8 @@ async def observation_plan_write_file(plan: ObservationPlan) -> str:
     """Validates and writes an observation plan to a JSON file for later use by sequence_load_plan. The plan defines target coordinates, acquisition intent, light and calibration frames, batching, cooling, autofocus, guiding, and observing constraints. This tool only creates the plan file; it does not load or start a sequence."""
     profile = await get_site_profile()
     await _validate_filters(plan, profile)
+    if not plan.plan_id:
+        plan = plan.model_copy(update={"plan_id": plan.effective_plan_id()})
     timestamp = datetime.now(tz=UTC).astimezone().strftime("%Y%m%dT%H%M%S")
     filename = f"{plan.target.lower()}_{plan.intent.lower()}_{timestamp}.json"
     filename = filename.replace(" ", "-")

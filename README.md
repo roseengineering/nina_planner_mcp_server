@@ -89,6 +89,7 @@ A plan is a JSON document that describes one complete imaging session. It encode
 |---|---|---|
 | `target` | no | Catalog designation, e.g. "M31", "NGC 7000" |
 | `intent` | no | 2-3 words describing the goal |
+| `plan_id` | no | Stable identifier stamped on write. Used for frame attribution; when absent, a deterministic hash of plan content is used. |
 | `description` | no | explanation of the observation plan, including rationale, exposure goals, equipment, or sky constraints |
 | `ra_hours` | **yes** | J2000 right ascension in hours `[0, 24)` |
 | `dec_deg` | **yes** | J2000 declination in degrees `[-90, +90]` |
@@ -152,6 +153,7 @@ At session end:
 ## Notes
 
 - **Filter validation:** `observation_plan_write_file` and `sequence_load_plan` check that every filter name in the plan (lights, flats, autofocus reference) matches a filter in your active N.I.N.A. profile. Unknown filters will be rejected with an error listing what is available.
+- **Frame attribution:** each light sequence names its target `<target> [<plan_id>]`. This appears as `TargetName` in `AcquisitionDetails.csv` and as `OBJECT` in FITS headers, so every acquired light frame can be attributed to the plan that requested it.
 - **The plan file is persistent:** — written to the current working directory. You can inspect, edit, and reuse it across sessions.
 - **Experimental:** This code is highly experimental.  At the moment I am testing it at my observatory.  However I don't have a camera cooler.  So those operations are untested.  The agent generates an advanced sequence that it loads into N.I.N.A.  This sequence is still in alpha.  
 
