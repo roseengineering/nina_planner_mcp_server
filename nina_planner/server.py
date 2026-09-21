@@ -2,9 +2,12 @@ import json
 import os
 import re
 import sys
-from datetime import datetime
+from collections.abc import Set as AbstractSet
+from datetime import UTC, datetime
+from pathlib import Path
 from typing import Any, Literal
 
+import anyio
 import httpx
 from mcp.server.fastmcp import FastMCP
 
@@ -34,6 +37,8 @@ mcp = FastMCP(
 NINA_ENDPOINT = os.environ.get("NINA_ENDPOINT", "localhost:1888")
 NINA_API_URL = f"http://{NINA_ENDPOINT}/v2/api"
 
+PROJECT_DIR = Path(__file__).resolve().parent.parent
+
 FrameType = Literal["lights", "darks", "bias", "dawn_flats", "dusk_flats"]
 
 
@@ -50,7 +55,7 @@ def _convert_keys(d: Any) -> Any:
     return d
 
 
-async def _api_get(path: str) -> dict[str, Any]:
+async def _api_get(path: str) -> Any:
     async with httpx.AsyncClient(base_url=NINA_API_URL, timeout=10.0) as client:
         resp = await client.get(path)
         resp.raise_for_status()
@@ -259,7 +264,7 @@ async def get_site_profile() -> ObservatoryProfile:
     ]
 
     def _exists(
-        section: dict, field: str, skip: set = frozenset({"No_Device"})
+        section: dict, field: str, skip: AbstractSet[str] = frozenset({"No_Device"})
     ) -> bool:
         value = section.get(field)
         return value is not None and value not in skip and value != ""
@@ -335,12 +340,13 @@ async def observation_plan_write_file(plan: ObservationPlan) -> str:
     """Validates and writes an observation plan to a JSON file for later use by sequence_load_plan. The plan defines target coordinates, acquisition intent, light and calibration frames, batching, cooling, autofocus, guiding, and observing constraints. This tool only creates the plan file; it does not load or start a sequence."""
     profile = await get_site_profile()
     await _validate_filters(plan, profile)
-    timestamp = datetime.now(tz=datetime.UTC).astimezone().strftime("%Y%m%dT%H%M%S")
+    timestamp = datetime.now(tz=UTC).astimezone().strftime("%Y%m%dT%H%M%S")
     filename = f"{plan.target.lower()}_{plan.intent.lower()}_{timestamp}.json"
     filename = filename.replace(" ", "-")
-    with open(filename, "w", encoding="utf-8") as f:
-        f.write(plan.model_dump_json(indent=2))
-    return f"Plan successfully written to {filename}"
+    path = PROJECT_DIR / filename
+    async with await anyio.open_file(path, "w", encoding="utf-8") as f:
+        await f.write(plan.model_dump_json(indent=2))
+    return f"Plan successfully written to {path}"
 
 
 @mcp.tool()
@@ -349,8 +355,11 @@ async def sequence_load_plan(
     frame_type: FrameType = "lights",
 ) -> str:
     """Loads an acquisition sequence with safety guardrails from an observation-plan JSON file. Select the frame type: lights, darks, bias, dawn_flats, or dusk_flats. This tool only loads the sequence; call sequence_start afterward."""
-    with open(file_path, "r", encoding="utf-8") as f:
-        data = json.loads(f.read())
+    path = Path(file_path)
+    if not path.is_absolute():
+        path = PROJECT_DIR / path
+    async with await anyio.open_file(path, "r", encoding="utf-8") as f:
+        data = json.loads(await f.read())
     plan = ObservationPlan.model_validate(data)
     profile = await get_site_profile()
     await _validate_filters(plan, profile)
