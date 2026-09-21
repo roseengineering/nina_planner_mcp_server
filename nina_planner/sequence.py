@@ -5,6 +5,28 @@ NINA_FLATS_AZIMUTH_DAWN = float(os.environ.get("NINA_FLATS_AZIMUTH_DAWN", "270")
 NINA_FLATS_AZIMUTH_DUSK = float(os.environ.get("NINA_FLATS_AZIMUTH_DUSK", "90"))
 
 
+def _fix_provider(data):
+    store = {}
+
+    def fn(data):
+        for k, d in data.items():
+            if isinstance(d, dict):
+                if k == "SelectedProvider":
+                    ptype = d["$type"]
+                    if ptype in store:
+                        data[k] = {"$ref": store[ptype]}
+                    else:
+                        store[ptype] = d["$id"]
+                else:
+                    fn(d)
+            elif isinstance(d, list):
+                for item in d:
+                    fn(item)
+
+    fn(data)
+    return data
+
+
 def _add_refs(data):
     ident = 0
 
@@ -139,11 +161,13 @@ def _container_base(
 def container_root(instructions=None):
     if instructions is None:
         instructions = []
-    return _add_refs(
-        _container_base(
-            "NINA.Sequencer.Container.SequenceRootContainer, NINA.Sequencer",
-            name="Root Sequence",
-            instructions=instructions,
+    return _fix_provider(
+        _add_refs(
+            _container_base(
+                "NINA.Sequencer.Container.SequenceRootContainer, NINA.Sequencer",
+                name="Root Sequence",
+                instructions=instructions,
+            )
         )
     )
 
