@@ -44,7 +44,27 @@ def _date_folders(root: Path, date: str | None) -> list[Path]:
     return folders
 
 
-def read_imaging_csv(date: str, root: Path, image_type: str) -> list[dict[str, Any]]:
+def _merge_enrich(row: dict[str, Any], acquisition: dict[str, Any]) -> dict[str, Any]:
+    enriched = dict(row)
+    for key, value in acquisition.items():
+        if key not in enriched or not (enriched[key] or "").strip():
+            enriched[key] = value
+    return enriched
+
+
+def _read_acquisition_details(session_dir: Path) -> dict[str, Any]:
+    path = session_dir / "AcquisitionDetails.csv"
+    if not path.is_file():
+        return {}
+    rows = _read_csv(path)
+    if not rows:
+        return {}
+    return rows[0]
+
+
+def read_imaging_csv(
+    date: str | None, root: Path, image_type: str
+) -> list[dict[str, Any]]:
     root = root or imaging_root()
     rows: list[dict[str, Any]] = []
     for folder in _date_folders(root, date):
@@ -59,6 +79,7 @@ def read_imaging_csv(date: str, root: Path, image_type: str) -> list[dict[str, A
             path = frame_dir / "ImageMetaData.csv"
             if not path.is_file():
                 continue
+            acquisition = _read_acquisition_details(frame_dir)
             for row in _read_csv(path):
                 row_image_type = (row.get("ImageType") or "").upper()
                 if row_image_type and row_image_type != frame:
@@ -68,7 +89,7 @@ def read_imaging_csv(date: str, root: Path, image_type: str) -> list[dict[str, A
                         "Date": folder.name,
                         "FrameType": frame,
                         "Source": "image_metadata",
-                        **row,
+                        **_merge_enrich(row, acquisition),
                     }
                 )
     return rows

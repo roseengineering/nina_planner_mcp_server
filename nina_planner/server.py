@@ -347,7 +347,7 @@ async def get_logs(since: int = 300) -> Any:
 async def get_imaging_metadata(
     date: str | None = None, image_type: str = "light"
 ) -> list[dict[str, Any]]:
-    """Returns imaging metadata parsed from the ImageMetaData.csv files in the frame folders (LIGHT, DARK, BIAS, FLAT, etc.) of the mounted N.I.N.A imaging directory. Each row is tagged with Date, FrameType, and Source. Defaults to lights frames for star-quality checks; pass another image type (light, dark, bias, flat — case-insensitive). Optionally filter to a single YYYY-MM-DD date."""
+    """Returns imaging metadata parsed from the ImageMetaData.csv files in the frame folders (LIGHT, DARK, BIAS, FLAT, etc.) of the mounted N.I.N.A imaging directory. Each row is tagged with Date, FrameType, and Source. When an AcquisitionDetails.csv is present in the same session directory, its fields (e.g. TargetName, FocalLength) are injected into each image row unless the image row already has a value for that field. Defaults to lights frames for star-quality checks; pass another image type (light, dark, bias, flat — case-insensitive). Optionally filter to a single YYYY-MM-DD date."""
     data = read_imaging_csv(
         date=date, root=await _resolve_imaging_root(), image_type=image_type
     )
@@ -355,6 +355,7 @@ async def get_imaging_metadata(
     return data
 
 
+@mcp.tool()
 async def sequence_get_state() -> Any:
     """Returns the loaded sequence structure and the current status of its containers, instructions, conditions, and triggers. Use it to determine whether a sequence is loaded, running, completed, failed, or waiting. This tool is read-only and takes no action."""
     return await _api_get("/sequence/json")
@@ -380,9 +381,9 @@ async def observation_plan_write_file(plan: ObservationPlan) -> str:
 @mcp.tool()
 async def sequence_load_plan(
     file_path: str,
-    frame_type: FrameType = "lights",
+    frame_type: FrameType = "light",
 ) -> str:
-    """Loads an acquisition sequence with safety guardrails from an observation-plan JSON file. Select the frame type: lights, darks, bias, dawn_flats, or dusk_flats. This tool only loads the sequence; call sequence_start afterward."""
+    """Loads an acquisition sequence with safety guardrails from an observation-plan JSON file. Select the frame type: light, dark, bias, dawn_flat, or dusk_flat. This tool only loads the sequence; call sequence_start afterward."""
     path = Path(file_path)
     if not path.is_absolute():
         path = PROJECT_DIR / path
@@ -392,15 +393,15 @@ async def sequence_load_plan(
     profile = await get_site_profile()
     await _validate_filters(plan, profile)
     equipment = await _get_site_equipment_status(profile)
-    if frame_type == "lights":
+    if frame_type == "light":
         seq = build_sequence_lights(plan, equipment)
-    elif frame_type == "darks":
+    elif frame_type == "dark":
         seq = build_sequence_darks(plan, equipment)
     elif frame_type == "bias":
         seq = build_sequence_darks(plan, equipment, bias=True)
-    elif frame_type == "dawn_flats":
+    elif frame_type == "dawn_flat":
         seq = build_sequence_flats(plan, equipment, profile=profile)
-    elif frame_type == "dusk_flats":
+    elif frame_type == "dusk_flat":
         seq = build_sequence_flats(plan, equipment, profile=profile, dusk=True)
     else:
         raise ValueError(f"Unsupported frame type: {frame_type}")

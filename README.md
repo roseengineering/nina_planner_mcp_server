@@ -16,14 +16,14 @@
 | `get_site_profile()` | Get observatory location (lat/lon/elevation), optics details, filter list, plate solver type, and image save path. |
 | `get_events(since)` | Get latest observatory event log entries from `since` seconds. |
 | `get_logs(since)` | Get latest N.I.N.A. application log entries from `since` seconds. |
-| `get_imaging_metadata(date?, image_type="light")` | Return image metadata for a date and image type (light, dark, bias, flat — case-insensitive). Defaults to `light`; pass another type to pull that folder's `ImageMetaData.csv`. |
+| `get_imaging_metadata(date?, image_type="light")` | Return image metadata for a date and image type (light, dark, bias, flat — case-insensitive). Defaults to `light`; pass another type to pull that folder's `ImageMetaData.csv`. When an `AcquisitionDetails.csv` sits next to it, its fields (e.g. `TargetName`, `FocalLength`) are injected into each row. |
 | `observation_plan_write_file(plan)` | Write out an observation plan JSON file. |
 
 ### Sequence Management
 
 | Tool | Purpose |
 |---|---|
-| `sequence_load_plan(file_path, frame_type)` | Load a plan file as a sequence (lights, darks, bias, dawn_flats, or dusk_flats). |
+| `sequence_load_plan(file_path, frame_type)` | Load a plan file as a sequence (light, dark, bias, dawn_flat, or dusk_flat). |
 | `sequence_start()` | Start or resume a stopped sequence. |
 | `sequence_stop()` | Stop any running sequence. |
 | `sequence_enter_safety_standby()` | Start a non-imaging sequence with safety guardrails. |
