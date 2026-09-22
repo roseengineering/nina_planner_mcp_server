@@ -187,7 +187,7 @@ def container_target(instructions=None):
         instructions = []
     return _container_base(
         "NINA.Sequencer.Container.TargetAreaContainer, NINA.Sequencer",
-        name="Imaging Sequence",
+        name="Target Sequence",
         instructions=instructions,
     )
 
