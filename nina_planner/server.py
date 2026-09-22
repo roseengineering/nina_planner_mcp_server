@@ -37,6 +37,12 @@ PROJECT_DIR = Path(__file__).resolve().parent.parent
 
 FrameType = Literal["light", "dark", "bias", "dawn_flat", "dusk_flat"]
 
+_INVALID_FILENAME_CHARS = re.compile(r'[\\/:*?"<>|\x00-\x1f\x7f]')
+
+
+def _sanitize_filename(s: str) -> str:
+    return _INVALID_FILENAME_CHARS.sub("-", s)
+
 
 def _to_snake(name: str) -> str:
     s = re.sub(r"(.)([A-Z][a-z]+)", r"\1_\2", name)
@@ -386,7 +392,7 @@ async def observation_plan_write_file(plan: ObservationPlan) -> str:
     if not plan.plan_id:
         plan = plan.model_copy(update={"plan_id": plan.effective_plan_id()})
     timestamp = datetime.now(tz=UTC).astimezone().strftime("%Y%m%dT%H%M%S")
-    filename = f"{plan.target.lower()}_{plan.intent.lower()}_{timestamp}.json"
+    filename = f"{_sanitize_filename(plan.target.lower())}_{_sanitize_filename(plan.intent.lower())}_{timestamp}.json"
     filename = filename.replace(" ", "-")
     path = PROJECT_DIR / filename
     async with await anyio.open_file(path, "w", encoding="utf-8") as f:
