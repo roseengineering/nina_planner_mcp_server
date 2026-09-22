@@ -269,7 +269,7 @@ Registers the opencode plugin and the `nina_planner` MCP server so both run toge
 
 | Variable | Default | Description |
 |---|---|---|
-| `NINA_ENDPOINT` | `localhost:1888` | N.I.N.A. host and port for the REST API (`host:port`) |
+| `NINA_ENDPOINT` | `127.0.0.1:1888` | N.I.N.A. host and port for the REST API (`host:port`).  For WSL, try `192.168.0.24:1888` |
 | `NINA_IMAGING_DIR` | — | Filesystem path to the mounted N.I.N.A. imaging directory (e.g. `/mnt/Users/george/Documents/N.I.N.A`). If set, overrides the profile `image_save_path` for `get_imaging_metadata`. |
 | `NINA_DRIVE_MOUNT` | — | Local mount root for the drive letter in the profile's `image_save_path`, used by `get_imaging_metadata` when `NINA_IMAGING_DIR` is unset (e.g. `/mnt` on a Mac with C: mounted there, `/mnt/c` in WSL). |
 | `NINA_FLATS_ALTITUDE` | `80` | Altitude in degrees for flat panel calibration frames |

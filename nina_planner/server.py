@@ -31,14 +31,8 @@ from .sequence import (
     build_sequence_teardown,
 )
 
-mcp = FastMCP(
-    name="nina-planner",
-    instructions="""Provides tools for controlling NINA (Nighttime Imaging 'N' Astronomy) software run observatories. Lets you inspect equipment, get observatory setup, write observation plans, and run NINA sequences generated from the plans. Focuses on orchestrating observation plans at a high level through NINA sequences rather than managing the individual commands that make up those sequences. Safety semantics: the safety monitor's is_safe field reflects whether the observatory enclosure (roof/dome) is open and it is safe to unpark and expose. is_safe=true means the enclosure is open and the scope may be unparked and acquisition may proceed; is_safe=false means the enclosure is closed, so the scope must remain stowed and acquisition is gated until it becomes safe. This is distinct from weather conditions, which are reported separately by the weather device. Stow behavior is capability-driven: sequences emit Park Scope only when the mount reports can_park=true, otherwise they use Find home when the mount reports can_find_home=true. Progress tracking: maintain an observatory progress file (progress.md in the project directory). On session start, read it to restore context before acting. After significant actions — status checks, plan writes, sequence loads/starts/stops, errors, and interventions — append a short timestamped entry (ISO-8601 timestamp) recording what was done, the observed equipment and safety state, and any decisions. Both the active session and automated worker sessions append to this file so history is shared across sessions.""",
-)
-
 NINA_ENDPOINT = os.environ.get("NINA_ENDPOINT", "localhost:1888")
 NINA_API_URL = f"http://{NINA_ENDPOINT}/v2/api"
-
 PROJECT_DIR = Path(__file__).resolve().parent.parent
 
 FrameType = Literal["light", "dark", "bias", "dawn_flat", "dusk_flat"]
@@ -158,6 +152,15 @@ async def _read_metadata(image_type: str | None = None) -> list[dict[str, Any]]:
     return rows
 
 
+### mcp tools
+
+
+mcp = FastMCP(
+    name="nina-planner",
+    instructions="""Provides tools for controlling NINA (Nighttime Imaging 'N' Astronomy) software run observatories. Lets you inspect equipment, get observatory setup, write observation plans, and run NINA sequences generated from the plans. Focuses on orchestrating observation plans at a high level through NINA sequences rather than managing the individual commands that make up those sequences. Safety semantics: the safety monitor's is_safe field reflects whether the observatory enclosure (roof/dome) is open and it is safe to unpark and expose. is_safe=true means the enclosure is open and the scope may be unparked and acquisition may proceed; is_safe=false means the enclosure is closed, so the scope must remain stowed and acquisition is gated until it becomes safe. This is distinct from weather conditions, which are reported separately by the weather device. Stow behavior is capability-driven: sequences emit Park Scope only when the mount reports can_park=true, otherwise they use Find home when the mount reports can_find_home=true. Progress tracking: maintain an observatory progress file (progress.md in the project directory). On session start, read it to restore context before acting. After significant actions — status checks, plan writes, sequence loads/starts/stops, errors, and interventions — append a short timestamped entry (ISO-8601 timestamp) recording what was done, the observed equipment and safety state, and any decisions. Both the active session and automated worker sessions append to this file so history is shared across sessions.""",
+)
+
+
 @mcp.tool()
 async def _get_site_equipment_status(profile) -> ObservatoryEquipment:
     from .models.camera import CameraDevice
@@ -235,9 +238,6 @@ async def _get_site_equipment_status(profile) -> ObservatoryEquipment:
         filter_wheel=_build(raw.get("FilterWheel", {}), FilterWheelDevice),
         rotator=_build(raw.get("Rotator", {}), RotatorDevice),
     )
-
-
-# status tools
 
 
 @mcp.tool()
@@ -374,12 +374,6 @@ async def get_imaging_metadata(
     return data
 
 
-@mcp.tool()
-async def sequence_get_state() -> Any:
-    """Returns the loaded sequence structure and the current status of its containers, instructions, conditions, and triggers. Use it to determine whether a sequence is loaded, running, completed, failed, or waiting. This tool is read-only and takes no action."""
-    return await _api_get("/sequence/json")
-
-
 # plan tools
 
 
@@ -415,6 +409,9 @@ async def observation_plan_get_progress(
             plan, rows, max_hfr=max_hfr, min_detected_stars=min_detected_stars
         ),
     }
+
+
+# sequence tools
 
 
 @mcp.tool()
@@ -477,9 +474,6 @@ async def sequence_load_plan(
     return f"`{frame_type}` sequence loaded."
 
 
-### exceptional tools
-
-
 @mcp.tool()
 async def sequence_execute_teardown() -> str:
     """Loads and starts the non-acquisition teardown sequence, safely stowing the telescope (park or home, per mount capability) while NINA's sequence-level safety guardrails remain active. Use for end-of-observation close-down — when you are done observing and want to shut down the scope — or before leaving the observatory unattended. Allow it to complete without interruption. This is separate from sequence_stop, which halts the current sequence but does not stow the scope."""
@@ -512,6 +506,12 @@ async def sequence_stop() -> str:
     """Stops the currently running NINA sequence immediately, leaving the telescope where it currently is — it does not stow the scope. Use for an urgent halt, to interrupt a stuck/looping sequence, or when the running sequence isn't what you wanted. If you then want to park/home the telescope, run sequence_execute_teardown separately. Note that sequence_load_plan and the teardown/standby entry tools already stop any running sequence before loading, so an explicit stop is only needed when you want to halt without loading anything new. Avoid stopping an in-progress teardown during the stow maneuver unless safety requires it, since interrupting mid-slew can leave the scope in an unsafe position. Call sequence_get_state afterward to confirm the sequence has stopped."""
     await _api_get("/sequence/stop")
     return "Sequence stopped."
+
+
+@mcp.tool()
+async def sequence_get_state() -> Any:
+    """Returns the loaded sequence structure and the current status of its containers, instructions, conditions, and triggers. Use it to determine whether a sequence is loaded, running, completed, failed, or waiting. This tool is read-only and takes no action."""
+    return await _api_get("/sequence/json")
 
 
 if __name__ == "__main__":

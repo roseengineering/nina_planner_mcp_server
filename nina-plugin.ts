@@ -1,7 +1,7 @@
 import type { PluginInput, PluginModule } from "@opencode-ai/plugin";
 declare const process: { env: Record<string, string | undefined> };
 
-const NINA_ENDPOINT = process.env.NINA_ENDPOINT || "localhost:1888";
+const NINA_ENDPOINT = process.env.NINA_ENDPOINT || "127.0.0.1:1888";
 const INTERVAL_CHECK_MINUTES = +(process.env.INTERVAL_CHECK_MINUTES || 10);
 const WORKER_AGENT = "worker";
 const DEBUG = process.env.DEBUG;
