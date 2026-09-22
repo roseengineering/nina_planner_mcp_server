@@ -5,14 +5,14 @@ from typing import Any
 
 from .models.plan import ObservationPlan
 
-_BRACKET_RE = re.compile(r"^(?P<base>.*?)\s*\[(?P<embedded>[^\]]+)\]$")
+_BRACKET_RE = re.compile(r"^.*?\s*\[(?P<embedded>[^\]]+)\]$")
 
 
-def _split_target(target: str) -> tuple[str, str]:
+def _embedded_plan_id(target: str) -> str:
     m = _BRACKET_RE.match(target)
     if m:
-        return m.group("base").strip(), m.group("embedded").strip()
-    return target.strip(), ""
+        return m.group("embedded").strip()
+    return ""
 
 
 def _exposure_matches(row: dict[str, Any], exposure: float | None) -> bool:
@@ -31,10 +31,7 @@ def _light_target_matches(plan: ObservationPlan, row: dict[str, Any]) -> bool:
     target = (row.get("TargetName") or "").strip()
     if not target:
         return False
-    base, embedded = _split_target(target)
-    if embedded:
-        return embedded == plan.effective_plan_id()
-    return base == plan.target
+    return _embedded_plan_id(target) == plan.effective_plan_id()
 
 
 def _quality_accepted(
