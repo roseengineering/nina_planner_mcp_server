@@ -31,7 +31,10 @@ def _light_target_matches(plan: ObservationPlan, row: dict[str, Any]) -> bool:
     target = (row.get("TargetName") or "").strip()
     if not target:
         return False
-    return _embedded_plan_id(target) == plan.effective_plan_id()
+    embedded = _embedded_plan_id(target)
+    if embedded:
+        return embedded == plan.effective_plan_id()
+    return target == plan.target
 
 
 def _quality_accepted(

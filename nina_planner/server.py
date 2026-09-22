@@ -5,7 +5,7 @@ import sys
 from collections.abc import Set as AbstractSet
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Literal, cast
 
 import anyio
 import httpx
@@ -75,10 +75,10 @@ async def _api_post(path: str, body: Any) -> dict[str, Any]:
         data = resp.json()
         if not data.get("Success", False):
             raise RuntimeError(data.get("Error", "API request failed"))
-        return data.get("Response", {})
+        return cast(dict[str, Any], data.get("Response", {}))
 
 
-async def _validate_filters(plan: ObservationPlan, profile: ObservatoryProfile):
+async def _validate_filters(plan: ObservationPlan, profile: ObservatoryProfile) -> None:
     profile_filter_names = {f.name for f in profile.filters}
     plan_filter_names: set[str] = set()
     for light in plan.light:
@@ -97,7 +97,9 @@ async def _validate_filters(plan: ObservationPlan, profile: ObservatoryProfile):
         )
 
 
-def _convert_to_met(data, since, now, name):
+def _convert_to_met(
+    data: list[dict[str, Any]], since: int, now: datetime, name: str
+) -> list[dict[str, Any]]:
     timestamp = "timestamp"
     tzinfo = now.tzinfo
     res = []
@@ -168,7 +170,9 @@ mcp = FastMCP(
 
 
 @mcp.tool()
-async def _get_site_equipment_status(profile) -> ObservatoryEquipment:
+async def _get_site_equipment_status(
+    profile: ObservatoryProfile,
+) -> ObservatoryEquipment:
     from .models.camera import CameraDevice
     from .models.dome import DomeDevice
     from .models.filter_wheel import FilterWheelDevice
@@ -231,7 +235,7 @@ async def _get_site_equipment_status(profile) -> ObservatoryEquipment:
         converted = _convert_keys(data)
         converted.setdefault("name", "")
         converted.setdefault("description", "")
-        return model_cls(**converted)
+        return model_cls(**converted)  # type: ignore[return-value]
 
     return ObservatoryEquipment(
         mount=_build(raw.get("Mount", {}), MountDevice),
@@ -252,7 +256,7 @@ async def get_site_equipment_status() -> ObservatoryEquipment:
     profile = await get_site_profile()
     equipment = await _get_site_equipment_status(profile)
     print("Equipment:", equipment.model_dump_json(indent=2), file=sys.stderr)
-    return equipment
+    return cast(ObservatoryEquipment, equipment)
 
 
 @mcp.tool()

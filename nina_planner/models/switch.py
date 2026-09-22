@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import Any
+
 from pydantic import BaseModel, field_validator
 
 
@@ -19,7 +21,7 @@ class WritableSwitchInfo(BaseModel):
 
     @field_validator("is_on", mode="before")
     @classmethod
-    def _compute_is_on(cls, v: bool, info) -> bool:
+    def _compute_is_on(cls, v: bool, info: Any) -> bool:
         if isinstance(v, bool):
             return v
         return False

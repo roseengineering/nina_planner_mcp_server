@@ -1,14 +1,20 @@
+from __future__ import annotations
+
 import os
+from typing import Any
+
+from .models.observatory import ObservatoryEquipment
+from .models.plan import ObservationPlan
 
 NINA_FLATS_ALTITUDE = float(os.environ.get("NINA_FLATS_ALTITUDE", "80"))
 NINA_FLATS_AZIMUTH_DAWN = float(os.environ.get("NINA_FLATS_AZIMUTH_DAWN", "270"))
 NINA_FLATS_AZIMUTH_DUSK = float(os.environ.get("NINA_FLATS_AZIMUTH_DUSK", "90"))
 
 
-def _fix_provider(data):
-    store = {}
+def _fix_provider(data: dict[str, Any]) -> dict[str, Any]:
+    store: dict[str, str] = {}
 
-    def fn(data):
+    def fn(data: dict[str, Any]) -> None:
         for k, d in data.items():
             if isinstance(d, dict):
                 if k == "SelectedProvider":
@@ -27,10 +33,10 @@ def _fix_provider(data):
     return data
 
 
-def _add_refs(data):
+def _add_refs(data: dict[str, Any]) -> dict[str, Any]:
     ident = 0
 
-    def fn(data, parent=None):
+    def fn(data: dict[str, Any], parent: dict[str, Any] | None = None) -> None:
         nonlocal ident
         if "$id" in data:
             ident += 1
@@ -50,25 +56,25 @@ def _add_refs(data):
     return data
 
 
-def _child(ctype):
+def _child(ctype: str) -> dict[str, Any]:
     return {"$id": None, "$type": ctype, "Parent": None}
 
 
-def _values(ctype, values=None):
+def _values(ctype: str, values: list[Any] | None = None) -> dict[str, Any]:
     if values is None:
         values = []
     return {"$id": None, "$type": ctype, "$values": values}
 
 
-def _to_minutes(deg):
+def _to_minutes(deg: float) -> int:
     return int(abs(deg) % 1 * 60)
 
 
-def _to_seconds(deg):
-    return round((abs(deg) * 60 % 1) * 60, 4)
+def _to_seconds(deg: float) -> int:
+    return int(round((abs(deg) * 60 % 1) * 60, 4))
 
 
-def _radec_coordinates(ra, dec):
+def _radec_coordinates(ra: float, dec: float) -> dict[str, Any]:
     negative = dec < 0
     abs_dec = abs(dec)
     return {
@@ -84,7 +90,7 @@ def _radec_coordinates(ra, dec):
     }
 
 
-def _azalt_coordinates(az, alt):
+def _azalt_coordinates(az: float, alt: float) -> dict[str, Any]:
     return {
         "$id": None,
         "$type": "NINA.Astrometry.InputTopocentricCoordinates, NINA.Astrometry",
@@ -97,7 +103,9 @@ def _azalt_coordinates(az, alt):
     }
 
 
-def _round_robin(exposures, batch_size=0, reverse=False):
+def _round_robin(
+    exposures: list[Any], batch_size: int = 0, reverse: bool = False
+) -> list[tuple[int, float, str | None]]:
     current_count = 0
     result = []
     while True:
@@ -118,19 +126,19 @@ def _round_robin(exposures, batch_size=0, reverse=False):
         if done:
             break
         current_count += batch_size
-    return reversed(result) if reverse else result
+    return list(reversed(result)) if reverse else result
 
 
 ### containers
 
 
 def _container_base(
-    ctype,
-    name=None,
-    conditions=None,
-    triggers=None,
-    instructions=None,
-):
+    ctype: str,
+    name: str | None = None,
+    conditions: list[Any] | None = None,
+    triggers: list[Any] | None = None,
+    instructions: list[Any] | None = None,
+) -> dict[str, Any]:
     if conditions is None:
         conditions = []
     if triggers is None:
@@ -158,7 +166,7 @@ def _container_base(
     }
 
 
-def container_root(instructions=None):
+def container_root(instructions: list[Any] | None = None) -> dict[str, Any]:
     if instructions is None:
         instructions = []
     return _fix_provider(
@@ -172,7 +180,7 @@ def container_root(instructions=None):
     )
 
 
-def container_start(instructions=None):
+def container_start(instructions: list[Any] | None = None) -> dict[str, Any]:
     if instructions is None:
         instructions = []
     return _container_base(
@@ -182,7 +190,7 @@ def container_start(instructions=None):
     )
 
 
-def container_target(instructions=None):
+def container_target(instructions: list[Any] | None = None) -> dict[str, Any]:
     if instructions is None:
         instructions = []
     return _container_base(
@@ -192,7 +200,7 @@ def container_target(instructions=None):
     )
 
 
-def container_end(instructions=None):
+def container_end(instructions: list[Any] | None = None) -> dict[str, Any]:
     if instructions is None:
         instructions = []
     return _container_base(
@@ -203,11 +211,11 @@ def container_end(instructions=None):
 
 
 def container_sequential(
-    name=None,
-    conditions=None,
-    triggers=None,
-    instructions=None,
-):
+    name: str | None = None,
+    conditions: list[Any] | None = None,
+    triggers: list[Any] | None = None,
+    instructions: list[Any] | None = None,
+) -> dict[str, Any]:
     if conditions is None:
         conditions = []
     if triggers is None:
@@ -224,15 +232,15 @@ def container_sequential(
 
 
 def container_deepsky(
-    name,
-    target,
-    ra,
-    dec,
-    posang=0,
-    triggers=None,
-    conditions=None,
-    instructions=None,
-):
+    name: str,
+    target: str,
+    ra: float,
+    dec: float,
+    posang: float = 0,
+    triggers: list[Any] | None = None,
+    conditions: list[Any] | None = None,
+    instructions: list[Any] | None = None,
+) -> dict[str, Any]:
     if conditions is None:
         conditions = []
     if triggers is None:
@@ -261,37 +269,39 @@ def container_deepsky(
 ### triggers
 
 
-def trigger_meridian_flip():
+def trigger_meridian_flip() -> dict[str, Any]:
     return _child(
         "NINA.Sequencer.Trigger.MeridianFlip.MeridianFlipTrigger, NINA.Sequencer"
     )
 
 
-def trigger_autofocus_after_filter_change():
+def trigger_autofocus_after_filter_change() -> dict[str, Any]:
     return _child(
         "NINA.Sequencer.Trigger.Autofocus.AutofocusAfterFilterChange, NINA.Sequencer"
     )
 
 
-def trigger_autofocus_after_temperature_change(degrees):
+def trigger_autofocus_after_temperature_change(degrees: float) -> dict[str, Any]:
     return _child(
         "NINA.Sequencer.Trigger.Autofocus.AutofocusAfterTemperatureChangeTrigger, NINA.Sequencer"
     ) | {"Amount": degrees}
 
 
-def trigger_autofocus_after_exposures(exposures):
+def trigger_autofocus_after_exposures(exposures: int) -> dict[str, Any]:
     return _child(
         "NINA.Sequencer.Trigger.Autofocus.AutofocusAfterExposures, NINA.Sequencer"
     ) | {"AfterExposures": exposures}
 
 
-def trigger_autofocus_after_hfr_increase(samples, amount):
+def trigger_autofocus_after_hfr_increase(samples: int, amount: float) -> dict[str, Any]:
     return _child(
         "NINA.Sequencer.Trigger.Autofocus.AutofocusAfterHFRIncreaseTrigger, NINA.Sequencer"
     ) | {"SampleSize": samples, "Amount": amount}
 
 
-def trigger_center_after_drift(after_exposures, distance_arcmin):
+def trigger_center_after_drift(
+    after_exposures: int, distance_arcmin: float
+) -> dict[str, Any]:
     return _child(
         "NINA.Sequencer.Trigger.Platesolving.CenterAfterDriftTrigger, NINA.Sequencer"
     ) | {
@@ -300,49 +310,49 @@ def trigger_center_after_drift(after_exposures, distance_arcmin):
     }
 
 
-def trigger_restore_guiding():
+def trigger_restore_guiding() -> dict[str, Any]:
     return _child("NINA.Sequencer.Trigger.Guider.RestoreGuiding, NINA.Sequencer")
 
 
 ### instructions
 
 
-def unpark_scope():
+def unpark_scope() -> dict[str, Any]:
     return _child("NINA.Sequencer.SequenceItem.Telescope.UnparkScope, NINA.Sequencer")
 
 
-def park_scope():
+def park_scope() -> dict[str, Any]:
     return _child("NINA.Sequencer.SequenceItem.Telescope.ParkScope, NINA.Sequencer")
 
 
-def home_scope():
+def home_scope() -> dict[str, Any]:
     return _child("NINA.Sequencer.SequenceItem.Telescope.FindHome, NINA.Sequencer")
 
 
-def warm_camera():
+def warm_camera() -> dict[str, Any]:
     return _child("NINA.Sequencer.SequenceItem.Camera.WarmCamera, NINA.Sequencer") | {
         "Duration": 0,
     }
 
 
-def cool_camera(temperature):
+def cool_camera(temperature: float) -> dict[str, Any]:
     return _child("NINA.Sequencer.SequenceItem.Camera.CoolCamera, NINA.Sequencer") | {
         "Temperature": temperature,
         "Duration": 0,
     }
 
 
-def start_guiding(calibration=False):
+def start_guiding(calibration: bool = False) -> dict[str, Any]:
     return _child("NINA.Sequencer.SequenceItem.Guider.StartGuiding, NINA.Sequencer") | {
         "ForceCalibration": calibration
     }
 
 
-def stop_guiding():
+def stop_guiding() -> dict[str, Any]:
     return _child("NINA.Sequencer.SequenceItem.Guider.StopGuiding, NINA.Sequencer")
 
 
-def set_tracking(mode):
+def set_tracking(mode: int) -> dict[str, Any]:
     # ascom mode: 0=Sidereal, 1=Lunar, 2=Solar, 3=King
     return _child(
         "NINA.Sequencer.SequenceItem.Telescope.SetTracking, NINA.Sequencer"
@@ -351,19 +361,19 @@ def set_tracking(mode):
     }
 
 
-def slew_and_center():
+def slew_and_center() -> dict[str, Any]:
     return _child("NINA.Sequencer.SequenceItem.Platesolving.Center, NINA.Sequencer") | {
         "Inherited": True,
     }
 
 
-def slew_to_azalt(az, alt):
+def slew_to_azalt(az: float, alt: float) -> dict[str, Any]:
     return _child(
         "NINA.Sequencer.SequenceItem.Telescope.SlewScopeToAltAz, NINA.Sequencer"
     ) | {"Coordinates": _azalt_coordinates(az, alt)}
 
 
-def set_readout(mode):
+def set_readout(mode: int) -> dict[str, Any]:
     return _child(
         "NINA.Sequencer.SequenceItem.Camera.SetReadoutMode, NINA.Sequencer"
     ) | {
@@ -371,17 +381,17 @@ def set_readout(mode):
     }
 
 
-def run_autofocus():
+def run_autofocus() -> dict[str, Any]:
     return _child("NINA.Sequencer.SequenceItem.Autofocus.RunAutofocus, NINA.Sequencer")
 
 
-def annotation():
+def annotation() -> dict[str, Any]:
     return _child("NINA.Sequencer.SequenceItem.Utility.Annotation, NINA.Sequencer") | {
         "Text": None
     }
 
 
-def switch_filter(name, position):
+def switch_filter(name: str, position: int) -> dict[str, Any]:
     return _child(
         "NINA.Sequencer.SequenceItem.FilterWheel.SwitchFilter, NINA.Sequencer"
     ) | {
@@ -390,7 +400,7 @@ def switch_filter(name, position):
     }
 
 
-def sky_flats(count, filter_name, position):
+def sky_flats(count: int, filter_name: str, position: int) -> dict[str, Any]:
     return _container_base(
         "NINA.Sequencer.SequenceItem.FlatDevice.SkyFlat, NINA.Sequencer",
         name="Twilight Sky Flats",
@@ -419,13 +429,13 @@ def sky_flats(count, filter_name, position):
 ### wait until
 
 
-def wait_until_safe():
+def wait_until_safe() -> dict[str, Any]:
     return _child(
         "NINA.Sequencer.SequenceItem.SafetyMonitor.WaitUntilSafe, NINA.Sequencer"
     )
 
 
-def wait_until_above_horizon(degrees):
+def wait_until_above_horizon(degrees: float) -> dict[str, Any]:
     return _child(
         "NINA.Sequencer.SequenceItem.Utility.WaitUntilAboveHorizon, NINA.Sequencer"
     ) | {
@@ -437,7 +447,7 @@ def wait_until_above_horizon(degrees):
     }
 
 
-def wait_until_above_altitude(degrees):
+def wait_until_above_altitude(degrees: float) -> dict[str, Any]:
     return _child(
         "NINA.Sequencer.SequenceItem.Utility.WaitForAltitude, NINA.Sequencer"
     ) | {
@@ -450,32 +460,32 @@ def wait_until_above_altitude(degrees):
     }
 
 
-def wait_until_time(source):
+def wait_until_time(source: str) -> dict[str, Any]:
     return _child("NINA.Sequencer.SequenceItem.Utility.WaitForTime, NINA.Sequencer") | {
         "MinutesOffset": 0,
         "SelectedProvider": _child(source),
     }
 
 
-def wait_until_dusk():
+def wait_until_dusk() -> dict[str, Any]:
     return wait_until_time(
         "NINA.Sequencer.Utility.DateTimeProvider.DuskProvider, NINA.Sequencer"
     )
 
 
-def wait_until_dawn():
+def wait_until_dawn() -> dict[str, Any]:
     return wait_until_time(
         "NINA.Sequencer.Utility.DateTimeProvider.DawnProvider, NINA.Sequencer"
     )
 
 
-def wait_until_sunset():
+def wait_until_sunset() -> dict[str, Any]:
     return wait_until_time(
         "NINA.Sequencer.Utility.DateTimeProvider.SunsetProvider, NINA.Sequencer"
     )
 
 
-def wait_if_sun_altitude(degrees, comparator):
+def wait_if_sun_altitude(degrees: float, comparator: int) -> dict[str, Any]:
     return _child(
         "NINA.Sequencer.SequenceItem.Utility.WaitForSunAltitude, NINA.Sequencer"
     ) | {
@@ -486,18 +496,18 @@ def wait_if_sun_altitude(degrees, comparator):
     }
 
 
-def wait_if_sun_altitude_above(degrees):
+def wait_if_sun_altitude_above(degrees: float) -> dict[str, Any]:
     return wait_if_sun_altitude(degrees, 3)
 
 
-def wait_if_sun_altitude_below(degrees):
+def wait_if_sun_altitude_below(degrees: float) -> dict[str, Any]:
     return wait_if_sun_altitude(degrees, 1)
 
 
 ### conditions
 
 
-def loop_until_sun_altitude(degrees, comparator):
+def loop_until_sun_altitude(degrees: float, comparator: int) -> dict[str, Any]:
     return _child("NINA.Sequencer.Conditions.SunAltitudeCondition, NINA.Sequencer") | {
         "Data": _child(
             "NINA.Sequencer.SequenceItem.Utility.WaitLoopData, NINA.Sequencer"
@@ -506,38 +516,38 @@ def loop_until_sun_altitude(degrees, comparator):
     }
 
 
-def loop_until_sun_altitude_above(degrees):
+def loop_until_sun_altitude_above(degrees: float) -> dict[str, Any]:
     return loop_until_sun_altitude(degrees, 3)
 
 
-def loop_until_sun_altitude_below(degrees):
+def loop_until_sun_altitude_below(degrees: float) -> dict[str, Any]:
     return loop_until_sun_altitude(degrees, 1)
 
 
-def loop_until_time(source):
+def loop_until_time(source: str) -> dict[str, Any]:
     return _child("NINA.Sequencer.Conditions.TimeCondition, NINA.Sequencer") | {
         "MinutesOffset": 0,
         "SelectedProvider": _child(source),
     }
 
 
-def loop_until_dawn():
+def loop_until_dawn() -> dict[str, Any]:
     return loop_until_time(
         "NINA.Sequencer.Utility.DateTimeProvider.DawnProvider, NINA.Sequencer"
     )
 
 
-def loop_until_meridian():
+def loop_until_meridian() -> dict[str, Any]:
     return loop_until_time(
         "NINA.Sequencer.Utility.DateTimeProvider.MeridianProvider, NINA.Sequencer"
     )
 
 
-def loop_while_safe():
+def loop_while_safe() -> dict[str, Any]:
     return _child("NINA.Sequencer.Conditions.SafetyMonitorCondition, NINA.Sequencer")
 
 
-def loop_while_above_horizon(degrees):
+def loop_while_above_horizon(degrees: float) -> dict[str, Any]:
     return _child("NINA.Sequencer.Conditions.AboveHorizonCondition, NINA.Sequencer") | {
         "HasDsoParent": True,
         "Data": _child(
@@ -547,7 +557,7 @@ def loop_while_above_horizon(degrees):
     }
 
 
-def loop_while_above_altitude(degrees):
+def loop_while_above_altitude(degrees: float) -> dict[str, Any]:
     return _child("NINA.Sequencer.Conditions.AltitudeCondition, NINA.Sequencer") | {
         "HasDsoParent": True,
         "Data": _child(
@@ -557,7 +567,7 @@ def loop_while_above_altitude(degrees):
     }
 
 
-def loop_for_iterations(count):
+def loop_for_iterations(count: int) -> dict[str, Any]:
     return _child("NINA.Sequencer.Conditions.LoopCondition, NINA.Sequencer") | {
         "CompletedIterations": 0,
         "Iterations": count,
@@ -567,7 +577,7 @@ def loop_for_iterations(count):
 ### plugin
 
 
-def loop_while(expression):
+def loop_while(expression: str) -> dict[str, Any]:
     return _child("WhenPlugin.When.LoopWhile, WhenPlugin") | {
         "PredicateExpr": _child("WhenPlugin.When.Expr, WhenPlugin")
         | {
@@ -577,30 +587,30 @@ def loop_while(expression):
     }
 
 
-def wait_indefinitely():
+def wait_indefinitely() -> dict[str, Any]:
     return _child("WhenPlugin.When.WaitIndefinitely, WhenPlugin")
 
 
-def end_instruction(name):
+def end_instruction(name: str) -> dict[str, Any]:
     return _child("WhenPlugin.When.EndInstructionSet, WhenPlugin") | {
         "InstructionSetName": name
     }
 
 
-def switch_filter_plus(position):
+def switch_filter_plus(position: str) -> dict[str, Any]:
     return _child("WhenPlugin.When.SwitchFilter, WhenPlugin") | {
         "FilterExpr": position,
     }
 
 
-def trigger_dither_after_exposures(exposures):
+def trigger_dither_after_exposures(exposures: int) -> dict[str, Any]:
     return _child("WhenPlugin.When.DitherAfterExposures, WhenPlugin") | {
         "AfterExpr": _child("WhenPlugin.When.Expr, WhenPlugin")
         | {"Expression": exposures}
     }
 
 
-def take_exposure(exposure, image_type):
+def take_exposure(exposure: float, image_type: str) -> dict[str, Any]:
     return _child(
         "NINA.Sequencer.SequenceItem.Imaging.TakeExposure, NINA.Sequencer"
     ) | {
@@ -613,7 +623,7 @@ def take_exposure(exposure, image_type):
     }
 
 
-def take_exposure_plus(exposure, image_type):
+def take_exposure_plus(exposure: float, image_type: str) -> dict[str, Any]:
     return _child("WhenPlugin.When.TakeExposure, WhenPlugin") | {
         "ImageType": image_type,
         "ExposureTimeExpr": exposure,
@@ -624,14 +634,22 @@ def take_exposure_plus(exposure, image_type):
     }
 
 
-def smart_exposure_plus(count, exposure, image_type, filter_name=None, dither=None):
+def smart_exposure_plus(
+    count: int,
+    exposure: float,
+    image_type: str,
+    filter_name: str | None = None,
+    dither: int | None = None,
+) -> dict[str, Any]:
     return _container_base(
         "WhenPlugin.When.SmartExposure, WhenPlugin",
         name="Smart Exposure +",
         conditions=[loop_for_iterations(count)],
-        triggers=[trigger_dither_after_exposures(dither)],
+        triggers=[trigger_dither_after_exposures(dither)] if dither is not None else [],
         instructions=[
-            switch_filter_plus(filter_name),
+            switch_filter_plus(filter_name)
+            if filter_name is not None
+            else annotation(),
             take_exposure_plus(exposure=exposure, image_type=image_type),
         ],
     ) | {
@@ -644,33 +662,45 @@ def smart_exposure_plus(count, exposure, image_type, filter_name=None, dither=No
 ####################################
 
 
-def sequence_warm_camera(equipment):
-    return [warm_camera()] if equipment.camera.thermal.has_cooler else []
-
-
-def sequence_cool_camera(plan, equipment):
+def sequence_warm_camera(equipment: ObservatoryEquipment) -> list[dict[str, Any]]:
     return (
-        [cool_camera(plan.cooler.setpoint_celsius) if plan.cooler.on else warm_camera()]
-        if equipment.camera.thermal.has_cooler
+        [warm_camera()]
+        if equipment.camera and equipment.camera.thermal.has_cooler
         else []
     )
 
 
-def sequence_park_scope(equipment):
+def sequence_cool_camera(
+    plan: ObservationPlan, equipment: ObservatoryEquipment
+) -> list[dict[str, Any]]:
     return (
-        [park_scope()]
-        if equipment.mount.can_park
-        else ([home_scope()] if equipment.mount.can_find_home else [])
+        [cool_camera(plan.cooler.setpoint_celsius) if plan.cooler.on else warm_camera()]
+        if equipment.camera and equipment.camera.thermal.has_cooler
+        else []
     )
 
 
-def sequence_unpark_scope(equipment):
-    return [unpark_scope()] if equipment.mount.can_park else []
+def sequence_park_scope(equipment: ObservatoryEquipment) -> list[dict[str, Any]]:
+    return (
+        [park_scope()]
+        if equipment.mount and equipment.mount.can_park
+        else (
+            [home_scope()] if equipment.mount and equipment.mount.can_find_home else []
+        )
+    )
+
+
+def sequence_unpark_scope(equipment: ObservatoryEquipment) -> list[dict[str, Any]]:
+    return [unpark_scope()] if equipment.mount and equipment.mount.can_park else []
 
 
 def sequence_safetynet(
-    name, equipment, instructions=None, conditions=None, triggers=None
-):
+    name: str,
+    equipment: ObservatoryEquipment,
+    instructions: list[Any] | None = None,
+    conditions: list[Any] | None = None,
+    triggers: list[Any] | None = None,
+) -> dict[str, Any]:
     if instructions is None:
         instructions = []
     if conditions is None:
@@ -680,7 +710,7 @@ def sequence_safetynet(
     return container_sequential(
         name=name,
         triggers=triggers,
-        conditions=[loop_while(True)] + conditions,
+        conditions=[loop_while("true")] + conditions,
         instructions=[
             container_sequential(
                 name="On Safe",
@@ -697,7 +727,7 @@ def sequence_safetynet(
     )
 
 
-def container_end_park_when_unsafe(equipment):
+def container_end_park_when_unsafe(equipment: ObservatoryEquipment) -> dict[str, Any]:
     return container_end(
         [
             container_sequential(
@@ -711,13 +741,15 @@ def container_end_park_when_unsafe(equipment):
     )
 
 
-def container_start_unpark_when_safe(equipment):
+def container_start_unpark_when_safe(equipment: ObservatoryEquipment) -> dict[str, Any]:
     return container_start(
         [sequence_safetynet(name="While Unsafe", equipment=equipment)]
     )
 
 
-def container_root_standby(equipment, instructions=None):
+def container_root_standby(
+    equipment: ObservatoryEquipment, instructions: list[Any] | None = None
+) -> dict[str, Any]:
     return container_root(
         [
             container_start_unpark_when_safe(equipment),
@@ -730,11 +762,11 @@ def container_root_standby(equipment, instructions=None):
 #########################################
 
 
-def build_sequence_standby(equipment):
+def build_sequence_standby(equipment: ObservatoryEquipment) -> dict[str, Any]:
     return container_root_standby(equipment)
 
 
-def build_sequence_teardown(equipment):
+def build_sequence_teardown(equipment: ObservatoryEquipment) -> dict[str, Any]:
     return container_root(
         [
             container_start(),
@@ -746,7 +778,9 @@ def build_sequence_teardown(equipment):
     )
 
 
-def build_sequence_darks(plan, equipment, bias=False):
+def build_sequence_darks(
+    plan: ObservationPlan, equipment: ObservatoryEquipment, bias: bool = False
+) -> dict[str, Any]:
     return container_root(
         [
             container_start(sequence_park_scope(equipment)),
@@ -766,7 +800,9 @@ def build_sequence_darks(plan, equipment, bias=False):
     )
 
 
-def build_sequence_lights(plan, equipment):
+def build_sequence_lights(
+    plan: ObservationPlan, equipment: ObservatoryEquipment
+) -> dict[str, Any]:
     return container_root_standby(
         equipment=equipment,
         instructions=[
@@ -852,7 +888,12 @@ def build_sequence_lights(plan, equipment):
     )
 
 
-def build_sequence_flats(plan, equipment, profile, dusk: bool = False):
+def build_sequence_flats(
+    plan: ObservationPlan,
+    equipment: ObservatoryEquipment,
+    profile: Any,
+    dusk: bool = False,
+) -> dict[str, Any]:
     return container_root_standby(
         equipment=equipment,
         instructions=[
@@ -895,6 +936,7 @@ def build_sequence_flats(plan, equipment, profile, dusk: bool = False):
                         ),
                     )
                     for d in _round_robin(plan.flat, reverse=dusk)
+                    if d[2] is not None
                 ],
             ),
         ],

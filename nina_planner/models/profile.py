@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import math
+from typing import Self
 
 from pydantic import BaseModel, model_validator
 
@@ -40,7 +41,7 @@ class OpticalTrainInfo(BaseModel):
     field_of_view_deg: tuple[float, float] | None = None
 
     @model_validator(mode="after")
-    def _compute_fov(self):
+    def _compute_fov(self) -> Self:
         if (
             self.pixel_size_microns is not None
             and self.focal_length_mm is not None
