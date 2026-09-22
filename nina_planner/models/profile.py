@@ -77,4 +77,5 @@ class ObservatoryProfile(BaseModel):
     plate_solver: str | None = None
     blind_plate_solver: str | None = None
     image_save_path: str
+    file_pattern: str | None = None
     equipment: EquipmentConfig

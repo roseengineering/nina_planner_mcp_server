@@ -327,6 +327,7 @@ async def get_site_profile() -> ObservatoryProfile:
         plate_solver=plate_solve.get("PlateSolverType"),
         blind_plate_solver=plate_solve.get("BlindSolverType"),
         image_save_path=image_file.get("FilePath", ""),
+        file_pattern=image_file.get("FilePattern"),
         equipment=equipment,
     )
     print("Profile:", profile.model_dump_json(indent=2), file=sys.stderr)

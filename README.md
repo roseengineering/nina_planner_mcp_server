@@ -153,6 +153,8 @@ At session end:
 
 ## Notes
 
+- **Required N.I.N.A. plugins:** the MCP server requires the following three plugins to be installed in N.I.N.A.: **Advanced API**, **Sequencer Powerups**, and **Session Metadata**.
+- **Image file pattern:** in the N.I.N.A. profile's `ImageFileSettings`, the first two top-level path segments of `FilePattern` must be `$$DATEMINUS12$$` followed by `$$IMAGETYPE$$` (e.g. `$$DATEMINUS12$$\$$IMAGETYPE$$\...`). `get_imaging_metadata` and frame attribution rely on this layout to locate each frame type's folder.
 - **Filter validation:** `observation_plan_write_file` and `sequence_load_plan` check that every filter name in the plan (lights, flats, autofocus reference) matches a filter in your active N.I.N.A. profile. Unknown filters will be rejected with an error listing what is available.
 - **Frame attribution:** each light sequence names its target `<target> [<plan_id>]`. This appears as `TargetName` in `AcquisitionDetails.csv` and as `OBJECT` in FITS headers, so every acquired light frame can be attributed to the plan that requested it.
 - **Resuming a plan:** call `observation_plan_get_progress` to see what a plan has already acquired, then `sequence_load_plan(..., mode="remaining")` to acquire only the deficit. Lights are attributed by the embedded `plan_id` (or, for frames taken before this feature existed, by target name + filter + exposure). Flats, darks, and bias are matched by image type/filter/exposure and can be shared across plans. Pass `mode="full"` to deliberately re-acquire.
