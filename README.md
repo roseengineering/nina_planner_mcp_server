@@ -2,7 +2,7 @@
 
 ![Banner for repository](banner.png)
 
-`nina_planner` is an MCP tool server for N.I.N.A. (Nighttime Imaging 'N' Astronomy). It lets you inspect equipment, write observation plans, load sequences, and control the telescope — all through tool calls in your AI client.  The focus is on tools to generate and manage sequences on N.I.N.A. rather than issuing real-time raw Advanced API commands.  This mcp server can generate "plans", in the style of ACP plans but in json, which then can be loaded and run as Advanced sequences.
+`nina_planner` is an MCP tool server for N.I.N.A. (Nighttime Imaging 'N' Astronomy). It lets you inspect equipment, write observation plans, load sequences, and control the telescope — all through tool calls in your AI client.  The focus is on tools to generate and manage sequences on N.I.N.A. rather than issuing real-time raw Advanced API commands.  This MCP server can generate "plans" — in the style of ACP (DC-3 Dreams) observatory plans, but as JSON — which can then be loaded and run as N.I.N.A. Advanced sequences.
 
 ---
 
@@ -160,7 +160,7 @@ At session end:
 - **Resuming a plan:** call `observation_plan_get_progress` to see what a plan has already acquired, then `sequence_load_plan(..., mode="remaining")` to acquire only the deficit. Lights are attributed by the embedded `plan_id` (or, for frames taken before this feature existed, by target name + filter + exposure). Flats, darks, and bias are matched by image type/filter/exposure and can be shared across plans. Pass `mode="full"` to deliberately re-acquire.
 - **Quality thresholds:** `max_hfr` and `min_detected_stars` (optional) exclude light frames that fail the thresholds from the acquired count. Frames missing the quality fields are excluded whenever a threshold is set (fail-closed). Thresholds are applied only to light frames — calibration frames have no star quality.
 - **Manually failing a frame:** delete (or move) the image file on disk — e.g. a bad `.fits`/`.tif`. The metadata row stays in the CSV (the plugin only appends), but it is omitted when the metadata is read, so progress no longer counts that frame as acquired and the next `mode="remaining"` load re-acquires it.
-- **The plan file is persistent:** — written to the current working directory. You can inspect, edit, and reuse it across sessions.
+- **The plan file is persistent** — written to the current working directory. You can inspect, edit, and reuse it across sessions.
 - **Experimental:** This code is highly experimental.  At the moment I am testing it at my observatory.  However I don't have a camera cooler.  So those operations are untested.  The agent generates an advanced sequence that it loads into N.I.N.A.  This sequence is still in alpha.  
 
 ---
