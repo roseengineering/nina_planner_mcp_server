@@ -1,9 +1,11 @@
 import type { PluginInput, PluginModule } from "@opencode-ai/plugin";
+import { appendFile } from "node:fs/promises";
 declare const process: { env: Record<string, string | undefined> };
 
 const NINA_ENDPOINT = process.env.NINA_ENDPOINT || "127.0.0.1:1888";
 const INTERVAL_CHECK_MINUTES = +(process.env.INTERVAL_CHECK_MINUTES || 10);
 const WORKER_AGENT = "worker";
+const WORKER_HISTORY = "/tmp/opencode-worker.json";
 const DEBUG = process.env.DEBUG;
 
 const plugin: PluginModule = {
@@ -25,9 +27,10 @@ const plugin: PluginModule = {
           console.error("nina-plugin: failed to create isolated session:", err);
           return null;
         });
+      const sessionId = newSession?.data?.id;
 
       // ensure the session was created successfully
-      if (!newSession?.data?.id) return;
+      if (!sessionId) return;
 
       // target the new session ID, ignoring the user's active console
       const text =
@@ -35,8 +38,9 @@ const plugin: PluginModule = {
           ? "Trigger: Routine interval check. No new N.I.N.A. events. Review observatory status and take action if needed."
           : `Trigger: The latest N.I.N.A. events follow:\n\n\`\`\`json\n${events}\n\`\`\``;
 
-      const payload = {
-        path: { id: newSession.data.id },
+      if (DEBUG) console.error("text:", text);
+      await ctx.client.session.prompt({
+        path: { id: sessionId },
         body: {
           agent: WORKER_AGENT,
           parts: [
@@ -46,10 +50,29 @@ const plugin: PluginModule = {
             },
           ],
         },
-      };
-      if (DEBUG) console.error("prompt:", JSON.stringify(payload, null, 2));
-      await ctx.client.session.prompt(payload);
-      await ctx.client.session.delete({ path: { id: newSession.data.id } });
+      });
+
+      // capture everything the worker did
+      const messages = await ctx.client.session.messages({
+        path: { id: sessionId }
+      });
+
+      // append session to file
+      await appendFile(
+        WORKER_HISTORY,
+        JSON.stringify({
+          timestamp: new Date().toISOString(),
+          sessionId,
+          agent: WORKER_AGENT,
+          messages: messages.data    
+        }) + "\n",
+        "utf8"
+      )
+
+      // delete session data
+      await ctx.client.session.delete({
+        path: { id: sessionId }
+      });
     }
 
     let eventBatch: string[] = [];
