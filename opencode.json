@@ -8,7 +8,7 @@
       "type": "local",
       "environment": {
         // "NINA_IMAGING_DIR": "/mnt/c/Users/george/Documents/N.I.N.A",
-        // "NINA_ENDPOINT": "192.168.0.24:1888"
+        // "NINA_ENDPOINT": "192.168.0.24:1888"  // WSL
         "NINA_DRIVE_MOUNT": "/mnt/c"
       },
       "command": [
