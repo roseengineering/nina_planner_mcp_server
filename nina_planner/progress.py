@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from .models.plan import ObservationPlan
@@ -73,6 +74,54 @@ def _quality_accepted(
     return True
 
 
+def _within_age(
+    row: dict[str, Any],
+    max_age_days: int | None,
+    reference_date: datetime.date | None,
+) -> bool:
+    if max_age_days is None:
+        return True
+    if reference_date is None:
+        return True
+    raw = row.get("date")
+    if not raw:
+        return False
+    try:
+        frame_date = datetime.fromisoformat(str(raw)).date()
+    except (TypeError, ValueError):
+        return False
+    cutoff = reference_date - timedelta(days=max_age_days)
+    return frame_date >= cutoff
+
+
+def _row_matches(
+    row: dict[str, Any],
+    image_type: str,
+    *,
+    filter_name: str | None = None,
+    exposure: float | None = None,
+    plan: ObservationPlan | None = None,
+    max_hfr: float | None = None,
+    min_detected_stars: int | None = None,
+    max_guiding_rms_arcsec: float | None = None,
+    max_age_days: int | None = None,
+    reference_date: datetime.date | None = None,
+) -> bool:
+    if (row.get("image_type") or row.get("frame_type") or "").upper() != image_type:
+        return False
+    if filter_name is not None and row.get("filter_name") != filter_name:
+        return False
+    if not _exposure_matches(row, exposure):
+        return False
+    if image_type == "LIGHT":
+        if plan is not None and not _light_target_matches(plan, row):
+            return False
+        return _quality_accepted(
+            row, max_hfr, min_detected_stars, max_guiding_rms_arcsec
+        )
+    return _within_age(row, max_age_days, reference_date)
+
+
 def _count_matching(
     rows: list[dict[str, Any]],
     image_type: str,
@@ -83,24 +132,66 @@ def _count_matching(
     max_hfr: float | None = None,
     min_detected_stars: int | None = None,
     max_guiding_rms_arcsec: float | None = None,
+    max_age_days: int | None = None,
+    reference_date: datetime.date | None = None,
 ) -> int:
     count = 0
     for row in rows:
-        if (row.get("image_type") or row.get("frame_type") or "").upper() != image_type:
-            continue
-        if filter_name is not None and row.get("filter_name") != filter_name:
-            continue
-        if not _exposure_matches(row, exposure):
-            continue
-        if image_type == "LIGHT":
-            if plan is not None and not _light_target_matches(plan, row):
-                continue
-            if not _quality_accepted(
-                row, max_hfr, min_detected_stars, max_guiding_rms_arcsec
-            ):
-                continue
-        count += 1
+        if _row_matches(
+            row,
+            image_type,
+            filter_name=filter_name,
+            exposure=exposure,
+            plan=plan,
+            max_hfr=max_hfr,
+            min_detected_stars=min_detected_stars,
+            max_guiding_rms_arcsec=max_guiding_rms_arcsec,
+            max_age_days=max_age_days,
+            reference_date=reference_date,
+        ):
+            count += 1
     return count
+
+
+def filter_metadata_rows(
+    plan: ObservationPlan,
+    rows: list[dict[str, Any]],
+    image_type: str,
+    *,
+    max_age_days: int | None = None,
+    reference_date: datetime.date | None = None,
+) -> list[dict[str, Any]]:
+    """Rows attributed to `plan` for `image_type`.
+
+    Lights match by the plan_id embedded in their file path; dark/bias/flat
+    frames match the plan's exposure specs (filter too, for flats) and must
+    fall within the calibration age window when one is configured.
+    """
+    image_type_upper = image_type.upper()
+    if image_type_upper == "LIGHT":
+        return [r for r in rows if _row_matches(r, "LIGHT", plan=plan)]
+    if image_type_upper == "FLAT":
+        specs = [(g.filter_name, g.exposure_time_seconds) for g in plan.flat]
+    elif image_type_upper == "DARK":
+        specs = [(None, g.exposure_time_seconds) for g in plan.dark]
+    elif image_type_upper == "BIAS":
+        specs = [(None, None)]
+    else:
+        return []
+    out: list[dict[str, Any]] = []
+    for row in rows:
+        for filter_name, exposure in specs:
+            if _row_matches(
+                row,
+                image_type_upper,
+                filter_name=filter_name,
+                exposure=exposure,
+                max_age_days=max_age_days,
+                reference_date=reference_date,
+            ):
+                out.append(row)
+                break
+    return out
 
 
 def plan_progress(
@@ -111,6 +202,8 @@ def plan_progress(
     min_detected_stars: int | None = None,
     max_guiding_rms_arcsec: float | None = None,
 ) -> dict[str, list[dict[str, Any]]]:
+    reference_date = datetime.now(UTC).date()
+
     def group(image_type: str, groups: list[Any]) -> list[dict[str, Any]]:
         out: list[dict[str, Any]] = []
         for g in groups:
@@ -127,6 +220,8 @@ def plan_progress(
                 max_hfr=max_hfr,
                 min_detected_stars=min_detected_stars,
                 max_guiding_rms_arcsec=max_guiding_rms_arcsec,
+                max_age_days=plan.calibration_max_age_days,
+                reference_date=reference_date,
             )
             out.append(
                 {

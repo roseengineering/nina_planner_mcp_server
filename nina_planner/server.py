@@ -11,7 +11,7 @@ import anyio
 import httpx
 from mcp.server.fastmcp import FastMCP
 
-from .imaging import melt_imaging_metadata, read_imaging_csv, windows_to_local
+from .imaging import read_imaging_csv, read_weather_csv, widen_imaging_metadata, windows_to_local
 from .models.observatory import ObservatoryEquipment
 from .models.plan import ObservationPlan
 from .models.profile import (
@@ -22,7 +22,7 @@ from .models.profile import (
     SiteLocationInfo,
 )
 from .nina_utils import ascom_float, ascom_int, to_snake
-from .progress import plan_progress, plan_with_remaining
+from .progress import filter_metadata_rows, plan_progress, plan_with_remaining
 from .sequence import (
     build_sequence_darks,
     build_sequence_flats,
@@ -116,7 +116,9 @@ def _convert_to_met(
         ts = d[timestamp]
         elapsed = (ts - now).total_seconds()
         if since + elapsed > 0:
-            d[timestamp] = ts.replace(microsecond=0).isoformat()
+            d[timestamp] = ts.astimezone(UTC).replace(microsecond=0).strftime(
+                "%Y-%m-%dT%H:%M:%SZ"
+            )
             res.append(d)
     return res
 
@@ -359,10 +361,24 @@ async def get_logs(since: int = 300) -> Any:
 
 
 @mcp.tool()
-async def get_imaging_metadata(image_type: str = "light") -> dict[str, Any]:
-    """Returns imaging metadata parsed from the ImageMetaData.csv files in the frame folders (LIGHT, DARK, BIAS, FLAT, etc.) of the mounted N.I.N.A imaging directory. Returns a compact narrow (melted) table to avoid noise: dead columns are dropped dynamically — columns constant across the returned frames are listed once in summary.constants, and columns with no real values (ASCOM NaN/-1, empty, 'n/a', and the 0 sentinel NINA writes for unmeasured quality/guiding/CCD metrics) are listed in summary.unpopulated. Only genuinely varying metrics become rows in the `metrics` array, namespaced by group (quality.hfr, guiding.rms, background.adu_mean, ...). Per-frame identity fields (file_path, date, exposure_number, exposure_start, duration, filter_name) are listed once in `frames`; `metrics` rows reference them by index. Defaults to lights frames for star-quality checks; pass another image type (light, dark, bias, flat — case-insensitive)."""
-    data = read_imaging_csv(root=await _resolve_imaging_root(), image_type=image_type)
-    res = melt_imaging_metadata(data)
+async def get_imaging_metadata(
+    file_path: str, image_type: str = "light"
+) -> dict[str, Any]:
+    """Returns imaging metadata for a plan, parsed from the ImageMetaData.csv files in the frame folders (LIGHT, DARK, BIAS, FLAT, etc.) of the mounted N.I.N.A imaging directory. The plan file scopes the result: light frames are attributed to the plan via the plan_id embedded in the recorded file path (no target-name fallback); dark/bias/flat frames are matched by image type/filter/exposure and must fall within the plan's `calibration_max_age_days` window of today (UTC). Returns a wide table with one row per exposure, each carrying the frame identity fields (file_path, date, exposure_number, exposure_start, duration, filter_name) plus its metrics as columns, namespaced by group (quality.hfr, guiding.rms, background.adu_mean, pointing.airmass, ...). Timestamps are normalized to seconds-precision UTC ISO-8601 with a Z suffix (e.g. 2026-09-22T02:16:25Z). Per-exposure weather samples from WeatherData.csv are joined onto the same row (weather.temperature, humidity, cloud_cover, ...) via the UTC exposure start. Dead columns are dropped dynamically: columns constant across the returned frames are listed once under summary.constants, and columns with no real values (ASCOM NaN/-1, empty, 'n/a', and the 0 sentinel NINA writes for unmeasured quality/guiding/CCD metrics) are listed under summary.unpopulated. Defaults to lights frames for star-quality checks; pass another image type (light, dark, bias, flat — case-insensitive)."""
+    root = await _resolve_imaging_root()
+    plan = await _load_plan(file_path)
+    rows = read_imaging_csv(root=root, image_type=image_type)
+    rows = filter_metadata_rows(
+        plan,
+        rows,
+        image_type,
+        max_age_days=plan.calibration_max_age_days,
+        reference_date=datetime.now(UTC).date(),
+    )
+    weather = read_weather_csv(root=root)
+    res = widen_imaging_metadata(rows, weather_rows=weather)
+    res["plan_id"] = plan.effective_plan_id()
+    res["target"] = plan.target
     print("Metadata:", json.dumps(res, indent=2), file=sys.stderr)
     return res
 
@@ -393,7 +409,7 @@ async def observation_plan_get_progress(
     min_detected_stars: int | None = None,
     max_guiding_rms_arcsec: float | None = None,
 ) -> dict[str, Any]:
-    """Returns per-frame-type acquisition progress for an observation-plan JSON file: for each exposure group, the total_count from the plan, the acquired_count attributed to this plan from the imaging metadata (ImageMetaData.csv + AcquisitionDetails.csv), and the remaining_count. Lights are attributed via the plan_id embedded in the recorded file path (no target-name fallback); flats/darks/bias are matched by image type, filter, and exposure. Pass max_hfr and/or min_detected_stars to exclude light frames that fail quality thresholds (frames missing the quality fields are excluded when a threshold is set). Use this before sequence_load_plan to decide what still needs acquiring."""
+    """Returns per-frame-type acquisition progress for an observation-plan JSON file: for each exposure group, the total_count from the plan, the acquired_count attributed to this plan from the imaging metadata (ImageMetaData.csv + AcquisitionDetails.csv), and the remaining_count. Lights are attributed via the plan_id embedded in the recorded file path (no target-name fallback); flats/darks/bias are matched by image type, filter, and exposure and must fall within the plan's calibration_max_age_days window of today (UTC). Pass max_hfr and/or min_detected_stars to exclude light frames that fail quality thresholds (frames missing the quality fields are excluded when a threshold is set). Use this before sequence_load_plan to decide what still needs acquiring."""
     plan = await _load_plan(file_path)
     rows = await _read_metadata()
     res = {

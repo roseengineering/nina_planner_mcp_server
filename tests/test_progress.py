@@ -1,7 +1,8 @@
 import unittest
+from datetime import UTC, datetime, timedelta
 
 from nina_planner.models.plan import ObservationPlan
-from nina_planner.progress import plan_progress, plan_with_remaining
+from nina_planner.progress import filter_metadata_rows, plan_progress, plan_with_remaining
 
 
 def _row(
@@ -9,14 +10,18 @@ def _row(
     filter_name="LP",
     duration="60.0",
     target: str | None = "M31 [plan-abc123]",
+    date: str | None = None,
 ):
+    if date is None:
+        date = datetime.now(UTC).date().isoformat()
     row = {
         "image_type": image_type,
         "filter_name": filter_name,
         "duration": duration,
+        "date": date,
     }
     if target is not None:
-        row["file_path"] = f"C:/NINA/2026-09-21/LIGHT/{target}__60.00s_0000.fits"
+        row["file_path"] = f"C:/NINA/{date}/LIGHT/{target}__60.00s_0000.fits"
     return row
 
 
@@ -227,6 +232,109 @@ class PlanWithRemainingTest(unittest.TestCase):
         counts = {l.filter_name: l.total_count for l in reduced.light}
         self.assertEqual(counts["L"], 5)
         self.assertEqual(counts["SII"], 2)
+
+
+class CalibrationAgeTest(unittest.TestCase):
+    def test_calibration_max_age_days_default_and_override(self):
+        self.assertEqual(_plan().calibration_max_age_days, 7)
+        self.assertEqual(_plan(calibration_max_age_days=0).calibration_max_age_days, 0)
+
+    def test_stale_calibration_excluded_from_progress(self):
+        plan = _plan()
+        today = datetime.now(UTC).date().isoformat()
+        stale = (datetime.now(UTC).date() - timedelta(days=30)).isoformat()
+        rows = [
+            _row(image_type="DARK", duration="60.0", target=None, date=today),
+            _row(image_type="DARK", duration="60.0", target=None, date=stale),
+        ]
+        prog = plan_progress(plan, rows)
+        self.assertEqual(prog["dark"][0]["acquired_count"], 1)
+        self.assertEqual(prog["dark"][0]["remaining_count"], 9)
+
+    def test_calibration_missing_date_excluded(self):
+        plan = _plan()
+        row = _row(image_type="BIAS", target=None)
+        del row["date"]
+        prog = plan_progress(plan, [row])
+        self.assertEqual(prog["bias"][0]["acquired_count"], 0)
+
+    def test_zero_age_window_counts_only_today(self):
+        plan = _plan(calibration_max_age_days=0)
+        today = datetime.now(UTC).date().isoformat()
+        yesterday = (datetime.now(UTC).date() - timedelta(days=1)).isoformat()
+        rows = [
+            _row(image_type="FLAT", filter_name="LP", duration="5.0", target=None, date=today),
+            _row(image_type="FLAT", filter_name="LP", duration="5.0", target=None, date=yesterday),
+        ]
+        prog = plan_progress(plan, rows)
+        self.assertEqual(prog["flat"][0]["acquired_count"], 1)
+
+
+class FilterMetadataRowsTest(unittest.TestCase):
+    def _ref(self):
+        return datetime.now(UTC).date()
+
+    def test_lights_match_plan_id(self):
+        plan = _plan()
+        rows = [
+            _row(target="M31 [plan-abc123]"),
+            _row(target="M31 [other-id]"),
+            _row(target="M31"),
+        ]
+        out = filter_metadata_rows(plan, rows, "light")
+        self.assertEqual(len(out), 1)
+        self.assertIn("plan-abc123", out[0]["file_path"])
+
+    def test_dark_matches_exposure_and_age(self):
+        plan = _plan()
+        ref = self._ref()
+        stale = (ref - timedelta(days=30)).isoformat()
+        rows = [
+            _row(image_type="DARK", duration="60.0", target=None),
+            _row(image_type="DARK", duration="60.0", target=None, date=stale),
+            _row(image_type="DARK", duration="300.0", target=None),
+        ]
+        out = filter_metadata_rows(plan, rows, "dark", max_age_days=7, reference_date=ref)
+        self.assertEqual(len(out), 1)
+        self.assertEqual(out[0]["duration"], "60.0")
+
+    def test_flat_matches_filter_and_exposure(self):
+        plan = _plan()
+        rows = [
+            _row(image_type="FLAT", filter_name="LP", duration="5.0", target=None),
+            _row(image_type="FLAT", filter_name="SII", duration="5.0", target=None),
+            _row(image_type="FLAT", filter_name="LP", duration="10.0", target=None),
+        ]
+        out = filter_metadata_rows(
+            plan, rows, "flat", max_age_days=7, reference_date=self._ref()
+        )
+        self.assertEqual(len(out), 1)
+        self.assertEqual(out[0]["filter_name"], "LP")
+
+    def test_bias_returns_within_window(self):
+        plan = _plan()
+        ref = self._ref()
+        stale = (ref - timedelta(days=3)).isoformat()
+        rows = [
+            _row(image_type="BIAS", target=None),
+            _row(image_type="BIAS", target=None, date=stale),
+        ]
+        out = filter_metadata_rows(plan, rows, "bias", max_age_days=0, reference_date=ref)
+        self.assertEqual(len(out), 1)
+
+    def test_missing_date_excluded_when_window_set(self):
+        plan = _plan()
+        row = _row(image_type="BIAS", target=None)
+        del row["date"]
+        out = filter_metadata_rows(
+            plan, [row], "bias", max_age_days=7, reference_date=self._ref()
+        )
+        self.assertEqual(out, [])
+
+    def test_empty_result(self):
+        plan = _plan()
+        self.assertEqual(filter_metadata_rows(plan, [], "light"), [])
+        self.assertEqual(filter_metadata_rows(plan, [], "dark"), [])
 
 
 if __name__ == "__main__":

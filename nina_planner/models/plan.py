@@ -90,6 +90,12 @@ class ObservationPlan(BaseModel):
     batch_size: int = Field(
         default=5, ge=0, description="Exposures per batch. 0 means unbatch."
     )
+    calibration_max_age_days: int = Field(
+        default=7,
+        ge=0,
+        description="Calibration frames (darks, bias, flats) older than this "
+        "many days are not attributed to the plan.",
+    )
 
     # hardware
     cooler: CoolerConfig = Field(default_factory=CoolerConfig)
