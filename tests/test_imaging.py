@@ -36,10 +36,10 @@ class ReadImagingCsvTest(unittest.TestCase):
         rows = read_imaging_csv(root=self.root, image_type="light")
 
         self.assertEqual(len(rows), 1)
-        self.assertEqual(rows[0]["Date"], "2026-09-21")
-        self.assertEqual(rows[0]["FrameType"], "LIGHT")
-        self.assertEqual(rows[0]["Duration"], "60.0")
-        self.assertEqual(rows[0]["FilterName"], "LP")
+        self.assertEqual(rows[0]["date"], "2026-09-21")
+        self.assertEqual(rows[0]["frame_type"], "LIGHT")
+        self.assertEqual(rows[0]["duration"], "60.0")
+        self.assertEqual(rows[0]["filter_name"], "LP")
 
     def test_injects_into_all_image_rows(self):
         self._write_images(
@@ -73,8 +73,8 @@ class ReadImagingCsvTest(unittest.TestCase):
         rows = read_imaging_csv(root=self.root, image_type="light")
 
         self.assertEqual(len(rows), 1)
-        self.assertEqual(rows[0]["Duration"], "60.0")
-        self.assertTrue(rows[0]["FilePath"].startswith(str(mount)))
+        self.assertEqual(rows[0]["duration"], "60.0")
+        self.assertTrue(rows[0]["file_path"].startswith(str(mount)))
 
     def test_row_kept_when_path_absent(self):
         _write_csv(
@@ -86,7 +86,7 @@ class ReadImagingCsvTest(unittest.TestCase):
         rows = read_imaging_csv(root=self.root, image_type="light")
 
         self.assertEqual(len(rows), 1)
-        self.assertEqual(rows[0]["Duration"], "60.0")
+        self.assertEqual(rows[0]["duration"], "60.0")
 
     def test_no_date_filter(self):
         self._write_images([["LIGHT", "60.0", "LP"]])
@@ -94,7 +94,7 @@ class ReadImagingCsvTest(unittest.TestCase):
         rows = read_imaging_csv(root=self.root, image_type="light")
 
         self.assertEqual(len(rows), 1)
-        self.assertEqual(rows[0]["Date"], "2026-09-21")
+        self.assertEqual(rows[0]["date"], "2026-09-21")
 
 
 class WindowsToLocalTest(unittest.TestCase):

@@ -8,16 +8,21 @@ def _row(
     image_type="LIGHT",
     filter_name="LP",
     duration="60.0",
-    target: str | None = "M31",
+    target: str | None = "M31 [plan-abc123]",
 ):
-    row = {"ImageType": image_type, "FilterName": filter_name, "Duration": duration}
+    row = {
+        "image_type": image_type,
+        "filter_name": filter_name,
+        "duration": duration,
+    }
     if target is not None:
-        row["TargetName"] = target
+        row["file_path"] = f"C:/NINA/2026-09-21/LIGHT/{target}__60.00s_0000.fits"
     return row
 
 
 def _plan(**overrides):
     data = {
+        "plan_id": "plan-abc123",
         "target": "M31",
         "ra_hours": 0.71,
         "dec_deg": 41.27,
@@ -41,16 +46,20 @@ class PlanProgressTest(unittest.TestCase):
             _row(target="M31 [plan-abc123]"),
             _row(target="M31 [plan-abc123]"),
             _row(target="M31 [other-id]"),  # different plan, ignored
-            _row(target="M31"),  # legacy frame, counted by target fallback
+            _row(target="M31"),  # no embedded id, ignored
         ]
         lights = plan_progress(plan, rows)["light"][0]
-        self.assertEqual(lights["acquired_count"], 3)
-        self.assertEqual(lights["remaining_count"], 17)
+        self.assertEqual(lights["acquired_count"], 2)
+        self.assertEqual(lights["remaining_count"], 18)
 
-    def test_legacy_target_name_matching(self):
-        plan = _plan()
+    def test_derived_plan_id_matching(self):
+        plan = _plan(plan_id="")
         self.assertEqual(plan.plan_id, "")
-        rows = [_row(target="M31"), _row(target="M31")]
+        pid = plan.effective_plan_id()
+        rows = [
+            _row(target=f"M31 [{pid}]"),
+            _row(target=f"M31 [{pid}]"),
+        ]
         lights = plan_progress(plan, rows)["light"][0]
         self.assertEqual(lights["acquired_count"], 2)
         self.assertEqual(lights["remaining_count"], 18)
@@ -98,15 +107,15 @@ class PlanProgressTest(unittest.TestCase):
 class QualityFilterTest(unittest.TestCase):
     def _hfr_row(self, hfr, stars=10):
         row = _row()
-        row["HFR"] = str(hfr)
-        row["DetectedStars"] = str(stars)
+        row["hfr"] = str(hfr)
+        row["detected_stars"] = str(stars)
         return row
 
     def _guiding_rms_row(self, rms_arcsec, hfr=1.0, stars=10):
         row = _row()
-        row["HFR"] = str(hfr)
-        row["DetectedStars"] = str(stars)
-        row["GuidingRMSArcSec"] = str(rms_arcsec)
+        row["hfr"] = str(hfr)
+        row["detected_stars"] = str(stars)
+        row["guiding_rms_arc_sec"] = str(rms_arcsec)
         return row
 
     def test_max_hfr_excludes_blur(self):
@@ -125,14 +134,14 @@ class QualityFilterTest(unittest.TestCase):
         plan = _plan()
         rows = [
             self._hfr_row(1.5),
-            _row(target="M31"),
+            _row(),
         ]  # second has no HFR/DetectedStars
         lights = plan_progress(plan, rows, max_hfr=2.5)["light"][0]
         self.assertEqual(lights["acquired_count"], 1)
 
     def test_no_filter_counts_all(self):
         plan = _plan()
-        rows = [self._hfr_row(9.0), _row(target="M31")]
+        rows = [self._hfr_row(9.0), _row()]
         lights = plan_progress(plan, rows)["light"][0]
         self.assertEqual(lights["acquired_count"], 2)
 
@@ -160,7 +169,7 @@ class QualityFilterTest(unittest.TestCase):
 
     def test_missing_guiding_rms_excluded_when_filtered(self):
         plan = _plan()
-        rows = [self._guiding_rms_row(1.5), _row(target="M31")]
+        rows = [self._guiding_rms_row(1.5), _row()]
         lights = plan_progress(plan, rows, max_guiding_rms_arcsec=2.5)["light"][0]
         self.assertEqual(lights["acquired_count"], 1)
 
@@ -181,10 +190,10 @@ class PlanWithRemainingTest(unittest.TestCase):
     def test_reduces_and_drops_completed(self):
         plan = _plan()
         rows = [
-            _row(target="M31"),
-            _row(target="M31"),
-            _row(target="M31"),
-            _row(target="M31"),
+            _row(),
+            _row(),
+            _row(),
+            _row(),
         ]  # 4 of 20 lights
         progress = plan_progress(plan, rows)
         reduced = plan_with_remaining(plan, progress)
@@ -197,7 +206,7 @@ class PlanWithRemainingTest(unittest.TestCase):
 
     def test_drops_fully_acquired_group(self):
         plan = _plan()
-        rows = [_row(target="M31") for _ in range(20)]
+        rows = [_row() for _ in range(20)]
         progress = plan_progress(plan, rows)
         reduced = plan_with_remaining(plan, progress)
 
@@ -210,7 +219,7 @@ class PlanWithRemainingTest(unittest.TestCase):
                 {"filter_name": "SII", "exposure_time_seconds": 60.0, "total_count": 5},
             ]
         )
-        rows = [_row(filter_name="SII", target="M31") for _ in range(3)]
+        rows = [_row(filter_name="SII") for _ in range(3)]
         progress = plan_progress(plan, rows)
         reduced = plan_with_remaining(plan, progress)
 

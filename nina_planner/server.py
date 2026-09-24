@@ -365,7 +365,7 @@ async def get_logs(since: int = 300) -> Any:
 
 @mcp.tool()
 async def get_imaging_metadata(image_type: str = "light") -> list[dict[str, Any]]:
-    """Returns imaging metadata parsed from the ImageMetaData.csv files in the frame folders (LIGHT, DARK, BIAS, FLAT, etc.) of the mounted N.I.N.A imaging directory. Each row is tagged with Date, FrameType, and Source. When an AcquisitionDetails.csv is present in the same session directory, its fields (e.g. TargetName, FocalLength) are injected into each image row unless the image row already has a value for that field. Defaults to lights frames for star-quality checks; pass another image type (light, dark, bias, flat — case-insensitive)."""
+    """Returns imaging metadata parsed from the ImageMetaData.csv files in the frame folders (LIGHT, DARK, BIAS, FLAT, etc.) of the mounted N.I.N.A imaging directory. Each row is tagged with date, frame_type, and source. When an AcquisitionDetails.csv is present in the same session directory, its fields (e.g. TargetName, FocalLength) are injected into each image row unless the image row already has a value for that field. Defaults to lights frames for star-quality checks; pass another image type (light, dark, bias, flat — case-insensitive)."""
     data = read_imaging_csv(root=await _resolve_imaging_root(), image_type=image_type)
     print("Metadata:", json.dumps(data, indent=2), file=sys.stderr)
     return data
@@ -397,7 +397,7 @@ async def observation_plan_get_progress(
     min_detected_stars: int | None = None,
     max_guiding_rms_arcsec: float | None = None,
 ) -> dict[str, Any]:
-    """Returns per-frame-type acquisition progress for an observation-plan JSON file: for each exposure group, the total_count from the plan, the acquired_count attributed to this plan from the imaging metadata (ImageMetaData.csv + AcquisitionDetails.csv), and the remaining_count. Lights are attributed via the plan_id embedded in the sequence target name (falling back to the target name for legacy frames); flats/darks/bias are matched by image type, filter, and exposure. Pass max_hfr and/or min_detected_stars to exclude light frames that fail quality thresholds (frames missing the quality fields are excluded when a threshold is set). Use this before sequence_load_plan to decide what still needs acquiring."""
+    """Returns per-frame-type acquisition progress for an observation-plan JSON file: for each exposure group, the total_count from the plan, the acquired_count attributed to this plan from the imaging metadata (ImageMetaData.csv + AcquisitionDetails.csv), and the remaining_count. Lights are attributed via the plan_id embedded in the recorded file path (no target-name fallback); flats/darks/bias are matched by image type, filter, and exposure. Pass max_hfr and/or min_detected_stars to exclude light frames that fail quality thresholds (frames missing the quality fields are excluded when a threshold is set). Use this before sequence_load_plan to decide what still needs acquiring."""
     plan = await _load_plan(file_path)
     rows = await _read_metadata()
     res = {

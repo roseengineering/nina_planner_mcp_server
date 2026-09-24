@@ -10,6 +10,11 @@ from typing import Any
 _DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 
 
+def _to_snake(name: str) -> str:
+    name = re.sub(r"([a-z0-9])([A-Z])", r"\1_\2", name)
+    return name.replace(" ", "_").lower()
+
+
 def windows_to_local(windows_path: str, drive_mount: str | None = None) -> Path:
     if sys.platform == "win32":
         return Path(windows_path)
@@ -24,7 +29,9 @@ def windows_to_local(windows_path: str, drive_mount: str | None = None) -> Path:
 
 def _read_csv(path: Path) -> list[dict[str, Any]]:
     with open(path, "r", encoding="utf-8-sig", newline="") as f:
-        return [dict(row) for row in csv.DictReader(f)]
+        return [
+            {_to_snake(k): v for k, v in row.items()} for row in csv.DictReader(f)
+        ]
 
 
 def _find_date_ancestor(path: Path) -> str | None:
@@ -56,18 +63,18 @@ def read_imaging_csv(root: Path, image_type: str) -> list[dict[str, Any]]:
         csv_dir = meta_path.parent
         date = _find_date_ancestor(meta_path)
         for row in _read_csv(meta_path):
-            row_image_type = (row.get("ImageType") or "").upper()
+            row_image_type = (row.get("image_type") or "").upper()
             if row_image_type != image_type_upper:
                 continue
-            raw_path = row.get("FilePath")
+            raw_path = row.get("file_path")
             resolved = _resolve_existing_file(raw_path)
             if raw_path and resolved is None:
                 continue
             if resolved:
-                row["FilePath"] = resolved
+                row["file_path"] = resolved
             enriched = dict(row)
             enriched.update(
-                {"Date": date, "FrameType": row_image_type, "Source": "image_metadata"}
+                {"date": date, "frame_type": row_image_type, "source": "image_metadata"}
             )
             rows.append(enriched)
     return rows

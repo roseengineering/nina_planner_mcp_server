@@ -18,7 +18,7 @@ def _embedded_plan_id(target: str) -> str:
 def _exposure_matches(row: dict[str, Any], exposure: float | None) -> bool:
     if exposure is None:
         return True
-    raw = row.get("Duration")
+    raw = row.get("duration")
     if raw is None or raw == "":
         return False
     try:
@@ -28,10 +28,10 @@ def _exposure_matches(row: dict[str, Any], exposure: float | None) -> bool:
 
 
 def _light_target_matches(plan: ObservationPlan, row: dict[str, Any]) -> bool:
-    target = (row.get("FilePath") or "").strip()
-    if not target:
+    path = (row.get("file_path") or "").strip()
+    if not path:
         return False
-    return _embedded_plan_id(target) == plan.effective_plan_id()
+    return _embedded_plan_id(path) == plan.effective_plan_id()
 
 
 def _quality_accepted(
@@ -41,7 +41,7 @@ def _quality_accepted(
     max_guiding_rms_arcsec: float | None = None,
 ) -> bool:
     if max_hfr is not None:
-        raw_hfr = row.get("HFR")
+        raw_hfr = row.get("hfr")
         if raw_hfr is None or raw_hfr == "":
             return False
         try:
@@ -51,7 +51,7 @@ def _quality_accepted(
         if hfr > max_hfr:
             return False
     if min_detected_stars is not None:
-        raw_stars = row.get("DetectedStars")
+        raw_stars = row.get("detected_stars")
         if raw_stars is None or raw_stars == "":
             return False
         try:
@@ -61,7 +61,7 @@ def _quality_accepted(
         if stars < min_detected_stars:
             return False
     if max_guiding_rms_arcsec is not None:
-        raw_rms = row.get("GuidingRMSArcSec")
+        raw_rms = row.get("guiding_rms_arc_sec")
         if raw_rms is None or raw_rms == "":
             return False
         try:
@@ -86,9 +86,9 @@ def _count_matching(
 ) -> int:
     count = 0
     for row in rows:
-        if (row.get("ImageType") or row.get("FrameType") or "").upper() != image_type:
+        if (row.get("image_type") or row.get("frame_type") or "").upper() != image_type:
             continue
-        if filter_name is not None and row.get("FilterName") != filter_name:
+        if filter_name is not None and row.get("filter_name") != filter_name:
             continue
         if not _exposure_matches(row, exposure):
             continue
