@@ -5,7 +5,7 @@ from typing import Any
 
 from .models.plan import ObservationPlan
 
-_BRACKET_RE = re.compile(r"^.*?\s*\[(?P<embedded>[^\]]+)\]$")
+_BRACKET_RE = re.compile(r"^.*?\s*\[(?P<embedded>[^\]]+)\]")
 
 
 def _embedded_plan_id(target: str) -> str:
@@ -28,7 +28,7 @@ def _exposure_matches(row: dict[str, Any], exposure: float | None) -> bool:
 
 
 def _light_target_matches(plan: ObservationPlan, row: dict[str, Any]) -> bool:
-    target = (row.get("TargetName") or "").strip()
+    target = (row.get("FilePath") or "").strip()
     if not target:
         return False
     return _embedded_plan_id(target) == plan.effective_plan_id()

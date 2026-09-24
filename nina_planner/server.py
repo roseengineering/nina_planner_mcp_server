@@ -11,7 +11,7 @@ import anyio
 import httpx
 from mcp.server.fastmcp import FastMCP
 
-from .imaging import imaging_root, read_imaging_csv, windows_to_local
+from .imaging import read_imaging_csv, windows_to_local
 from .models.observatory import ObservatoryEquipment
 from .models.plan import ObservationPlan
 from .models.profile import (
@@ -127,18 +127,8 @@ def _convert_to_met(
 
 
 async def _resolve_imaging_root() -> Path:
-    if os.environ.get("NINA_IMAGING_DIR"):
-        return imaging_root()
     profile = await get_site_profile()
-    drive_mount = os.environ.get("NINA_DRIVE_MOUNT")
-    if drive_mount:
-        return windows_to_local(profile.image_save_path, drive_mount)
-    if sys.platform == "win32":
-        return Path(profile.image_save_path)
-    raise RuntimeError(
-        "NINA_IMAGING_DIR (or NINA_DRIVE_MOUNT) must be set on Linux and WSL to "
-        "resolve the imaging directory for get_imaging_metadata."
-    )
+    return windows_to_local(profile.image_save_path)
 
 
 async def _load_plan(file_path: str) -> ObservationPlan:
@@ -153,10 +143,10 @@ async def _load_plan(file_path: str) -> ObservationPlan:
 async def _read_metadata(image_type: str | None = None) -> list[dict[str, Any]]:
     root = await _resolve_imaging_root()
     if image_type is not None:
-        return read_imaging_csv(date=None, root=root, image_type=image_type)
+        return read_imaging_csv(root=root, image_type=image_type)
     rows: list[dict[str, Any]] = []
     for t in ("light", "dark", "bias", "flat"):
-        rows += read_imaging_csv(date=None, root=root, image_type=t)
+        rows += read_imaging_csv(root=root, image_type=t)
     return rows
 
 
@@ -374,13 +364,9 @@ async def get_logs(since: int = 300) -> Any:
 
 
 @mcp.tool()
-async def get_imaging_metadata(
-    date: str | None = None, image_type: str = "light"
-) -> list[dict[str, Any]]:
-    """Returns imaging metadata parsed from the ImageMetaData.csv files in the frame folders (LIGHT, DARK, BIAS, FLAT, etc.) of the mounted N.I.N.A imaging directory. Each row is tagged with Date, FrameType, and Source. When an AcquisitionDetails.csv is present in the same session directory, its fields (e.g. TargetName, FocalLength) are injected into each image row unless the image row already has a value for that field. Defaults to lights frames for star-quality checks; pass another image type (light, dark, bias, flat — case-insensitive). Optionally filter to a single YYYY-MM-DD date."""
-    data = read_imaging_csv(
-        date=date, root=await _resolve_imaging_root(), image_type=image_type
-    )
+async def get_imaging_metadata(image_type: str = "light") -> list[dict[str, Any]]:
+    """Returns imaging metadata parsed from the ImageMetaData.csv files in the frame folders (LIGHT, DARK, BIAS, FLAT, etc.) of the mounted N.I.N.A imaging directory. Each row is tagged with Date, FrameType, and Source. When an AcquisitionDetails.csv is present in the same session directory, its fields (e.g. TargetName, FocalLength) are injected into each image row unless the image row already has a value for that field. Defaults to lights frames for star-quality checks; pass another image type (light, dark, bias, flat — case-insensitive)."""
+    data = read_imaging_csv(root=await _resolve_imaging_root(), image_type=image_type)
     print("Metadata:", json.dumps(data, indent=2), file=sys.stderr)
     return data
 

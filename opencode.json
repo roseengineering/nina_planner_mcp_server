@@ -5,7 +5,7 @@
       "./nina-plugin.ts",
       {
         // "intervalCheck": 10,
-        "ninaEndpoint": "192.168.0.24:1888",
+        // "ninaEndpoint": "192.168.0.24:1888",
         "agentHistory": "/tmp/nina-agent.json",
         "pluginLogs": "/tmp/nina-plugins.log"
       }
@@ -15,11 +15,8 @@
     "nina-planner": {
       "type": "local",
       "environment": {
-        // "NINA_IMAGING_DIR": "/mnt/c/Users/george/Documents/N.I.N.A",
         // "NINA_ENDPOINT": "192.168.0.24:1888",
         // "NINA_DRIVE_MOUNT": "/mnt/c"
-        "NINA_ENDPOINT": "192.168.0.24:1888",
-        "NINA_DRIVE_MOUNT": "/"
       },
       "command": [
         "bash", 
