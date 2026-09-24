@@ -35,7 +35,10 @@ def _light_target_matches(plan: ObservationPlan, row: dict[str, Any]) -> bool:
 
 
 def _quality_accepted(
-    row: dict[str, Any], max_hfr: float | None, min_detected_stars: int | None
+    row: dict[str, Any],
+    max_hfr: float | None,
+    min_detected_stars: int | None,
+    max_guiding_rms_arcsec: float | None = None,
 ) -> bool:
     if max_hfr is not None:
         raw_hfr = row.get("HFR")
@@ -57,6 +60,16 @@ def _quality_accepted(
             return False
         if stars < min_detected_stars:
             return False
+    if max_guiding_rms_arcsec is not None:
+        raw_rms = row.get("GuidingRMSArcSec")
+        if raw_rms is None or raw_rms == "":
+            return False
+        try:
+            rms = float(raw_rms)
+        except (TypeError, ValueError):
+            return False
+        if rms > max_guiding_rms_arcsec:
+            return False
     return True
 
 
@@ -69,6 +82,7 @@ def _count_matching(
     plan: ObservationPlan | None = None,
     max_hfr: float | None = None,
     min_detected_stars: int | None = None,
+    max_guiding_rms_arcsec: float | None = None,
 ) -> int:
     count = 0
     for row in rows:
@@ -81,7 +95,9 @@ def _count_matching(
         if image_type == "LIGHT":
             if plan is not None and not _light_target_matches(plan, row):
                 continue
-            if not _quality_accepted(row, max_hfr, min_detected_stars):
+            if not _quality_accepted(
+                row, max_hfr, min_detected_stars, max_guiding_rms_arcsec
+            ):
                 continue
         count += 1
     return count
@@ -93,6 +109,7 @@ def plan_progress(
     *,
     max_hfr: float | None = None,
     min_detected_stars: int | None = None,
+    max_guiding_rms_arcsec: float | None = None,
 ) -> dict[str, list[dict[str, Any]]]:
     def group(image_type: str, groups: list[Any]) -> list[dict[str, Any]]:
         out: list[dict[str, Any]] = []
@@ -109,6 +126,7 @@ def plan_progress(
                 plan=plan if image_type == "LIGHT" else None,
                 max_hfr=max_hfr,
                 min_detected_stars=min_detected_stars,
+                max_guiding_rms_arcsec=max_guiding_rms_arcsec,
             )
             out.append(
                 {

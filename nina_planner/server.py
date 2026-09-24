@@ -409,17 +409,24 @@ async def observation_plan_get_progress(
     file_path: str,
     max_hfr: float | None = None,
     min_detected_stars: int | None = None,
+    max_guiding_rms_arcsec: float | None = None,
 ) -> dict[str, Any]:
     """Returns per-frame-type acquisition progress for an observation-plan JSON file: for each exposure group, the total_count from the plan, the acquired_count attributed to this plan from the imaging metadata (ImageMetaData.csv + AcquisitionDetails.csv), and the remaining_count. Lights are attributed via the plan_id embedded in the sequence target name (falling back to the target name for legacy frames); flats/darks/bias are matched by image type, filter, and exposure. Pass max_hfr and/or min_detected_stars to exclude light frames that fail quality thresholds (frames missing the quality fields are excluded when a threshold is set). Use this before sequence_load_plan to decide what still needs acquiring."""
     plan = await _load_plan(file_path)
     rows = await _read_metadata()
-    return {
+    res = {
         "plan_id": plan.effective_plan_id(),
         "target": plan.target,
         "frame_types": plan_progress(
-            plan, rows, max_hfr=max_hfr, min_detected_stars=min_detected_stars
+            plan,
+            rows,
+            max_hfr=max_hfr,
+            min_detected_stars=min_detected_stars,
+            max_guiding_rms_arcsec=max_guiding_rms_arcsec,
         ),
     }
+    print("Progress:", json.dumps(res, indent=2), file=sys.stderr)
+    return res
 
 
 # sequence tools
@@ -432,6 +439,7 @@ async def sequence_load_plan(
     mode: str = "remaining",
     max_hfr: float | None = None,
     min_detected_stars: int | None = None,
+    max_guiding_rms_arcsec: float | None = None,
 ) -> str:
     """Loads an acquisition sequence with safety guardrails from an observation-plan JSON file. Select the frame type: light, dark, bias, dawn_flat, or dusk_flat. In the default `remaining` mode the sequence only acquires frames still needed (total minus frames already attributed to this plan in the imaging metadata); if nothing remains it reports the plan as complete and loads nothing. max_hfr and/or min_detected_stars exclude light frames failing quality thresholds from the acquired count. Pass `mode="full"` to acquire the entire plan again. This tool only loads the sequence; call sequence_start afterward."""
     plan = await _load_plan(file_path)
@@ -456,7 +464,11 @@ async def sequence_load_plan(
                 "load the whole plan regardless."
             ) from e
         progress = plan_progress(
-            plan, rows, max_hfr=max_hfr, min_detected_stars=min_detected_stars
+            plan,
+            rows,
+            max_hfr=max_hfr,
+            min_detected_stars=min_detected_stars,
+            max_guiding_rms_arcsec=max_guiding_rms_arcsec,
         )
         items = progress[group_key]
         if all(item["remaining_count"] == 0 for item in items):

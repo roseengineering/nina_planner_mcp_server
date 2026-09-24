@@ -18,13 +18,13 @@
 | `get_logs(since)` | Get latest N.I.N.A. application log entries from `since` seconds. |
 | `get_imaging_metadata(date?, image_type="light")` | Return image metadata for a date and image type (light, dark, bias, flat — case-insensitive). Defaults to `light`; pass another type to pull that folder's `ImageMetaData.csv`. When an `AcquisitionDetails.csv` sits next to it, its fields (e.g. `TargetName`, `FocalLength`) are injected into each row. Rows whose recorded image file has been deleted/moved are omitted. |
 | `observation_plan_write_file(plan)` | Write out an observation plan JSON file. |
-| `observation_plan_get_progress(file_path, max_hfr?, min_detected_stars?)` | Report per-frame-type progress: total, acquired (attributed to this plan), and remaining for each exposure group. Quality thresholds exclude light frames that fail them. |
+| `observation_plan_get_progress(file_path, max_hfr?, min_detected_stars?, max_guiding_rms_arcsec?)` | Report per-frame-type progress: total, acquired (attributed to this plan), and remaining for each exposure group. Quality thresholds exclude light frames that fail them. |
 
 ### Sequence Management
 
 | Tool | Purpose |
 |---|---|
-| `sequence_load_plan(file_path, frame_type, mode="remaining", max_hfr?, min_detected_stars?)` | Load a plan file as a sequence (light, dark, bias, dawn_flat, or dusk_flat). Default `remaining` mode acquires only frames not yet attributed to the plan; `mode="full"` acquires the whole plan. Quality thresholds exclude light frames that fail them from the acquired count. Reports "plan complete" and loads nothing when nothing remains. |
+| `sequence_load_plan(file_path, frame_type, mode="remaining", max_hfr?, min_detected_stars?, max_guiding_rms_arcsec?)` | Load a plan file as a sequence (light, dark, bias, dawn_flat, or dusk_flat). Default `remaining` mode acquires only frames not yet attributed to the plan; `mode="full"` acquires the whole plan. Quality thresholds exclude light frames that fail them from the acquired count. Reports "plan complete" and loads nothing when nothing remains. |
 | `sequence_start()` | Start or resume a stopped sequence. |
 | `sequence_stop()` | Stop any running sequence. |
 | `sequence_enter_safety_standby()` | Start a non-imaging sequence with safety guardrails. |
@@ -242,12 +242,15 @@ Rules:
     "./nina-plugin.ts"
   ],
   "mcp": {
-    "nina_planner": {
+    "nina-planner": {
       "type": "local",
+      "environment": {
+        "NINA_DRIVE_MOUNT": "/mnt/c"
+      },
       "command": [
-        "bash",
-        "-c",
-        "python -m nina_planner 2>> /tmp/opencode_nina_planner.log"
+        "bash", 
+        "-c", 
+        "uv run -m nina_planner 2>> /tmp/opencode_nina_planner.log"
       ]
     }
   }
@@ -264,7 +267,7 @@ Registers the opencode plugin and the `nina_planner` MCP server so both run toge
 
 | Variable | Default | Description |
 |---|---|---|
-| `NINA_ENDPOINT` | `localhost:1888` | N.I.N.A. host and port for the websocket event stream |
+| `NINA_ENDPOINT` | `127.0.0.1:1888` | N.I.N.A. host and port for the websocket event stream |
 | `NINA_INTERVAL_MINUTES` | `10` | Interval between autonomous status checks (float) |
 
 ### `nina_planner` (MCP server)
