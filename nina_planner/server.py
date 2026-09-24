@@ -11,7 +11,7 @@ import anyio
 import httpx
 from mcp.server.fastmcp import FastMCP
 
-from .imaging import read_imaging_csv, windows_to_local
+from .imaging import melt_imaging_metadata, read_imaging_csv, windows_to_local
 from .models.observatory import ObservatoryEquipment
 from .models.plan import ObservationPlan
 from .models.profile import (
@@ -21,7 +21,7 @@ from .models.profile import (
     OpticalTrainInfo,
     SiteLocationInfo,
 )
-from .nina_utils import ascom_float, ascom_int
+from .nina_utils import ascom_float, ascom_int, to_snake
 from .progress import plan_progress, plan_with_remaining
 from .sequence import (
     build_sequence_darks,
@@ -44,14 +44,9 @@ def _sanitize_filename(s: str) -> str:
     return _INVALID_FILENAME_CHARS.sub("-", s)
 
 
-def _to_snake(name: str) -> str:
-    s = re.sub(r"(.)([A-Z][a-z]+)", r"\1_\2", name)
-    return re.sub(r"([a-z0-9])([A-Z])", r"\1_\2", s).lower()
-
-
 def _convert_keys(d: Any) -> Any:
     if isinstance(d, dict):
-        return {_to_snake(k): _convert_keys(v) for k, v in d.items()}
+        return {to_snake(k): _convert_keys(v) for k, v in d.items()}
     if isinstance(d, list):
         return [_convert_keys(v) for v in d]
     return d
@@ -364,11 +359,12 @@ async def get_logs(since: int = 300) -> Any:
 
 
 @mcp.tool()
-async def get_imaging_metadata(image_type: str = "light") -> list[dict[str, Any]]:
-    """Returns imaging metadata parsed from the ImageMetaData.csv files in the frame folders (LIGHT, DARK, BIAS, FLAT, etc.) of the mounted N.I.N.A imaging directory. Each row is tagged with date, frame_type, and source. When an AcquisitionDetails.csv is present in the same session directory, its fields (e.g. TargetName, FocalLength) are injected into each image row unless the image row already has a value for that field. Defaults to lights frames for star-quality checks; pass another image type (light, dark, bias, flat — case-insensitive)."""
+async def get_imaging_metadata(image_type: str = "light") -> dict[str, Any]:
+    """Returns imaging metadata parsed from the ImageMetaData.csv files in the frame folders (LIGHT, DARK, BIAS, FLAT, etc.) of the mounted N.I.N.A imaging directory. Returns a compact narrow (melted) table to avoid noise: dead columns are dropped dynamically — columns constant across the returned frames are listed once in summary.constants, and columns with no real values (ASCOM NaN/-1, empty, 'n/a', and the 0 sentinel NINA writes for unmeasured quality/guiding/CCD metrics) are listed in summary.unpopulated. Only genuinely varying metrics become rows in the `metrics` array, namespaced by group (quality.hfr, guiding.rms, background.adu_mean, ...). Per-frame identity fields (file_path, date, exposure_number, exposure_start, duration, filter_name) are listed once in `frames`; `metrics` rows reference them by index. Defaults to lights frames for star-quality checks; pass another image type (light, dark, bias, flat — case-insensitive)."""
     data = read_imaging_csv(root=await _resolve_imaging_root(), image_type=image_type)
-    print("Metadata:", json.dumps(data, indent=2), file=sys.stderr)
-    return data
+    res = melt_imaging_metadata(data)
+    print("Metadata:", json.dumps(res, indent=2), file=sys.stderr)
+    return res
 
 
 # plan tools

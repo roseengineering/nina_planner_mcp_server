@@ -4,7 +4,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from nina_planner.imaging import read_imaging_csv, windows_to_local
+from nina_planner.imaging import melt_imaging_metadata, read_imaging_csv, windows_to_local
 
 
 def _write_csv(path: Path, header: list[str], rows: list[list[str]]):
@@ -123,6 +123,113 @@ class WindowsToLocalTest(unittest.TestCase):
             windows_to_local(r"\share\N.I.N.A", "/mnt"),
             Path(r"\share\N.I.N.A"),
         )
+
+
+class MeltImagingMetadataTest(unittest.TestCase):
+    def _rows(self):
+        base = {
+            "file_path": "/d/2026-09-21/LIGHT/a.fits",
+            "date": "2026-09-21",
+            "exposure_start": "2026-09-21 21:16",
+            "exposure_start_utc": "2026-09-22T02:16:25Z",
+            "duration": "60",
+            "filter_name": "Clear",
+            "image_type": "LIGHT",
+            "frame_type": "LIGHT",
+            "source": "image_metadata",
+            "binning": "1x1",
+            "gain": "0",
+            "offset": "0",
+            "pier_side": "n/a",
+            "focuser_position": "15625",
+            "rotator_position": "0",
+            "camera_temp": "NaN",
+            "camera_target_temp": "NaN",
+            "detected_stars": "0",
+            "hfr": "0",
+            "fwhm": "NaN",
+            "eccentricity": "NaN",
+            "guiding_rms": "0",
+            "guiding_rms_arc_sec": "0",
+            "airmass": "1.03",
+            "focuser_temp": "4.0",
+            "adu_mean": "5000",
+            "mount_ra": "312.75",
+            "mount_dec": "31.2",
+        }
+        b = dict(base)
+        b.update(
+            {
+                "file_path": "/d/2026-09-21/LIGHT/b.fits",
+                "exposure_number": "1",
+                "exposure_start": "2026-09-21 21:17",
+                "exposure_start_utc": "2026-09-22T02:17:25Z",
+                "airmass": "1.02",
+                "focuser_temp": "3.0",
+                "adu_mean": "4999",
+                "mount_ra": "312.76",
+                "mount_dec": "31.21",
+            }
+        )
+        base["exposure_number"] = "0"
+        return [base, b]
+
+    def test_constant_columns_move_to_summary(self):
+        res = melt_imaging_metadata(self._rows())
+        constants = res["summary"]["constants"]
+        self.assertEqual(constants["binning"], "1x1")
+        self.assertEqual(constants["gain"], 0.0)
+        self.assertEqual(constants["offset"], 0.0)
+        self.assertEqual(constants["focuser_position"], 15625.0)
+        self.assertNotIn("binning", {m["metric"] for m in res["metrics"]})
+
+    def test_unpopulated_columns_listed(self):
+        res = melt_imaging_metadata(self._rows())
+        unpopulated = res["summary"]["unpopulated"]
+        for col in ("camera_temp", "detected_stars", "hfr", "fwhm",
+                    "guiding_rms_arc_sec", "pier_side"):
+            self.assertIn(col, unpopulated)
+
+    def test_varying_metrics_become_narrow_rows(self):
+        res = melt_imaging_metadata(self._rows())
+        metrics = res["metrics"]
+        self.assertEqual(len(metrics), 10)  # 5 varying metrics x 2 frames
+        by_name = {}
+        for m in metrics:
+            by_name.setdefault(m["metric"], []).append(m["value"])
+        self.assertEqual(by_name["pointing.airmass"], [1.03, 1.02])
+        self.assertEqual(by_name["focus.focuser_temp"], [4.0, 3.0])
+        self.assertEqual(by_name["background.adu_mean"], [5000.0, 4999.0])
+        self.assertEqual(by_name["pointing.mount_ra"], [312.75, 312.76])
+
+    def test_frames_listed_once_with_index(self):
+        res = melt_imaging_metadata(self._rows())
+        self.assertEqual([f["index"] for f in res["frames"]], [0, 1])
+        self.assertEqual(res["frames"][0]["file_path"],
+                         "/d/2026-09-21/LIGHT/a.fits")
+        self.assertEqual(res["frames"][1]["filter_name"], "Clear")
+        for m in res["metrics"]:
+            self.assertIn(m["frame"], (0, 1))
+
+    def test_summary_counts(self):
+        res = melt_imaging_metadata(self._rows())
+        self.assertEqual(res["summary"]["count"], 2)
+        self.assertEqual(res["summary"]["by_filter"], {"Clear": 2})
+        self.assertEqual(res["summary"]["by_date"], {"2026-09-21": 2})
+
+    def test_quality_metric_surfaces_when_populated(self):
+        rows = self._rows()
+        rows[0]["hfr"] = "2.1"
+        res = melt_imaging_metadata(rows)
+        hfr_rows = [m for m in res["metrics"] if m["metric"] == "quality.hfr"]
+        self.assertEqual(hfr_rows, [{"frame": 0, "metric": "quality.hfr", "value": 2.1}])
+        self.assertNotIn("hfr", res["summary"]["unpopulated"])
+
+    def test_empty_rows(self):
+        res = melt_imaging_metadata([])
+        self.assertEqual(res["summary"]["count"], 0)
+        self.assertEqual(res["frames"], [])
+        self.assertEqual(res["metrics"], [])
 
 
 if __name__ == "__main__":

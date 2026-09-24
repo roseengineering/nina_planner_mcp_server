@@ -1,10 +1,21 @@
 from __future__ import annotations
 
 import math
+import re
 from datetime import datetime
 from typing import TypeVar
 
 T = TypeVar("T")
+
+
+def to_snake(name: str) -> str:
+    """Convert a camelCase / PascalCase name to snake_case.
+
+    Two-pass: split before an acronym boundary (``RMSArcSec`` -> ``RMS_Arc``)
+    and before each embedded uppercase letter (``ArcSec`` -> ``Arc_Sec``).
+    """
+    s = re.sub(r"(.)([A-Z][a-z]+)", r"\1_\2", name)
+    return re.sub(r"([a-z0-9])([A-Z])", r"\1_\2", s).lower()
 
 
 def ascom_float(value: object) -> float | None:
