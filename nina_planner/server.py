@@ -92,6 +92,32 @@ async def _validate_filters(plan: ObservationPlan, profile: ObservatoryProfile) 
         )
 
 
+def _validate_position_angle(plan: ObservationPlan, profile: ObservatoryProfile) -> None:
+    set_idxs = [
+        i for i, p in enumerate(plan.pointings, start=1) if p.position_angle_deg is not None
+    ]
+    unset_idxs = [
+        i for i, p in enumerate(plan.pointings, start=1) if p.position_angle_deg is None
+    ]
+    if set_idxs and unset_idxs:
+        raise ValueError(
+            f"Plan mixes position_angle_deg: pointings {set_idxs} set it but "
+            f"pointings {unset_idxs} do not. Either set position_angle_deg on "
+            "every pointing or omit it from all."
+        )
+    if not profile.equipment.has_rotator and set_idxs:
+        labeled = [
+            f"pointing {i} ({p.label})" if p.label else f"pointing {i}"
+            for i, p in enumerate(plan.pointings, start=1)
+            if p.position_angle_deg is not None
+        ]
+        raise ValueError(
+            f"Plan sets position_angle_deg on {', '.join(labeled)} but profile "
+            f"'{profile.profile_name}' has no rotator. Either add a rotator to the "
+            "profile or omit position_angle_deg from the pointings."
+        )
+
+
 def _convert_to_met(
     data: list[dict[str, Any]], since: int, now: datetime, name: str
 ) -> list[dict[str, Any]]:
@@ -404,6 +430,7 @@ async def write_plan_file(plan: ObservationPlan) -> str:
     """Validates and writes an observation plan to a JSON file for later use by load_sequence_from_plan. The plan defines one or more target pointings (RA/Dec/PA, optional label), acquisition intent, light and calibration frames, batching, cooling, autofocus, guiding, and observing constraints. This tool only creates the plan file; it does not load or start a sequence."""
     profile = await get_site_profile()
     await _validate_filters(plan, profile)
+    _validate_position_angle(plan, profile)
     if not plan.plan_id:
         plan = plan.model_copy(update={"plan_id": plan._base_plan_id()})
     timestamp = datetime.now(tz=UTC).astimezone().strftime("%Y%m%dT%H%M%S")
@@ -461,6 +488,7 @@ async def load_sequence_from_plan(
     plan = await _load_plan(file_path)
     profile = await get_site_profile()
     await _validate_filters(plan, profile)
+    _validate_position_angle(plan, profile)
     _check_pointing_index(plan, pointing_index)
     equipment = await _get_site_equipment_status(profile)
 

@@ -820,6 +820,7 @@ def build_sequence_lights(
     pointing = plan.pointings[pointing_index - 1]
     prefix = f"{plan.target} - {pointing.label}" if pointing.label else plan.target
     target = f"{prefix} [{plan.effective_plan_id(pointing_index)}]"
+    posang = 0 if pointing.position_angle_deg is None else pointing.position_angle_deg
     return container_root_standby(
         equipment=equipment,
         instructions=[
@@ -828,7 +829,7 @@ def build_sequence_lights(
                 target=target,
                 ra=pointing.ra_hours,
                 dec=pointing.dec_deg,
-                posang=pointing.position_angle_deg,
+                posang=posang,
                 instructions=[
                     sequence_safetynet(
                         name="Wait For Dusk",
@@ -886,7 +887,7 @@ def build_sequence_lights(
                             switch_filter_plus(plan.autofocus.reference_filter_name),
                         ]
                         + [
-                            slew_and_center() if pointings.position_angle_deg is None else slew_center_and_rotate()
+                            slew_and_center() if pointing.position_angle_deg is None else slew_center_and_rotate()
                         ]
                         + [
                             run_autofocus(),
