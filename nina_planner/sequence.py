@@ -367,6 +367,12 @@ def slew_and_center() -> dict[str, Any]:
     }
 
 
+def slew_center_and_rotate() -> dict[str, Any]:
+    return _child("NINA.Sequencer.SequenceItem.Platesolving.CenterAndRotate, NINA.Sequencer") | {
+        "Inherited": True,
+    }
+
+
 def slew_to_azalt(az: float, alt: float) -> dict[str, Any]:
     return _child(
         "NINA.Sequencer.SequenceItem.Telescope.SlewScopeToAltAz, NINA.Sequencer"
@@ -878,7 +884,11 @@ def build_sequence_lights(
                         + [
                             set_tracking(0),
                             switch_filter_plus(plan.autofocus.reference_filter_name),
-                            slew_and_center(),
+                        ]
+                        + [
+                            slew_and_center() if pointings.position_angle_deg is None else slew_center_and_rotate()
+                        ]
+                        + [
                             run_autofocus(),
                             start_guiding(),
                         ]
