@@ -2,8 +2,12 @@
   "target": "Veil Nebula",
   "intent": "Widefield supernova remnant",
   "description": "Veil Nebula complex centered between Western NGC 6960 and Eastern NGC 6992",
-  "ra_hours": 20.85,
-  "dec_deg": 31.22,
+  "pointings": [
+    {
+      "ra_hours": 20.85,
+      "dec_deg": 31.22
+    }
+  ],
   "batch_size": 5,
   "cooler": {
     "on": true,

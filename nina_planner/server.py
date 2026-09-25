@@ -128,6 +128,14 @@ async def _resolve_imaging_root() -> Path:
     return windows_to_local(profile.image_save_path)
 
 
+def _check_pointing_index(plan: ObservationPlan, pointing_index: int) -> None:
+    if pointing_index < 1 or pointing_index > len(plan.pointings):
+        raise ValueError(
+            f"pointing_index={pointing_index} out of range (plan has "
+            f"{len(plan.pointings)} pointings; valid 1..{len(plan.pointings)})"
+        )
+
+
 async def _load_plan(file_path: str) -> ObservationPlan:
     path = Path(file_path)
     if not path.is_absolute():
@@ -362,22 +370,27 @@ async def get_logs(since: int = 300) -> Any:
 
 @mcp.tool()
 async def get_imaging_metadata(
-    file_path: str, image_type: str = "light"
+    file_path: str,
+    pointing_index: int = 1,
+    image_type: str = "light",
 ) -> dict[str, Any]:
-    """Returns imaging metadata for a plan, parsed from the ImageMetaData.csv files in the frame folders (LIGHT, DARK, BIAS, FLAT, etc.) of the mounted N.I.N.A imaging directory. The plan file scopes the result: light frames are attributed to the plan via the plan_id embedded in the recorded file path (no target-name fallback); dark/bias/flat frames are matched by image type/filter/exposure and must fall within the plan's `calibration_max_age_days` window of today (UTC). Returns a wide table with one row per exposure, each carrying the frame identity fields (file_path, date, exposure_number, exposure_start, duration, filter_name) plus its metrics as columns, namespaced by group (quality.hfr, guiding.rms, background.adu_mean, pointing.airmass, ...). Timestamps are normalized to seconds-precision UTC ISO-8601 with a Z suffix (e.g. 2026-09-22T02:16:25Z). Per-exposure weather samples from WeatherData.csv are joined onto the same row (weather.temperature, humidity, cloud_cover, ...) via the UTC exposure start. Dead columns are dropped dynamically: columns constant across the returned frames are listed once under summary.constants, and columns with no real values (ASCOM NaN/-1, empty, 'n/a', and the 0 sentinel NINA writes for unmeasured quality/guiding/CCD metrics) are listed under summary.unpopulated. Defaults to lights frames for star-quality checks; pass another image type (light, dark, bias, flat — case-insensitive)."""
+    """Returns imaging metadata for a plan and one of its pointings, parsed from the ImageMetaData.csv files in the frame folders (LIGHT, DARK, BIAS, FLAT, etc.) of the mounted N.I.N.A imaging directory. The plan file scopes the result: light frames are attributed to the plan via the `{base_plan_id}-{pointing_index}` plan id embedded in the recorded file path (no target-name fallback); dark/bias/flat frames are matched by image type/filter/exposure and must fall within the plan's `calibration_max_age_days` window of today (UTC). Returns a wide table with one row per exposure, each carrying the frame identity fields (file_path, date, exposure_number, exposure_start, duration, filter_name) plus its metrics as columns, namespaced by group (quality.hfr, guiding.rms, background.adu_mean, pointing.airmass, ...). Timestamps are normalized to seconds-precision UTC ISO-8601 with a `Z` suffix (e.g. 2026-09-22T02:16:25Z). Per-exposure weather samples from `WeatherData.csv` are joined onto the same row (weather.temperature, humidity, cloud_cover, ...) via the UTC exposure start. Dead columns are dropped dynamically: columns constant across the returned frames are listed once under summary.constants, and columns with no real values (ASCOM NaN/-1, empty, 'n/a', and the 0 sentinel NINA writes for unmeasured quality/guiding/CCD metrics) are listed under summary.unpopulated. Defaults to lights frames for star-quality checks; pass another image type (light, dark, bias, flat — case-insensitive)."""
     root = await _resolve_imaging_root()
     plan = await _load_plan(file_path)
+    _check_pointing_index(plan, pointing_index)
     rows = read_imaging_csv(root=root, image_type=image_type)
     rows = filter_metadata_rows(
         plan,
         rows,
         image_type,
+        pointing_index=pointing_index,
         max_age_days=plan.calibration_max_age_days,
         reference_date=datetime.now(UTC).date(),
     )
     weather = read_weather_csv(root=root)
     res = widen_imaging_metadata(rows, weather_rows=weather)
-    res["plan_id"] = plan.effective_plan_id()
+    res["plan_id"] = plan.effective_plan_id(pointing_index)
+    res["pointing_index"] = pointing_index
     res["target"] = plan.target
     print("Metadata:", json.dumps(res, indent=2), file=sys.stderr)
     return res
@@ -388,11 +401,11 @@ async def get_imaging_metadata(
 
 @mcp.tool()
 async def write_plan_file(plan: ObservationPlan) -> str:
-    """Validates and writes an observation plan to a JSON file for later use by load_sequence_from_plan. The plan defines target coordinates, acquisition intent, light and calibration frames, batching, cooling, autofocus, guiding, and observing constraints. This tool only creates the plan file; it does not load or start a sequence."""
+    """Validates and writes an observation plan to a JSON file for later use by load_sequence_from_plan. The plan defines one or more target pointings (RA/Dec/PA, optional label), acquisition intent, light and calibration frames, batching, cooling, autofocus, guiding, and observing constraints. This tool only creates the plan file; it does not load or start a sequence."""
     profile = await get_site_profile()
     await _validate_filters(plan, profile)
     if not plan.plan_id:
-        plan = plan.model_copy(update={"plan_id": plan.effective_plan_id()})
+        plan = plan.model_copy(update={"plan_id": plan._base_plan_id()})
     timestamp = datetime.now(tz=UTC).astimezone().strftime("%Y%m%dT%H%M%S")
     filename = f"{_sanitize_filename(plan.target.lower())}_{_sanitize_filename(plan.intent.lower())}_{timestamp}.json"
     filename = filename.replace(" ", "-")
@@ -405,19 +418,23 @@ async def write_plan_file(plan: ObservationPlan) -> str:
 @mcp.tool()
 async def get_plan_progress(
     file_path: str,
+    pointing_index: int = 1,
     max_hfr: float | None = None,
     min_detected_stars: int | None = None,
     max_guiding_rms_arcsec: float | None = None,
 ) -> dict[str, Any]:
-    """Returns per-frame-type acquisition progress for an observation-plan JSON file: for each exposure group, the total_count from the plan, the acquired_count attributed to this plan from the imaging metadata (ImageMetaData.csv + AcquisitionDetails.csv), and the remaining_count. Lights are attributed via the plan_id embedded in the recorded file path (no target-name fallback); flats/darks/bias are matched by image type, filter, and exposure and must fall within the plan's calibration_max_age_days window of today (UTC). Pass max_hfr and/or min_detected_stars to exclude light frames that fail quality thresholds (frames missing the quality fields are excluded when a threshold is set). Use this before load_sequence_from_plan to decide what still needs acquiring."""
+    """Returns per-frame-type acquisition progress for an observation-plan JSON file and one of its pointings: for each exposure group, the total_count from the plan, the acquired_count attributed to this plan/pointing from the imaging metadata (ImageMetaData.csv + AcquisitionDetails.csv), and the remaining_count. Lights are attributed via the `{base_plan_id}-{pointing_index}` plan id embedded in the recorded file path (no target-name fallback); flats/darks/bias are matched by image type, filter, and exposure and must fall within the plan's calibration_max_age_days window of today (UTC). Pass max_hfr and/or min_detected_stars to exclude light frames that fail quality thresholds (frames missing the quality fields are excluded when a threshold is set). Use this before load_sequence_from_plan to decide what still needs acquiring."""
     plan = await _load_plan(file_path)
+    _check_pointing_index(plan, pointing_index)
     rows = await _read_metadata()
     res = {
-        "plan_id": plan.effective_plan_id(),
+        "plan_id": plan.effective_plan_id(pointing_index),
+        "pointing_index": pointing_index,
         "target": plan.target,
         "frame_types": plan_progress(
             plan,
             rows,
+            pointing_index=pointing_index,
             max_hfr=max_hfr,
             min_detected_stars=min_detected_stars,
             max_guiding_rms_arcsec=max_guiding_rms_arcsec,
@@ -434,15 +451,17 @@ async def get_plan_progress(
 async def load_sequence_from_plan(
     file_path: str,
     frame_type: FrameType = "light",
+    pointing_index: int = 1,
     mode: str = "remaining",
     max_hfr: float | None = None,
     min_detected_stars: int | None = None,
     max_guiding_rms_arcsec: float | None = None,
 ) -> str:
-    """Loads an acquisition sequence with safety guardrails from an observation-plan JSON file. Select the frame type: light, dark, bias, dawn_flat, or dusk_flat. In the default `remaining` mode the sequence only acquires frames still needed (total minus frames already attributed to this plan in the imaging metadata); if nothing remains it reports the plan as complete and loads nothing. max_hfr and/or min_detected_stars exclude light frames failing quality thresholds from the acquired count. Pass `mode="full"` to acquire the entire plan again. This tool only loads the sequence; call start_sequence afterward."""
+    """Loads an acquisition sequence with safety guardrails from an observation-plan JSON file. Select the frame type: light, dark, bias, dawn_flat, or dusk_flat. `pointing_index` (1-based, default 1) selects which pointing of the plan to load — the lights target name embeds `{base_plan_id}-{pointing_index}` so each pointing's frames are attributed independently. In the default `remaining` mode the sequence only acquires frames still needed (total minus frames already attributed to this plan/pointing in the imaging metadata); if nothing remains it reports the plan as complete and loads nothing. max_hfr and/or min_detected_stars exclude light frames failing quality thresholds from the acquired count. Pass `mode="full"` to acquire the entire plan again. This tool only loads the sequence; call start_sequence afterward."""
     plan = await _load_plan(file_path)
     profile = await get_site_profile()
     await _validate_filters(plan, profile)
+    _check_pointing_index(plan, pointing_index)
     equipment = await _get_site_equipment_status(profile)
 
     group_key = {
@@ -464,6 +483,7 @@ async def load_sequence_from_plan(
         progress = plan_progress(
             plan,
             rows,
+            pointing_index=pointing_index,
             max_hfr=max_hfr,
             min_detected_stars=min_detected_stars,
             max_guiding_rms_arcsec=max_guiding_rms_arcsec,
@@ -472,15 +492,15 @@ async def load_sequence_from_plan(
         if all(item["remaining_count"] == 0 for item in items):
             total = sum(item["total_count"] for item in items)
             return (
-                f"`{frame_type}` plan is complete — {total} of {total} frames "
-                "already acquired; nothing to load."
+                f"`{frame_type}` pointing {pointing_index} is complete — "
+                f"{total} of {total} frames already acquired; nothing to load."
             )
         plan = plan_with_remaining(plan, progress)
     elif mode != "full":
         raise ValueError(f"Unsupported mode: {mode} (use 'remaining' or 'full')")
 
     if frame_type == "light":
-        seq = build_sequence_lights(plan, equipment)
+        seq = build_sequence_lights(plan, equipment, pointing_index=pointing_index)
     elif frame_type == "dark":
         seq = build_sequence_darks(plan, equipment)
     elif frame_type == "bias":

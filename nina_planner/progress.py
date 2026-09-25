@@ -28,11 +28,16 @@ def _exposure_matches(row: dict[str, Any], exposure: float | None) -> bool:
         return False
 
 
-def _light_target_matches(plan: ObservationPlan, row: dict[str, Any]) -> bool:
+def _light_target_matches(
+    plan: ObservationPlan,
+    row: dict[str, Any],
+    *,
+    pointing_index: int = 1,
+) -> bool:
     path = (row.get("file_path") or "").strip()
     if not path:
         return False
-    return _embedded_plan_id(path) == plan.effective_plan_id()
+    return _embedded_plan_id(path) == plan.effective_plan_id(pointing_index)
 
 
 def _quality_accepted(
@@ -101,6 +106,7 @@ def _row_matches(
     filter_name: str | None = None,
     exposure: float | None = None,
     plan: ObservationPlan | None = None,
+    pointing_index: int = 1,
     max_hfr: float | None = None,
     min_detected_stars: int | None = None,
     max_guiding_rms_arcsec: float | None = None,
@@ -114,7 +120,9 @@ def _row_matches(
     if not _exposure_matches(row, exposure):
         return False
     if image_type == "LIGHT":
-        if plan is not None and not _light_target_matches(plan, row):
+        if plan is not None and not _light_target_matches(
+            plan, row, pointing_index=pointing_index
+        ):
             return False
         return _quality_accepted(
             row, max_hfr, min_detected_stars, max_guiding_rms_arcsec
@@ -129,6 +137,7 @@ def _count_matching(
     filter_name: str | None = None,
     exposure: float | None = None,
     plan: ObservationPlan | None = None,
+    pointing_index: int = 1,
     max_hfr: float | None = None,
     min_detected_stars: int | None = None,
     max_guiding_rms_arcsec: float | None = None,
@@ -143,6 +152,7 @@ def _count_matching(
             filter_name=filter_name,
             exposure=exposure,
             plan=plan,
+            pointing_index=pointing_index,
             max_hfr=max_hfr,
             min_detected_stars=min_detected_stars,
             max_guiding_rms_arcsec=max_guiding_rms_arcsec,
@@ -158,18 +168,24 @@ def filter_metadata_rows(
     rows: list[dict[str, Any]],
     image_type: str,
     *,
+    pointing_index: int = 1,
     max_age_days: int | None = None,
     reference_date: datetime.date | None = None,
 ) -> list[dict[str, Any]]:
     """Rows attributed to `plan` for `image_type`.
 
-    Lights match by the plan_id embedded in their file path; dark/bias/flat
-    frames match the plan's exposure specs (filter too, for flats) and must
-    fall within the calibration age window when one is configured.
+    Lights match by the plan_id embedded in their file path (with the
+    pointing_index suffix appended at load time); dark/bias/flat frames
+    match the plan's exposure specs (filter too, for flats) and must fall
+    within the calibration age window when one is configured.
     """
     image_type_upper = image_type.upper()
     if image_type_upper == "LIGHT":
-        return [r for r in rows if _row_matches(r, "LIGHT", plan=plan)]
+        return [
+            r
+            for r in rows
+            if _row_matches(r, "LIGHT", plan=plan, pointing_index=pointing_index)
+        ]
     if image_type_upper == "FLAT":
         specs = [(g.filter_name, g.exposure_time_seconds) for g in plan.flat]
     elif image_type_upper == "DARK":
@@ -198,6 +214,7 @@ def plan_progress(
     plan: ObservationPlan,
     rows: list[dict[str, Any]],
     *,
+    pointing_index: int = 1,
     max_hfr: float | None = None,
     min_detected_stars: int | None = None,
     max_guiding_rms_arcsec: float | None = None,
@@ -217,6 +234,7 @@ def plan_progress(
                 filter_name=filter_name,
                 exposure=exposure,
                 plan=plan if image_type == "LIGHT" else None,
+                pointing_index=pointing_index,
                 max_hfr=max_hfr,
                 min_detected_stars=min_detected_stars,
                 max_guiding_rms_arcsec=max_guiding_rms_arcsec,

@@ -9,7 +9,7 @@ def _row(
     image_type="LIGHT",
     filter_name="LP",
     duration="60.0",
-    target: str | None = "M31 [plan-abc123]",
+    target: str | None = "M31 [plan-abc123-1]",
     date: str | None = None,
 ):
     if date is None:
@@ -29,8 +29,7 @@ def _plan(**overrides):
     data = {
         "plan_id": "plan-abc123",
         "target": "M31",
-        "ra_hours": 0.71,
-        "dec_deg": 41.27,
+        "pointings": [{"ra_hours": 0.71, "dec_deg": 41.27}],
         "light": [
             {"filter_name": "LP", "exposure_time_seconds": 60.0, "total_count": 20}
         ],
@@ -48,9 +47,9 @@ class PlanProgressTest(unittest.TestCase):
     def test_embedded_plan_id_matching(self):
         plan = _plan(plan_id="plan-abc123")
         rows = [
-            _row(target="M31 [plan-abc123]"),
-            _row(target="M31 [plan-abc123]"),
-            _row(target="M31 [other-id]"),  # different plan, ignored
+            _row(target="M31 [plan-abc123-1]"),
+            _row(target="M31 [plan-abc123-1]"),
+            _row(target="M31 [other-id-1]"),  # different plan, ignored
             _row(target="M31"),  # no embedded id, ignored
         ]
         lights = plan_progress(plan, rows)["light"][0]
@@ -60,10 +59,10 @@ class PlanProgressTest(unittest.TestCase):
     def test_derived_plan_id_matching(self):
         plan = _plan(plan_id="")
         self.assertEqual(plan.plan_id, "")
-        pid = plan.effective_plan_id()
+        pid = plan._base_plan_id()
         rows = [
-            _row(target=f"M31 [{pid}]"),
-            _row(target=f"M31 [{pid}]"),
+            _row(target=f"M31 [{pid}-1]"),
+            _row(target=f"M31 [{pid}-1]"),
         ]
         lights = plan_progress(plan, rows)["light"][0]
         self.assertEqual(lights["acquired_count"], 2)
@@ -71,7 +70,7 @@ class PlanProgressTest(unittest.TestCase):
 
     def test_other_target_not_counted(self):
         plan = _plan()
-        rows = [_row(target="NGC 7331")]
+        rows = [_row(target="NGC 7331 [plan-other-1]")]
         lights = plan_progress(plan, rows)["light"][0]
         self.assertEqual(lights["acquired_count"], 0)
         self.assertEqual(lights["remaining_count"], 20)
@@ -79,8 +78,8 @@ class PlanProgressTest(unittest.TestCase):
     def test_filter_and_exposure_match(self):
         plan = _plan()
         rows = [
-            _row(filter_name="SII"),  # wrong filter
-            _row(duration="30.0"),  # wrong exposure
+            _row(filter_name="SII", target="M31 [plan-abc123-1]"),  # wrong filter
+            _row(duration="30.0", target="M31 [plan-abc123-1]"),  # wrong exposure
             _row(),  # match
         ]
         lights = plan_progress(plan, rows)["light"][0]
@@ -102,8 +101,8 @@ class PlanProgressTest(unittest.TestCase):
     def test_non_light_rows_excluded_from_lights(self):
         plan = _plan()
         rows = [
-            _row(image_type="DARK", target="M31 [plan-x]"),
-            _row(image_type="FLAT", target="M31 [plan-x]"),
+            _row(image_type="DARK", target="M31 [plan-x-1]"),
+            _row(image_type="FLAT", target="M31 [plan-x-1]"),
         ]
         lights = plan_progress(plan, rows)["light"][0]
         self.assertEqual(lights["acquired_count"], 0)
@@ -194,12 +193,7 @@ class QualityFilterTest(unittest.TestCase):
 class PlanWithRemainingTest(unittest.TestCase):
     def test_reduces_and_drops_completed(self):
         plan = _plan()
-        rows = [
-            _row(),
-            _row(),
-            _row(),
-            _row(),
-        ]  # 4 of 20 lights
+        rows = [_row() for _ in range(4)]  # 4 of 20 lights for pointing 1
         progress = plan_progress(plan, rows)
         reduced = plan_with_remaining(plan, progress)
 
@@ -277,13 +271,13 @@ class FilterMetadataRowsTest(unittest.TestCase):
     def test_lights_match_plan_id(self):
         plan = _plan()
         rows = [
-            _row(target="M31 [plan-abc123]"),
-            _row(target="M31 [other-id]"),
+            _row(target="M31 [plan-abc123-1]"),
+            _row(target="M31 [other-id-1]"),
             _row(target="M31"),
         ]
         out = filter_metadata_rows(plan, rows, "light")
         self.assertEqual(len(out), 1)
-        self.assertIn("plan-abc123", out[0]["file_path"])
+        self.assertIn("plan-abc123-1", out[0]["file_path"])
 
     def test_dark_matches_exposure_and_age(self):
         plan = _plan()
@@ -335,6 +329,53 @@ class FilterMetadataRowsTest(unittest.TestCase):
         plan = _plan()
         self.assertEqual(filter_metadata_rows(plan, [], "light"), [])
         self.assertEqual(filter_metadata_rows(plan, [], "dark"), [])
+
+
+class PointingIndexTest(unittest.TestCase):
+    def test_effective_plan_id_appends_index(self):
+        plan = _plan(plan_id="plan-abc123")
+        self.assertEqual(plan.effective_plan_id(1), "plan-abc123-1")
+        self.assertEqual(plan.effective_plan_id(2), "plan-abc123-2")
+
+    def test_pointing_index_isolates_progress(self):
+        plan = _plan(
+            plan_id="plan-abc123",
+            pointings=[
+                {"ra_hours": 0.71, "dec_deg": 41.27},
+                {"ra_hours": 0.72, "dec_deg": 41.28},
+            ],
+        )
+        rows = [
+            _row(target="M31 [plan-abc123-1]"),
+            _row(target="M31 [plan-abc123-1]"),
+            _row(target="M31 [plan-abc123-2]"),
+        ]
+        lights_p1 = plan_progress(plan, rows, pointing_index=1)["light"][0]
+        lights_p2 = plan_progress(plan, rows, pointing_index=2)["light"][0]
+        self.assertEqual(lights_p1["acquired_count"], 2)
+        self.assertEqual(lights_p1["remaining_count"], 18)
+        self.assertEqual(lights_p2["acquired_count"], 1)
+        self.assertEqual(lights_p2["remaining_count"], 19)
+
+    def test_out_of_range_pointing_index_excluded_via_filter(self):
+        plan = _plan(
+            pointings=[{"ra_hours": 0.71, "dec_deg": 41.27}]
+        )
+        with self.assertRaises(ValueError):
+            from nina_planner.server import _check_pointing_index
+            _check_pointing_index(plan, 0)
+        with self.assertRaises(ValueError):
+            _check_pointing_index(plan, 2)
+        # valid index 1 does not raise
+        _check_pointing_index(plan, 1)
+
+    def test_labeled_pointing_targets(self):
+        plan = _plan(
+            plan_id="plan-abc123",
+            pointings=[{"label": "Pane 1", "ra_hours": 0.71, "dec_deg": 41.27}],
+        )
+        self.assertEqual(plan.pointings[0].label, "Pane 1")
+        self.assertEqual(plan.effective_plan_id(1), "plan-abc123-1")
 
 
 if __name__ == "__main__":

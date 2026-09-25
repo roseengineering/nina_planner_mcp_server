@@ -3,6 +3,8 @@ import json
 
 from pydantic import BaseModel, Field
 
+from .pointing import Pointing
+
 
 class LightExposurePlan(BaseModel):
     filter_name: str
@@ -81,18 +83,10 @@ class ObservationPlan(BaseModel):
         default="",
         description="explanation of the observation plan, including rationale, exposure goals, equipment, or sky constraints",
     )
-    ra_hours: float = Field(
-        ge=0.0, lt=24.0, description="Right Ascension J2000 in hours [0.0, 24.0)"
-    )
-    dec_deg: float = Field(
-        ge=-90.0, le=90.0, description="Declination J2000 in degrees [-90.0, +90.0]"
-    )
-    position_angle_deg: float | None = Field(
-        default=None,
-        ge=0.0,
-        lt=360.0,
-        description="Rotator position angle in degrees [0.0, 360.0), measured east of north. "
-        "Omitted (None) forwards 0 to NINA, leaving the rotator at its current/synced position.",
+    pointings: list[Pointing] = Field(
+        min_length=1,
+        description="One or more target pointings (RA/Dec/PA, optional label) to image. "
+        "Each pointing of a plan is loaded separately by pointing_index.",
     )
     batch_size: int = Field(
         default=5, ge=0, description="Exposures per batch. 0 means unbatch."
@@ -116,9 +110,12 @@ class ObservationPlan(BaseModel):
     dark: list[DarkExposurePlan] = Field(min_length=1)
     bias: list[BiasExposurePlan] = Field(min_length=1)
 
-    def effective_plan_id(self) -> str:
+    def _base_plan_id(self) -> str:
         if self.plan_id:
             return self.plan_id
         data = self.model_dump(exclude={"plan_id"})
         canonical = json.dumps(data, sort_keys=True, separators=(",", ":"))
         return "plan-" + hashlib.sha1(canonical.encode()).hexdigest()[:12]
+
+    def effective_plan_id(self, pointing_index: int) -> str:
+        return f"{self._base_plan_id()}-{pointing_index}"

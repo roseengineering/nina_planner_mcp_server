@@ -801,17 +801,28 @@ def build_sequence_darks(
 
 
 def build_sequence_lights(
-    plan: ObservationPlan, equipment: ObservatoryEquipment
+    plan: ObservationPlan,
+    equipment: ObservatoryEquipment,
+    *,
+    pointing_index: int = 1,
 ) -> dict[str, Any]:
+    if pointing_index < 1 or pointing_index > len(plan.pointings):
+        raise ValueError(
+            f"pointing_index={pointing_index} out of range "
+            f"(plan has {len(plan.pointings)} pointings; valid 1..{len(plan.pointings)})"
+        )
+    pointing = plan.pointings[pointing_index - 1]
+    prefix = f"{plan.target} - {pointing.label}" if pointing.label else plan.target
+    target = f"{prefix} [{plan.effective_plan_id(pointing_index)}]"
     return container_root_standby(
         equipment=equipment,
         instructions=[
             container_deepsky(
                 name="Deep Sky Target Sequence",
-                target=f"{plan.target} [{plan.effective_plan_id()}]",
-                ra=plan.ra_hours,
-                dec=plan.dec_deg,
-                posang=plan.position_angle_deg,
+                target=target,
+                ra=pointing.ra_hours,
+                dec=pointing.dec_deg,
+                posang=pointing.position_angle_deg,
                 instructions=[
                     sequence_safetynet(
                         name="Wait For Dusk",

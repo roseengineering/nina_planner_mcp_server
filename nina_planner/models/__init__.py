@@ -15,7 +15,7 @@ from .guider import GuiderDevice, GuiderMetric
 from .meridian import MeridianInfo
 from .mount import MountDevice
 from .observatory import ObservatoryEquipment
-from .pointing import PointingInfo
+from .pointing import Pointing, PointingInfo
 from .profile import (
     FilterInfo,
     ObservatoryProfile,
@@ -44,6 +44,7 @@ __all__ = [
     "ObservatoryProfile",
     "OffsetInfo",
     "OpticalTrainInfo",
+    "Pointing",
     "PointingInfo",
     "ReadonlySwitchInfo",
     "ReadoutInfo",
