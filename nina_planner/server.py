@@ -333,7 +333,7 @@ async def get_site_profile() -> ObservatoryProfile:
 
 @mcp.tool()
 async def get_events(since: int = 300) -> Any:
-    """Returns recent timestamped NINA observatory events and their event-specific details from the last `since` seconds. Use it to reconstruct sequence, equipment, safety, imaging, and error activity. This tool is read-only; use get_site_equipment_status and sequence_get_state for current status."""
+    """Returns recent timestamped NINA observatory events and their event-specific details from the last `since` seconds. Use it to reconstruct sequence, equipment, safety, imaging, and error activity. This tool is read-only; use get_site_equipment_status and get_sequence_state for current status."""
     timestamp = await _api_get("/time")
     now = datetime.fromisoformat(timestamp)
     res = await _api_get("/event-history")
@@ -387,8 +387,8 @@ async def get_imaging_metadata(
 
 
 @mcp.tool()
-async def observation_plan_write_file(plan: ObservationPlan) -> str:
-    """Validates and writes an observation plan to a JSON file for later use by sequence_load_plan. The plan defines target coordinates, acquisition intent, light and calibration frames, batching, cooling, autofocus, guiding, and observing constraints. This tool only creates the plan file; it does not load or start a sequence."""
+async def write_plan_file(plan: ObservationPlan) -> str:
+    """Validates and writes an observation plan to a JSON file for later use by load_sequence_from_plan. The plan defines target coordinates, acquisition intent, light and calibration frames, batching, cooling, autofocus, guiding, and observing constraints. This tool only creates the plan file; it does not load or start a sequence."""
     profile = await get_site_profile()
     await _validate_filters(plan, profile)
     if not plan.plan_id:
@@ -403,13 +403,13 @@ async def observation_plan_write_file(plan: ObservationPlan) -> str:
 
 
 @mcp.tool()
-async def observation_plan_get_progress(
+async def get_plan_progress(
     file_path: str,
     max_hfr: float | None = None,
     min_detected_stars: int | None = None,
     max_guiding_rms_arcsec: float | None = None,
 ) -> dict[str, Any]:
-    """Returns per-frame-type acquisition progress for an observation-plan JSON file: for each exposure group, the total_count from the plan, the acquired_count attributed to this plan from the imaging metadata (ImageMetaData.csv + AcquisitionDetails.csv), and the remaining_count. Lights are attributed via the plan_id embedded in the recorded file path (no target-name fallback); flats/darks/bias are matched by image type, filter, and exposure and must fall within the plan's calibration_max_age_days window of today (UTC). Pass max_hfr and/or min_detected_stars to exclude light frames that fail quality thresholds (frames missing the quality fields are excluded when a threshold is set). Use this before sequence_load_plan to decide what still needs acquiring."""
+    """Returns per-frame-type acquisition progress for an observation-plan JSON file: for each exposure group, the total_count from the plan, the acquired_count attributed to this plan from the imaging metadata (ImageMetaData.csv + AcquisitionDetails.csv), and the remaining_count. Lights are attributed via the plan_id embedded in the recorded file path (no target-name fallback); flats/darks/bias are matched by image type, filter, and exposure and must fall within the plan's calibration_max_age_days window of today (UTC). Pass max_hfr and/or min_detected_stars to exclude light frames that fail quality thresholds (frames missing the quality fields are excluded when a threshold is set). Use this before load_sequence_from_plan to decide what still needs acquiring."""
     plan = await _load_plan(file_path)
     rows = await _read_metadata()
     res = {
@@ -431,7 +431,7 @@ async def observation_plan_get_progress(
 
 
 @mcp.tool()
-async def sequence_load_plan(
+async def load_sequence_from_plan(
     file_path: str,
     frame_type: FrameType = "light",
     mode: str = "remaining",
@@ -439,7 +439,7 @@ async def sequence_load_plan(
     min_detected_stars: int | None = None,
     max_guiding_rms_arcsec: float | None = None,
 ) -> str:
-    """Loads an acquisition sequence with safety guardrails from an observation-plan JSON file. Select the frame type: light, dark, bias, dawn_flat, or dusk_flat. In the default `remaining` mode the sequence only acquires frames still needed (total minus frames already attributed to this plan in the imaging metadata); if nothing remains it reports the plan as complete and loads nothing. max_hfr and/or min_detected_stars exclude light frames failing quality thresholds from the acquired count. Pass `mode="full"` to acquire the entire plan again. This tool only loads the sequence; call sequence_start afterward."""
+    """Loads an acquisition sequence with safety guardrails from an observation-plan JSON file. Select the frame type: light, dark, bias, dawn_flat, or dusk_flat. In the default `remaining` mode the sequence only acquires frames still needed (total minus frames already attributed to this plan in the imaging metadata); if nothing remains it reports the plan as complete and loads nothing. max_hfr and/or min_detected_stars exclude light frames failing quality thresholds from the acquired count. Pass `mode="full"` to acquire the entire plan again. This tool only loads the sequence; call start_sequence afterward."""
     plan = await _load_plan(file_path)
     profile = await get_site_profile()
     await _validate_filters(plan, profile)
@@ -496,8 +496,8 @@ async def sequence_load_plan(
 
 
 @mcp.tool()
-async def sequence_execute_teardown() -> str:
-    """Loads and starts the non-acquisition teardown sequence, safely stowing the telescope (park or home, per mount capability) while NINA's sequence-level safety guardrails remain active. Use for end-of-observation close-down — when you are done observing and want to shut down the scope — or before leaving the observatory unattended. Allow it to complete without interruption. This is separate from sequence_stop, which halts the current sequence but does not stow the scope."""
+async def stow_telescope() -> str:
+    """Loads and starts the non-acquisition teardown sequence, safely stowing the telescope (park or home, per mount capability) while NINA's sequence-level safety guardrails remain active. Use for end-of-observation close-down — when you are done observing and want to shut down the scope — or before leaving the observatory unattended. Allow it to complete without interruption. This is separate from stop_sequence, which halts the current sequence but does not stow the scope."""
     equipment = await get_site_equipment_status()
     seq = build_sequence_teardown(equipment)
     await _api_post("/sequence/load", seq)
@@ -506,8 +506,8 @@ async def sequence_execute_teardown() -> str:
 
 
 @mcp.tool()
-async def sequence_enter_safety_standby() -> str:
-    """Loads a non-acquisition standby sequence that keeps NINA sequence-level safety and stow guardrails active while the observatory is idle. After loading, call sequence_start. Stop it before loading an acquisition or teardown sequence. Use whenever equipment is deployed and no other sequence is running."""
+async def enter_safety_standby() -> str:
+    """Loads a non-acquisition standby sequence that keeps NINA sequence-level safety and stow guardrails active while the observatory is idle. After loading, call start_sequence. Stop it before loading an acquisition or teardown sequence. Use whenever equipment is deployed and no other sequence is running."""
     equipment = await get_site_equipment_status()
     seq = build_sequence_standby(equipment)
     await _api_post("/sequence/load", seq)
@@ -516,21 +516,21 @@ async def sequence_enter_safety_standby() -> str:
 
 
 @mcp.tool()
-async def sequence_start() -> str:
-    """Starts or resumes the currently loaded sequence, activating its acquisition or safety workflow. Call sequence_get_state afterward to verify that it is running."""
+async def start_sequence() -> str:
+    """Starts or resumes the currently loaded sequence, activating its acquisition or safety workflow. Call get_sequence_state afterward to verify that it is running."""
     await _api_get("/sequence/start?skipValidation=true")
     return "Sequence started."
 
 
 @mcp.tool()
-async def sequence_stop() -> str:
-    """Stops the currently running NINA sequence immediately, leaving the telescope where it currently is — it does not stow the scope. Use for an urgent halt, to interrupt a stuck/looping sequence, or when the running sequence isn't what you wanted. If you then want to park/home the telescope, run sequence_execute_teardown separately. Note that sequence_load_plan and the teardown/standby entry tools already stop any running sequence before loading, so an explicit stop is only needed when you want to halt without loading anything new. Avoid stopping an in-progress teardown during the stow maneuver unless safety requires it, since interrupting mid-slew can leave the scope in an unsafe position. Call sequence_get_state afterward to confirm the sequence has stopped."""
+async def stop_sequence() -> str:
+    """Stops the currently running NINA sequence immediately, leaving the telescope where it currently is — it does not stow the scope. Use for an urgent halt, to interrupt a stuck/looping sequence, or when the running sequence isn't what you wanted. If you then want to park/home the telescope, run stow_telescope separately. Note that load_sequence_from_plan and the teardown/standby entry tools already stop any running sequence before loading, so an explicit stop is only needed when you want to halt without loading anything new. Avoid stopping an in-progress teardown during the stow maneuver unless safety requires it, since interrupting mid-slew can leave the scope in an unsafe position. Call get_sequence_state afterward to confirm the sequence has stopped."""
     await _api_get("/sequence/stop")
     return "Sequence stopped."
 
 
 @mcp.tool()
-async def sequence_get_state() -> Any:
+async def get_sequence_state() -> Any:
     """Returns the loaded sequence structure and the current status of its containers, instructions, conditions, and triggers. Use it to determine whether a sequence is loaded, running, completed, failed, or waiting. This tool is read-only and takes no action."""
     return await _api_get("/sequence/json")
 
