@@ -87,6 +87,13 @@ class ObservationPlan(BaseModel):
     dec_deg: float = Field(
         ge=-90.0, le=90.0, description="Declination J2000 in degrees [-90.0, +90.0]"
     )
+    position_angle_deg: float | None = Field(
+        default=None,
+        ge=0.0,
+        lt=360.0,
+        description="Rotator position angle in degrees [0.0, 360.0), measured east of north. "
+        "Omitted (None) forwards 0 to NINA, leaving the rotator at its current/synced position.",
+    )
     batch_size: int = Field(
         default=5, ge=0, description="Exposures per batch. 0 means unbatch."
     )

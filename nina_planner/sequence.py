@@ -236,7 +236,7 @@ def container_deepsky(
     target: str,
     ra: float,
     dec: float,
-    posang: float = 0,
+    posang: float | None = None,
     triggers: list[Any] | None = None,
     conditions: list[Any] | None = None,
     instructions: list[Any] | None = None,
@@ -811,6 +811,7 @@ def build_sequence_lights(
                 target=f"{plan.target} [{plan.effective_plan_id()}]",
                 ra=plan.ra_hours,
                 dec=plan.dec_deg,
+                posang=plan.position_angle_deg,
                 instructions=[
                     sequence_safetynet(
                         name="Wait For Dusk",

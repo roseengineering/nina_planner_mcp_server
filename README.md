@@ -38,8 +38,8 @@
 A plan is a JSON document that describes one complete imaging session. It encodes the **target**, **exposure settings** for all five frame types, and **equipment configuration** (cooler, autofocus, guiding, constraints).
 
 ### Plan structure
-
-[veil-nebula_widefield-supernova-remnant_20260913T080623.json](See veil-nebula_widefield-supernova-remnant_20260913T080623.json plan).
+ 
+See [veil-nebula_widefield-supernova-remnant_20260913T080623.json plan](veil-nebula_widefield-supernova-remnant_20260913T080623.json).
 
 ### Fields
 
@@ -51,6 +51,7 @@ A plan is a JSON document that describes one complete imaging session. It encode
 | `description` | no | explanation of the observation plan, including rationale, exposure goals, equipment, or sky constraints |
 | `ra_hours` | **yes** | J2000 right ascension in hours `[0, 24)` |
 | `dec_deg` | **yes** | J2000 declination in degrees `[-90, +90]` |
+| `position_angle_deg` | no | Rotator position angle, degrees east of north, `[0, 360)`. Omitted forwards 0 to NINA (rotator keeps its current/synced position). |
 | `batch_size` | no | Exposures per batch (0 = no batching, default 5) |
 | `cooler` | no | Target setpoint (default -10°C) |
 | `constraints` | no | Minimum altitude and horizon safety buffer |
@@ -192,7 +193,7 @@ Rules:
 
 ## `opencode.json` — Opencode v1 Sample Configuration
 
-See [opencode.json](Example opencode.json).
+See example [opencode.json](opencode.json).
 
 Registers the opencode plugin and the `nina_planner` MCP server so both run together. The MCP server provides the tools (`load_sequence_from_plan`, `get_site_equipment_status`, etc.) that the plugin-prompted agent calls.
 
