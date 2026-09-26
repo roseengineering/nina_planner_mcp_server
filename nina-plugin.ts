@@ -15,23 +15,21 @@ const plugin: Plugin = async (
   options: PluginOptions = {},
 ) => {
   const ninaEndpoint = (options.ninaEndpoint as string) || "127.0.0.1:1888";
-  const intervalCheck = (options.intervalCheck as number) || 10;
+  const intervalCheck: number =
+    typeof options.intervalCheck === "number" ? options.intervalCheck : 10;
   const pluginLogs = options.pluginLogs as string || null;
-  const agentHistory = options.agentHistory as string || null;
 
   async function triggerIntervention(events: string | null = null) {
-    const sessions = await ctx.client.session.list().catch(() => null)
-    if (!sessions?.data?.length) {
-      fileLog(pluginLogs, "nina-plugin: active session does not exist.");
-      return
-    }
-    const session = sessions.data[0]
-
-    // target the new session ID, ignoring the user's active console
-    const text = events == null
+    // get prompt
+    const text = (events == null
         ? "Trigger: Routine interval check. No new N.I.N.A. events."
-        : `Trigger: New N.I.N.A. events follow:\n\n\`\`\`json\n${events}\n\`\`\``;
+        : `Trigger: New N.I.N.A. events follow:\n\n\`\`\`json\n${events}\n\`\`\``);
     fileLog(pluginLogs, "text:", text);
+
+    // get active session
+    const sessions = await ctx.client.session.list().catch(() => null)
+    if (!sessions?.data?.length) return
+    const session = sessions.data[0]
 
     // inject prompt
     await ctx.client.session.prompt({
@@ -44,30 +42,6 @@ const plugin: Plugin = async (
           },
         ],
       },
-    });
-
-    // capture everything the worker did
-    const messages = await ctx.client.session.messages({
-      path: { id: sessionId },
-    });
-
-    // append session to file
-    if (agentHistory) {
-      await appendFile(
-        agentHistory,
-        JSON.stringify({
-          timestamp: new Date().toISOString(),
-          sessionId,
-          agent: agentName,
-          messages: messages.data,
-        }) + "\n",
-        "utf8",
-      );
-    }
-
-    // delete session data
-    await ctx.client.session.delete({
-      path: { id: sessionId },
     });
   }
 
@@ -88,7 +62,7 @@ const plugin: Plugin = async (
       flushBatch().catch((err: unknown) =>
         fileLog(pluginLogs, "nina-plugin: flushBatch failed:", err),
       );
-    }, 1_000);
+    }, 5_000);
   }
 
   let ws: WebSocket | null = null;
@@ -131,16 +105,19 @@ const plugin: Plugin = async (
 
   connect();
 
-  const intervalId = setInterval(() => {
-    triggerIntervention().catch((err: unknown) =>
-      fileLog(pluginLogs, "nina-plugin: interval trigger failed:", err),
-    );
-  }, intervalCheck * 60_000);
+  let intervalId: ReturnType<typeof setInterval> | null = null;
+  if (intervalCheck > 0) {
+    intervalId = setInterval(() => {
+      triggerIntervention().catch((err: unknown) =>
+        fileLog(pluginLogs, "nina-plugin: interval trigger failed:", err),
+      );
+    }, intervalCheck * 60_000);
+  }
 
   return {
     dispose: async () => {
       closed = true;
-      clearInterval(intervalId);
+      if (intervalId !== null) clearInterval(intervalId);
       if (debounceTimer) clearTimeout(debounceTimer);
       if (reconnectTimer) clearTimeout(reconnectTimer);
       ws?.close();

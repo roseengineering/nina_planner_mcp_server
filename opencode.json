@@ -3,10 +3,9 @@
   "plugin": [ 
     [ "./nina-plugin.ts", 
       { 
-        // "intervalCheck": 10,
-        // "ninaEndpoint": "192.168.0.24:1888",
-        "agentHistory": "/tmp/nina-plugin.json", 
-        "pluginLogs": "/tmp/nina-plugin-debug.log" 
+        // "ninaEndpoint": "192.168.0.24:1888", // defaults to 127.0.0.1:1888
+        "pluginLogs": "/tmp/nina-plugin-debug.log",
+        "intervalCheck": 0  // 0 disables interval check, defaults to every 10 minutes
       } 
     ]
   ],
@@ -14,11 +13,17 @@
     "nina-planner": {
       "type": "local",
       "environment": {
-        // "NINA_ENDPOINT": "192.168.0.24:1888",
-        // "NINA_DRIVE_MOUNT": "/mnt/c",
+        // "NINA_ENDPOINT": "192.168.0.24:1888", // defaults to 127.0.0.1:1888
+	// "NINA_DRIVE_MOUNT": "/System/Volumes/Data/Network", // defaults to /mnt/<drive>
+	"NINA_TIME_SIMULATOR_ENABLED": 1,  // default disabled
         "NINA_PLANNER_LOG": "/tmp/nina-planner-debug.log"
       },
-      "command": [ "uv", "run", "-m", "nina_planner" ]
+      "command": [ // don't use bash -c, hard for opencode to kill and restart
+        "uv",
+       	"run",
+       	"-m",
+       	"nina_planner"
+      ]
     }
   }
 }

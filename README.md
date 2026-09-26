@@ -30,6 +30,8 @@
 | `enter_safety_standby()` | Start a non-imaging sequence with safety guardrails. |
 | `stow_telescope()` | Start a teardown sequence, parking scope. |
 | `get_sequence_state()` | Return the loaded sequence structure and the current status of its containers, instructions, conditions, and triggers (whether loaded, running, completed, failed, or waiting). |
+| `ensure_nina_running()` | If `NINA.exe` is not visible to `tasklist.exe`, launch it from `NINA_EXE_PATH` (or the standard install path if unset). Idempotent no-op when NINA is already running. Fire-and-forget — callers should poll `get_site_equipment_status()` to confirm readiness. Always available (no env-var gate). |
+| `simulate_observation_time(when)` | Briefly shifts the Windows host clock to `when`, relaunches NINA so it captures the simulated local time during its own init, then resyncs the OS clock back to real time. Useful for testing observation plans during the day against NINA's simulator. After the call, NINA continues running on simulated local time while the OS clock is back to real time. Opt-in via `NINA_TIME_SIMULATOR_ENABLED=1`. |
 
 ---
 
@@ -41,7 +43,7 @@ A plan is a JSON document that describes one complete imaging session. It encode
 
 An example json plan:
 
-```json
+```json veil-nebula_widefield-supernova-remnant_20260913T080623.json
 {
   "target": "Veil Nebula",
   "intent": "Widefield supernova remnant",
@@ -251,16 +253,15 @@ Rules:
 
 ## `opencode.json` — Opencode v1 Sample Configuration
 
-```json
+```json opencode.json
 {
   "$schema": "https://opencode.ai/config.json",
   "plugin": [ 
     [ "./nina-plugin.ts", 
       { 
-        // "intervalCheck": 10,
-        // "ninaEndpoint": "192.168.0.24:1888",
-        "agentHistory": "/tmp/nina-plugin.json", 
-        "pluginLogs": "/tmp/nina-plugin-debug.log" 
+        // "ninaEndpoint": "192.168.0.24:1888", // defaults to 127.0.0.1:1888
+        "pluginLogs": "/tmp/nina-plugin-debug.log",
+        "intervalCheck": 0  // 0 disables interval check, defaults to every 10 minutes
       } 
     ]
   ],
@@ -268,11 +269,17 @@ Rules:
     "nina-planner": {
       "type": "local",
       "environment": {
-        // "NINA_ENDPOINT": "192.168.0.24:1888",
-        // "NINA_DRIVE_MOUNT": "/mnt/c",
+        // "NINA_ENDPOINT": "192.168.0.24:1888", // defaults to 127.0.0.1:1888
+	// "NINA_DRIVE_MOUNT": "/System/Volumes/Data/Network", // defaults to /mnt/<drive>
+	"NINA_TIME_SIMULATOR_ENABLED": 1,  // default disabled
         "NINA_PLANNER_LOG": "/tmp/nina-planner-debug.log"
       },
-      "command": [ "uv", "run", "-m", "nina_planner" ]
+      "command": [ // don't use bash -c, hard for opencode to kill and restart
+        "uv",
+       	"run",
+       	"-m",
+       	"nina_planner"
+      ]
     }
   }
 }
@@ -308,3 +315,5 @@ Configured under `opencode.json > plugin` as the second array element (see [`ope
 | `NINA_FLATS_ALTITUDE` | `80` | Altitude in degrees for flat panel calibration frames |
 | `NINA_FLATS_AZIMUTH_DAWN` | `270` | Azimuth in degrees pointing west for dawn flats |
 | `NINA_FLATS_AZIMUTH_DUSK` | `90` | Azimuth in degrees pointing east for dusk flats |
+| `NINA_TIME_SIMULATOR_ENABLED` | _unset_ | When set to `"1"`, enables the `simulate_observation_time` tool. Off by default — the tool refuses with a clear error otherwise. |
+| `NINA_EXE_PATH` | `C:\Program Files\N.I.N.A. - Nighttime Imaging 'N' Astronomy\NINA.exe` | Windows path to `NINA.exe` used by `simulate_observation_time` to relaunch NINA after the host clock shift. |
