@@ -15,7 +15,7 @@
       "environment": {
         // "NINA_ENDPOINT": "192.168.0.24:1888", // defaults to 127.0.0.1:1888
 	// "NINA_DRIVE_MOUNT": "/System/Volumes/Data/Network", // defaults to /mnt/<drive>
-	"NINA_TIME_SIMULATOR_ENABLED": 1,  // default disabled
+	"NINA_TIME_SIMULATOR_ENABLED": "1", // default disabled
         "NINA_PLANNER_LOG": "/tmp/nina-planner-debug.log"
       },
       "command": [ // don't use bash -c, hard for opencode to kill and restart
