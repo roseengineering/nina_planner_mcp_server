@@ -6,6 +6,7 @@ from pathlib import Path
 
 from nina_planner.imaging import (
     _norm_ts,
+    _resolve_image_path,
     read_imaging_csv,
     read_weather_csv,
     widen_imaging_metadata,
@@ -101,6 +102,123 @@ class ReadImagingCsvTest(unittest.TestCase):
 
         self.assertEqual(len(rows), 1)
         self.assertEqual(rows[0]["date"], "2026-09-21")
+
+    def test_relative_path_resolved_against_csv_sibling(self):
+        # Regression: a relative FilePath like "foo.fits" previously checked
+        # against process CWD, so it was silently dropped unless the MCP
+        # server happened to be launched from the imaging root.
+        fits_name = "2026-09-21_00-00-00_Clear__60.00s_0000.fits"
+        (self.light_dir / fits_name).write_text("fits")
+        self._write_images(
+            [["LIGHT", "60.0", "LP", fits_name]],
+            header=["ImageType", "Duration", "FilterName", "FilePath"],
+        )
+
+        rows = read_imaging_csv(root=self.root, image_type="light")
+
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["file_path"], str(self.light_dir / fits_name))
+
+    def test_relative_path_resolved_against_date_folder(self):
+        # NINA sometimes writes paths like "LIGHT/foo.fits" relative to the
+        # 2026-09-21/ folder (one tier above the metadata file's parent).
+        fits_name = "2026-09-21_00-00-00_Clear__60.00s_0000.fits"
+        (self.light_dir / fits_name).write_text("fits")
+        self._write_images(
+            [["LIGHT", "60.0", "LP", f"LIGHT/{fits_name}"]],
+            header=["ImageType", "Duration", "FilterName", "FilePath"],
+        )
+
+        rows = read_imaging_csv(root=self.root, image_type="light")
+
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["file_path"], str(self.light_dir / fits_name))
+
+    def test_relative_path_resolved_against_imaging_root(self):
+        # Or NINA may write paths from the imaging root, e.g.
+        # "2026-09-21/LIGHT/foo.fits".
+        fits_name = "2026-09-21_00-00-00_Clear__60.00s_0000.fits"
+        (self.light_dir / fits_name).write_text("fits")
+        relative = f"2026-09-21/LIGHT/{fits_name}"
+        self._write_images(
+            [["LIGHT", "60.0", "LP", relative]],
+            header=["ImageType", "Duration", "FilterName", "FilePath"],
+        )
+
+        rows = read_imaging_csv(root=self.root, image_type="light")
+
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["file_path"], str(self.light_dir / fits_name))
+
+    def test_relative_path_with_no_match_dropped(self):
+        # Relative path that doesn't resolve under any declared base is
+        # dropped — same as the prior behavior of returning None and gating
+        # at the caller. CWD is no longer probed.
+        self._write_images(
+            [["LIGHT", "60.0", "LP", "LIGHT/missing.fits"]],
+            header=["ImageType", "Duration", "FilterName", "FilePath"],
+        )
+
+        rows = read_imaging_csv(root=self.root, image_type="light")
+
+        self.assertEqual(rows, [])
+
+
+class RealNinaSampleTest(unittest.TestCase):
+    """End-to-end fixture tests against a captured NINA ImageMetaData.csv.
+
+    The fixture at tests/fixtures/nina-sample/2026-09-20/LIGHT/ mirrors the
+    directory layout NINA writes under the configured imaging save root.
+    The CSV contains 60 real exposure rows, all using absolute Windows
+    paths in the FilePath column (``C:/Users/<user>/Documents/N.I.N.A/...``).
+
+    Whether the corresponding ``.fits`` files are visible depends on the
+    host's WSL mount of the user's imaging directory. The tests adapt: if
+    the .fits files are reachable they verify the full end-to-end
+    resolution, otherwise they verify the function handles real NINA
+    shapes without error.
+    """
+
+    SAMPLES_DIR = (
+        Path(__file__).resolve().parent
+        / "fixtures"
+        / "nina-sample"
+        / "2026-09-20"
+        / "LIGHT"
+    )
+    NINA_IMAGING_LIGHT_DIR = Path(
+        "/mnt/c/Users/george/Documents/N.I.N.A/2026-09-20/LIGHT"
+    )
+
+    def test_read_imaging_csv_handles_real_nina_shapes(self):
+        rows = read_imaging_csv(
+            root=self.SAMPLES_DIR.parent.parent, image_type="light"
+        )
+        if self.NINA_IMAGING_LIGHT_DIR.is_dir():
+            # End-to-end: real .fits files visible, all 60 rows resolve
+            # and surface with POSIX file_path values under /mnt/c/.
+            self.assertEqual(len(rows), 60)
+            for row in rows:
+                self.assertTrue(
+                    row["file_path"].startswith("/mnt/c/"),
+                    f"row file_path not translated to POSIX: {row['file_path']!r}",
+                )
+                self.assertTrue(row["file_path"].endswith(".fits"))
+        else:
+            # Reduced environment: .fits files unreachable, all rows drop
+            # at the file-existence check. Pinned behavior is "no crash".
+            self.assertEqual(rows, [])
+
+    def test_resolver_transforms_real_nina_absolute_path(self):
+        # First FilePath value in the captured sample, verbatim.
+        self.assertEqual(
+            _resolve_image_path(
+                "C:/Users/george/Documents/N.I.N.A/2026-09-20/LIGHT/"
+                "2026-09-20_21-59-36_Clear__60.00s_0000.fits"
+            ),
+            "/mnt/c/Users/george/Documents/N.I.N.A/2026-09-20/LIGHT/"
+            "2026-09-20_21-59-36_Clear__60.00s_0000.fits",
+        )
 
 
 class WindowsToLocalTest(unittest.TestCase):

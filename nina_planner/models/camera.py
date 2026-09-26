@@ -76,7 +76,7 @@ class CameraDevice(BaseModel):
             if not data.get("connected", False):
                 return data
 
-            data["state"] = data.get("camera_state", "CameraIdle")
+            data["state"] = data.get("camera_state") or "CameraIdle"
 
             bin_x = data.get("bin_x", 1)
             bin_y = data.get("bin_y", 1)

@@ -40,17 +40,30 @@ def _find_date_ancestor(path: Path) -> str | None:
     return None
 
 
-def _resolve_image_path(file_path: str | None) -> str | None:
+def _resolve_image_path(
+    file_path: str | None,
+    bases: tuple[Path, ...] = (),
+) -> str | None:
     if not file_path:
         return None
-    return str(windows_to_local(file_path))
+    p = Path(windows_to_local(file_path))
+    if p.is_absolute():
+        return str(p)
+    for base in bases:
+        candidate = Path(base) / p
+        if candidate.is_file():
+            return str(candidate)
+    return str(p)
 
 
-def _resolve_existing_file(file_path: str | None) -> str | None:
+def _resolve_existing_file(
+    file_path: str | None,
+    bases: tuple[Path, ...] = (),
+) -> str | None:
     if not file_path:
         return None
-    resolved = _resolve_image_path(file_path)
-    if Path(resolved).is_file():
+    resolved = _resolve_image_path(file_path, bases)
+    if resolved and Path(resolved).is_file():
         return resolved
     return None
 
@@ -60,13 +73,15 @@ def read_imaging_csv(root: Path, image_type: str) -> list[dict[str, Any]]:
     image_type_upper = image_type.upper()
     for meta_path in root.rglob("ImageMetaData.csv"):
         csv_dir = meta_path.parent
+        date_dir = csv_dir.parent
+        bases = (csv_dir, date_dir, root)
         date = _find_date_ancestor(meta_path)
         for row in _read_csv(meta_path):
             row_image_type = (row.get("image_type") or "").upper()
             if row_image_type != image_type_upper:
                 continue
             raw_path = row.get("file_path")
-            resolved = _resolve_existing_file(raw_path)
+            resolved = _resolve_existing_file(raw_path, bases=bases)
             if raw_path and resolved is None:
                 continue
             if resolved:

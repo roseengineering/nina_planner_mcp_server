@@ -18,11 +18,18 @@ def to_snake(name: str) -> str:
     return re.sub(r"([a-z0-9])([A-Z])", r"\1_\2", s).lower()
 
 
+_MISSING_STRINGS = {"nan", "n/a", "na", ""}
+
+
+def _missing_string(value: str) -> bool:
+    return value.strip().lower() in _MISSING_STRINGS
+
+
 def ascom_float(value: object) -> float | None:
     if value is None:
         return None
     if isinstance(value, str):
-        if value.lower() == "nan":
+        if _missing_string(value):
             return None
         return float(value)
     if isinstance(value, float):
@@ -42,7 +49,7 @@ def ascom_int(value: object) -> int | None:
     if value is None:
         return None
     if isinstance(value, str):
-        if value.lower() == "nan":
+        if _missing_string(value):
             return None
         return int(float(value))
     if isinstance(value, float):

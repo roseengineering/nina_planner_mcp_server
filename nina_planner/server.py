@@ -377,7 +377,7 @@ async def get_site_profile() -> ObservatoryProfile:
 
     optics = OpticalTrainInfo(
         telescope_name=telescope.get("Name", ""),
-        focal_length_mm=float(telescope.get("FocalLength", 0)),
+        focal_length_mm=telescope.get("FocalLength"),
         focal_ratio=float(telescope.get("FocalRatio", 0)),
         pixel_size_microns=pixel_size,
         default_gain=gain,

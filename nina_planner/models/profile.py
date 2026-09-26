@@ -50,6 +50,8 @@ class OpticalTrainInfo(BaseModel):
             and self.camera_ysize_px is not None
             and self.camera_xsize_px > 0
             and self.camera_ysize_px > 0
+            and self.focal_length_mm > 0
+            and self.pixel_size_microns > 0
         ):
             sensor_width_mm = self.camera_xsize_px * self.pixel_size_microns / 1000.0
             sensor_height_mm = self.camera_ysize_px * self.pixel_size_microns / 1000.0
