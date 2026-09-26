@@ -20,41 +20,27 @@ const plugin: Plugin = async (
   const agentHistory = options.agentHistory as string || null;
 
   async function triggerIntervention(events: string | null = null) {
-    const agentName = "worker";
-
-    // does agent exist?
-    const { data: agents } = await ctx.client.app.agents();
-    const exists = agents.some((a: any) => a.name === agentName);
-    if (!exists) {
-      fileLog(pluginLogs, "nina-plugin: agent does not exist.", agentName);
-      return null;
+    const sessions = await ctx.client.session.list().catch(() => null)
+    if (!sessions?.data?.length) {
+      fileLog(pluginLogs, "nina-plugin: active session does not exist.");
+      return
     }
-
-    // create a brand new session
-    const newSession = await ctx.client.session
-      .create()
-      .catch((err: unknown) => {
-        fileLog(pluginLogs, "nina-plugin: failed to create isolated session:", err);
-        return null;
-      });
-    const sessionId = newSession?.data?.id;
-    if (!sessionId) return;
+    const session = sessions.data[0]
 
     // target the new session ID, ignoring the user's active console
-    const text =
-      events == null
+    const text = events == null
         ? "Trigger: Routine interval check. No new N.I.N.A. events."
         : `Trigger: New N.I.N.A. events follow:\n\n\`\`\`json\n${events}\n\`\`\``;
-
     fileLog(pluginLogs, "text:", text);
+
+    // inject prompt
     await ctx.client.session.prompt({
-      path: { id: sessionId },
+      path: { id: session.id },
       body: {
-        agent: agentName,
         parts: [
           {
             type: "text",
-            text,
+            text
           },
         ],
       },
