@@ -1,0 +1,2 @@
+TargetName,RACoordinates,DECCoordinates,TelescopeName,FocalLength,FocalRatio,CameraName,PixelSize,BitDepth,ObserverLatitude,ObserverLongitude,ObserverElevation
+Veil Nebula,20h 51m 0s,"31° 13' 12""",mine,500,5,N.I.N.A. Simulator Camera,3.8,16,31.5475,-99.3817,470

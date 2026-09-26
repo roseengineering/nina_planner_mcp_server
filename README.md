@@ -275,8 +275,7 @@ Rules:
         "NINA_PLANNER_LOG": "/tmp/nina-planner-debug.log"
       },
       "command": [ // don't use bash -c, hard for opencode to kill and restart
-        "uv",
-       	"run",
+        "python",
        	"-m",
        	"nina_planner"
       ]

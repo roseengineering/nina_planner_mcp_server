@@ -368,7 +368,9 @@ def slew_and_center() -> dict[str, Any]:
 
 
 def slew_center_and_rotate() -> dict[str, Any]:
-    return _child("NINA.Sequencer.SequenceItem.Platesolving.CenterAndRotate, NINA.Sequencer") | {
+    return _child(
+        "NINA.Sequencer.SequenceItem.Platesolving.CenterAndRotate, NINA.Sequencer"
+    ) | {
         "Inherited": True,
     }
 
@@ -887,7 +889,9 @@ def build_sequence_lights(
                             switch_filter_plus(plan.autofocus.reference_filter_name),
                         ]
                         + [
-                            slew_and_center() if pointing.position_angle_deg is None else slew_center_and_rotate()
+                            slew_and_center()
+                            if pointing.position_angle_deg is None
+                            else slew_center_and_rotate()
                         ]
                         + [
                             run_autofocus(),
@@ -954,9 +958,7 @@ def build_sequence_flats(
                     sky_flats(
                         count=d[0],
                         filter_name=d[2],
-                        position=next(
-                            f.position for f in profile.filters if f.name == d[2]
-                        ),
+                        position=profile.filter_position(d[2]),
                     )
                     for d in _round_robin(plan.flat, reverse=dusk)
                     if d[2] is not None

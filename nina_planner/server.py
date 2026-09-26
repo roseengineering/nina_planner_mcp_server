@@ -112,6 +112,7 @@ async def _spawn_detached(argv: list[str]) -> subprocess.Popen[bytes]:
     Used by the simulation tools to launch elevated PowerShell (with a UAC
     prompt on screen) and to launch NINA.exe — both fire-and-forget.
     """
+
     def _popen() -> subprocess.Popen[bytes]:
         return subprocess.Popen(
             argv,
@@ -126,11 +127,11 @@ async def _spawn_detached(argv: list[str]) -> subprocess.Popen[bytes]:
 
 async def _run_blocking(argv: list[str], *, timeout: float = 30.0) -> Any:
     """Run a subprocess to completion in a thread; return CompletedProcess."""
+
     def _run() -> Any:
         return subprocess.run(argv, capture_output=True, text=True, timeout=timeout)
 
     return await anyio.to_thread.run_sync(_run)
-
 
 
 async def _validate_filters(plan: ObservationPlan, profile: ObservatoryProfile) -> None:
@@ -152,9 +153,13 @@ async def _validate_filters(plan: ObservationPlan, profile: ObservatoryProfile) 
         )
 
 
-def _validate_position_angle(plan: ObservationPlan, profile: ObservatoryProfile) -> None:
+def _validate_position_angle(
+    plan: ObservationPlan, profile: ObservatoryProfile
+) -> None:
     set_idxs = [
-        i for i, p in enumerate(plan.pointings, start=1) if p.position_angle_deg is not None
+        i
+        for i, p in enumerate(plan.pointings, start=1)
+        if p.position_angle_deg is not None
     ]
     unset_idxs = [
         i for i, p in enumerate(plan.pointings, start=1) if p.position_angle_deg is None
@@ -178,10 +183,11 @@ def _validate_position_angle(plan: ObservationPlan, profile: ObservatoryProfile)
         )
 
 
-def _convert_to_met(
-    data: list[dict[str, Any]], since: int, now: datetime, name: str
+async def _convert_to_met(
+    data: list[dict[str, Any]], since: int, name: str
 ) -> list[dict[str, Any]]:
     timestamp = "timestamp"
+    now = datetime.fromisoformat(await _api_get("/time"))
     tzinfo = now.tzinfo
     res = []
     for d in data:
@@ -192,7 +198,6 @@ def _convert_to_met(
         ts = datetime.fromisoformat(value)
         if ts.tzinfo is None:
             ts = ts.replace(tzinfo=tzinfo)
-        tzinfo = ts.tzinfo
         d = _convert_keys(d)
         d[timestamp] = ts
         res.append(d)
@@ -202,8 +207,8 @@ def _convert_to_met(
         ts = d[timestamp]
         elapsed = (ts - now).total_seconds()
         if since + elapsed > 0:
-            d[timestamp] = ts.astimezone(UTC).replace(microsecond=0).strftime(
-                "%Y-%m-%dT%H:%M:%SZ"
+            d[timestamp] = (
+                ts.astimezone(UTC).replace(microsecond=0).strftime("%Y-%m-%dT%H:%M:%SZ")
             )
             res.append(d)
     return res
@@ -434,10 +439,8 @@ async def get_site_profile() -> ObservatoryProfile:
 @mcp.tool()
 async def get_events(since: int = 300) -> Any:
     """Returns recent timestamped NINA observatory events and their event-specific details from the last `since` seconds. Use it to reconstruct sequence, equipment, safety, imaging, and error activity. This tool is read-only; use get_site_equipment_status and get_sequence_state for current status."""
-    timestamp = await _api_get("/time")
-    now = datetime.fromisoformat(timestamp)
     res = await _api_get("/event-history")
-    res = _convert_to_met(res, since=since, now=now, name="Time")
+    res = await _convert_to_met(res, since=since, name="Time")
     _log_payload("Events:", json.dumps(res, indent=2))
     return res
 
@@ -445,10 +448,8 @@ async def get_events(since: int = 300) -> Any:
 @mcp.tool()
 async def get_logs(since: int = 300) -> Any:
     """Returns recent NINA application log entries, including informational messages, warnings, and errors with source and timestamp details from the last `since` seconds. Use it to diagnose sequence failures, equipment communication problems, and unexpected behavior. This tool is read-only and takes no action."""
-    timestamp = await _api_get("/time")
-    now = datetime.fromisoformat(timestamp)
     res = await _api_get("/application/logs?lineCount=200")
-    res = _convert_to_met(res, since=since, now=now, name="Timestamp")
+    res = await _convert_to_met(res, since=since, name="Timestamp")
     for d in res:
         if "line" in d:
             del d["line"]
@@ -673,18 +674,14 @@ async def ensure_nina_running() -> str:
     """
     log_extra: list[str] = []
     try:
-        probe = await _run_blocking(
-            ["tasklist.exe", "/FI", "IMAGENAME eq NINA.exe"]
-        )
+        probe = await _run_blocking(["tasklist.exe", "/FI", "IMAGENAME eq NINA.exe"])
         was_running = "NINA.exe" in (probe.stdout or "")
     except Exception as e:
         log_extra.append(f"nina probe failed: {e!r}")
         was_running = False
 
     if was_running:
-        summary = (
-            "ensure_nina_running: NINA.exe already running — no action."
-        )
+        summary = "ensure_nina_running: NINA.exe already running — no action."
         log_extra.append("NINA already running, no launch")
     else:
         nina_exe = nina_exe_path()
@@ -700,13 +697,10 @@ async def ensure_nina_running() -> str:
 
     _log_payload("ensure_nina_running:", summary)
     try:
-        await append_progress_entry(
-            "ensure_nina_running: " + "; ".join(log_extra)
-        )
+        await append_progress_entry("ensure_nina_running: " + "; ".join(log_extra))
     except Exception as e:
         _log_payload("ensure_nina_running: progress entry failed", repr(e))
     return summary
-
 
 
 @mcp.tool()
@@ -770,8 +764,7 @@ async def simulate_observation_time(when: str = "", reset: bool = False) -> str:
     if reset:
         if when:
             raise ValueError(
-                "`when` must be empty when `reset=True` "
-                "(reset uses no simulated time)."
+                "`when` must be empty when `reset=True` (reset uses no simulated time)."
             )
         log_extra.append("reset mode: returning NINA to real local time")
 
@@ -825,9 +818,7 @@ async def simulate_observation_time(when: str = "", reset: bool = False) -> str:
                 f"converged={converged}, delta={delta:+.2f}s."
             )
         except Exception as e:
-            _log_payload(
-                "simulate_observation_time: progress entry failed", repr(e)
-            )
+            _log_payload("simulate_observation_time: progress entry failed", repr(e))
         return summary
 
     if not when or not when.strip():
@@ -839,9 +830,7 @@ async def simulate_observation_time(when: str = "", reset: bool = False) -> str:
 
     was_running = False
     try:
-        probe = await _run_blocking(
-            ["tasklist.exe", "/FI", "IMAGENAME eq NINA.exe"]
-        )
+        probe = await _run_blocking(["tasklist.exe", "/FI", "IMAGENAME eq NINA.exe"])
         was_running = "NINA.exe" in (probe.stdout or "")
     except Exception as e:
         log_extra.append(f"nina probe failed: {e!r}")
@@ -949,7 +938,6 @@ async def get_nina_time() -> dict[str, Any]:
         "delta_seconds": delta_seconds,
         "simulated": abs(delta_seconds) > DRIFT_TOLERANCE_SECONDS,
     }
-
 
 
 if __name__ == "__main__":

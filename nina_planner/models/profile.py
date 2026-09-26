@@ -8,7 +8,7 @@ from pydantic import BaseModel, model_validator
 
 class FilterInfo(BaseModel):
     name: str
-    position: int | None = None
+    position: int
     focus_offset: int | None = None
 
 
@@ -83,3 +83,12 @@ class ObservatoryProfile(BaseModel):
     image_save_path: str
     file_pattern: str | None = None
     equipment: EquipmentConfig
+
+    def filter_position(self, name: str) -> int:
+        filt = next((f for f in self.filters if f.name == name), None)
+        if filt is None:
+            raise ValueError(
+                f"Filter {name!r} not found in profile {self.profile_name!r}. "
+                f"Available: {[f.name for f in self.filters]}"
+            )
+        return filt.position
