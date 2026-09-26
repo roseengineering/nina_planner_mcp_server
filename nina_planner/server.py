@@ -42,12 +42,14 @@ from .sequence import (
     build_sequence_teardown,
 )
 from .system_time import (
+    DRIFT_TOLERANCE_SECONDS,
     kill_nina_command,
     launch_nina_command,
     nina_exe_path,
     restore_clock_powershell,
     shift_clock_powershell,
     time_simulator_enabled,
+    validate_iso_local,
 )
 
 NINA_ENDPOINT = os.environ.get("NINA_ENDPOINT", "127.0.0.1:1888")
@@ -708,38 +710,52 @@ async def ensure_nina_running() -> str:
 
 
 @mcp.tool()
-async def simulate_observation_time(when: str) -> str:
-    """Kills any running NINA, briefly shifts the Windows host clock to `when`,
-    relaunches NINA in the background so it picks up the simulated time
-    during its own init, and resyncs the OS clock back to real time. Useful
-    for simulating an observing night against NINA's simulator during the day.
+async def simulate_observation_time(when: str = "", reset: bool = False) -> str:
+    """Manages NINA's clock relative to the host OS clock.
 
-    Steps (each sub-step is logged to ``NINA_PLANNER_LOG``; the only visible
-    UI effects are two UAC prompts on the Windows host):
-        1. Probe for ``NINA.exe`` via ``tasklist.exe``. If running, kill it
-           and ``sleep`` 2 s; otherwise log and continue.
-        2. Fire ``Start-Process powershell -Verb RunAs 'Set-Date "<when>"'``
-           via ``sudo powershell.exe`` (fire-and-forget; UAC prompt).
-        3. ``sleep`` 3 s for the time shift to settle.
-        4. Fire ``cmd.exe /c start "" "<NINA_EXE_PATH>"`` (detached).
-        5. ``sleep`` 10 s so NINA reads the simulated clock during its init.
-        6. Fire ``Start-Process powershell -Verb RunAs 'w32tm /resync'``
-           (fire-and-forget; UAC prompt).
+    Two modes, selected by ``reset``:
 
-    After the call returns, the OS clock is back to real time but NINA is
-    still running on simulated local time. Use ``get_events`` / the
-    ``weather.timestamp`` field to confirm the simulated date.
+    - ``reset=False`` (default): **simulate**. Briefly shifts the Windows host
+      clock to ``when``, relaunches NINA so it captures the simulated time
+      during its own init, then restores the OS clock to real time. NINA
+      continues running on simulated local time afterwards — verify with
+      :func:`get_nina_time` (``simulated=True`` while in effect).
+
+    - ``reset=True``: **reset back to real time**. Unconditionally kills
+      NINA.exe, runs ``w32tm /resync`` to ensure the OS clock is on real
+      network time, relaunches NINA so it captures the now-real clock during
+      its own init, and polls :func:`get_nina_time` until NINA's clock
+      converges with the host (within ``DRIFT_TOLERANCE_SECONDS``). Use this
+      after a simulate run to return the observatory to real time.
+
+    In both modes the OS clock is on real time at the end; in simulate mode
+    NINA is on simulated local time, in reset mode NINA is on real local
+    time.
+
+    The simulate path is logged as separate ``simulate_observation_time:``
+    sub-payloads (``probe``, ``shift``, ``launch``, ``restore``) in
+    ``NINA_PLANNER_LOG``. The only visible UI effects are two UAC prompts
+    on the Windows host per simulate invocation (one for ``Set-Date``, one
+    for ``w32tm /resync``); the reset path produces one UAC prompt (for
+    ``w32tm /resync``).
 
     Args:
-        when: Any string PowerShell's ``Set-Date`` accepts (e.g. ``"10/15/2026
-            11:15 PM"`` or ``"2026-10-15 23:15"``). Passed through verbatim;
-            cannot contain a single quote.
+        when: Required when ``reset=False``. Naive ISO 8601 local datetime
+            (e.g. ``"2026-10-15T23:15:00"`` or ``"2026-10-15 23:15:00"``).
+            Must not carry a timezone suffix (``Z`` or ``+HH:MM``) — those
+            would silently land wrong because ``Set-Date`` operates on
+            local time. Must not contain a single quote. Must be empty when
+            ``reset=True``.
+        reset: When ``True``, run the reset-to-real-time path instead of
+            simulate. ``when`` must be empty in this mode.
 
     Raises:
         RuntimeError: if the ``NINA_TIME_SIMULATOR_ENABLED`` env var is not
             set in the MCP environment. Set it to ``1`` in ``opencode.json``'s
             MCP ``environment`` block to enable.
-        ValueError: if ``when`` is empty or contains a single quote.
+        ValueError: if ``when`` fails ISO 8601 local datetime validation, or
+            if ``when`` is empty when ``reset=False`` / non-empty when
+            ``reset=True``.
     """
     if not time_simulator_enabled():
         raise RuntimeError(
@@ -747,10 +763,79 @@ async def simulate_observation_time(when: str) -> str:
             "NINA_TIME_SIMULATOR_ENABLED=1 in the MCP environment block of "
             "opencode.json to enable them."
         )
-    shift_clock_powershell(when)
 
     log_extra: list[str] = []
     nina_exe = nina_exe_path()
+
+    if reset:
+        if when:
+            raise ValueError(
+                "`when` must be empty when `reset=True` "
+                "(reset uses no simulated time)."
+            )
+        log_extra.append("reset mode: returning NINA to real local time")
+
+        try:
+            probe = await _run_blocking(
+                ["tasklist.exe", "/FI", "IMAGENAME eq NINA.exe"]
+            )
+            was_running = "NINA.exe" in (probe.stdout or "")
+        except Exception as e:
+            log_extra.append(f"nina probe failed: {e!r}")
+            was_running = False
+
+        try:
+            await _run_blocking(kill_nina_command(), timeout=15.0)
+            await anyio.sleep(2.0)
+            if was_running:
+                log_extra.append("killed running NINA")
+            else:
+                log_extra.append("NINA was not running (taskkill had no target)")
+        except Exception as e:
+            log_extra.append(f"taskkill failed: {e!r}")
+
+        restore_ps = restore_clock_powershell()
+        _log_payload("simulate_observation_time: restore", restore_ps)
+        await _spawn_detached(["sudo", "powershell.exe", "-Command", restore_ps])
+        log_extra.append("ran w32tm /resync to ensure OS clock is real")
+
+        launch = launch_nina_command(nina_exe)
+        _log_payload("simulate_observation_time: launch", " ".join(launch))
+        await _spawn_detached(launch)
+        log_extra.append(f"relaunched NINA from {nina_exe} on real OS clock")
+
+        converged, delta = await _wait_for_real_time()
+        if converged:
+            log_extra.append(
+                f"NINA clock converged with host within "
+                f"{DRIFT_TOLERANCE_SECONDS:g}s (delta={delta:+.2f}s)"
+            )
+        else:
+            log_extra.append(
+                f"NINA clock still diverges from host by {delta:+.2f}s "
+                f"after convergence wait — investigate"
+            )
+
+        summary = "simulate_observation_time(reset=True): " + "; ".join(log_extra)
+        _log_payload("simulate_observation_time:", summary)
+        try:
+            await append_progress_entry(
+                "simulate_observation_time(reset=True): killed NINA, ran "
+                "w32tm /resync, relaunched NINA on real OS clock; "
+                f"converged={converged}, delta={delta:+.2f}s."
+            )
+        except Exception as e:
+            _log_payload(
+                "simulate_observation_time: progress entry failed", repr(e)
+            )
+        return summary
+
+    if not when or not when.strip():
+        raise ValueError(
+            "`when` must be a non-empty ISO 8601 local datetime when "
+            "`reset=False` (e.g. '2026-10-15T23:15:00')."
+        )
+    validate_iso_local(when)
 
     was_running = False
     try:
@@ -801,6 +886,69 @@ async def simulate_observation_time(when: str) -> str:
     except Exception as e:
         _log_payload("simulate_observation_time: progress entry failed", repr(e))
     return summary
+
+
+async def _wait_for_real_time(
+    tolerance_seconds: float = DRIFT_TOLERANCE_SECONDS,
+    max_wait_seconds: float = 30.0,
+    poll_interval_seconds: float = 1.0,
+) -> tuple[bool, float]:
+    """Poll :func:`get_nina_time` until NINA's clock is within tolerance.
+
+    Returns ``(converged, delta_seconds)`` where ``delta_seconds`` is the
+    final observed delta (NINA − host, signed). Polling tolerates transient
+    API failures and times out after ``max_wait_seconds``, returning the
+    last observed delta (or ``NaN`` if no sample ever succeeded).
+    """
+    deadline = anyio.current_time() + max_wait_seconds
+    last_delta = float("nan")
+    while anyio.current_time() < deadline:
+        try:
+            result = await get_nina_time()
+            last_delta = float(result["delta_seconds"])
+            if abs(last_delta) <= tolerance_seconds:
+                return True, last_delta
+        except Exception:
+            pass
+        await anyio.sleep(poll_interval_seconds)
+    try:
+        result = await get_nina_time()
+        last_delta = float(result["delta_seconds"])
+    except Exception:
+        pass
+    return abs(last_delta) <= tolerance_seconds, last_delta
+
+
+@mcp.tool()
+async def get_nina_time() -> dict[str, Any]:
+    """Returns NINA's reported time alongside the host OS clock, the signed
+    delta between them (NINA − host), and a ``simulated`` flag (``True`` when
+    |delta| exceeds the configured drift tolerance).
+
+    Use this to detect whether a previous ``simulate_observation_time`` call
+    is still in effect (``simulated=True``) or to verify that
+    ``simulate_observation_time(reset=True)`` returned NINA to real time
+    (``simulated=False`` and ``delta_seconds`` ≈ 0).
+
+    Timestamps are returned as naive ISO 8601 local datetimes (no timezone
+    suffix); ``delta_seconds`` is computed in UTC after attaching the host's
+    local timezone to whichever side is naive.
+    """
+    timestamp = await _api_get("/time")
+    nina_dt = datetime.fromisoformat(timestamp)
+    host_dt = datetime.now().astimezone()
+    if nina_dt.tzinfo is None:
+        nina_utc = nina_dt.replace(tzinfo=host_dt.tzinfo).astimezone(UTC)
+    else:
+        nina_utc = nina_dt.astimezone(UTC)
+    host_utc = host_dt.astimezone(UTC)
+    delta_seconds = (nina_utc - host_utc).total_seconds()
+    return {
+        "nina_time": nina_dt.replace(microsecond=0).isoformat(),
+        "host_time": host_dt.replace(microsecond=0).isoformat(),
+        "delta_seconds": delta_seconds,
+        "simulated": abs(delta_seconds) > DRIFT_TOLERANCE_SECONDS,
+    }
 
 
 

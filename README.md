@@ -317,3 +317,29 @@ Configured under `opencode.json > plugin` as the second array element (see [`ope
 | `NINA_FLATS_AZIMUTH_DUSK` | `90` | Azimuth in degrees pointing east for dusk flats |
 | `NINA_TIME_SIMULATOR_ENABLED` | _unset_ | When set to `"1"`, enables the `simulate_observation_time` tool. Off by default — the tool refuses with a clear error otherwise. |
 | `NINA_EXE_PATH` | `C:\Program Files\N.I.N.A. - Nighttime Imaging 'N' Astronomy\NINA.exe` | Windows path to `NINA.exe` used by `simulate_observation_time` to relaunch NINA after the host clock shift. |
+
+## Setting up WSL
+
+Make sure you have setup mirroring to allow you to connect to NINA via localhost.  Do this by editing wslconfig and setting networking mode to mirrored.  Otherwise you will have to know the external ip of your machine in order to connect to your NINA API endpoint.
+
+
+```
+$ vi $HOME/.wslconfig
+[wsl2]
+networkingMode=mirrored
+```
+
+Then shutdown wsl and restart
+
+```bash
+$ wsl --shutdown
+$ wsl
+```
+
+In addition, to get the system tools to work to stop and restart NINA should it stop, make sudo password less with:
+
+
+```bash
+$ echo "$USER ALL=(ALL) NOPASSWD: ALL" | sudo tee /etc/sudoers.d/90-user
+```
+

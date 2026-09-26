@@ -2,7 +2,11 @@ import unittest
 from datetime import UTC, datetime, timedelta
 
 from nina_planner.models.plan import ObservationPlan
-from nina_planner.progress import filter_metadata_rows, plan_progress, plan_with_remaining
+from nina_planner.progress import (
+    filter_metadata_rows,
+    plan_progress,
+    plan_with_remaining,
+)
 
 
 def _row(
