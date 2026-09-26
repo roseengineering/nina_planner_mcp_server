@@ -38,8 +38,68 @@
 A plan is a JSON document that describes one complete imaging session. It encodes the **target**, **exposure settings** for all five frame types, and **equipment configuration** (cooler, autofocus, guiding, constraints).
 
 ### Plan structure
- 
-See [veil-nebula_widefield-supernova-remnant_20260913T080623.json plan](veil-nebula_widefield-supernova-remnant_20260913T080623.json).
+
+An example json plan:
+
+```json
+{
+  "target": "Veil Nebula",
+  "intent": "Widefield supernova remnant",
+  "description": "Veil Nebula complex centered between Western NGC 6960 and Eastern NGC 6992",
+  "pointings": [
+    {
+      "ra_hours": 20.85,
+      "dec_deg": 31.22
+    }
+  ],
+  "batch_size": 5,
+  "cooler": {
+    "on": true,
+    "setpoint_celsius": -10.0
+  },
+  "constraints": {
+    "min_altitude": 30.0,
+    "horizon_offset_degrees": 2.0
+  },
+  "autofocus": {
+    "reference_filter_name": "LP",
+    "hfr_increase_sample_size": 3,
+    "hfr_increase_threshold_percent": 15.0,
+    "every_n_exposures": 10,
+    "threshold_celsius": 1.0
+  },
+  "guiding": {
+    "dither_every_n_exposures": 2,
+    "check_drift_every_n_exposures": 6,
+    "max_drift_arcmin": 1.5
+  },
+  "light": [
+    {
+      "filter_name": "LP",
+      "exposure_time_seconds": 60.0,
+      "total_count": 60
+    }
+  ],
+  "flat": [
+    {
+      "filter_name": "LP",
+      "exposure_time_seconds": 5.0,
+      "total_count": 30
+    }
+  ],
+  "dark": [
+    {
+      "exposure_time_seconds": 60.0,
+      "total_count": 20
+    }
+  ],
+  "bias": [
+    {
+      "total_count": 30
+    }
+  ]
+}
+``` 
 
 ### Fields
 
@@ -49,9 +109,6 @@ See [veil-nebula_widefield-supernova-remnant_20260913T080623.json plan](veil-neb
 | `intent` | no | 2-3 words describing the goal |
 | `plan_id` | no | Stable identifier stamped on write. Used for frame attribution; when absent, a deterministic hash of plan content is used. |
 | `description` | no | explanation of the observation plan, including rationale, exposure goals, equipment, or sky constraints |
-| `ra_hours` | _(removed)_ | Renamed to `pointings[].ra_hours`. The old top-level field is no longer accepted. |
-| `dec_deg` | _(removed)_ | Renamed to `pointings[].dec_deg`. The old top-level field is no longer accepted. |
-| `position_angle_deg` | _(removed)_ | Renamed to `pointings[].position_angle_deg`. |
 | `pointings` | **yes** | One or more target pointings. Each is a `Pointing` object: `label` (optional string shown in the NINA target name when set), `ra_hours` (J2000 RA in hours, `[0, 24)`), `dec_deg` (J2000 dec in degrees, `[-90, +90]`), and `position_angle_deg` (optional rotator PA in degrees east of north, `[0, 360)`; omitted forwards 0 to NINA). A pointing is selected at run time via `pointing_index` on `load_sequence_from_plan`/`get_plan_progress`/`get_imaging_metadata`. |
 | `batch_size` | no | Exposures per batch (0 = no batching, default 5) |
 | `cooler` | no | Target setpoint (default -10°C) |
@@ -138,9 +195,9 @@ The plugin auto-reconnects on websocket disconnection with a 5-second retry. On 
 
 ---
 
-## `worker.md` — OpenCode Worker Agent
+## `AGENTS.md` — OpenCode Worker Agent
 
-`worker.md` (in `.opencode/agents/`) defines the `worker` agent that `nina-plugin.ts` triggers for automated safety interrupts, sequence halts, and recovery routines.
+`AGENTS.md` (in `.opencode/agents/`) defines the observer agent that the active console user becomes and the `nina-plugin.ts` triggers for automated safety interrupts, sequence halts, and recovery routines.
 
 ---
 
@@ -194,7 +251,32 @@ Rules:
 
 ## `opencode.json` — Opencode v1 Sample Configuration
 
-See example [opencode.json](opencode.json).
+```json
+{
+  "$schema": "https://opencode.ai/config.json",
+  "plugin": [ 
+    [ "./nina-plugin.ts", 
+      { 
+        // "intervalCheck": 10,
+        // "ninaEndpoint": "192.168.0.24:1888",
+        "agentHistory": "/tmp/nina-plugin.json", 
+        "pluginLogs": "/tmp/nina-plugin-debug.log" 
+      } 
+    ]
+  ],
+  "mcp": {
+    "nina-planner": {
+      "type": "local",
+      "environment": {
+        // "NINA_ENDPOINT": "192.168.0.24:1888",
+        // "NINA_DRIVE_MOUNT": "/mnt/c",
+        "NINA_PLANNER_LOG": "/tmp/nina-planner-debug.log"
+      },
+      "command": [ "uv", "run", "-m", "nina_planner" ]
+    }
+  }
+}
+```
 
 Registers the opencode plugin and the `nina_planner` MCP server so both run together. The MCP server provides the tools (`load_sequence_from_plan`, `get_site_equipment_status`, etc.) that the plugin-prompted agent calls.
 
