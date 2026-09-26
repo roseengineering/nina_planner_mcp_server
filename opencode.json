@@ -1,14 +1,13 @@
 {
   "$schema": "https://opencode.ai/config.json",
-  "plugin": [
-    [
-      "./nina-plugin.ts",
-      {
+  "plugin": [ 
+    [ "./nina-plugin.ts", 
+      { 
         // "intervalCheck": 10,
         // "ninaEndpoint": "192.168.0.24:1888",
-        "agentHistory": "/tmp/nina-agent.json",
-        "pluginLogs": "/tmp/nina-plugins.log"
-      }
+        "agentHistory": "/tmp/nina-plugin.json", 
+        "pluginLogs": "/tmp/nina-plugin-debug.log" 
+      } 
     ]
   ],
   "mcp": {
@@ -16,13 +15,10 @@
       "type": "local",
       "environment": {
         // "NINA_ENDPOINT": "192.168.0.24:1888",
-        // "NINA_DRIVE_MOUNT": "/mnt/c"
+        // "NINA_DRIVE_MOUNT": "/mnt/c",
+        "NINA_PLANNER_LOG": "/tmp/nina-planner-debug.log"
       },
-      "command": [
-        "bash", 
-        "-c", 
-        "uv run -m nina_planner 2>> /tmp/nina-planner.log"
-      ]
+      "command": [ "uv", "run", "-m", "nina_planner" ]
     }
   }
 }

@@ -28,6 +28,7 @@ class EquipmentConfig(BaseModel):
     has_dome: bool
     has_weather: bool
     has_safety_monitor: bool
+    has_switch: bool
 
 
 class OpticalTrainInfo(BaseModel):

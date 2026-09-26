@@ -33,6 +33,7 @@ from .sequence import (
 
 NINA_ENDPOINT = os.environ.get("NINA_ENDPOINT", "localhost:1888")
 NINA_API_URL = f"http://{NINA_ENDPOINT}/v2/api"
+NINA_PLANNER_LOG = os.environ.get("NINA_PLANNER_LOG")
 PROJECT_DIR = Path(__file__).resolve().parent.parent
 
 FrameType = Literal["light", "dark", "bias", "dawn_flat", "dusk_flat"]
@@ -52,6 +53,17 @@ def _convert_keys(d: Any) -> Any:
     return d
 
 
+def _log_payload(label: str, payload: str) -> None:
+    if NINA_PLANNER_LOG:
+        path = Path(NINA_PLANNER_LOG)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        timestamp = datetime.now(UTC).isoformat()
+        with path.open("a", encoding="utf-8") as f:
+            f.write(f"{timestamp} {label} {payload}\n")
+    else:
+        print(f"{label} {payload}", file=sys.stderr)
+
+
 async def _api_get(path: str) -> Any:
     async with httpx.AsyncClient(base_url=NINA_API_URL, timeout=10.0) as client:
         resp = await client.get(path)
@@ -59,7 +71,7 @@ async def _api_get(path: str) -> Any:
         data = resp.json()
         if not data.get("Success", False):
             raise RuntimeError(data.get("Error", "API request failed"))
-        print("_api_get:", json.dumps(data, indent=2), file=sys.stderr)
+        _log_payload("_api_get:", json.dumps(data, indent=2))
         return data.get("Response", {})
 
 
@@ -202,6 +214,7 @@ async def _get_site_equipment_status(
     from .models.mount import MountDevice
     from .models.rotator import RotatorDevice
     from .models.safety_monitor import SafetyMonitorDevice
+    from .models.switch import Switch
     from .models.weather import Weather
 
     raw = await _api_get("/equipment/info")
@@ -216,6 +229,7 @@ async def _get_site_equipment_status(
         "Dome": (DomeDevice, "/equipment/dome"),
         "FilterWheel": (FilterWheelDevice, "/equipment/filterwheel"),
         "Rotator": (RotatorDevice, "/equipment/rotator"),
+        "Switch": (Switch, "/equipment/switch"),
     }
 
     EXISTS = {
@@ -228,6 +242,7 @@ async def _get_site_equipment_status(
         "Dome": profile.equipment.has_dome,
         "WeatherData": profile.equipment.has_weather,
         "SafetyMonitor": profile.equipment.has_safety_monitor,
+        "Switch": profile.equipment.has_switch,
     }
 
     devices_connecting: list[str] = []
@@ -268,6 +283,7 @@ async def _get_site_equipment_status(
         dome=_build(raw.get("Dome", {}), DomeDevice),
         filter_wheel=_build(raw.get("FilterWheel", {}), FilterWheelDevice),
         rotator=_build(raw.get("Rotator", {}), RotatorDevice),
+        switch=_build(raw.get("Switch", {}), Switch),
     )
 
 
@@ -276,7 +292,7 @@ async def get_site_equipment_status() -> ObservatoryEquipment:
     """Returns the current connection, operating state, measurements, and capabilities of active observatory equipment, including weather and safety-monitor status (whether the enclosure is open and it is safe to unpark), and mount capabilities (`can_park`, `can_find_home`) that determine how the scope can be stowed. Use it for live operational and safety checks. This tool is read-only and takes no action."""
     profile = await get_site_profile()
     equipment = await _get_site_equipment_status(profile)
-    print("Equipment:", equipment.model_dump_json(indent=2), file=sys.stderr)
+    _log_payload("Equipment:", equipment.model_dump_json(indent=2))
     return cast(ObservatoryEquipment, equipment)
 
 
@@ -298,6 +314,7 @@ async def get_site_profile() -> ObservatoryProfile:
     weather = raw.get("WeatherDataSettings", {})
     safety = raw.get("SafetyMonitorSettings", {})
     focuser = raw.get("FocuserSettings", {})
+    switch = raw.get("SwitchSettings", {})
 
     pixel_size = ascom_float(camera.get("PixelSize")) or 0
     gain = ascom_int(camera.get("Gain")) or 0
@@ -346,6 +363,7 @@ async def get_site_profile() -> ObservatoryProfile:
         has_dome=_exists(dome, "Id"),
         has_weather=_exists(weather, "Id"),
         has_safety_monitor=_exists(safety, "Id"),
+        has_switch=_exists(switch, "Id"),
     )
 
     profile = ObservatoryProfile(
@@ -361,7 +379,7 @@ async def get_site_profile() -> ObservatoryProfile:
         file_pattern=image_file.get("FilePattern"),
         equipment=equipment,
     )
-    print("Profile:", profile.model_dump_json(indent=2), file=sys.stderr)
+    _log_payload("Profile:", profile.model_dump_json(indent=2))
     return profile
 
 
@@ -372,7 +390,7 @@ async def get_events(since: int = 300) -> Any:
     now = datetime.fromisoformat(timestamp)
     res = await _api_get("/event-history")
     res = _convert_to_met(res, since=since, now=now, name="Time")
-    print("Events:", json.dumps(res, indent=2), file=sys.stderr)
+    _log_payload("Events:", json.dumps(res, indent=2))
     return res
 
 
@@ -390,7 +408,7 @@ async def get_logs(since: int = 300) -> Any:
             del d["member"]
         if "source" in d:
             del d["source"]
-    print("Logs:", json.dumps(res, indent=2), file=sys.stderr)
+    _log_payload("Logs:", json.dumps(res, indent=2))
     return res
 
 
@@ -418,7 +436,7 @@ async def get_imaging_metadata(
     res["plan_id"] = plan.effective_plan_id(pointing_index)
     res["pointing_index"] = pointing_index
     res["target"] = plan.target
-    print("Metadata:", json.dumps(res, indent=2), file=sys.stderr)
+    _log_payload("Metadata:", json.dumps(res, indent=2))
     return res
 
 
@@ -467,7 +485,7 @@ async def get_plan_progress(
             max_guiding_rms_arcsec=max_guiding_rms_arcsec,
         ),
     }
-    print("Progress:", json.dumps(res, indent=2), file=sys.stderr)
+    _log_payload("Progress:", json.dumps(res, indent=2))
     return res
 
 

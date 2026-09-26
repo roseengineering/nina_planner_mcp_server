@@ -40,13 +40,11 @@ class MountDevice(BaseModel):
                 data["mount_status"] = "IDLE"
 
             coords = data.get("coordinates", {}) or {}
-            ra = ascom_float(coords.get("ra")) or ascom_float(coords.get("ra_degs"))
+            ra = ascom_float(coords.get("ra")) # hours
             dec = ascom_float(coords.get("dec"))
             if ra is None and dec is None:
                 ra = ascom_float(data.get("right_ascension"))
                 dec = ascom_float(data.get("declination"))
-            if ra is not None:
-                ra = ra / 15.0
 
             data["pointing"] = PointingInfo(
                 ra_hours=ra,

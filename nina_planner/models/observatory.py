@@ -10,6 +10,7 @@ from .guider import GuiderDevice
 from .mount import MountDevice
 from .rotator import RotatorDevice
 from .safety_monitor import SafetyMonitorDevice
+from .switch import Switch
 from .weather import Weather
 
 
@@ -23,3 +24,4 @@ class ObservatoryEquipment(BaseModel):
     dome: DomeDevice | None = None
     weather: Weather | None = None
     safety_monitor: SafetyMonitorDevice | None = None
+    switch: Switch | None = None
