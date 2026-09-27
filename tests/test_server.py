@@ -1,4 +1,6 @@
+import asyncio
 import json
+import os
 import tempfile
 import unittest
 from datetime import UTC, datetime
@@ -7,7 +9,13 @@ from unittest.mock import AsyncMock, patch
 
 from nina_planner.models.observatory import ObservatoryEquipment
 from nina_planner.models.plan import ObservationPlan
-from nina_planner.models.profile import ObservatoryProfile
+from nina_planner.models.profile import (
+    EquipmentConfig,
+    FilterInfo,
+    ObservatoryProfile,
+    OpticalTrainInfo,
+    SiteLocationInfo,
+)
 from nina_planner.server import (
     _check_pointing_index,
     _convert_keys,
@@ -98,10 +106,9 @@ class HelperFunctionsTest(unittest.TestCase):
     """Pure-logic helpers in server.py."""
 
     def test_sanitize_filename_strips_invalid_chars(self):
-        # Path separators, control chars, and Windows-reserved chars all
-        # replaced with a hyphen.
         self.assertEqual(
-            _sanitize_filename('a/b\\c:d*e?f"g<h>i|j'), "a-b-c-d-e-f-g-h-i-j"
+            _sanitize_filename('a/b\\c:d*e?f"g<h>i|j'),
+            "a-b-c-d-e-f-g-h-i-j",
         )
         self.assertEqual(_sanitize_filename("plain_name"), "plain_name")
 
@@ -123,7 +130,7 @@ class HelperFunctionsTest(unittest.TestCase):
         self.assertEqual(_convert_keys(None), None)
 
     def test_log_payload_writes_to_file(self):
-        with tempfile_TemporaryDirectory_patch() as tmp:
+        with tempfile.TemporaryDirectory() as tmp:
             log_path = Path(tmp) / "test.log"
             with patch("nina_planner.server.NINA_PLANNER_LOG", str(log_path)):
                 _log_payload("Test", "payload")
@@ -133,13 +140,10 @@ class HelperFunctionsTest(unittest.TestCase):
 
     def test_log_payload_falls_back_to_stderr_when_no_env(self):
         # When NINA_PLANNER_LOG is unset, log_payload writes to stderr.
-        # Hard to assert stderr cleanly — just verify no exception.
         with patch("nina_planner.server.NINA_PLANNER_LOG", None):
             _log_payload("Test", "payload")  # should not raise
 
     def _make_plan(self, **overrides):
-        from nina_planner.models.plan import ObservationPlan
-
         data = {
             "plan_id": "plan-test",
             "target": "M31",
@@ -159,12 +163,6 @@ class HelperFunctionsTest(unittest.TestCase):
     def _make_profile(self, filters=None, has_rotator=True):
         if filters is None:
             filters = []
-        from nina_planner.models.profile import (
-            EquipmentConfig,
-            OpticalTrainInfo,
-            SiteLocationInfo,
-        )
-
         return ObservatoryProfile(
             profile_name="Test",
             profile_id="abc",
@@ -191,19 +189,13 @@ class HelperFunctionsTest(unittest.TestCase):
         )
 
     def test_validate_filters_all_known(self):
-        from nina_planner.models.profile import FilterInfo
-
         filters = [FilterInfo(name="L", position=1, focus_offset=0)]
         profile = self._make_profile(filters=filters)
         plan = self._make_plan()
         # No exception → all filters known. _validate_filters is async.
-        import asyncio
-
         asyncio.run(_validate_filters(plan, profile))
 
     def test_validate_filters_unknown_filter_raises(self):
-        from nina_planner.models.profile import FilterInfo
-
         filters = [FilterInfo(name="L", position=1, focus_offset=0)]
         profile = self._make_profile(filters=filters)
         plan = self._make_plan(
@@ -215,17 +207,11 @@ class HelperFunctionsTest(unittest.TestCase):
                 }
             ]
         )
-        import asyncio
-
         with self.assertRaises(ValueError) as ctx:
             asyncio.run(_validate_filters(plan, profile))
         self.assertIn("UNKNOWN", str(ctx.exception))
 
     def test_validate_filters_includes_reference_filter(self):
-        from nina_planner.models.profile import FilterInfo
-
-        # Plan with reference_filter_name not in any light/flat list —
-        # validator should still check it.
         filters = [
             FilterInfo(name="L", position=1, focus_offset=0),
             FilterInfo(name="R", position=2, focus_offset=0),
@@ -238,9 +224,7 @@ class HelperFunctionsTest(unittest.TestCase):
             ],
             flat=[{"filter_name": "L", "exposure_time_seconds": 5.0, "total_count": 1}],
         )
-        import asyncio
-
-        asyncio.run(_validate_filters(plan, profile))  # no exception, R is in profile
+        asyncio.run(_validate_filters(plan, profile))
 
     def test_validate_position_angle_all_set(self):
         profile = self._make_profile(has_rotator=True)
@@ -294,13 +278,6 @@ class HelperFunctionsTest(unittest.TestCase):
             _check_pointing_index(plan, 99)
 
 
-def tempfile_TemporaryDirectory_patch():
-    """Lazy import to avoid pulling tempfile at module top level."""
-    import tempfile
-
-    return tempfile.TemporaryDirectory()
-
-
 class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
     """Direct-call tests for @mcp.tool() functions in server.py.
 
@@ -311,14 +288,6 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
     """
 
     def _minimal_profile(self):
-        """Return an ObservatoryProfile with all equipment flags False so
-        _get_site_equipment_status skips per-device API calls."""
-        from nina_planner.models.profile import (
-            EquipmentConfig,
-            OpticalTrainInfo,
-            SiteLocationInfo,
-        )
-
         return ObservatoryProfile(
             profile_name="Test",
             profile_id="abc",
@@ -345,13 +314,6 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
         )
 
     def _full_profile(self, filters=None):
-        from nina_planner.models.profile import (
-            EquipmentConfig,
-            FilterInfo,
-            OpticalTrainInfo,
-            SiteLocationInfo,
-        )
-
         if filters is None:
             filters = [FilterInfo(name="L", position=1, focus_offset=0)]
         return ObservatoryProfile(
@@ -387,7 +349,81 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
             ),
         )
 
-    # ---- get_site_profile ----
+    async def test_resolve_imaging_root(self):
+        from nina_planner.imaging import windows_to_local
+        from nina_planner.server import _resolve_imaging_root
+
+        profile = self._full_profile()
+        with patch(
+            "nina_planner.server.get_site_profile",
+            AsyncMock(return_value=profile),
+        ):
+            result = await _resolve_imaging_root()
+        expected = windows_to_local("C:\\NINA")
+        self.assertEqual(result, expected)
+
+    async def test_load_plan_with_relative_path(self):
+        from nina_planner.server import _load_plan
+
+        plan_dict = {
+            "plan_id": "plan-test123",
+            "target": "M31",
+            "pointings": [{"ra_hours": 5.0, "dec_deg": 10.0}],
+            "light": [
+                {"filter_name": "L", "exposure_time_seconds": 60.0, "total_count": 1}
+            ],
+            "flat": [
+                {"filter_name": "L", "exposure_time_seconds": 5.0, "total_count": 1}
+            ],
+            "dark": [{"exposure_time_seconds": 60.0, "total_count": 1}],
+            "bias": [{"total_count": 1}],
+        }
+
+        with tempfile.TemporaryDirectory() as tmp:
+            project_dir = Path(tmp)
+            plan_filename = "subdir_plan.json"
+            (project_dir / plan_filename).write_text(json.dumps(plan_dict))
+            with patch("nina_planner.server.PROJECT_DIR", project_dir):
+                result = await _load_plan(plan_filename)
+        self.assertEqual(result.plan_id, "plan-test123")
+        self.assertEqual(result.target, "M31")
+
+    async def test_read_metadata_with_image_type(self):
+        from nina_planner.server import _read_metadata
+
+        def fake_read(root, image_type):
+            return [{"image_type": image_type.upper(), "duration": "60.0"}]
+
+        with (
+            patch(
+                "nina_planner.server.get_site_profile",
+                AsyncMock(return_value=self._full_profile()),
+            ),
+            patch("nina_planner.server.read_imaging_csv", side_effect=fake_read),
+        ):
+            rows = await _read_metadata("light")
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["image_type"], "LIGHT")
+
+    async def test_read_metadata_without_image_type(self):
+        from nina_planner.server import _read_metadata
+
+        types_seen = []
+
+        def fake_read(root, image_type):
+            types_seen.append(image_type)
+            return [{"image_type": image_type}]
+
+        with (
+            patch(
+                "nina_planner.server.get_site_profile",
+                AsyncMock(return_value=self._full_profile()),
+            ),
+            patch("nina_planner.server.read_imaging_csv", side_effect=fake_read),
+        ):
+            rows = await _read_metadata()
+        self.assertEqual(set(types_seen), {"light", "dark", "bias", "flat"})
+        self.assertEqual(len(rows), 4)
 
     async def test_get_site_profile_returns_observatory_profile(self):
         from nina_planner.server import get_site_profile
@@ -411,8 +447,7 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
             "ImageFileSettings": {"FilePath": "C:\\NINA", "FilePattern": None},
             "PlateSolveSettings": {"PlateSolverType": None, "BlindSolverType": None},
             "FramingAssistantSettings": {"CameraWidth": 3000, "CameraHeight": 2000},
-            # GuiderSettings has GuiderName but it matches the skip set
-            # (Direct_Guider, No_Guider), so has_guider becomes False.
+            # GuiderSettings has GuiderName matching the skip set, so has_guider=False.
             "GuiderSettings": {"GuiderName": "Direct_Guider"},
             "RotatorSettings": {"Id": "Rot1"},
             "DomeSettings": {},
@@ -427,7 +462,6 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result.optics.focal_length_mm, 600)
         self.assertTrue(result.equipment.has_mount)
         self.assertTrue(result.equipment.has_camera)
-        # Direct_Guider is in the skip set, so has_guider should be False.
         self.assertFalse(result.equipment.has_guider)
 
     async def test_get_site_profile_with_filters(self):
@@ -463,8 +497,6 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result.filters[0].position, 1)
         self.assertEqual(result.filters[1].name, "R")
 
-    # ---- _get_site_equipment_status ----
-
     async def test_get_site_equipment_status_returns_empty_when_all_false(self):
         from nina_planner.server import _get_site_equipment_status
 
@@ -479,9 +511,7 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
         from nina_planner.server import _get_site_equipment_status
 
         profile = self._minimal_profile()
-        # Set has_mount=True but Connected=False → should call connect endpoint.
-        from nina_planner.models.profile import EquipmentConfig
-
+        # Set has_mount=True but Connected=False → should call connect.
         profile_connected = profile.model_copy(
             update={
                 "equipment": EquipmentConfig(
@@ -510,16 +540,38 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
                 await _get_site_equipment_status(profile_connected)
         self.assertIn("Mount", str(ctx.exception))
 
-    # ---- get_events / get_logs ----
+    async def test_get_site_equipment_status_connected_device(self):
+        from nina_planner.server import _get_site_equipment_status
+
+        profile = self._minimal_profile().model_copy(
+            update={
+                "equipment": EquipmentConfig(
+                    has_mount=True,
+                    has_camera=False,
+                    has_focuser=False,
+                    has_filter_wheel=False,
+                    has_guider=False,
+                    has_rotator=False,
+                    has_dome=False,
+                    has_weather=False,
+                    has_safety_monitor=False,
+                    has_switch=False,
+                )
+            }
+        )
+        raw = {"Mount": {"Connected": True, "Name": "TestMount"}}
+
+        with patch("nina_planner.server._api_get", AsyncMock(return_value=raw)):
+            equipment = await _get_site_equipment_status(profile)
+        self.assertIsNotNone(equipment.mount)
+        self.assertEqual(equipment.mount.name, "TestMount")
+        self.assertTrue(equipment.mount.connected)
 
     async def test_get_events_returns_filtered(self):
         from nina_planner.server import get_events
 
-        # Use a /time value that's already UTC-anchored so the test is
-        # timezone-independent. /time is naive; if we make it Z-suffixed it's
-        # treated as already-UTC and not tagged with host tz.
         events = [{"Time": "2026-09-22T02:55:00Z", "Type": "Info"}]
-        time_str = "2026-09-22T03:00:00Z"  # UTC-anchored
+        time_str = "2026-09-22T03:00:00Z"
 
         async def fake(path):
             if path == "/time":
@@ -558,8 +610,6 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("member", result[0])
         self.assertNotIn("source", result[0])
 
-    # ---- write_plan_file ----
-
     async def test_write_plan_file_creates_file(self):
         from nina_planner.server import write_plan_file
 
@@ -576,11 +626,11 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
         )
 
         with tempfile.TemporaryDirectory() as tmp:
-            project_dir = Path(tmp)
-            (project_dir / "subdir").mkdir()
-            (project_dir / "subdir" / "progress.md").write_text("")
+            project_dir = Path(tmp) / "sub"
+            project_dir.mkdir()
+            (project_dir / "progress.md").write_text("")
             with (
-                patch("nina_planner.server.PROJECT_DIR", project_dir / "subdir"),
+                patch("nina_planner.server.PROJECT_DIR", project_dir),
                 patch(
                     "nina_planner.server.get_site_profile",
                     AsyncMock(return_value=self._full_profile()),
@@ -590,11 +640,37 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn("Plan successfully written to", result)
         self.assertTrue(result.endswith(".json"))
 
-    # ---- get_plan_progress ----
+    async def test_write_plan_file_auto_fills_plan_id(self):
+        from nina_planner.server import write_plan_file
+
+        plan = ObservationPlan(
+            plan_id="",
+            target="M31_Plan",
+            pointings=[{"ra_hours": 5.0, "dec_deg": 10.0}],
+            light=[
+                {"filter_name": "L", "exposure_time_seconds": 60.0, "total_count": 1}
+            ],
+            flat=[{"filter_name": "L", "exposure_time_seconds": 5.0, "total_count": 1}],
+            dark=[{"exposure_time_seconds": 60.0, "total_count": 1}],
+            bias=[{"total_count": 1}],
+        )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            project_dir = Path(tmp) / "sub"
+            project_dir.mkdir()
+            (project_dir / "progress.md").write_text("")
+            with (
+                patch("nina_planner.server.PROJECT_DIR", project_dir),
+                patch(
+                    "nina_planner.server.get_site_profile",
+                    AsyncMock(return_value=self._full_profile()),
+                ),
+            ):
+                result = await write_plan_file(plan)
+        self.assertIn("m31_plan", result.lower())
+        self.assertTrue(result.endswith(".json"))
 
     async def test_get_plan_progress_returns_summary(self):
-        import tempfile as _tempfile
-
         from nina_planner.server import get_plan_progress
 
         plan_dict = {
@@ -611,7 +687,7 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
             "bias": [{"total_count": 1}],
         }
 
-        with _tempfile.TemporaryDirectory() as tmp:
+        with tempfile.TemporaryDirectory() as tmp:
             plan_path = Path(tmp) / "plan.json"
             plan_path.write_text(json.dumps(plan_dict))
 
@@ -624,8 +700,6 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["pointing_index"], 1)
         self.assertEqual(result["target"], "M31")
         self.assertIn("light", result["frame_types"])
-
-    # ---- load_sequence_from_plan ----
 
     async def test_load_sequence_from_plan_remaining_mode(self):
         from nina_planner.server import load_sequence_from_plan
@@ -648,7 +722,6 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
             plan_path = Path(tmp) / "plan.json"
             plan_path.write_text(json.dumps(plan_dict))
 
-            # plan_progress returns a dict of frame-type → list of plain dicts.
             fake_progress = {
                 "light": [
                     {
@@ -712,6 +785,48 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn("is complete", result)
         self.assertIn("nothing to load", result)
 
+    async def test_load_sequence_from_plan_read_metadata_fails(self):
+        from nina_planner.server import load_sequence_from_plan
+
+        plan_dict = {
+            "plan_id": "plan-test123",
+            "target": "M31",
+            "pointings": [{"ra_hours": 5.0, "dec_deg": 10.0}],
+            "light": [
+                {"filter_name": "L", "exposure_time_seconds": 60.0, "total_count": 1}
+            ],
+            "flat": [
+                {"filter_name": "L", "exposure_time_seconds": 5.0, "total_count": 1}
+            ],
+            "dark": [{"exposure_time_seconds": 60.0, "total_count": 1}],
+            "bias": [{"total_count": 1}],
+        }
+
+        with tempfile.TemporaryDirectory() as tmp:
+            plan_path = Path(tmp) / "plan.json"
+            plan_path.write_text(json.dumps(plan_dict))
+
+            with (
+                patch(
+                    "nina_planner.server.get_site_profile",
+                    AsyncMock(return_value=self._full_profile()),
+                ),
+                patch(
+                    "nina_planner.server._get_site_equipment_status",
+                    AsyncMock(return_value=ObservatoryEquipment()),
+                ),
+                patch(
+                    "nina_planner.server._read_metadata",
+                    AsyncMock(side_effect=RuntimeError("imaging dir missing")),
+                ),
+            ):
+                with self.assertRaises(ValueError) as ctx:
+                    await load_sequence_from_plan(
+                        str(plan_path), frame_type="light", pointing_index=1
+                    )
+        self.assertIn("Cannot compute remaining frames", str(ctx.exception))
+        self.assertIn("Pass mode='full'", str(ctx.exception))
+
     async def test_load_sequence_from_plan_invalid_mode(self):
         from nina_planner.server import load_sequence_from_plan
 
@@ -733,9 +848,19 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
             plan_path = Path(tmp) / "plan.json"
             plan_path.write_text(json.dumps(plan_dict))
 
-            with patch(
-                "nina_planner.server.get_site_profile",
-                AsyncMock(return_value=self._full_profile()),
+            with (
+                patch(
+                    "nina_planner.server.get_site_profile",
+                    AsyncMock(return_value=self._full_profile()),
+                ),
+                patch(
+                    "nina_planner.server._get_site_equipment_status",
+                    AsyncMock(return_value=ObservatoryEquipment()),
+                ),
+                patch(
+                    "nina_planner.server._read_metadata",
+                    AsyncMock(return_value=[]),
+                ),
             ):
                 with self.assertRaises(ValueError) as ctx:
                     await load_sequence_from_plan(
@@ -746,7 +871,254 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
                     )
         self.assertIn("Unsupported mode", str(ctx.exception))
 
-    # ---- stow_telescope / enter_safety_standby ----
+    async def test_load_sequence_from_plan_dark_frame(self):
+        from unittest.mock import MagicMock as _MM
+
+        from nina_planner.server import load_sequence_from_plan
+
+        plan_dict = {
+            "plan_id": "plan-test123",
+            "target": "M31",
+            "pointings": [{"ra_hours": 5.0, "dec_deg": 10.0}],
+            "light": [
+                {"filter_name": "L", "exposure_time_seconds": 60.0, "total_count": 1}
+            ],
+            "flat": [
+                {"filter_name": "L", "exposure_time_seconds": 5.0, "total_count": 1}
+            ],
+            "dark": [{"exposure_time_seconds": 60.0, "total_count": 1}],
+            "bias": [{"total_count": 1}],
+        }
+
+        with tempfile.TemporaryDirectory() as tmp:
+            plan_path = Path(tmp) / "plan.json"
+            plan_path.write_text(json.dumps(plan_dict))
+
+            with (
+                patch(
+                    "nina_planner.server.get_site_profile",
+                    AsyncMock(return_value=self._full_profile()),
+                ),
+                patch(
+                    "nina_planner.server._get_site_equipment_status",
+                    AsyncMock(return_value=ObservatoryEquipment()),
+                ),
+                patch(
+                    "nina_planner.server.build_sequence_darks",
+                    new=_MM(return_value={"$type": "darks"}),
+                ),
+                patch(
+                    "nina_planner.server._api_post",
+                    AsyncMock(return_value={}),
+                ),
+            ):
+                result = await load_sequence_from_plan(
+                    str(plan_path), frame_type="dark", pointing_index=1
+                )
+        self.assertIn("`dark` sequence loaded", result)
+
+    async def test_load_sequence_from_plan_bias_frame(self):
+        from nina_planner.server import load_sequence_from_plan
+
+        plan_dict = {
+            "plan_id": "plan-test123",
+            "target": "M31",
+            "pointings": [{"ra_hours": 5.0, "dec_deg": 10.0}],
+            "light": [
+                {"filter_name": "L", "exposure_time_seconds": 60.0, "total_count": 1}
+            ],
+            "flat": [
+                {"filter_name": "L", "exposure_time_seconds": 5.0, "total_count": 1}
+            ],
+            "dark": [{"exposure_time_seconds": 60.0, "total_count": 1}],
+            "bias": [{"total_count": 1}],
+        }
+
+        with tempfile.TemporaryDirectory() as tmp:
+            plan_path = Path(tmp) / "plan.json"
+            plan_path.write_text(json.dumps(plan_dict))
+
+            captured_kwargs = {}
+
+            def fake_darks(plan, equipment, bias=False):
+                captured_kwargs["bias"] = bias
+                return {"$type": "darks"}
+
+            with (
+                patch(
+                    "nina_planner.server.get_site_profile",
+                    AsyncMock(return_value=self._full_profile()),
+                ),
+                patch(
+                    "nina_planner.server._get_site_equipment_status",
+                    AsyncMock(return_value=ObservatoryEquipment()),
+                ),
+                patch(
+                    "nina_planner.server.build_sequence_darks",
+                    side_effect=fake_darks,
+                ),
+                patch(
+                    "nina_planner.server._api_post",
+                    AsyncMock(return_value={}),
+                ),
+            ):
+                result = await load_sequence_from_plan(
+                    str(plan_path), frame_type="bias", pointing_index=1
+                )
+        self.assertTrue(captured_kwargs["bias"])
+        self.assertIn("`bias` sequence loaded", result)
+
+    async def test_load_sequence_from_plan_dawn_flat(self):
+        from nina_planner.server import load_sequence_from_plan
+
+        plan_dict = {
+            "plan_id": "plan-test123",
+            "target": "M31",
+            "pointings": [{"ra_hours": 5.0, "dec_deg": 10.0}],
+            "light": [
+                {"filter_name": "L", "exposure_time_seconds": 60.0, "total_count": 1}
+            ],
+            "flat": [
+                {"filter_name": "L", "exposure_time_seconds": 5.0, "total_count": 1}
+            ],
+            "dark": [{"exposure_time_seconds": 60.0, "total_count": 1}],
+            "bias": [{"total_count": 1}],
+        }
+
+        with tempfile.TemporaryDirectory() as tmp:
+            plan_path = Path(tmp) / "plan.json"
+            plan_path.write_text(json.dumps(plan_dict))
+
+            captured_kwargs = {}
+
+            def fake_flats(plan, equipment, profile, dusk=False):
+                captured_kwargs["dusk"] = dusk
+                return {"$type": "flats"}
+
+            with (
+                patch(
+                    "nina_planner.server.get_site_profile",
+                    AsyncMock(return_value=self._full_profile()),
+                ),
+                patch(
+                    "nina_planner.server._get_site_equipment_status",
+                    AsyncMock(return_value=ObservatoryEquipment()),
+                ),
+                patch(
+                    "nina_planner.server.build_sequence_flats",
+                    side_effect=fake_flats,
+                ),
+                patch(
+                    "nina_planner.server._api_post",
+                    AsyncMock(return_value={}),
+                ),
+            ):
+                result = await load_sequence_from_plan(
+                    str(plan_path), frame_type="dawn_flat", pointing_index=1
+                )
+        self.assertFalse(captured_kwargs["dusk"])
+        self.assertIn("`dawn_flat` sequence loaded", result)
+
+    async def test_load_sequence_from_plan_dusk_flat(self):
+        from nina_planner.server import load_sequence_from_plan
+
+        plan_dict = {
+            "plan_id": "plan-test123",
+            "target": "M31",
+            "pointings": [{"ra_hours": 5.0, "dec_deg": 10.0}],
+            "light": [
+                {"filter_name": "L", "exposure_time_seconds": 60.0, "total_count": 1}
+            ],
+            "flat": [
+                {"filter_name": "L", "exposure_time_seconds": 5.0, "total_count": 1}
+            ],
+            "dark": [{"exposure_time_seconds": 60.0, "total_count": 1}],
+            "bias": [{"total_count": 1}],
+        }
+
+        with tempfile.TemporaryDirectory() as tmp:
+            plan_path = Path(tmp) / "plan.json"
+            plan_path.write_text(json.dumps(plan_dict))
+
+            captured_kwargs = {}
+
+            def fake_flats(plan, equipment, profile, dusk=False):
+                captured_kwargs["dusk"] = dusk
+                return {"$type": "flats"}
+
+            with (
+                patch(
+                    "nina_planner.server.get_site_profile",
+                    AsyncMock(return_value=self._full_profile()),
+                ),
+                patch(
+                    "nina_planner.server._get_site_equipment_status",
+                    AsyncMock(return_value=ObservatoryEquipment()),
+                ),
+                patch(
+                    "nina_planner.server.build_sequence_flats",
+                    side_effect=fake_flats,
+                ),
+                patch(
+                    "nina_planner.server._api_post",
+                    AsyncMock(return_value={}),
+                ),
+            ):
+                result = await load_sequence_from_plan(
+                    str(plan_path), frame_type="dusk_flat", pointing_index=1
+                )
+        self.assertTrue(captured_kwargs["dusk"])
+        self.assertIn("`dusk_flat` sequence loaded", result)
+
+    async def test_load_sequence_from_plan_full_mode(self):
+        from unittest.mock import MagicMock as _MM
+
+        from nina_planner.server import load_sequence_from_plan
+
+        plan_dict = {
+            "plan_id": "plan-test123",
+            "target": "M31",
+            "pointings": [{"ra_hours": 5.0, "dec_deg": 10.0}],
+            "light": [
+                {"filter_name": "L", "exposure_time_seconds": 60.0, "total_count": 1}
+            ],
+            "flat": [
+                {"filter_name": "L", "exposure_time_seconds": 5.0, "total_count": 1}
+            ],
+            "dark": [{"exposure_time_seconds": 60.0, "total_count": 1}],
+            "bias": [{"total_count": 1}],
+        }
+
+        with tempfile.TemporaryDirectory() as tmp:
+            plan_path = Path(tmp) / "plan.json"
+            plan_path.write_text(json.dumps(plan_dict))
+
+            # In full mode, _read_metadata is NOT called.
+            with (
+                patch(
+                    "nina_planner.server.get_site_profile",
+                    AsyncMock(return_value=self._full_profile()),
+                ),
+                patch(
+                    "nina_planner.server._get_site_equipment_status",
+                    AsyncMock(return_value=ObservatoryEquipment()),
+                ),
+                patch(
+                    "nina_planner.server._read_metadata",
+                    new=_MM(side_effect=AssertionError("should not be called")),
+                ),
+                patch(
+                    "nina_planner.server._api_post",
+                    AsyncMock(return_value={}),
+                ),
+            ):
+                result = await load_sequence_from_plan(
+                    str(plan_path),
+                    frame_type="light",
+                    pointing_index=1,
+                    mode="full",
+                )
+        self.assertIn("`light` sequence loaded", result)
 
     async def test_stow_telescope_loads_and_starts(self):
         from nina_planner.server import stow_telescope
@@ -775,8 +1147,6 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
         ):
             result = await enter_safety_standby()
         self.assertEqual(result, "Safety standby sequence started.")
-
-    # ---- start_sequence / stop_sequence / get_sequence_state ----
 
     async def test_start_sequence(self):
         from nina_planner.server import start_sequence
@@ -809,11 +1179,7 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
             result = await get_sequence_state()
         self.assertEqual(result, expected)
 
-    # ---- get_imaging_metadata ----
-
     async def test_get_imaging_metadata_returns_widened(self):
-        import tempfile as _tempfile
-
         from nina_planner.server import get_imaging_metadata
 
         plan_dict = {
@@ -830,11 +1196,10 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
             "bias": [{"total_count": 1}],
         }
 
-        with _tempfile.TemporaryDirectory() as tmp:
+        with tempfile.TemporaryDirectory() as tmp:
             plan_path = Path(tmp) / "plan.json"
             plan_path.write_text(json.dumps(plan_dict))
 
-            # Image directory doesn't exist → read_imaging_csv returns [].
             with (
                 patch(
                     "nina_planner.server._resolve_imaging_root",
@@ -848,8 +1213,6 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
                 )
         self.assertEqual(result["plan_id"], "plan-test123-1")
         self.assertEqual(result["target"], "M31")
-
-    # ---- get_nina_time ----
 
     async def test_get_nina_time_returns_dict(self):
         from nina_planner.server import get_nina_time
@@ -872,9 +1235,163 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
             AsyncMock(return_value="2026-09-22T03:00:00-05:00"),
         ):
             result = await get_nina_time()
-        # With offset, the timestamp is tz-aware → delta is computed
-        # in UTC.
         self.assertIn("delta_seconds", result)
+
+    async def test_simulate_shift_mode_get_nina_time_fails(self):
+        from nina_planner.server import simulate_observation_time
+
+        with (
+            patch.dict(os.environ, {"NINA_TIME_SIMULATOR_ENABLED": "1"}),
+            patch(
+                "nina_planner.server.get_nina_time",
+                AsyncMock(side_effect=RuntimeError("shift query failed")),
+            ),
+            patch("nina_planner.server._log_payload"),
+        ):
+            with self.assertRaises(RuntimeError) as ctx:
+                await simulate_observation_time("2026-10-15T23:15:00")
+        self.assertIn("shift query failed", str(ctx.exception))
+
+    async def test_get_site_equipment_status_calls_log_payload(self):
+        """When get_site_equipment_status runs, it calls _log_payload with
+        the equipment dump. Don't mock _log_payload — let it run.
+        """
+        from nina_planner.server import get_site_equipment_status
+
+        with tempfile.TemporaryDirectory() as tmp:
+            log_path = Path(tmp) / "test.log"
+            with (
+                patch(
+                    "nina_planner.server.NINA_PLANNER_LOG",
+                    str(log_path),
+                ),
+                patch(
+                    "nina_planner.server._api_get",
+                    AsyncMock(return_value={}),
+                ),
+            ):
+                await get_site_equipment_status()
+            content = log_path.read_text()
+            self.assertIn("Equipment:", content)
+
+    async def test_simulate_reset_progress_entry_fails(self):
+        """When append_progress_entry raises in the reset path, the tool
+        still returns successfully — the except branch swallows the error.
+        """
+        from nina_planner.server import simulate_observation_time
+
+        class FakeProcess:
+            stdout = "NINA.exe                      12345\n"
+
+        with (
+            patch.dict(os.environ, {"NINA_TIME_SIMULATOR_ENABLED": "1"}),
+            patch(
+                "nina_planner.server._run_blocking",
+                return_value=FakeProcess(),
+            ),
+            patch(
+                "nina_planner.server.get_nina_time",
+                AsyncMock(
+                    return_value={
+                        "nina_time": "2026-09-26T13:00:00",
+                        "host_time": "2026-09-26T13:00:00",
+                        "delta_seconds": 0.0,
+                        "simulated": False,
+                    }
+                ),
+            ),
+            patch(
+                "nina_planner.server.append_progress_entry",
+                AsyncMock(side_effect=OSError("disk full")),
+            ),
+            patch("nina_planner.server._log_payload"),
+        ):
+            # Should not raise — the progress-entry failure is swallowed.
+            result = await simulate_observation_time(reset=True)
+        self.assertIn("converged", result["summary"])
+
+    async def test_simulate_shift_progress_entry_fails(self):
+        """When append_progress_entry raises in the shift path, the tool
+        still returns successfully — the except branch swallows the error.
+        """
+        from nina_planner.server import simulate_observation_time
+
+        with (
+            patch.dict(os.environ, {"NINA_TIME_SIMULATOR_ENABLED": "1"}),
+            patch(
+                "nina_planner.server.get_nina_time",
+                AsyncMock(
+                    return_value={
+                        "nina_time": "2026-10-15T23:15:00",
+                        "host_time": "2026-09-26T16:55:00",
+                        "delta_seconds": 17_328_000.0,
+                        "simulated": True,
+                    }
+                ),
+            ),
+            patch(
+                "nina_planner.server.append_progress_entry",
+                AsyncMock(side_effect=OSError("disk full")),
+            ),
+            patch("nina_planner.server._log_payload"),
+        ):
+            # Should not raise — the progress-entry failure is swallowed.
+            result = await simulate_observation_time("2026-10-15T23:15:00")
+        self.assertEqual(result["simulated"], True)
+
+    async def test_ensure_nina_running_progress_entry_fails(self):
+        """When append_progress_entry raises in ensure_nina_running, the tool
+        still returns — the except branch swallows the error.
+        """
+        from nina_planner.server import ensure_nina_running
+
+        class FakeProcess:
+            stdout = "NINA.exe                      12345\n"
+
+        with (
+            patch(
+                "nina_planner.server._run_blocking",
+                return_value=FakeProcess(),
+            ),
+            patch(
+                "nina_planner.server.append_progress_entry",
+                AsyncMock(side_effect=OSError("disk full")),
+            ),
+            patch("nina_planner.server._log_payload"),
+        ):
+            # Should not raise — the progress-entry failure is swallowed.
+            result = await ensure_nina_running()
+        # The launch path ran successfully despite the progress-entry error.
+        self.assertEqual(result["state"], "running")
+
+    async def test_get_site_equipment_status_missing_device_data(self):
+        """When a device is marked has_X=True but the raw response has no
+        entry for it (empty dict), _build returns None without trying to
+        construct the model."""
+        from nina_planner.server import _get_site_equipment_status
+
+        profile = self._minimal_profile().model_copy(
+            update={
+                "equipment": EquipmentConfig(
+                    has_mount=True,
+                    has_camera=False,
+                    has_focuser=False,
+                    has_filter_wheel=False,
+                    has_guider=False,
+                    has_rotator=False,
+                    has_dome=False,
+                    has_weather=False,
+                    has_safety_monitor=False,
+                    has_switch=False,
+                )
+            }
+        )
+        # Raw doesn't include "Mount" at all → _build returns None.
+        raw = {}
+
+        with patch("nina_planner.server._api_get", AsyncMock(return_value=raw)):
+            equipment = await _get_site_equipment_status(profile)
+        self.assertIsNone(equipment.mount)
 
 
 if __name__ == "__main__":
