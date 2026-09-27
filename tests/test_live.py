@@ -1,5 +1,6 @@
 import asyncio
 import os
+import time
 import unittest
 
 import pytest
@@ -40,6 +41,20 @@ def _is_running(state) -> bool:
     if isinstance(state, list):
         return any(_is_running(item) for item in state)
     return False
+
+
+def _wait_for_sequence_running(expected: bool, timeout: float = 10.0):
+    deadline = time.monotonic() + timeout
+    state = None
+    while time.monotonic() < deadline:
+        state = asyncio.run(get_sequence_state())
+        if _is_running(state) is expected:
+            return state
+        time.sleep(0.25)
+    raise AssertionError(
+        f"sequence did not become {'running' if expected else 'stopped'} "
+        f"within {timeout}s; last state: {state!r}"
+    )
 
 
 def _nina_reachable() -> bool:
@@ -179,18 +194,23 @@ class LiveNinaTest(unittest.TestCase):
         asyncio.run(stop_sequence())
 
     def test_start_sequence(self):
-        result = asyncio.run(enter_safety_standby())
-        self.assertIn("standby", result)
         asyncio.run(stop_sequence())
+        _wait_for_sequence_running(expected=False)
 
         try:
+            result = asyncio.run(enter_safety_standby())
+            self.assertIn("standby", result)
+            _wait_for_sequence_running(expected=True)
+            asyncio.run(stop_sequence())
+            _wait_for_sequence_running(expected=False)
+
             result = asyncio.run(start_sequence())
             self.assertEqual(result, "Sequence started.")
-            state = asyncio.run(get_sequence_state())
+            state = _wait_for_sequence_running(expected=True)
             self.assertIsInstance(state, list)
-            self.assertTrue(_is_running(state), "sequence should be running")
         finally:
             asyncio.run(stop_sequence())
+            _wait_for_sequence_running(expected=False)
 
     def test_enter_teardown(self):
         result = asyncio.run(stow_telescope())

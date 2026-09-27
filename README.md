@@ -258,7 +258,7 @@ Rules:
 {
   "$schema": "https://opencode.ai/config.json",
   "plugin": [ 
-    [ "./xnina-plugin.ts", 
+    [ "./nina-plugin.ts", 
       { 
         // "ninaEndpoint": "192.168.0.24:1888", // defaults to 127.0.0.1:1888
         "pluginLogs": "/tmp/nina-plugin-debug.log",
