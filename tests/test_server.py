@@ -6,6 +6,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
+import pytest
 from conftest import requires_wsl
 
 from nina_planner.models.observatory import ObservatoryEquipment
@@ -1414,6 +1415,7 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(result["pid"])
         self.assertEqual(result["nina_time"], "2026-09-22T03:00:00")
 
+    @pytest.mark.live
     @requires_wsl
     async def test_start_nina_simulated_get_nina_time_fails(self):
         """When get_nina_time() never returns the simulated date during
@@ -1506,6 +1508,7 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
             content = log_path.read_text()
             self.assertIn("Equipment:", content)
 
+    @pytest.mark.live
     @requires_wsl
     async def test_start_nina_simulated_progress_entry_fails(self):
         """When append_progress_entry raises in start_nina simulated path, the tool

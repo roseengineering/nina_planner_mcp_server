@@ -52,7 +52,9 @@ select = ["E", "F", "I", "B"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-v -m 'not live'"
-markers = ["live: requires a running NINA instance (skipped if unreachable)"]
+markers = [
+    "live: slow environment-specific integration tests (running NINA or WSL required)",
+]
 
 [tool.coverage]
 source = ["nina_planner"]

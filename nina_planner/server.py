@@ -86,8 +86,6 @@ def _log_payload(label: str, payload: str) -> None:
         timestamp = datetime.now(UTC).isoformat()
         with path.open("a", encoding="utf-8") as f:
             f.write(f"{timestamp} {label} {payload}\n")
-    else:
-        print(f"{label} {payload}", file=sys.stderr)
 
 
 async def _api_get(path: str) -> Any:

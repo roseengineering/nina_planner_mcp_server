@@ -6,6 +6,7 @@ from datetime import datetime
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import pytest
 from conftest import requires_wsl
 
 from nina_planner.system_time import (
@@ -535,6 +536,7 @@ class StartNinaTest(unittest.TestCase):
         )
         self.assertIn("/Delete", executed_cmds[-1])
 
+    @pytest.mark.live
     @requires_wsl
     def test_start_simulated_time_runs_full_cycle(self):
         from datetime import datetime as _dt
@@ -692,6 +694,7 @@ class StartNinaTest(unittest.TestCase):
         self.assertIsNotNone(clock_state["restored"])
         self.assertEqual(clock_state["reads"], 3)
 
+    @pytest.mark.live
     @requires_wsl
     def test_start_simulated_shift_timeout_restores_and_raises(self):
         from datetime import datetime as _dt
@@ -726,6 +729,7 @@ class StartNinaTest(unittest.TestCase):
         restore_cmds = [c for c in ps_commands if c.startswith("Set-Date -Date '")]
         self.assertGreaterEqual(len(restore_cmds), 1)
 
+    @pytest.mark.live
     @requires_wsl
     def test_start_simulated_nina_capture_timeout_restores_and_raises(self):
         from datetime import datetime as _dt
@@ -795,6 +799,7 @@ class StartNinaTest(unittest.TestCase):
         restore_cmds = [c for c in ps_commands if c.startswith("Set-Date -Date '")]
         self.assertGreaterEqual(len(restore_cmds), 1)
 
+    @pytest.mark.live
     @requires_wsl
     def test_start_simulated_restore_timeout_raises(self):
         from datetime import datetime as _dt
