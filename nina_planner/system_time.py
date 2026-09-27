@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import subprocess
 import sys
+import tempfile
 from datetime import datetime
 from pathlib import Path
 
@@ -61,19 +62,13 @@ def local_to_windows(local_path: Path | str, drive_mount: str | None = None) -> 
 
 def get_launcher_paths() -> tuple[Path, str]:
     """Return (local_path, windows_path) for the NINA launch batch file."""
-    custom_dir = os.environ.get("NINA_LAUNCHER_DIR")
-    if custom_dir:
-        p = Path(custom_dir)
-        local_p = p / "launch_nina.cmd"
-        return local_p, local_to_windows(local_p)
-
     user = os.environ.get("USER", "george")
     default_wsl_temp = Path(f"/mnt/c/Users/{user}/AppData/Local/Temp")
     if default_wsl_temp.is_dir():
         local_p = default_wsl_temp / "launch_nina.cmd"
         return local_p, f"C:\\Users\\{user}\\AppData\\Local\\Temp\\launch_nina.cmd"
 
-    local_p = Path.cwd() / "launch_nina.cmd"
+    local_p = Path(tempfile.gettempdir()) / "launch_nina.cmd"
     return local_p, local_to_windows(local_p)
 
 

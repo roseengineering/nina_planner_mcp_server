@@ -10,6 +10,7 @@ from conftest import requires_wsl
 
 from nina_planner.system_time import (
     NINA_EXE_DEFAULT,
+    get_launcher_paths,
     kill_nina_command,
     local_to_windows,
     nina_exe_path,
@@ -127,12 +128,34 @@ class CommandBuildersTest(unittest.TestCase):
     def test_write_nina_launcher(self):
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
-            with patch.dict(os.environ, {"NINA_LAUNCHER_DIR": str(tmp_path)}):
+            real_is_dir = Path.is_dir
+            wsl_temp = Path(
+                f"/mnt/c/Users/{os.environ.get('USER', 'george')}/AppData/Local/Temp"
+            )
+
+            def is_dir(path):
+                return False if path == wsl_temp else real_is_dir(path)
+
+            with (
+                patch("nina_planner.system_time.tempfile.gettempdir", return_value=tmp),
+                patch.object(Path, "is_dir", autospec=True, side_effect=is_dir),
+            ):
                 local_p, win_p = write_nina_launcher(r"C:\Test\NINA.exe")
                 self.assertTrue(local_p.exists())
                 content = local_p.read_text(encoding="utf-8")
                 self.assertIn("@echo off", content)
                 self.assertIn(r'start "" "C:\Test\NINA.exe"', content)
+
+    def test_launcher_defaults_to_system_temp_directory(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            with (
+                patch("nina_planner.system_time.tempfile.gettempdir", return_value=tmp),
+                patch.object(Path, "is_dir", return_value=False),
+            ):
+                local_p, _ = get_launcher_paths()
+
+        self.assertEqual(local_p, tmp_path / "launch_nina.cmd")
 
 
 class ValidateIsoLocalTest(unittest.TestCase):
