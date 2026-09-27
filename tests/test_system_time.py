@@ -494,6 +494,7 @@ class StartNinaTest(unittest.TestCase):
             self.assertNotIn("-Verb RunAs", cmd)
             self.assertNotIn("sudo", cmd)
 
+    @requires_wsl
     def test_start_simulated_shift_timeout_restores_and_raises(self):
         from datetime import datetime as _dt
 
