@@ -7,7 +7,7 @@ Safety model:
 - Stow is capability-driven: park only if the mount reports `can_park=true`, otherwise home if `can_find_home=true`.
 
 When triggered (new event or interval check):
-0. Call `ensure_nina_running()` first. NINA occasionally crashes; without it the rest of this protocol silently breaks (if NINA endpoint is dead, every NINA-facing tool fails). If the call reports a fresh launch, poll `get_site_equipment_status()` for up to ~30 s for NINA's REST API to come up; if it never responds, append a `progress.md` entry and stop — do not invent equipment state from absence.
+0. Check if NINA is responsive via `get_site_equipment_status()`. NINA occasionally crashes; if unresponsive or down, call `start_nina()` to launch it into the interactive desktop session. If `start_nina()` reports NINA was launched, poll `get_site_equipment_status()` for up to ~30 s for NINA's REST API to come up; if it never responds, append a `progress.md` entry and stop — do not invent equipment state from absence.
 1. Read `progress.md` to restore context (and `plan.md` for the night loop). Check current equipment status via `get_site_equipment_status`; confirm sequence state with `get_sequence_state`.
 2. If the safety monitor reports `is_safe=false` or weather limits are violated: do not start or resume acquisition. Ensure the scope is being stowed by the running sequence; otherwise stow it yourself (park if `can_park`, else home if `can_find_home`). Never interrupt an in-progress teardown during a stow maneuver unless safety requires it.
 3. If no sequence is running, equipment is deployed, and acquisition is not about to start, keep guardrails active with `enter_safety_standby`.
@@ -22,10 +22,11 @@ Multi-target night loop — when triggered (sequence-finished or interval check)
 6. Append a `progress.md` entry: target chosen, altitude at start, why it was chosen over others, any caveats. Record completion in `progress.md` (leave `plan.md` untouched — the user may be editing it).
 7. Confirm the sequence is running via `get_sequence_state`, then await the next trigger.
 
-Time simulation — when triggered and NINA reports a clock far from real time:
-- `simulate_observation_time(when, reset=False)` briefly shifts the Windows host clock so a freshly-relaunched NINA captures simulated local time during its own init, then restores the real OS clock. After the call, the **host OS** is on real time but **NINA** is on simulated local time — NINA's `/v2/api/time` and any logged timestamps will diverge from real wall time by exactly the simulated offset.
-- `when` must be a naive ISO 8601 local datetime (`YYYY-MM-DDTHH:MM:SS` or `YYYY-MM-DD HH:MM:SS`); timezone suffixes (`Z`, `+HH:MM`) are rejected because `Set-Date` operates on local time and would silently land wrong.
-- `simulate_observation_time(reset=True)` returns NINA to real time: unconditionally kills NINA.exe, runs `w32tm /resync`, relaunches NINA so it reads the real OS clock during init, and polls until NINA's clock converges with the host (≤2 s). It does **not** check whether a sequence is running — if you call it mid-exposure, the frame is lost and the mount may be left where it was. That is on you, not the tool.
-- Detect simulated mode without invoking anything time-altering: call `get_nina_time()` (returns `simulated=True` when |delta| > 2 s, false otherwise). Falls back to reading `progress.md` for the last `simulate_observation_time:` entry.
-- When a sequence is running on simulated time, treat clock-mismatched timestamps in logs/events as expected. Do **not** interpret the divergence as a hardware fault, and do **not** call `w32tm /resync` or any other restore primitive autonomously — the user manages the simulation lifecycle (reset is user-initiated via the tool, not autonomous).
-- Both modes are opt-in via `NINA_TIME_SIMULATOR_ENABLED=1` in the MCP environment; without it, the tool refuses with a clear error pointing back at `opencode.json`.
+NINA lifecycle and time simulation:
+- `start_nina(time=None)` launches NINA into the interactive desktop session (GUI visible) on the real OS clock (today).
+- `start_nina(time="YYYY-MM-DDTHH:MM:SS")` briefly shifts the Windows host clock so a freshly-launched NINA captures simulated local time during its init, then restores the real OS clock. After the call, the host OS is on real time while NINA continues running on simulated local time.
+- If NINA is already running when `start_nina` is called (with or without `time`), it errors with `"NINA is already running. Call stop_nina() first."`
+- `stop_nina()` terminates `NINA.exe` immediately via taskkill. Use it before launching NINA with a new date or to shut down NINA.
+- `get_nina_time()` checks whether NINA is on simulated time (`simulated=True` when |delta| > 2 s) or real time.
+- The shift and restore require the calling Windows token to carry `SeSystemtimePrivilege` ("Change the system time"). When running over SSH/WSL the WSL interop token usually inherits the user's interactive Windows token; verify with `/mnt/c/Windows/System32/whoami.exe /priv | grep -i systemtime`.
+- When running on simulated time, treat clock-mismatched timestamps in logs/events as expected. Do not interpret the divergence as a hardware fault.

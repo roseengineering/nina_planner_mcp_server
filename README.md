@@ -30,8 +30,9 @@
 | `enter_safety_standby()` | Start a non-imaging sequence with safety guardrails. |
 | `stow_telescope()` | Start a teardown sequence, parking scope. |
 | `get_sequence_state()` | Return the loaded sequence structure and the current status of its containers, instructions, conditions, and triggers (whether loaded, running, completed, failed, or waiting). |
-| `ensure_nina_running()` | If `NINA.exe` is not visible to `tasklist.exe`, launch it from `NINA_EXE_PATH` (or the standard install path if unset). Idempotent no-op when NINA is already running. Fire-and-forget — callers should poll `get_site_equipment_status()` to confirm readiness. Always available (no env-var gate). |
-| `simulate_observation_time(when)` | Briefly shifts the Windows host clock to `when`, relaunches NINA so it captures the simulated local time during its own init, then resyncs the OS clock back to real time. Useful for testing observation plans during the day against NINA's simulator. After the call, NINA continues running on simulated local time while the OS clock is back to real time. Opt-in via `NINA_TIME_SIMULATOR_ENABLED=1`. |
+| `stop_nina()` | Terminate the NINA.exe application immediately via taskkill. |
+| `start_nina(time=None)` | Launch NINA into the active interactive desktop session (GUI visible). With `time=None`, launches on current real time. With `time="YYYY-MM-DDTHH:MM:SS"`, shifts host clock, launches NINA, and restores real clock so NINA runs on simulated time. Errors if NINA is already running (call `stop_nina()` first). |
+| `get_nina_time()` | Report NINA's clock versus host clock, delta in seconds, and whether NINA is on simulated time. |
 
 ---
 
@@ -271,7 +272,6 @@ Rules:
       "environment": {
         // "NINA_ENDPOINT": "192.168.0.24:1888", // defaults to 127.0.0.1:1888
 	// "NINA_DRIVE_MOUNT": "/System/Volumes/Data/Network", // defaults to /mnt/<drive>
-	"NINA_TIME_SIMULATOR_ENABLED": "1", // default disabled
         "NINA_PLANNER_LOG": "/tmp/nina-planner-debug.log"
       },
       "command": [ // don't use bash -c, hard for opencode to kill and restart
@@ -314,8 +314,7 @@ Configured under `opencode.json > plugin` as the second array element (see [`ope
 | `NINA_FLATS_ALTITUDE` | `80` | Altitude in degrees for flat panel calibration frames |
 | `NINA_FLATS_AZIMUTH_DAWN` | `270` | Azimuth in degrees pointing west for dawn flats |
 | `NINA_FLATS_AZIMUTH_DUSK` | `90` | Azimuth in degrees pointing east for dusk flats |
-| `NINA_TIME_SIMULATOR_ENABLED` | _unset_ | When set to `"1"`, enables the `simulate_observation_time` tool. Off by default — the tool refuses with a clear error otherwise. |
-| `NINA_EXE_PATH` | `C:\Program Files\N.I.N.A. - Nighttime Imaging 'N' Astronomy\NINA.exe` | Windows path to `NINA.exe` used by `simulate_observation_time` to relaunch NINA after the host clock shift. |
+| `NINA_EXE_PATH` | `C:\Program Files\N.I.N.A. - Nighttime Imaging 'N' Astronomy\NINA.exe` | Windows path to `NINA.exe` used by `start_nina` to launch NINA. |
 
 ## Setting up WSL
 
@@ -341,4 +340,27 @@ In addition, to get the system tools to work to stop and restart NINA should it 
 ```bash
 $ echo "$USER ALL=(ALL) NOPASSWD: ALL" | sudo tee /etc/sudoers.d/90-user
 ```
+
+## Elevation & the "Change the system time" privilege
+
+`start_nina(time=...)` shifts the Windows host clock with `Set-Date` and restores it after NINA captures the simulated time. Both calls need the **"Change the system time"** privilege (`SeSystemtimePrivilege`) in the Windows token that the MCP server uses.
+
+WSL runs Windows tools under your *Windows login token*, so whether the call succeeds without prompting depends on that token — not on adding admin anywhere.
+
+Check your token from WSL (use the full path — the bare `whoami.exe` is shadowed by the GNU `whoami` in some WSL setups and silently ignores `/priv`):
+
+```bash
+/mnt/c/Windows/System32/whoami.exe /priv  | grep -i systemtime
+/mnt/c/Windows/System32/whoami.exe /groups | grep -i "Integrity"
+```
+
+If you see `SeSystemtimePrivilege … Enabled` and `High Mandatory Level`, the clock change runs **promptless** — no admin changes needed. The tool calls `Set-Date` directly.
+
+If the privilege is absent or integrity is `Medium`, the tool will fail with a `"shift to '<time>' failed (host may lack 'Change the system time' privilege)"` error. To fix:
+
+1. Grant the user right: `secpol.msc → Local Policies → User Rights Assignment → Change the system time → Add <your account>`. (Add the account itself, not just `Administrators` — the right is stripped from a filtered Medium token.)
+2. Re-login so the new privilege appears in your token: `wsl --shutdown`, then reconnect your SSH session.
+3. Re-verify: `/mnt/c/Windows/System32/whoami.exe /priv | grep -i systemtime` should now list `SeSystemtimePrivilege … Enabled`.
+
+`start_nina(time=...)` also performs **deterministic restore**: it captures the real host clock before the shift (`real0`) and restores to `real0 + elapsed` after NINA captures the simulated time. No `w32tm /resync` or NTP source is required.
 

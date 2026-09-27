@@ -4,7 +4,7 @@ import re
 import subprocess
 import sys
 from collections.abc import Set as AbstractSet
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, Literal, cast
 
@@ -44,12 +44,16 @@ from .sequence import (
 from .system_time import (
     DRIFT_TOLERANCE_SECONDS,
     kill_nina_command,
-    launch_nina_command,
     nina_exe_path,
-    restore_clock_powershell,
+    nina_running,
+    read_windows_clock_powershell,
+    restore_set_date_powershell,
+    schtasks_create_command,
+    schtasks_delete_command,
+    schtasks_run_command,
     shift_clock_powershell,
-    time_simulator_enabled,
     validate_iso_local,
+    write_nina_launcher,
 )
 
 NINA_ENDPOINT = os.environ.get("NINA_ENDPOINT", "127.0.0.1:1888")
@@ -258,7 +262,7 @@ async def _read_metadata(image_type: str | None = None) -> list[dict[str, Any]]:
 
 mcp = FastMCP(
     name="nina-planner",
-    instructions="""Provides tools for controlling NINA (Nighttime Imaging 'N' Astronomy) software run observatories. Lets you inspect equipment, get observatory setup, write observation plans, and run NINA sequences generated from the plans. Focuses on orchestrating observation plans at a high level through NINA sequences rather than managing the individual commands that make up those sequences. Safety semantics: the safety monitor's is_safe field reflects whether the observatory enclosure (roof/dome) is open and it is safe to unpark and expose. is_safe=true means the enclosure is open and the scope may be unparked and acquisition may proceed; is_safe=false means the enclosure is closed, so the scope must remain stowed and acquisition is gated until it becomes safe. This is distinct from weather conditions, which are reported separately by the weather device. Stow behavior is capability-driven: sequences emit Park Scope only when the mount reports can_park=true, otherwise they use Find home when the mount reports can_find_home=true. Crash recovery: ensure_nina_running() probes tasklist for NINA.exe and launches NINA from NINA_EXE_PATH (or the standard install path) when the GUI is not running. Always available; idempotent; fire-and-forget. Call it first when NINA-facing tools fail. Time simulation: simulate_observation_time(when) briefly shifts the Windows host clock so NINA (running on Windows) captures the simulated local time during its own startup, then restores the real OS clock. After the call, NINA continues to run on simulated local time while the OS clock reports real time — NINA's API timestamps will diverge from real time. Use get_events or compare NINA's /time to the real OS clock to detect this; do not interpret divergence as a hardware fault. The tool is opt-in via NINA_TIME_SIMULATOR_ENABLED=1 in the MCP environment. Progress tracking: maintain an observatory progress file (progress.md in the project directory). On session start, read it to restore context before acting. After significant actions — status checks, plan writes, sequence loads/starts/stops, errors, and interventions — append a short timestamped entry (ISO-8601 timestamp) recording what was done, the observed equipment and safety state, and any decisions. Both the active session and automated worker sessions append to this file so history is shared across sessions.""",
+    instructions="""Provides tools for controlling NINA (Nighttime Imaging 'N' Astronomy) software run observatories. Lets you inspect equipment, get observatory setup, write observation plans, and run NINA sequences generated from the plans. Focuses on orchestrating observation plans at a high level through NINA sequences rather than managing the individual commands that make up those sequences. Safety semantics: the safety monitor's is_safe field reflects whether the observatory enclosure (roof/dome) is open and it is safe to unpark and expose. is_safe=true means the enclosure is open and the scope may be unparked and acquisition may proceed; is_safe=false means the enclosure is closed, so the scope must remain stowed and acquisition is gated until it becomes safe. This is distinct from weather conditions, which are reported separately by the weather device. Stow behavior is capability-driven: sequences emit Park Scope only when the mount reports can_park=true, otherwise they use Find home when the mount reports can_find_home=true. Lifecycle: start_nina(time=None) launches NINA into the active interactive desktop session (pass time='YYYY-MM-DDTHH:MM:SS' to start on simulated time); stop_nina() terminates NINA immediately. If NINA is already running, start_nina will error and require calling stop_nina first. get_nina_time() reports NINA's clock versus host real time. Progress tracking: maintain an observatory progress file (progress.md in the project directory). On session start, read it to restore context before acting. After significant actions — status checks, plan writes, sequence loads/starts/stops, errors, and interventions — append a short timestamped entry (ISO-8601 timestamp) recording what was done, the observed equipment and safety state, and any decisions. Both the active session and automated worker sessions append to this file so history is shared across sessions.""",
 )
 
 
@@ -657,299 +661,265 @@ async def get_sequence_state() -> Any:
     return await _api_get("/sequence/json")
 
 
-@mcp.tool()
-async def ensure_nina_running() -> dict[str, Any]:
-    """If ``NINA.exe`` is not running on the Windows host, launch it from
-    ``NINA_EXE_PATH`` (or the standard install path if unset). Otherwise,
-    this is a no-op.
-
-    NINA occasionally crashes; without this tool, every other NINA-facing
-    tool (``get_site_equipment_status``, ``load_sequence_from_plan``, etc.)
-    fails because the REST API on ``localhost:1888`` is unreachable. Call
-    this first when NINA seems unresponsive.
-
-    The launch is fire-and-forget — the MCP call returns as soon as
-    ``cmd.exe /c start "" "<nina_exe>"`` has been spawned. NINA's REST API
-    typically takes 5–15 s to come up; callers should poll
-    ``get_site_equipment_status()`` to confirm readiness before issuing
-    further commands.
-
-    Always available (no env-var gate) — the operation is idempotent
-    (no-op when NINA is up) and does not touch the host clock.
-
-    Returns a dict with the operation outcome:
-
-    - ``state``: one of ``"running"`` (probe confirmed NINA is up), ``"launched"``
-      (probe confirmed NINA was down, spawned a new instance), or
-      ``"probe_failed"`` (the ``tasklist.exe`` probe errored, so we don't
-      know — to avoid spawning a duplicate NINA, we did NOT launch; the
-      caller should investigate or retry).
-    - ``summary``: human-readable string describing what happened.
-    """
-    log_extra: list[str] = []
-    probe_failed = False
-    probe_err: str | None = None
+async def _launch_nina_interactive(nina_exe: str) -> None:
+    """Launch NINA in the active interactive desktop session via Task Scheduler."""
+    _, win_path = write_nina_launcher(nina_exe)
+    create_cmd = schtasks_create_command(win_path)
+    run_cmd = schtasks_run_command()
+    del_cmd = schtasks_delete_command()
+    _log_payload("_launch_nina_interactive: create", " ".join(create_cmd))
+    await _run_blocking(create_cmd, timeout=15.0)
+    _log_payload("_launch_nina_interactive: run", " ".join(run_cmd))
+    await _run_blocking(run_cmd, timeout=15.0)
     try:
-        probe = await _run_blocking(["tasklist.exe", "/FI", "IMAGENAME eq NINA.exe"])
-        was_running = "NINA.exe" in (probe.stdout or "")
+        await _run_blocking(del_cmd, timeout=10.0)
     except Exception as e:
-        probe_failed = True
-        probe_err = repr(e)
-        log_extra.append(f"nina probe failed: {probe_err}")
-        was_running = False
+        _log_payload("_launch_nina_interactive: delete task warning", repr(e))
 
-    if probe_failed:
-        state = "probe_failed"
-        summary = (
-            "ensure_nina_running: WARNING — process probe failed (tasklist.exe "
-            f"errored: {probe_err}). NINA may already be running. Not launching "
-            "to avoid duplicate processes. Investigate or retry."
-        )
-        log_extra.append("probe inconclusive, NOT launching to avoid duplicates")
-    elif was_running:
-        state = "running"
-        summary = "ensure_nina_running: NINA.exe confirmed running — no action."
-        log_extra.append("NINA already running, no launch")
-    else:
-        state = "launched"
-        nina_exe = nina_exe_path()
-        launch = launch_nina_command(nina_exe)
-        _log_payload("ensure_nina_running: launch", " ".join(launch))
-        await _spawn_detached(launch)
-        log_extra.append(f"launched NINA from {nina_exe}")
-        summary = (
-            "ensure_nina_running: NINA.exe confirmed not running; "
-            f"launched from {nina_exe}. Poll get_site_equipment_status() "
-            "to confirm readiness."
-        )
 
-    _log_payload("ensure_nina_running:", summary)
-    try:
-        await append_progress_entry("ensure_nina_running: " + "; ".join(log_extra))
-    except Exception as e:
-        _log_payload("ensure_nina_running: progress entry failed", repr(e))
-    return {"state": state, "summary": summary}
+async def _read_windows_clock() -> datetime:
+    """Read the current Windows host clock via Get-Date. Returns aware local datetime."""
+    proc = await _run_blocking(
+        ["powershell.exe", "-NoProfile", "-Command", read_windows_clock_powershell()],
+        timeout=10.0,
+    )
+    raw = (proc.stdout or "").strip()
+    if not raw:
+        raise RuntimeError("Get-Date returned no output")
+    return datetime.fromisoformat(raw)
+
+
+async def _poll_until_async(check, timeout: float, interval: float) -> bool:
+    """Poll ``check`` (async callable returning bool) until it returns True or timeout."""
+    deadline = anyio.current_time() + timeout
+    while anyio.current_time() < deadline:
+        if await check():
+            return True
+        await anyio.sleep(interval)
+    return False
+
+
+def _now_local() -> datetime:
+    """Current local time as a timezone-aware datetime."""
+    return datetime.now().astimezone()
 
 
 @mcp.tool()
-async def simulate_observation_time(
-    when: str = "", reset: bool = False
-) -> dict[str, Any]:
-    """Manages NINA's clock relative to the host OS clock.
+async def stop_nina() -> dict[str, Any]:
+    """Terminate the NINA.exe application immediately.
 
-    Returns a dict with NINA's clock state so callers can verify the result
-    programmatically without parsing a string:
-
-    - ``summary``: human-readable summary of the operation (also logged).
-    - ``nina_time``: NINA's reported time as ISO 8601 (from ``/v2/api/time``).
-    - ``host_time``: the host's UTC time at the moment of measurement.
-    - ``delta_seconds``: signed delta (NINA − host, in seconds).
-    - ``simulated``: ``True`` when ``|delta_seconds| > DRIFT_TOLERANCE_SECONDS``.
-
-    In ``reset`` mode, a ``RuntimeError`` is raised if NINA's clock still
-    diverges from the host after the resync (most likely the OS clock wasn't
-    restored in time before NINA launched). In that case no dict is returned.
-
-    Two modes, selected by ``reset``:
-
-    - ``reset=False`` (default): **simulate**. Briefly shifts the Windows host
-      clock to ``when``, relaunches NINA so it captures the simulated time
-      during its own init, then restores the OS clock to real time. NINA
-      continues running on simulated local time afterwards — verify with
-      the returned ``nina_time``/``host_time`` (``simulated=True`` while in
-      effect).
-
-    - ``reset=True``: **reset back to real time**. Unconditionally kills
-      NINA.exe, runs ``w32tm /resync`` to ensure the OS clock is on real
-      network time, relaunches NINA so it captures the now-real clock during
-      its own init, and polls :func:`get_nina_time` until NINA's clock
-      converges with the host (within ``DRIFT_TOLERANCE_SECONDS``). Use this
-      after a simulate run to return the observatory to real time.
-
-    In both modes the OS clock is on real time at the end; in simulate mode
-    NINA is on simulated local time, in reset mode NINA is on real local
-    time.
-
-    The simulate path is logged as separate ``simulate_observation_time:``
-    sub-payloads (``probe``, ``shift``, ``launch``, ``restore``) in
-    ``NINA_PLANNER_LOG``. The only visible UI effects are two UAC prompts
-    on the Windows host per simulate invocation (one for ``Set-Date``, one
-    for ``w32tm /resync``); the reset path produces one UAC prompt (for
-    ``w32tm /resync``).
-
-    Args:
-        when: Required when ``reset=False``. Naive ISO 8601 local datetime
-            (e.g. ``"2026-10-15T23:15:00"`` or ``"2026-10-15 23:15:00"``).
-            Must not carry a timezone suffix (``Z`` or ``+HH:MM``) — those
-            would silently land wrong because ``Set-Date`` operates on
-            local time. Must not contain a single quote. Must be empty when
-            ``reset=True``.
-        reset: When ``True``, run the reset-to-real-time path instead of
-            simulate. ``when`` must be empty in this mode.
-
-    Raises:
-        RuntimeError: if the ``NINA_TIME_SIMULATOR_ENABLED`` env var is not
-            set in the MCP environment. Set it to ``1`` in ``opencode.json``'s
-            MCP ``environment`` block to enable.
-        ValueError: if ``when`` fails ISO 8601 local datetime validation, or
-            if ``when`` is empty when ``reset=False`` / non-empty when
-            ``reset=True``.
+    Checks whether NINA.exe is currently running. If running, force-terminates
+    it via taskkill.exe and logs the action to progress.md. If NINA is not running,
+    returns cleanly as a no-op.
     """
-    if not time_simulator_enabled():
-        raise RuntimeError(
-            "Time-simulation tools are disabled. Set "
-            "NINA_TIME_SIMULATOR_ENABLED=1 in the MCP environment block of "
-            "opencode.json to enable them."
-        )
-
     log_extra: list[str] = []
-    nina_exe = nina_exe_path()
-
-    if reset:
-        if when:
-            raise ValueError(
-                "`when` must be empty when `reset=True` (reset uses no simulated time)."
-            )
-        log_extra.append("reset mode: returning NINA to real local time")
-
-        try:
-            probe = await _run_blocking(
-                ["tasklist.exe", "/FI", "IMAGENAME eq NINA.exe"]
-            )
-            was_running = "NINA.exe" in (probe.stdout or "")
-        except Exception as e:
-            log_extra.append(f"nina probe failed: {e!r}")
-            was_running = False
-
-        try:
-            await _run_blocking(kill_nina_command(), timeout=15.0)
-            await anyio.sleep(2.0)
-            if was_running:
-                log_extra.append("killed running NINA")
-            else:
-                log_extra.append("NINA was not running (taskkill had no target)")
-        except Exception as e:
-            log_extra.append(f"taskkill failed: {e!r}")
-
-        restore_ps = restore_clock_powershell()
-        _log_payload("simulate_observation_time: restore", restore_ps)
-        await _spawn_detached(["sudo", "powershell.exe", "-Command", restore_ps])
-        # Mirror the shift path's 3-second delay: give UAC + PowerShell +
-        # w32tm /resync time to complete before launching NINA. Without this,
-        # NINA can start while the OS clock is still simulated.
-        await anyio.sleep(3.0)
-        log_extra.append("ran w32tm /resync to ensure OS clock is real")
-
-        launch = launch_nina_command(nina_exe)
-        _log_payload("simulate_observation_time: launch", " ".join(launch))
-        await _spawn_detached(launch)
-        log_extra.append(f"relaunched NINA from {nina_exe} on real OS clock")
-
-        converged, delta = await _wait_for_real_time()
-        if converged:
-            log_extra.append(
-                f"NINA clock converged with host within "
-                f"{DRIFT_TOLERANCE_SECONDS:g}s (delta={delta:+.2f}s)"
-            )
-        else:
-            raise RuntimeError(
-                f"simulate_observation_time(reset=True) failed: NINA clock "
-                f"diverges from host by {delta:+.2f}s after the resync. "
-                f"Most likely the OS clock wasn't restored in time before "
-                f"NINA launched (slow UAC click, slow w32tm /resync). "
-                f"Retry the call after a few seconds."
-            )
-
-        try:
-            nina_time_info = await get_nina_time()
-        except Exception as e:
-            raise RuntimeError(
-                f"simulate_observation_time(reset=True) failed: could not "
-                f"query NINA's clock for the return value after convergence: "
-                f"{e!r}. NINA is running; verify with get_nina_time."
-            ) from e
-
-        summary = "simulate_observation_time(reset=True): " + "; ".join(log_extra)
-        _log_payload("simulate_observation_time:", summary)
-        try:
-            await append_progress_entry(
-                "simulate_observation_time(reset=True): killed NINA, ran "
-                "w32tm /resync, relaunched NINA on real OS clock; "
-                f"converged={converged}, delta={delta:+.2f}s."
-            )
-        except Exception as e:
-            _log_payload("simulate_observation_time: progress entry failed", repr(e))
-        return {
-            "summary": summary,
-            "nina_time": nina_time_info["nina_time"],
-            "host_time": nina_time_info["host_time"],
-            "delta_seconds": nina_time_info["delta_seconds"],
-            "simulated": nina_time_info["simulated"],
-        }
-
-    if not when or not when.strip():
-        raise ValueError(
-            "`when` must be a non-empty ISO 8601 local datetime when "
-            "`reset=False` (e.g. '2026-10-15T23:15:00')."
-        )
-    validate_iso_local(when)
-
-    was_running = False
     try:
         probe = await _run_blocking(["tasklist.exe", "/FI", "IMAGENAME eq NINA.exe"])
-        was_running = "NINA.exe" in (probe.stdout or "")
+        is_running = "NINA.exe" in (probe.stdout or "")
     except Exception as e:
         log_extra.append(f"nina probe failed: {e!r}")
+        is_running = False
 
-    if was_running:
-        try:
-            await _run_blocking(kill_nina_command(), timeout=15.0)
-            await anyio.sleep(2.0)
-            log_extra.append("killed running NINA")
-        except Exception as e:
-            log_extra.append(f"taskkill failed: {e!r}")
-    else:
-        log_extra.append("NINA was not running (proceeding without kill)")
-
-    shift_ps = shift_clock_powershell(when)
-    _log_payload("simulate_observation_time: shift", shift_ps)
-    await _spawn_detached(["sudo", "powershell.exe", "-Command", shift_ps])
-    await anyio.sleep(3.0)
-    log_extra.append(f"shifted OS clock to {when}")
-
-    launch = launch_nina_command(nina_exe)
-    _log_payload("simulate_observation_time: launch", " ".join(launch))
-    await _spawn_detached(launch)
-    log_extra.append(f"relaunched NINA from {nina_exe}")
-
-    await anyio.sleep(10.0)
+    if not is_running:
+        summary = "stop_nina: NINA is not running — no action taken."
+        _log_payload("stop_nina:", summary)
+        return {"stopped": False, "summary": summary}
 
     try:
-        nina_time_info = await get_nina_time()
+        await _run_blocking(kill_nina_command(), timeout=15.0)
+        await anyio.sleep(1.0)
+        summary = "stop_nina: NINA.exe terminated successfully."
+        log_extra.append("killed running NINA")
+    except Exception as e:
+        summary = f"stop_nina failed: taskkill error: {e!r}"
+        log_extra.append(summary)
+        _log_payload("stop_nina error:", summary)
+        raise RuntimeError(summary) from e
+
+    _log_payload("stop_nina:", summary)
+    try:
+        await append_progress_entry("stop_nina: " + "; ".join(log_extra))
+    except Exception as e:
+        _log_payload("stop_nina: progress entry failed", repr(e))
+
+    return {"stopped": True, "summary": summary}
+
+
+@mcp.tool()
+async def start_nina(time: str | None = None) -> dict[str, Any]:
+    """Launches NINA into the interactive desktop session.
+
+    If NINA is already running, raises an error instructing the caller to stop it first.
+
+    Args:
+        time: Optional naive ISO 8601 local datetime (e.g. '2026-10-15T23:15:00').
+            If omitted or None, NINA launches on current real time.
+            If provided, briefly shifts the Windows OS clock to that datetime,
+            launches NINA so it captures the simulated time during initialization,
+            then restores the OS clock back to real time.
+    """
+    if time is not None and not time.strip():
+        raise ValueError(
+            "`time` cannot be empty. Pass None for current time, or an ISO 8601 string."
+        )
+    if time is not None:
+        validate_iso_local(time)
+
+    try:
+        probe = await _run_blocking(["tasklist.exe", "/FI", "IMAGENAME eq NINA.exe"])
+        is_running = "NINA.exe" in (probe.stdout or "")
+    except Exception as e:
+        _log_payload("start_nina probe warning:", repr(e))
+        is_running = False
+
+    if is_running:
+        raise RuntimeError("NINA is already running. Call stop_nina() first.")
+
+    nina_exe = nina_exe_path()
+    log_extra: list[str] = []
+
+    if time is None:
+        log_extra.append("launching NINA on real time")
+        await _launch_nina_interactive(nina_exe)
+        log_extra.append(f"launched NINA from {nina_exe}")
+        summary = (
+            "start_nina: launched NINA on real time into interactive desktop session. "
+            "Poll get_site_equipment_status() to confirm readiness."
+        )
+        _log_payload("start_nina:", summary)
+        try:
+            await append_progress_entry("start_nina: " + "; ".join(log_extra))
+        except Exception as e:
+            _log_payload("start_nina: progress entry failed", repr(e))
+        return {"summary": summary, "simulated": False}
+
+    # Simulated time path
+    log_extra.append(f"simulating observation time {time}")
+    parsed_target = validate_iso_local(time)
+    local_tz = _now_local().tzinfo
+    target_aware = parsed_target.replace(tzinfo=local_tz)
+
+    # 1. Capture real0 from Windows host clock.
+    try:
+        real0 = await _read_windows_clock()
     except Exception as e:
         raise RuntimeError(
-            f"simulate_observation_time failed: could not query NINA's "
-            f"clock after launching on simulated time {when!r}: {e!r}. "
-            f"NINA may not have captured the simulated time — verify with "
-            f"get_nina_time."
+            f"start_nina failed: could not read host clock before shift: {e!r}"
         ) from e
+    shift_at = datetime.now(UTC)
 
-    restore_ps = restore_clock_powershell()
-    _log_payload("simulate_observation_time: restore", restore_ps)
-    await _spawn_detached(["sudo", "powershell.exe", "-Command", restore_ps])
-    log_extra.append("restored real-time OS clock via w32tm /resync")
-
-    summary = "simulate_observation_time: " + "; ".join(log_extra)
-    _log_payload("simulate_observation_time:", summary)
+    # 2. Shift Windows host clock to simulated target (direct, no UAC).
+    shift_cmd = shift_clock_powershell(time)
+    _log_payload("start_nina: shift", shift_cmd)
     try:
-        await append_progress_entry(
-            f"simulate_observation_time: shifted OS clock to {when!r} "
-            f"briefly to relaunch NINA on simulated local time; OS clock "
-            f"restored to real time. NINA continues running on simulated "
-            f"local time."
+        await _run_blocking(
+            ["powershell.exe", "-NoProfile", "-Command", shift_cmd], timeout=10.0
         )
     except Exception as e:
-        _log_payload("simulate_observation_time: progress entry failed", repr(e))
+        raise RuntimeError(
+            f"start_nina failed: shift to {time!r} failed "
+            "(host may lack 'Change the system time' privilege): "
+            f"{e!r}"
+        ) from e
+
+    # 3. Verify shift by polling the Windows host clock.
+    async def _shift_check() -> bool:
+        try:
+            host_now = await _read_windows_clock()
+            return abs((host_now - target_aware).total_seconds()) <= 2.0
+        except Exception:
+            return False
+
+    shift_ok = await _poll_until_async(_shift_check, timeout=10.0, interval=0.5)
+    if not shift_ok:
+        # Best-effort restore to real0 before raising.
+        try:
+            restore_cmd = restore_set_date_powershell(
+                real0.astimezone(local_tz).replace(tzinfo=None).isoformat()
+            )
+            await _run_blocking(
+                ["powershell.exe", "-NoProfile", "-Command", restore_cmd], timeout=10.0
+            )
+        except Exception:
+            pass
+        raise RuntimeError(
+            f"start_nina failed: host clock did not converge to {time!r} within 10s of shift. "
+            "Host clock restored."
+        )
+    log_extra.append(f"shifted OS clock to {time}")
+
+    # 4. Launch NINA in interactive session.
+    await _launch_nina_interactive(nina_exe)
+    log_extra.append(f"launched NINA from {nina_exe}")
+
+    # 5. Capture-check: poll NINA /time until it reports the simulated date.
+    async def _capture_check() -> bool:
+        try:
+            info = await get_nina_time()
+            nina_naive = datetime.fromisoformat(info["nina_time"])
+            nina_aware = (
+                nina_naive.replace(tzinfo=local_tz)
+                if nina_naive.tzinfo is None
+                else nina_naive.astimezone(local_tz)
+            )
+            # Tolerate up to 30s of drift: NINA captures the host clock at
+            # init and then advances on its own, so readings drift forward
+            # over time.
+            return abs((nina_aware - target_aware).total_seconds()) <= 30.0
+        except Exception:
+            return False
+
+    captured = await _poll_until_async(_capture_check, timeout=45.0, interval=1.0)
+
+    # 6. Always restore the host clock (deterministic: real0 + measured elapsed).
+    restore_at = datetime.now(UTC)
+    elapsed = (restore_at - shift_at).total_seconds()
+    restore_target_dt = real0 + timedelta(seconds=elapsed)
+    restore_target_naive = restore_target_dt.astimezone(local_tz).replace(tzinfo=None)
+    restore_cmd = restore_set_date_powershell(restore_target_naive.isoformat())
+    _log_payload("start_nina: restore", restore_cmd)
+    restore_error: str | None = None
+    try:
+        await _run_blocking(
+            ["powershell.exe", "-NoProfile", "-Command", restore_cmd], timeout=10.0
+        )
+    except Exception as e:
+        restore_error = repr(e)
+
+    # 7. Verify restore.
+    async def _restore_check() -> bool:
+        try:
+            host_now = await _read_windows_clock()
+            return abs((host_now - restore_target_dt).total_seconds()) <= 2.0
+        except Exception:
+            return False
+
+    restored = await _poll_until_async(_restore_check, timeout=10.0, interval=0.5)
+    log_extra.append(
+        f"restored host clock to {restore_target_dt.isoformat()} (verified={restored})"
+    )
+
+    if not captured:
+        raise RuntimeError(
+            f"start_nina failed: NINA never captured simulated date {time!r} within 45s. "
+            "Host clock has been restored. Verify NINA launched with get_site_equipment_status()."
+        )
+    if not restored:
+        raise RuntimeError(
+            f"start_nina failed: host clock did not restore to {restore_target_dt.isoformat()} "
+            f"(restore_error={restore_error!r}). Manual intervention may be required."
+        )
+
+    # 8. Return correct simulated/delta now that host is real.
+    nina_time_info = await get_nina_time()
+
+    summary = "start_nina: " + "; ".join(log_extra)
+    _log_payload("start_nina:", summary)
+    try:
+        await append_progress_entry("start_nina: " + "; ".join(log_extra))
+    except Exception as e:
+        _log_payload("start_nina: progress entry failed", repr(e))
+
     return {
         "summary": summary,
         "nina_time": nina_time_info["nina_time"],
@@ -959,47 +929,14 @@ async def simulate_observation_time(
     }
 
 
-async def _wait_for_real_time(
-    tolerance_seconds: float = DRIFT_TOLERANCE_SECONDS,
-    max_wait_seconds: float = 30.0,
-    poll_interval_seconds: float = 1.0,
-) -> tuple[bool, float]:
-    """Poll :func:`get_nina_time` until NINA's clock is within tolerance.
-
-    Returns ``(converged, delta_seconds)`` where ``delta_seconds`` is the
-    final observed delta (NINA − host, signed). Polling tolerates transient
-    API failures and times out after ``max_wait_seconds``, returning the
-    last observed delta (or ``NaN`` if no sample ever succeeded).
-    """
-    deadline = anyio.current_time() + max_wait_seconds
-    last_delta = float("nan")
-    while anyio.current_time() < deadline:
-        try:
-            result = await get_nina_time()
-            last_delta = float(result["delta_seconds"])
-            if abs(last_delta) <= tolerance_seconds:
-                return True, last_delta
-        except Exception:
-            pass
-        await anyio.sleep(poll_interval_seconds)
-    try:
-        result = await get_nina_time()
-        last_delta = float(result["delta_seconds"])
-    except Exception:
-        pass
-    return abs(last_delta) <= tolerance_seconds, last_delta
-
-
 @mcp.tool()
 async def get_nina_time() -> dict[str, Any]:
     """Returns NINA's reported time alongside the host OS clock, the signed
     delta between them (NINA − host), and a ``simulated`` flag (``True`` when
     |delta| exceeds the configured drift tolerance).
 
-    Use this to detect whether a previous ``simulate_observation_time`` call
-    is still in effect (``simulated=True``) or to verify that
-    ``simulate_observation_time(reset=True)`` returned NINA to real time
-    (``simulated=False`` and ``delta_seconds`` ≈ 0).
+    Use this to detect whether NINA is running on simulated time (``simulated=True``)
+    or real time (``simulated=False`` and ``delta_seconds`` ≈ 0).
 
     Timestamps are returned as naive ISO 8601 local datetimes (no timezone
     suffix); ``delta_seconds`` is computed in UTC after attaching the host's

@@ -1237,20 +1237,50 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
             result = await get_nina_time()
         self.assertIn("delta_seconds", result)
 
-    async def test_simulate_shift_mode_get_nina_time_fails(self):
-        from nina_planner.server import simulate_observation_time
+    async def test_start_nina_simulated_get_nina_time_fails(self):
+        """When get_nina_time() never returns the simulated date during
+        capture-check, start_nina restores the host clock and raises.
+        """
+        from datetime import datetime as _dt
+
+        from nina_planner.server import start_nina
+
+        class FakeProcess:
+            stdout = ""
+
+        host_calls = {"n": 0}
+
+        async def fake_read_windows_clock():
+            host_calls["n"] += 1
+            # First call: real0. After that: shifted target so shift-check passes.
+            if host_calls["n"] == 1:
+                return _dt.fromisoformat("2026-09-26T16:55:00-05:00")
+            return _dt.fromisoformat("2026-10-15T23:15:00-05:00")
 
         with (
-            patch.dict(os.environ, {"NINA_TIME_SIMULATOR_ENABLED": "1"}),
+            patch(
+                "nina_planner.server._read_windows_clock",
+                side_effect=fake_read_windows_clock,
+            ),
+            patch(
+                "nina_planner.server._run_blocking",
+                return_value=FakeProcess(),
+            ),
+            patch(
+                "nina_planner.server.write_nina_launcher",
+                return_value=(Path("/tmp/launch.cmd"), r"C:\tmp\launch.cmd"),
+            ),
             patch(
                 "nina_planner.server.get_nina_time",
                 AsyncMock(side_effect=RuntimeError("shift query failed")),
             ),
+            patch("nina_planner.server.anyio.sleep", new=AsyncMockSleep()),
             patch("nina_planner.server._log_payload"),
         ):
             with self.assertRaises(RuntimeError) as ctx:
-                await simulate_observation_time("2026-10-15T23:15:00")
-        self.assertIn("shift query failed", str(ctx.exception))
+                await start_nina("2026-10-15T23:15:00")
+        # Capture-check fails (NINA never reports simulated date); host restored.
+        self.assertIn("NINA never captured simulated date", str(ctx.exception))
 
     async def test_get_site_equipment_status_calls_log_payload(self):
         """When get_site_equipment_status runs, it calls _log_payload with
@@ -1274,79 +1304,72 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
             content = log_path.read_text()
             self.assertIn("Equipment:", content)
 
-    async def test_simulate_reset_progress_entry_fails(self):
-        """When append_progress_entry raises in the reset path, the tool
+    async def test_start_nina_simulated_progress_entry_fails(self):
+        """When append_progress_entry raises in start_nina simulated path, the tool
         still returns successfully — the except branch swallows the error.
         """
-        from nina_planner.server import simulate_observation_time
+        from datetime import datetime as _dt
+
+        from nina_planner.server import start_nina
 
         class FakeProcess:
-            stdout = "NINA.exe                      12345\n"
+            stdout = ""
+
+        host_calls = {"n": 0}
+
+        async def fake_read_windows_clock():
+            host_calls["n"] += 1
+            # 1) real0, 2) shifted target (shift-check), 3+) restored target.
+            if host_calls["n"] == 1:
+                return _dt.fromisoformat("2026-09-26T16:55:00-05:00")
+            if host_calls["n"] == 2:
+                return _dt.fromisoformat("2026-10-15T23:15:00-05:00")
+            return _dt.fromisoformat("2026-09-26T16:55:01-05:00")
+
+        async def fake_get_nina_time():
+            return {
+                "nina_time": "2026-10-15T23:15:00",
+                "host_time": "2026-09-26T16:55:00",
+                "delta_seconds": 17_328_000.0,
+                "simulated": True,
+            }
 
         with (
-            patch.dict(os.environ, {"NINA_TIME_SIMULATOR_ENABLED": "1"}),
+            patch(
+                "nina_planner.server._read_windows_clock",
+                side_effect=fake_read_windows_clock,
+            ),
             patch(
                 "nina_planner.server._run_blocking",
                 return_value=FakeProcess(),
             ),
             patch(
+                "nina_planner.server.write_nina_launcher",
+                return_value=(Path("/tmp/launch.cmd"), r"C:\tmp\launch.cmd"),
+            ),
+            patch(
                 "nina_planner.server.get_nina_time",
-                AsyncMock(
-                    return_value={
-                        "nina_time": "2026-09-26T13:00:00",
-                        "host_time": "2026-09-26T13:00:00",
-                        "delta_seconds": 0.0,
-                        "simulated": False,
-                    }
-                ),
+                AsyncMock(side_effect=fake_get_nina_time),
             ),
             patch(
                 "nina_planner.server.append_progress_entry",
                 AsyncMock(side_effect=OSError("disk full")),
             ),
+            patch("nina_planner.server.anyio.sleep", new=AsyncMockSleep()),
             patch("nina_planner.server._log_payload"),
         ):
             # Should not raise — the progress-entry failure is swallowed.
-            result = await simulate_observation_time(reset=True)
-        self.assertIn("converged", result["summary"])
-
-    async def test_simulate_shift_progress_entry_fails(self):
-        """When append_progress_entry raises in the shift path, the tool
-        still returns successfully — the except branch swallows the error.
-        """
-        from nina_planner.server import simulate_observation_time
-
-        with (
-            patch.dict(os.environ, {"NINA_TIME_SIMULATOR_ENABLED": "1"}),
-            patch(
-                "nina_planner.server.get_nina_time",
-                AsyncMock(
-                    return_value={
-                        "nina_time": "2026-10-15T23:15:00",
-                        "host_time": "2026-09-26T16:55:00",
-                        "delta_seconds": 17_328_000.0,
-                        "simulated": True,
-                    }
-                ),
-            ),
-            patch(
-                "nina_planner.server.append_progress_entry",
-                AsyncMock(side_effect=OSError("disk full")),
-            ),
-            patch("nina_planner.server._log_payload"),
-        ):
-            # Should not raise — the progress-entry failure is swallowed.
-            result = await simulate_observation_time("2026-10-15T23:15:00")
+            result = await start_nina("2026-10-15T23:15:00")
         self.assertEqual(result["simulated"], True)
 
-    async def test_ensure_nina_running_progress_entry_fails(self):
-        """When append_progress_entry raises in ensure_nina_running, the tool
+    async def test_start_nina_real_time_progress_entry_fails(self):
+        """When append_progress_entry raises in start_nina real-time, the tool
         still returns — the except branch swallows the error.
         """
-        from nina_planner.server import ensure_nina_running
+        from nina_planner.server import start_nina
 
         class FakeProcess:
-            stdout = "NINA.exe                      12345\n"
+            stdout = ""
 
         with (
             patch(
@@ -1360,9 +1383,8 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
             patch("nina_planner.server._log_payload"),
         ):
             # Should not raise — the progress-entry failure is swallowed.
-            result = await ensure_nina_running()
-        # The launch path ran successfully despite the progress-entry error.
-        self.assertEqual(result["state"], "running")
+            result = await start_nina(None)
+        self.assertEqual(result["simulated"], False)
 
     async def test_get_site_equipment_status_missing_device_data(self):
         """When a device is marked has_X=True but the raw response has no
@@ -1392,6 +1414,13 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
         with patch("nina_planner.server._api_get", AsyncMock(return_value=raw)):
             equipment = await _get_site_equipment_status(profile)
         self.assertIsNone(equipment.mount)
+
+
+class AsyncMockSleep:
+    """Async sleep stand-in that returns immediately."""
+
+    async def __call__(self, *_args, **_kwargs):
+        return None
 
 
 if __name__ == "__main__":

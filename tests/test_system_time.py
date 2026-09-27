@@ -8,14 +8,19 @@ from unittest.mock import MagicMock, patch
 
 from nina_planner.system_time import (
     NINA_EXE_DEFAULT,
+    get_launcher_paths,
     kill_nina_command,
-    launch_nina_command,
+    local_to_windows,
     nina_exe_path,
     nina_running,
-    restore_clock_powershell,
+    read_windows_clock_powershell,
+    restore_set_date_powershell,
+    schtasks_create_command,
+    schtasks_delete_command,
+    schtasks_run_command,
     shift_clock_powershell,
-    time_simulator_enabled,
     validate_iso_local,
+    write_nina_launcher,
 )
 
 
@@ -23,15 +28,13 @@ class CommandBuildersTest(unittest.TestCase):
     def test_shift_clock_powershell_iso_t_separator(self):
         self.assertEqual(
             shift_clock_powershell("2026-10-15T23:15:00"),
-            "Start-Process powershell -ArgumentList "
-            "'Set-Date \"2026-10-15T23:15:00\"' -Verb RunAs",
+            "Set-Date -Date '2026-10-15T23:15:00'",
         )
 
     def test_shift_clock_powershell_iso_space_separator(self):
         self.assertEqual(
             shift_clock_powershell("2026-10-15 23:15:00"),
-            "Start-Process powershell -ArgumentList "
-            "'Set-Date \"2026-10-15 23:15:00\"' -Verb RunAs",
+            "Set-Date -Date '2026-10-15 23:15:00'",
         )
 
     def test_shift_clock_powershell_rejects_ampm(self):
@@ -62,27 +65,73 @@ class CommandBuildersTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             shift_clock_powershell("2026-10-15T23:15:00+02:00")
 
-    def test_restore_clock_powershell(self):
+    def test_restore_set_date_powershell(self):
         self.assertEqual(
-            restore_clock_powershell(),
-            "Start-Process powershell -ArgumentList 'w32tm /resync' -Verb RunAs",
+            restore_set_date_powershell("2026-10-15T23:15:00"),
+            "Set-Date -Date '2026-10-15T23:15:00'",
         )
 
-    def test_launch_nina_command(self):
-        nina_exe = (
-            r"C:\Program Files\N.I.N.A. - Nighttime Imaging 'N' Astronomy"
-            r"\NINA.exe"
-        )
-        self.assertEqual(
-            launch_nina_command(nina_exe),
-            ["cmd.exe", "/c", "start", "", nina_exe],
-        )
+    def test_restore_set_date_powershell_rejects_empty(self):
+        with self.assertRaises(ValueError):
+            restore_set_date_powershell("")
+
+    def test_read_windows_clock_powershell(self):
+        self.assertEqual(read_windows_clock_powershell(), "Get-Date -Format o")
 
     def test_kill_nina_command(self):
         self.assertEqual(
             kill_nina_command(),
             ["taskkill.exe", "/F", "/IM", "NINA.exe"],
         )
+
+    def test_schtasks_create_command(self):
+        cmd = schtasks_create_command(r"C:\temp\launch_nina.cmd")
+        self.assertEqual(
+            cmd,
+            [
+                "schtasks.exe",
+                "/Create",
+                "/TN",
+                "NINAPlanner-Launch",
+                "/TR",
+                r"C:\temp\launch_nina.cmd",
+                "/SC",
+                "ONCE",
+                "/ST",
+                "00:00",
+                "/IT",
+                "/F",
+            ],
+        )
+
+    def test_schtasks_run_command(self):
+        self.assertEqual(
+            schtasks_run_command(),
+            ["schtasks.exe", "/Run", "/TN", "NINAPlanner-Launch"],
+        )
+
+    def test_schtasks_delete_command(self):
+        self.assertEqual(
+            schtasks_delete_command(),
+            ["schtasks.exe", "/Delete", "/TN", "NINAPlanner-Launch", "/F"],
+        )
+
+    def test_local_to_windows_wsl_mount(self):
+        p = Path("/mnt/c/Users/george/AppData/Local/Temp/launch_nina.cmd")
+        self.assertEqual(
+            local_to_windows(p),
+            r"C:\Users\george\AppData\Local\Temp\launch_nina.cmd",
+        )
+
+    def test_write_nina_launcher(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            with patch.dict(os.environ, {"NINA_LAUNCHER_DIR": str(tmp_path)}):
+                local_p, win_p = write_nina_launcher(r"C:\Test\NINA.exe")
+                self.assertTrue(local_p.exists())
+                content = local_p.read_text(encoding="utf-8")
+                self.assertIn("@echo off", content)
+                self.assertIn(r'start "" "C:\Test\NINA.exe"', content)
 
 
 class ValidateIsoLocalTest(unittest.TestCase):
@@ -170,27 +219,6 @@ class NinaRunningTest(unittest.TestCase):
             self.assertFalse(nina_running())
 
 
-class TimeSimulatorGateTest(unittest.TestCase):
-    def test_default_off(self):
-        with patch.dict(os.environ, {}, clear=False):
-            os.environ.pop("NINA_TIME_SIMULATOR_ENABLED", None)
-            self.assertFalse(time_simulator_enabled())
-
-    def test_on_with_one(self):
-        with patch.dict(os.environ, {"NINA_TIME_SIMULATOR_ENABLED": "1"}, clear=False):
-            self.assertTrue(time_simulator_enabled())
-
-    def test_off_with_other_values(self):
-        for value in ("0", "true", "yes", "", "ON"):
-            with patch.dict(
-                os.environ, {"NINA_TIME_SIMULATOR_ENABLED": value}, clear=False
-            ):
-                self.assertFalse(
-                    time_simulator_enabled(),
-                    f"value {value!r} should not enable",
-                )
-
-
 class AppendProgressEntryTest(unittest.TestCase):
     def setUp(self):
         self._tmp = tempfile.TemporaryDirectory()
@@ -209,15 +237,12 @@ class AppendProgressEntryTest(unittest.TestCase):
         return self.progress.read_text(encoding="utf-8")
 
     def test_appends_iso_timestamped_section(self):
-        body = "shifted OS clock to '2026-10-15 23:15'"
+        body = "started NINA on real time"
         new_content = self._call(body)
-        # Original content preserved.
         self.assertIn("# progress.md", new_content)
-        # New entry has the auto header and the body verbatim.
         self.assertIn("## ", new_content)
         self.assertIn("— auto", new_content)
         self.assertIn(body, new_content)
-        # Ends with a newline.
         self.assertTrue(new_content.endswith("\n"))
 
     def test_appends_subsequent_entries(self):
@@ -226,11 +251,10 @@ class AppendProgressEntryTest(unittest.TestCase):
         content = self.progress.read_text(encoding="utf-8")
         self.assertIn("first entry body", content)
         self.assertIn("second entry body", content)
-        # Both have auto headers.
         self.assertEqual(content.count("— auto"), 2)
 
 
-class EnsureNinaRunningTest(unittest.TestCase):
+class StopNinaTest(unittest.TestCase):
     def setUp(self):
         self._tmp = tempfile.TemporaryDirectory()
         self.project_dir = Path(self._tmp.name)
@@ -240,343 +264,342 @@ class EnsureNinaRunningTest(unittest.TestCase):
     def tearDown(self):
         self._tmp.cleanup()
 
-    def test_no_action_when_running(self):
-        running_proc = MagicMock()
-        running_proc.stdout = (
-            "Image Name                     PID\nNINA.exe                      12345\n"
-        )
-        from nina_planner.server import ensure_nina_running
+    def test_stop_when_not_running_is_noop(self):
+        from nina_planner.server import stop_nina
+
+        absent_proc = MagicMock()
+        absent_proc.stdout = "INFO: No tasks running\n"
 
         with (
             patch("nina_planner.server.PROJECT_DIR", self.project_dir),
             patch(
-                "nina_planner.server._run_blocking",
-                return_value=running_proc,
-            ),
-            patch("nina_planner.server._spawn_detached") as mock_spawn,
-            patch("nina_planner.server._log_payload"),
-        ):
-            result = asyncio.run(ensure_nina_running())
-        # result is a dict with state + summary
-        self.assertEqual(result["state"], "running")
-        self.assertIn("confirmed running", result["summary"])
-        self.assertIn("no action", result["summary"])
-        mock_spawn.assert_not_called()
-        self.assertIn(
-            "NINA already running, no launch",
-            self.progress.read_text(encoding="utf-8"),
-        )
-
-    def test_launches_when_not_running(self):
-        absent_proc = MagicMock()
-        absent_proc.stdout = "INFO: No tasks are running which match.\n"
-        from nina_planner.server import ensure_nina_running
-
-        with (
-            patch("nina_planner.server.PROJECT_DIR", self.project_dir),
-            patch("nina_planner.server._run_blocking", return_value=absent_proc),
-            patch("nina_planner.server._spawn_detached") as mock_spawn,
-            patch("nina_planner.server._log_payload"),
-            patch.dict(
-                os.environ,
-                {"NINA_EXE_PATH": r"D:\apps\NINA.exe"},
-                clear=False,
-            ),
-        ):
-            result = asyncio.run(ensure_nina_running())
-        # result is a dict with state + summary
-        self.assertEqual(result["state"], "launched")
-        self.assertIn("confirmed not running", result["summary"])
-        self.assertIn("launched", result["summary"])
-        self.assertIn(r"D:\apps\NINA.exe", result["summary"])
-        mock_spawn.assert_called_once()
-        argv = mock_spawn.call_args.args[0]
-        self.assertEqual(
-            argv,
-            ["cmd.exe", "/c", "start", "", r"D:\apps\NINA.exe"],
-        )
-        self.assertIn(
-            "launched NINA from D:\\apps\\NINA.exe",
-            self.progress.read_text(encoding="utf-8"),
-        )
-
-    def test_default_path_when_env_unset(self):
-        absent_proc = MagicMock()
-        absent_proc.stdout = ""
-        from nina_planner.server import ensure_nina_running
-
-        with (
-            patch("nina_planner.server.PROJECT_DIR", self.project_dir),
-            patch("nina_planner.server._run_blocking", return_value=absent_proc),
-            patch("nina_planner.server._spawn_detached") as mock_spawn,
-            patch("nina_planner.server._log_payload"),
-            patch.dict(os.environ, {}, clear=False),
-        ):
-            os.environ.pop("NINA_EXE_PATH", None)
-            asyncio.run(ensure_nina_running())
-        argv = mock_spawn.call_args.args[0]
-        self.assertEqual(argv[-1], NINA_EXE_DEFAULT)
-
-    def test_probe_failure_returns_probe_failed_without_launch(self):
-        """When the tasklist.exe probe fails, we MUST NOT launch — that
-        could create a duplicate NINA process if one is already running.
-        Caller gets state='probe_failed' and decides whether to retry
-        or investigate.
-        """
-        from nina_planner.server import ensure_nina_running
-
-        with (
-            patch("nina_planner.server.PROJECT_DIR", self.project_dir),
-            patch(
-                "nina_planner.server._run_blocking",
-                side_effect=RuntimeError("tasklist crashed"),
-            ),
-            patch("nina_planner.server._spawn_detached") as mock_spawn,
-            patch("nina_planner.server._log_payload"),
-        ):
-            result = asyncio.run(ensure_nina_running())
-        # result is a dict; state is the signal the caller acts on
-        self.assertEqual(result["state"], "probe_failed")
-        # CRITICAL: must not have spawned anything
-        mock_spawn.assert_not_called()
-        # The summary should make the failure visible
-        self.assertIn("WARNING", result["summary"])
-        self.assertIn("tasklist.exe errored", result["summary"])
-        self.assertIn("duplicate processes", result["summary"])
-        # Progress entry records the warning for postmortem
-        content = self.progress.read_text(encoding="utf-8")
-        self.assertIn("nina probe failed", content)
-        self.assertIn("NOT launching to avoid duplicates", content)
-        self.assertNotIn("launched NINA", content)
-
-
-class SimulateObservationTimeTest(unittest.TestCase):
-    def setUp(self):
-        self._tmp = tempfile.TemporaryDirectory()
-        self.project_dir = Path(self._tmp.name)
-        self.progress = self.project_dir / "progress.md"
-        self.progress.write_text("# progress.md\n")
-
-    def tearDown(self):
-        self._tmp.cleanup()
-
-    def _enabled_env(self):
-        return patch.dict(
-            os.environ,
-            {"NINA_TIME_SIMULATOR_ENABLED": "1", "NINA_EXE_PATH": r"D:\apps\NINA.exe"},
-            clear=False,
-        )
-
-    def test_simulate_mode_runs_full_path(self):
-        absent_proc = MagicMock()
-        absent_proc.stdout = ""
-        from nina_planner.server import simulate_observation_time
-
-        with (
-            self._enabled_env(),
-            patch("nina_planner.server.PROJECT_DIR", self.project_dir),
-            patch("nina_planner.server._run_blocking", return_value=absent_proc),
-            patch("nina_planner.server._spawn_detached") as mock_spawn,
-            patch("nina_planner.server.anyio.sleep", new=AsyncMockSleep()),
-            patch("nina_planner.server._log_payload"),
-        ):
-            result = asyncio.run(simulate_observation_time("2026-10-15T23:15:00"))
-        # result is a dict with summary + structured clock info
-        self.assertIn("summary", result)
-        self.assertIn("nina_time", result)
-        self.assertIn("host_time", result)
-        self.assertIn("delta_seconds", result)
-        self.assertIn("simulated", result)
-        self.assertIn("simulate_observation_time:", result["summary"])
-        self.assertIn("shifted OS clock to 2026-10-15T23:15:00", result["summary"])
-        # Three spawn_detached calls: shift (sudo powershell Set-Date), launch
-        # (NINA), restore (sudo powershell w32tm /resync).
-        self.assertEqual(mock_spawn.call_count, 3)
-        shift_argv = mock_spawn.call_args_list[0].args[0]
-        self.assertEqual(shift_argv[0], "sudo")
-        self.assertIn('Set-Date "2026-10-15T23:15:00"', " ".join(shift_argv))
-        launch_argv = mock_spawn.call_args_list[1].args[0]
-        self.assertEqual(
-            launch_argv, ["cmd.exe", "/c", "start", "", r"D:\apps\NINA.exe"]
-        )
-        restore_argv = mock_spawn.call_args_list[2].args[0]
-        self.assertIn("w32tm /resync", " ".join(restore_argv))
-        content = self.progress.read_text(encoding="utf-8")
-        self.assertIn("simulate_observation_time:", content)
-        self.assertIn("2026-10-15T23:15:00", content)
-
-    def test_simulate_mode_rejects_empty_when(self):
-        from nina_planner.server import simulate_observation_time
-
-        with (
-            self._enabled_env(),
-            patch("nina_planner.server.PROJECT_DIR", self.project_dir),
-            patch("nina_planner.server._log_payload"),
-        ):
-            with self.assertRaises(ValueError):
-                asyncio.run(simulate_observation_time(""))
-
-    def test_simulate_mode_rejects_ampm_when(self):
-        from nina_planner.server import simulate_observation_time
-
-        with (
-            self._enabled_env(),
-            patch("nina_planner.server.PROJECT_DIR", self.project_dir),
-            patch("nina_planner.server._log_payload"),
-        ):
-            with self.assertRaises(ValueError):
-                asyncio.run(simulate_observation_time("10/15/2026 11:15 PM"))
-
-    def test_simulate_mode_rejects_z_suffix(self):
-        from nina_planner.server import simulate_observation_time
-
-        with (
-            self._enabled_env(),
-            patch("nina_planner.server.PROJECT_DIR", self.project_dir),
-            patch("nina_planner.server._log_payload"),
-        ):
-            with self.assertRaises(ValueError):
-                asyncio.run(simulate_observation_time("2026-10-15T23:15:00Z"))
-
-    def test_reset_mode_kills_runs_resync_relaunches_polls(self):
-        running_proc = MagicMock()
-        running_proc.stdout = "NINA.exe                      12345\n"
-        from nina_planner.server import simulate_observation_time
-
-        # Pre-populate a fake get_nina_time that converges immediately.
-        async def fake_get_nina_time():
-            return {
-                "nina_time": "2026-09-26T13:00:00",
-                "host_time": "2026-09-26T13:00:01",
-                "delta_seconds": -1.0,
-                "simulated": False,
-            }
-
-        with (
-            self._enabled_env(),
-            patch("nina_planner.server.PROJECT_DIR", self.project_dir),
-            patch(
-                "nina_planner.server._run_blocking",
-                return_value=running_proc,
+                "nina_planner.server._run_blocking", return_value=absent_proc
             ) as mock_run,
-            patch("nina_planner.server._spawn_detached") as mock_spawn,
+            patch("nina_planner.server._log_payload"),
+        ):
+            result = asyncio.run(stop_nina())
+
+        self.assertFalse(result["stopped"])
+        self.assertIn("not running", result["summary"])
+        # Only tasklist probe was executed, no taskkill
+        self.assertEqual(mock_run.call_count, 1)
+
+    def test_stop_when_running_kills_process(self):
+        from nina_planner.server import stop_nina
+
+        running_proc = MagicMock()
+        running_proc.stdout = "NINA.exe                      12345 Console\n"
+
+        with (
+            patch("nina_planner.server.PROJECT_DIR", self.project_dir),
             patch(
-                "nina_planner.server.get_nina_time",
-                side_effect=fake_get_nina_time,
-            ),
+                "nina_planner.server._run_blocking", return_value=running_proc
+            ) as mock_run,
             patch("nina_planner.server.anyio.sleep", new=AsyncMockSleep()),
             patch("nina_planner.server._log_payload"),
         ):
-            result = asyncio.run(simulate_observation_time(reset=True))
-        # taskkill + sleep + (resync via spawn) + (launch via spawn) = 2 runs
-        # of _run_blocking (probe + taskkill) and 2 spawns (resync + launch).
+            result = asyncio.run(stop_nina())
+
+        self.assertTrue(result["stopped"])
+        self.assertIn("terminated successfully", result["summary"])
         self.assertEqual(mock_run.call_count, 2)
         kill_argv = mock_run.call_args_list[1].args[0]
         self.assertEqual(kill_argv, ["taskkill.exe", "/F", "/IM", "NINA.exe"])
-        self.assertEqual(mock_spawn.call_count, 2)
-        resync_argv = mock_spawn.call_args_list[0].args[0]
-        self.assertIn("w32tm /resync", " ".join(resync_argv))
-        launch_argv = mock_spawn.call_args_list[1].args[0]
-        self.assertEqual(
-            launch_argv, ["cmd.exe", "/c", "start", "", r"D:\apps\NINA.exe"]
-        )
-        # result is a dict with summary + structured clock info
-        self.assertIn("summary", result)
-        self.assertIn("nina_time", result)
-        self.assertIn("host_time", result)
-        self.assertIn("delta_seconds", result)
-        self.assertIn("simulated", result)
-        self.assertEqual(result["nina_time"], "2026-09-26T13:00:00")
-        self.assertEqual(result["host_time"], "2026-09-26T13:00:01")
-        self.assertEqual(result["delta_seconds"], -1.0)
-        self.assertFalse(result["simulated"])
-        self.assertIn("reset mode", result["summary"])
-        self.assertIn("killed running NINA", result["summary"])
-        self.assertIn("w32tm /resync", result["summary"])
-        self.assertIn("relaunched NINA", result["summary"])
-        self.assertIn("converged", result["summary"])
         content = self.progress.read_text(encoding="utf-8")
-        self.assertIn("simulate_observation_time(reset=True)", content)
+        self.assertIn("stop_nina: killed running NINA", content)
 
-    def test_reset_mode_kills_even_when_not_running(self):
+    def test_stop_when_taskkill_fails_raises_runtime_error(self):
+        from nina_planner.server import stop_nina
+
+        running_proc = MagicMock()
+        running_proc.stdout = "NINA.exe                      12345 Console\n"
+
+        def fake_run(argv, timeout=30.0):
+            if "tasklist.exe" in argv:
+                return running_proc
+            raise RuntimeError("Access denied")
+
+        with (
+            patch("nina_planner.server.PROJECT_DIR", self.project_dir),
+            patch("nina_planner.server._run_blocking", side_effect=fake_run),
+            patch("nina_planner.server._log_payload"),
+        ):
+            with self.assertRaises(RuntimeError) as ctx:
+                asyncio.run(stop_nina())
+            self.assertIn("taskkill error", str(ctx.exception))
+
+
+class StartNinaTest(unittest.TestCase):
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.project_dir = Path(self._tmp.name)
+        self.progress = self.project_dir / "progress.md"
+        self.progress.write_text("# progress.md\n")
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def test_start_errors_when_already_running(self):
+        from nina_planner.server import start_nina
+
+        running_proc = MagicMock()
+        running_proc.stdout = "NINA.exe                      12345 Console\n"
+
+        with (
+            patch("nina_planner.server.PROJECT_DIR", self.project_dir),
+            patch("nina_planner.server._run_blocking", return_value=running_proc),
+            patch("nina_planner.server._log_payload"),
+        ):
+            with self.assertRaises(RuntimeError) as ctx:
+                asyncio.run(start_nina())
+            self.assertIn(
+                "NINA is already running. Call stop_nina() first.", str(ctx.exception)
+            )
+
+            with self.assertRaises(RuntimeError) as ctx:
+                asyncio.run(start_nina("2026-10-15T23:15:00"))
+            self.assertIn(
+                "NINA is already running. Call stop_nina() first.", str(ctx.exception)
+            )
+
+    def test_start_real_time_launches_interactive(self):
+        from nina_planner.server import start_nina
+
         absent_proc = MagicMock()
         absent_proc.stdout = ""
-        from nina_planner.server import simulate_observation_time
+
+        executed_cmds = []
+
+        def fake_run(argv, timeout=30.0):
+            executed_cmds.append(argv)
+            return absent_proc
+
+        with (
+            patch("nina_planner.server.PROJECT_DIR", self.project_dir),
+            patch("nina_planner.server._run_blocking", side_effect=fake_run),
+            patch(
+                "nina_planner.server.write_nina_launcher",
+                return_value=(Path("/tmp/launch.cmd"), r"C:\tmp\launch.cmd"),
+            ),
+            patch("nina_planner.server._log_payload"),
+        ):
+            result = asyncio.run(start_nina())
+
+        self.assertFalse(result["simulated"])
+        self.assertIn("launched NINA on real time", result["summary"])
+        # Commands executed: tasklist probe, schtasks /Create, schtasks /Run, schtasks /Delete
+        cmd_names = [c[0] for c in executed_cmds]
+        self.assertEqual(
+            cmd_names, ["tasklist.exe", "schtasks.exe", "schtasks.exe", "schtasks.exe"]
+        )
+        create_args = executed_cmds[1]
+        self.assertIn("/IT", create_args)
+        self.assertIn(r"C:\tmp\launch.cmd", create_args)
+
+        content = self.progress.read_text(encoding="utf-8")
+        self.assertIn("start_nina: launching NINA on real time", content)
+
+    def test_start_simulated_time_runs_full_cycle(self):
+        from datetime import datetime as _dt
+
+        from nina_planner.server import start_nina
+
+        # Host clock reads: first call returns real0 (before shift), subsequent
+        # calls return the simulated target (during shift-check), then return
+        # the post-restore target (during restore-check), and finally the real
+        # value for the trailing get_nina_time host reference.
+        host_sequence = [
+            _dt.fromisoformat("2026-09-26T16:55:00-05:00"),  # real0
+            _dt.fromisoformat("2026-10-15T23:15:00-05:00"),  # shifted target
+            _dt.fromisoformat("2026-10-15T23:15:00-05:00"),  # shifted target
+            _dt.fromisoformat("2026-09-26T16:55:01-05:00"),  # restored
+            _dt.fromisoformat("2026-09-26T16:55:01-05:00"),  # restored
+            _dt.fromisoformat("2026-09-26T16:55:01-05:00"),  # restored (extra poll)
+        ]
+        idx = {"v": 0}
+
+        async def fake_read_windows_clock():
+            v = host_sequence[min(idx["v"], len(host_sequence) - 1)]
+            idx["v"] += 1
+            return v
+
+        # Track the powershell commands executed.
+        ps_commands: list[str] = []
+
+        def fake_run_blocking(argv, timeout=30.0):
+            if isinstance(argv, list) and argv and argv[0] == "powershell.exe":
+                ps_commands.append(argv[-1] if argv[-1] is not None else "")
+            return MagicMock(stdout="")
 
         async def fake_get_nina_time():
+            # Phase 1 (during capture-check): return simulated time.
+            # Phase 2 (after restore, final read): return simulated nina vs real host.
+            if not hasattr(fake_get_nina_time, "_calls"):
+                fake_get_nina_time._calls = 0  # type: ignore[attr-defined]
+            fake_get_nina_time._calls += 1  # type: ignore[attr-defined]
+            if fake_get_nina_time._calls <= 3:  # type: ignore[attr-defined]
+                return {
+                    "nina_time": "2026-10-15T23:15:00",
+                    "host_time": "2026-09-26T16:55:00",
+                    "delta_seconds": 17_328_000.0,
+                    "simulated": True,
+                }
             return {
-                "nina_time": "2026-09-26T13:00:00",
-                "host_time": "2026-09-26T13:00:00",
+                "nina_time": "2026-10-15T23:15:00",
+                "host_time": "2026-09-26T16:55:01",
+                "delta_seconds": 17_327_999.0,
+                "simulated": True,
+            }
+
+        with (
+            patch("nina_planner.server.PROJECT_DIR", self.project_dir),
+            patch(
+                "nina_planner.server._read_windows_clock",
+                side_effect=fake_read_windows_clock,
+            ),
+            patch("nina_planner.server._run_blocking", side_effect=fake_run_blocking),
+            patch(
+                "nina_planner.server.write_nina_launcher",
+                return_value=(Path("/tmp/launch.cmd"), r"C:\tmp\launch.cmd"),
+            ),
+            patch("nina_planner.server.get_nina_time", side_effect=fake_get_nina_time),
+            patch("nina_planner.server.anyio.sleep", new=AsyncMockSleep()),
+            patch("nina_planner.server._log_payload"),
+        ):
+            result = asyncio.run(start_nina("2026-10-15T23:15:00"))
+
+        self.assertTrue(result["simulated"])
+        self.assertEqual(result["nina_time"], "2026-10-15T23:15:00")
+        self.assertIn(
+            "simulating observation time 2026-10-15T23:15:00", result["summary"]
+        )
+        self.assertIn("restored host clock to", result["summary"])
+        self.assertIn("verified=True", result["summary"])
+
+        # Assert no fixed sleeps were used as gates — the shift and restore
+        # checks are poll-based via _read_windows_clock.
+        self.assertGreaterEqual(idx["v"], 4)
+
+        # Assert at least two powershell commands were executed: a shift and
+        # a restore, both with the direct (no -Verb RunAs) form.
+        shift_cmds = [
+            c for c in ps_commands if "Set-Date -Date '2026-10-15T23:15:00'" in c
+        ]
+        restore_cmds = [c for c in ps_commands if c.startswith("Set-Date -Date '")]
+        self.assertEqual(len(shift_cmds), 1)
+        self.assertGreaterEqual(len(restore_cmds), 2)
+        for cmd in ps_commands:
+            self.assertNotIn("-Verb RunAs", cmd)
+            self.assertNotIn("sudo", cmd)
+
+    def test_start_simulated_shift_timeout_restores_and_raises(self):
+        from datetime import datetime as _dt
+
+        from nina_planner.server import start_nina
+
+        # Host clock reads: real0, then stuck on the original real value (shift failed).
+        async def fake_read_windows_clock():
+            return _dt.fromisoformat("2026-09-26T16:55:00-05:00")
+
+        ps_commands: list[str] = []
+
+        def fake_run_blocking(argv, timeout=30.0):
+            if isinstance(argv, list) and argv and argv[0] == "powershell.exe":
+                ps_commands.append(argv[-1] if argv[-1] is not None else "")
+            return MagicMock(stdout="")
+
+        with (
+            patch("nina_planner.server.PROJECT_DIR", self.project_dir),
+            patch(
+                "nina_planner.server._read_windows_clock",
+                side_effect=fake_read_windows_clock,
+            ),
+            patch("nina_planner.server._run_blocking", side_effect=fake_run_blocking),
+            patch("nina_planner.server.anyio.sleep", new=AsyncMockSleep()),
+            patch("nina_planner.server._log_payload"),
+        ):
+            with self.assertRaises(RuntimeError) as ctx:
+                asyncio.run(start_nina("2026-10-15T23:15:00"))
+        self.assertIn("did not converge to '2026-10-15T23:15:00'", str(ctx.exception))
+        # A best-effort restore Set-Date must have been issued.
+        restore_cmds = [c for c in ps_commands if c.startswith("Set-Date -Date '")]
+        self.assertGreaterEqual(len(restore_cmds), 1)
+
+    def test_start_simulated_nina_capture_timeout_restores_and_raises(self):
+        from datetime import datetime as _dt
+
+        from nina_planner.server import start_nina
+
+        host_calls = {"n": 0}
+
+        async def fake_read_windows_clock():
+            host_calls["n"] += 1
+            # First call: real0. After that: shifted target (so shift-check passes).
+            if host_calls["n"] == 1:
+                return _dt.fromisoformat("2026-09-26T16:55:00-05:00")
+            return _dt.fromisoformat("2026-10-15T23:15:00-05:00")
+
+        ps_commands: list[str] = []
+
+        def fake_run_blocking(argv, timeout=30.0):
+            if isinstance(argv, list) and argv and argv[0] == "powershell.exe":
+                ps_commands.append(argv[-1] if argv[-1] is not None else "")
+            return MagicMock(stdout="")
+
+        # NINA never reports the simulated date.
+        async def fake_get_nina_time():
+            return {
+                "nina_time": "2026-09-26T16:55:00",
+                "host_time": "2026-09-26T16:55:00",
                 "delta_seconds": 0.0,
                 "simulated": False,
             }
 
         with (
-            self._enabled_env(),
             patch("nina_planner.server.PROJECT_DIR", self.project_dir),
-            patch("nina_planner.server._run_blocking", return_value=absent_proc),
-            patch("nina_planner.server._spawn_detached") as mock_spawn,
             patch(
-                "nina_planner.server.get_nina_time",
-                side_effect=fake_get_nina_time,
+                "nina_planner.server._read_windows_clock",
+                side_effect=fake_read_windows_clock,
             ),
+            patch("nina_planner.server._run_blocking", side_effect=fake_run_blocking),
+            patch(
+                "nina_planner.server.write_nina_launcher",
+                return_value=(Path("/tmp/launch.cmd"), r"C:\tmp\launch.cmd"),
+            ),
+            patch("nina_planner.server.get_nina_time", side_effect=fake_get_nina_time),
             patch("nina_planner.server.anyio.sleep", new=AsyncMockSleep()),
             patch("nina_planner.server._log_payload"),
         ):
-            result = asyncio.run(simulate_observation_time(reset=True))
-        # taskkill ran but logged that NINA was not running.
-        self.assertIn("not running", result["summary"])
-        self.assertEqual(mock_spawn.call_count, 2)
+            with self.assertRaises(RuntimeError) as ctx:
+                asyncio.run(start_nina("2026-10-15T23:15:00"))
+        self.assertIn("NINA never captured simulated date", str(ctx.exception))
+        # Restore Set-Date must have run even though capture failed.
+        restore_cmds = [c for c in ps_commands if c.startswith("Set-Date -Date '")]
+        self.assertGreaterEqual(len(restore_cmds), 1)
 
-    def test_reset_mode_returns_time_info_dict(self):
-        """The reset path returns a dict with nina_time/host_time/
-        delta_seconds/simulated so the agent can verify the clock state
-        programmatically.
-        """
-        running_proc = MagicMock()
-        running_proc.stdout = "NINA.exe                      12345\n"
-        from nina_planner.server import simulate_observation_time
+    def test_start_simulated_restore_timeout_raises(self):
+        from datetime import datetime as _dt
 
-        async def fake_get_nina_time():
-            return {
-                "nina_time": "2026-09-26T13:00:00",
-                "host_time": "2026-09-26T13:00:00.5",
-                "delta_seconds": -0.5,
-                "simulated": False,
-            }
+        from nina_planner.server import start_nina
 
-        with (
-            self._enabled_env(),
-            patch("nina_planner.server.PROJECT_DIR", self.project_dir),
-            patch("nina_planner.server._run_blocking", return_value=running_proc),
-            patch("nina_planner.server._spawn_detached"),
-            patch(
-                "nina_planner.server.get_nina_time",
-                side_effect=fake_get_nina_time,
-            ),
-            patch("nina_planner.server.anyio.sleep", new=AsyncMockSleep()),
-            patch("nina_planner.server._log_payload"),
-        ):
-            result = asyncio.run(simulate_observation_time(reset=True))
-        self.assertIsInstance(result, dict)
-        self.assertEqual(result["nina_time"], "2026-09-26T13:00:00")
-        self.assertEqual(result["host_time"], "2026-09-26T13:00:00.5")
-        self.assertEqual(result["delta_seconds"], -0.5)
-        self.assertFalse(result["simulated"])
-        self.assertIn("summary", result)
-        self.assertIsInstance(result["summary"], str)
+        host_calls = {"n": 0}
 
-    def test_simulate_mode_returns_time_info_dict(self):
-        """The shift path returns a dict with nina_time/host_time/
-        delta_seconds/simulated so the agent can verify NINA captured
-        the simulated time.
-        """
-        absent_proc = MagicMock()
-        absent_proc.stdout = ""
-        from nina_planner.server import simulate_observation_time
+        async def fake_read_windows_clock():
+            host_calls["n"] += 1
+            # 1) real0, 2) shifted target (shift-check), 3+) never converges to
+            # the restore target — stays on the simulated date instead.
+            if host_calls["n"] == 1:
+                return _dt.fromisoformat("2026-09-26T16:55:00-05:00")
+            return _dt.fromisoformat("2026-10-15T23:15:00-05:00")
+
+        ps_commands: list[str] = []
+
+        def fake_run_blocking(argv, timeout=30.0):
+            if isinstance(argv, list) and argv and argv[0] == "powershell.exe":
+                ps_commands.append(argv[-1] if argv[-1] is not None else "")
+            return MagicMock(stdout="")
 
         async def fake_get_nina_time():
-            # Simulated time is hours ahead of real time — large delta.
             return {
                 "nina_time": "2026-10-15T23:15:00",
                 "host_time": "2026-09-26T16:55:00",
@@ -585,162 +608,48 @@ class SimulateObservationTimeTest(unittest.TestCase):
             }
 
         with (
-            self._enabled_env(),
-            patch("nina_planner.server.PROJECT_DIR", self.project_dir),
-            patch("nina_planner.server._run_blocking", return_value=absent_proc),
-            patch("nina_planner.server._spawn_detached"),
-            patch(
-                "nina_planner.server.get_nina_time",
-                side_effect=fake_get_nina_time,
-            ),
-            patch("nina_planner.server.anyio.sleep", new=AsyncMockSleep()),
-            patch("nina_planner.server._log_payload"),
-        ):
-            result = asyncio.run(simulate_observation_time("2026-10-15T23:15:00"))
-        self.assertIsInstance(result, dict)
-        self.assertEqual(result["nina_time"], "2026-10-15T23:15:00")
-        self.assertEqual(result["host_time"], "2026-09-26T16:55:00")
-        self.assertGreater(result["delta_seconds"], 1_000_000.0)
-        self.assertTrue(result["simulated"])
-        self.assertIn("summary", result)
-        self.assertIsInstance(result["summary"], str)
-
-    def test_reset_mode_awaits_three_seconds_between_resync_and_launch(self):
-        """Regression: ensure NINA doesn't launch before the OS clock has
-        settled after w32tm /resync. The 3-second sleep between the resync
-        spawn and the launch spawn is critical for the reset path; without
-        it NINA can capture the simulated time at startup and never converge.
-        """
-        from nina_planner.server import simulate_observation_time
-
-        running_proc = MagicMock()
-        running_proc.stdout = "NINA.exe                      12345\n"
-
-        sleep_durations: list[float] = []
-        spawn_order: list[list[str]] = []
-
-        async def fake_get_nina_time():
-            return {
-                "nina_time": "2026-09-26T13:00:00",
-                "host_time": "2026-09-26T13:00:00",
-                "delta_seconds": 0.0,
-                "simulated": False,
-            }
-
-        async def fake_sleep(seconds: float) -> None:
-            sleep_durations.append(seconds)
-
-        def fake_spawn(argv: list[str]):
-            spawn_order.append(argv)
-            return MagicMock()
-
-        with (
-            self._enabled_env(),
             patch("nina_planner.server.PROJECT_DIR", self.project_dir),
             patch(
-                "nina_planner.server._run_blocking",
-                return_value=running_proc,
+                "nina_planner.server._read_windows_clock",
+                side_effect=fake_read_windows_clock,
             ),
-            patch("nina_planner.server._spawn_detached", side_effect=fake_spawn),
+            patch("nina_planner.server._run_blocking", side_effect=fake_run_blocking),
             patch(
-                "nina_planner.server.get_nina_time",
-                side_effect=fake_get_nina_time,
+                "nina_planner.server.write_nina_launcher",
+                return_value=(Path("/tmp/launch.cmd"), r"C:\tmp\launch.cmd"),
             ),
-            patch("nina_planner.server.anyio.sleep", side_effect=fake_sleep),
-            patch("nina_planner.server._log_payload"),
-        ):
-            asyncio.run(simulate_observation_time(reset=True))
-
-        # The reset path spawns 2 detached processes: resync (w32tm) then
-        # launch (NINA). We assert ordering, sleep durations, and that the
-        # 3.0s wait lands between them.
-        self.assertEqual(len(spawn_order), 2)
-        resync_argv = spawn_order[0]
-        launch_argv = spawn_order[1]
-        self.assertIn("w32tm /resync", " ".join(resync_argv))
-        self.assertEqual(
-            launch_argv, ["cmd.exe", "/c", "start", "", r"D:\apps\NINA.exe"]
-        )
-        # The 3.0s sleep must happen between the resync spawn and the
-        # launch spawn — it's the wait that gives UAC + w32tm time to
-        # complete before NINA captures the OS clock.
-        self.assertIn(
-            3.0,
-            sleep_durations,
-            (
-                f"expected anyio.sleep(3.0) between resync spawn and launch "
-                f"spawn; got sleeps {sleep_durations}"
-            ),
-        )
-        # Also check that the 2.0s sleep after the kill happened.
-        self.assertIn(2.0, sleep_durations)
-        # The 3.0s sleep must come AFTER the resync spawn. We verify by
-        # checking that 2.0 < 3.0 in chronological order (kill sleep first,
-        # then resync spawn + 3s wait, then launch spawn).
-        self.assertLess(
-            sleep_durations.index(2.0),
-            sleep_durations.index(3.0),
-            "expected kill-wait (2.0s) to precede resync-wait (3.0s)",
-        )
-
-    def test_reset_mode_raises_when_convergence_fails(self):
-        """When NINA's clock still diverges from the host after the resync,
-        the tool raises RuntimeError instead of silently logging and returning
-        a summary string. The MCP caller (agent) sees the error and decides
-        whether to retry.
-        """
-        from nina_planner.server import simulate_observation_time
-
-        running_proc = MagicMock()
-        running_proc.stdout = "NINA.exe                      12345\n"
-
-        with (
-            self._enabled_env(),
-            patch("nina_planner.server.PROJECT_DIR", self.project_dir),
-            patch("nina_planner.server._run_blocking", return_value=running_proc),
-            patch("nina_planner.server._spawn_detached"),
-            patch(
-                "nina_planner.server._wait_for_real_time",
-                return_value=(False, -300.0),
-            ),
+            patch("nina_planner.server.get_nina_time", side_effect=fake_get_nina_time),
             patch("nina_planner.server.anyio.sleep", new=AsyncMockSleep()),
             patch("nina_planner.server._log_payload"),
         ):
             with self.assertRaises(RuntimeError) as ctx:
-                asyncio.run(simulate_observation_time(reset=True))
-        self.assertIn("diverges from host by -300.00s", str(ctx.exception))
-        self.assertIn("Retry the call", str(ctx.exception))
+                asyncio.run(start_nina("2026-10-15T23:15:00"))
+        self.assertIn("host clock did not restore", str(ctx.exception))
 
-    def test_reset_mode_rejects_when_argument(self):
-        from nina_planner.server import simulate_observation_time
+    def test_start_rejects_empty_string(self):
+        from nina_planner.server import start_nina
 
-        with (
-            self._enabled_env(),
-            patch("nina_planner.server.PROJECT_DIR", self.project_dir),
-            patch("nina_planner.server._log_payload"),
-        ):
-            with self.assertRaises(ValueError):
-                asyncio.run(
-                    simulate_observation_time(when="2026-10-15T23:15:00", reset=True)
-                )
+        with self.assertRaises(ValueError):
+            asyncio.run(start_nina(""))
 
-    def test_disabled_when_env_not_set(self):
-        from nina_planner.server import simulate_observation_time
+        with self.assertRaises(ValueError):
+            asyncio.run(start_nina("   "))
 
-        with (
-            patch.dict(os.environ, {}, clear=False),
-            patch("nina_planner.server.PROJECT_DIR", self.project_dir),
-            patch("nina_planner.server._log_payload"),
-        ):
-            os.environ.pop("NINA_TIME_SIMULATOR_ENABLED", None)
-            with self.assertRaises(RuntimeError):
-                asyncio.run(simulate_observation_time("2026-10-15T23:15:00"))
+    def test_start_rejects_ampm(self):
+        from nina_planner.server import start_nina
+
+        with self.assertRaises(ValueError):
+            asyncio.run(start_nina("10/15/2026 11:15 PM"))
+
+    def test_start_rejects_z_suffix(self):
+        from nina_planner.server import start_nina
+
+        with self.assertRaises(ValueError):
+            asyncio.run(start_nina("2026-10-15T23:15:00Z"))
 
 
 class GetNinaTimeTest(unittest.TestCase):
     def _fake_api_time(self, iso: str):
-        """Build a fake _api_get callable that returns /time payload."""
-
         async def fake(path: str):
             assert path == "/time"
             return iso
@@ -748,7 +657,6 @@ class GetNinaTimeTest(unittest.TestCase):
         return fake
 
     def _fixed_host(self, iso: str):
-        """Patch nina_planner.server.datetime so .now() returns a fixed value."""
         from nina_planner import server as server_mod
 
         fixed = datetime.fromisoformat(iso)
@@ -810,9 +718,6 @@ class GetNinaTimeTest(unittest.TestCase):
             side_effect=self._fake_api_time("2026-09-26T13:00:00+00:00"),
         ):
             result = asyncio.run(get_nina_time())
-        # Function should not crash on aware NINA timestamps. The precise
-        # delta depends on the test runner's local timezone offset, so we
-        # only assert structural correctness.
         self.assertIn("nina_time", result)
         self.assertIn("host_time", result)
         self.assertIn("delta_seconds", result)
