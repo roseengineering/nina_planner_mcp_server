@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import math
-import re
 from datetime import UTC, date, datetime, timedelta
 from typing import Any
 
@@ -39,14 +38,9 @@ async def append_progress_entry(text: str) -> None:
         await f.write(block)
 
 
-_BRACKET_RE = re.compile(r"^.*?\s*\[(?P<embedded>[^\]]+)\]")
-
-
-def _embedded_plan_id(target: str) -> str:
-    m = _BRACKET_RE.match(target)
-    if m:
-        return m.group("embedded").strip()
-    return ""
+def _path_components(path: str) -> list[str]:
+    """Split a metadata path independent of its Windows/POSIX separators."""
+    return [part for part in path.replace("\\", "/").split("/") if part]
 
 
 def _exposure_matches(row: dict[str, Any], exposure: float | None) -> bool:
@@ -70,7 +64,25 @@ def _light_target_matches(
     path = (row.get("file_path") or "").strip()
     if not path:
         return False
-    return _embedded_plan_id(path) == plan.effective_plan_id(pointing_index)
+
+    components = _path_components(path)
+    expected_token = f"[{plan.effective_plan_id(pointing_index)}]"
+    light_indices = [
+        index
+        for index, component in enumerate(components)
+        if component.upper() == "LIGHT"
+    ]
+
+    # N.I.N.A. can put the target name either in the first directory under
+    # LIGHT or in the image filename. Do not inspect ancestor directories:
+    # they are unrelated to the image's target identity.
+    target_components = [components[-1]] if components else []
+    if light_indices:
+        target_directory_index = light_indices[-1] + 1
+        if target_directory_index < len(components) - 1:
+            target_components.append(components[target_directory_index])
+
+    return any(expected_token in component for component in target_components)
 
 
 def _quality_accepted(

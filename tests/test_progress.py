@@ -60,6 +60,36 @@ class PlanProgressTest(unittest.TestCase):
         self.assertEqual(lights["acquired_count"], 2)
         self.assertEqual(lights["remaining_count"], 18)
 
+    def test_target_directory_and_filename_matching_ignore_ancestor_directories(self):
+        plan = _plan(plan_id="plan-abc123")
+        rows = [
+            {
+                **_row(target=None),
+                "file_path": (
+                    r"C:\NINA\[unrelated-bracket]\2026-09-28\LIGHT"
+                    r"\M31 [plan-abc123-1]\frame.fits"
+                ),
+            },
+            {
+                **_row(target=None),
+                "file_path": (
+                    "/NINA/[unrelated-bracket]/2026-09-28/LIGHT/"
+                    "M31 [plan-abc123-1]__60.00s_0000.fits"
+                ),
+            },
+            {
+                **_row(target=None),
+                "file_path": (
+                    "/NINA/M31 [plan-abc123-1]/2026-09-28/LIGHT/"
+                    "NGC 7331 [other-id-1]/frame.fits"
+                ),
+            },
+        ]
+
+        lights = plan_progress(plan, rows)["light"][0]
+        self.assertEqual(lights["acquired_count"], 2)
+        self.assertEqual(lights["remaining_count"], 18)
+
     def test_derived_plan_id_matching(self):
         plan = _plan(plan_id="")
         self.assertEqual(plan.plan_id, "")
