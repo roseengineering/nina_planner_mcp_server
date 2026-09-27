@@ -5,7 +5,7 @@ import subprocess
 import sys
 import tempfile
 from datetime import datetime
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 
 NINA_EXE_DEFAULT = (
     r"C:\Program Files\N.I.N.A. - Nighttime Imaging 'N' Astronomy\NINA.exe"
@@ -61,9 +61,44 @@ def local_to_windows(local_path: Path | str, drive_mount: str | None = None) -> 
 
 
 def get_launcher_paths() -> tuple[Path, str]:
-    """Return (local_path, windows_path) for the NINA launch batch file."""
-    local_p = Path(tempfile.gettempdir()) / "launch_nina.cmd"
-    return local_p, local_to_windows(local_p)
+    """Return local and Windows paths for a launcher visible to Task Scheduler.
+
+    Under WSL, Python's temporary directory is usually ``/tmp``, which Windows
+    Task Scheduler cannot use as an action path. Resolve Windows' own ``%TEMP%``
+    directory and map it into the WSL-mounted drive instead.
+    """
+    if sys.platform == "win32":
+        local_p = Path(tempfile.gettempdir()) / "launch_nina.cmd"
+        return local_p, str(local_p)
+
+    result = subprocess.run(
+        ["cmd.exe", "/d", "/c", "echo", "%TEMP%"],
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=10,
+    )
+    windows_temp = (result.stdout or "").strip()
+    if result.returncode != 0 or not windows_temp:
+        detail = (result.stderr or result.stdout or "").strip()
+        raise RuntimeError(
+            "Could not resolve the Windows temporary directory for NINA launch"
+            + (f": {detail}" if detail else ".")
+        )
+
+    windows_temp_path = PureWindowsPath(windows_temp)
+    drive = windows_temp_path.drive
+    if not drive or not windows_temp_path.is_absolute():
+        raise RuntimeError(
+            f"Windows TEMP is not an absolute drive path: {windows_temp!r}"
+        )
+
+    mount = os.environ.get("NINA_DRIVE_MOUNT") or f"/mnt/{drive[0].lower()}"
+    local_temp = Path(mount).joinpath(*windows_temp_path.parts[1:])
+    launcher_name = "launch_nina.cmd"
+    local_p = local_temp / launcher_name
+    windows_p = str(windows_temp_path / launcher_name)
+    return local_p, windows_p
 
 
 def write_nina_launcher(nina_exe: str | None = None) -> tuple[Path, str]:

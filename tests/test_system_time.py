@@ -129,26 +129,56 @@ class CommandBuildersTest(unittest.TestCase):
     def test_write_nina_launcher(self):
         with tempfile.TemporaryDirectory() as tmp:
             with (
-                patch("nina_planner.system_time.tempfile.gettempdir", return_value=tmp),
+                patch(
+                    "nina_planner.system_time.subprocess.run",
+                    return_value=MagicMock(
+                        returncode=0,
+                        stdout=r"C:\Users\test\AppData\Local\Temp" + "\r\n",
+                    ),
+                ),
+                patch.dict(os.environ, {"NINA_DRIVE_MOUNT": tmp}),
             ):
                 local_p, win_p = write_nina_launcher(r"C:\Test\NINA.exe")
-                self.assertEqual(local_p, Path(tmp) / "launch_nina.cmd")
-                self.assertEqual(win_p, local_to_windows(local_p))
+                self.assertEqual(
+                    local_p,
+                    Path(tmp)
+                    / "Users"
+                    / "test"
+                    / "AppData"
+                    / "Local"
+                    / "Temp"
+                    / "launch_nina.cmd",
+                )
+                self.assertEqual(
+                    win_p,
+                    r"C:\Users\test\AppData\Local\Temp\launch_nina.cmd",
+                )
                 self.assertTrue(local_p.exists())
                 content = local_p.read_text(encoding="utf-8")
                 self.assertIn("@echo off", content)
                 self.assertIn(r'start "" "C:\Test\NINA.exe"', content)
 
-    def test_launcher_defaults_to_system_temp_directory(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            tmp_path = Path(tmp)
-            with (
-                patch("nina_planner.system_time.tempfile.gettempdir", return_value=tmp),
-                patch.object(Path, "is_dir", return_value=False),
-            ):
-                local_p, _ = get_launcher_paths()
+    def test_launcher_uses_windows_temp_directory_under_wsl(self):
+        with (
+            patch(
+                "nina_planner.system_time.subprocess.run",
+                return_value=MagicMock(
+                    returncode=0,
+                    stdout=r"C:\Users\test\AppData\Local\Temp" + "\r\n",
+                ),
+            ),
+            patch.dict(os.environ, {"NINA_DRIVE_MOUNT": "/mnt/c"}),
+        ):
+            local_p, windows_p = get_launcher_paths()
 
-        self.assertEqual(local_p, tmp_path / "launch_nina.cmd")
+        self.assertEqual(
+            local_p,
+            Path("/mnt/c/Users/test/AppData/Local/Temp/launch_nina.cmd"),
+        )
+        self.assertEqual(
+            windows_p,
+            r"C:\Users\test\AppData\Local\Temp\launch_nina.cmd",
+        )
 
 
 class ValidateIsoLocalTest(unittest.TestCase):

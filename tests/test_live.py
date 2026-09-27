@@ -1,18 +1,9 @@
 import asyncio
-import os
 import time
 import unittest
+from pathlib import Path
 
 import pytest
-
-try:
-    import httpx
-
-    _HTTPX_AVAILABLE = True
-except ImportError:
-    _HTTPX_AVAILABLE = False
-
-from pathlib import Path
 
 from nina_planner.server import (
     enter_safety_standby,
@@ -59,20 +50,8 @@ def _wait_for_sequence_running(expected: bool, timeout: float = 10.0):
     )
 
 
-def _nina_reachable() -> bool:
-    if not _HTTPX_AVAILABLE:
-        return False
-    endpoint = os.environ.get("NINA_ENDPOINT", "127.0.0.1:1888")
-    url = f"http://{endpoint}/v2/api/time"
-    try:
-        resp = httpx.get(url, timeout=5.0)
-        return resp.status_code == 200
-    except (httpx.ConnectError, httpx.TimeoutException, Exception):
-        return False
-
-
 def _wait_for_nina_status(
-    *, process_running: bool, api_responsive: bool, timeout: float = 30.0
+    *, process_running: bool, api_responsive: bool, timeout: float = 120.0
 ):
     deadline = time.monotonic() + timeout
     status = None
@@ -95,8 +74,10 @@ def _wait_for_nina_status(
 class LiveNinaTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        if not _nina_reachable():
-            pytest.skip("NINA not reachable at configured endpoint")
+        status = asyncio.run(get_nina_status())
+        if not status["process_running"]:
+            asyncio.run(start_nina())
+        _wait_for_nina_status(process_running=True, api_responsive=True)
 
     def test_get_nina_status(self):
         result = asyncio.run(get_nina_status())
