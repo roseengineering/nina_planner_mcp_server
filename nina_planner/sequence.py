@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 import os
 from typing import Any
 
@@ -682,7 +681,9 @@ def sequence_deepsky(
     prefix = f"{plan.target} - {pointing.label}" if pointing.label else plan.target
     target = f"{prefix} [{plan.effective_plan_id(pointing_index)}]"
     posang = 0 if pointing.position_angle_deg is None else pointing.position_angle_deg
-    starting = "ACQUISITION-STARTING: Running sequence now on next target or calibration"
+    starting = (
+        "ACQUISITION-STARTING: Running sequence now on next target or calibration"
+    )
     finished = "ACQUISITION-FINISHED: Stop this sequence and proceed to the next target or calibration"
     return container_deepsky(
         name="Deep Sky Target Sequence",

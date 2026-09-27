@@ -6,6 +6,8 @@ from datetime import datetime
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+from conftest import requires_wsl
+
 from nina_planner.system_time import (
     NINA_EXE_DEFAULT,
     get_launcher_paths,
@@ -399,6 +401,7 @@ class StartNinaTest(unittest.TestCase):
         content = self.progress.read_text(encoding="utf-8")
         self.assertIn("start_nina: launching NINA on real time", content)
 
+    @requires_wsl
     def test_start_simulated_time_runs_full_cycle(self):
         from datetime import datetime as _dt
 
@@ -525,6 +528,7 @@ class StartNinaTest(unittest.TestCase):
         restore_cmds = [c for c in ps_commands if c.startswith("Set-Date -Date '")]
         self.assertGreaterEqual(len(restore_cmds), 1)
 
+    @requires_wsl
     def test_start_simulated_nina_capture_timeout_restores_and_raises(self):
         from datetime import datetime as _dt
 
@@ -577,6 +581,7 @@ class StartNinaTest(unittest.TestCase):
         restore_cmds = [c for c in ps_commands if c.startswith("Set-Date -Date '")]
         self.assertGreaterEqual(len(restore_cmds), 1)
 
+    @requires_wsl
     def test_start_simulated_restore_timeout_raises(self):
         from datetime import datetime as _dt
 

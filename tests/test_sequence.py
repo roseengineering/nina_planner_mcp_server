@@ -1,6 +1,9 @@
 import unittest
 from dataclasses import dataclass
+from typing import Any
 
+from nina_planner.models.camera import CameraDevice
+from nina_planner.models.mount import MountDevice
 from nina_planner.models.observatory import ObservatoryEquipment
 from nina_planner.models.plan import ObservationPlan
 from nina_planner.sequence import build_sequence_lights
@@ -466,6 +469,384 @@ class SequenceBuildersTest(unittest.TestCase):
             dusk=True,
         )
         self.assertIsInstance(result, dict)
+
+
+def _find_items(d: Any, type_substring: str) -> list[dict]:
+    """Recursively find all dicts whose $type contains the given substring."""
+    out = []
+    if isinstance(d, dict):
+        t = d.get("$type")
+        if isinstance(t, str) and type_substring in t:
+            out.append(d)
+        for v in d.values():
+            out.extend(_find_items(v, type_substring))
+    elif isinstance(d, list):
+        for item in d:
+            out.extend(_find_items(item, type_substring))
+    return out
+
+
+def _deepsky_targets(seq: dict) -> list[dict]:
+    return _find_items(seq, "DeepSkyObjectContainer")
+
+
+def _items(seq: dict) -> list[dict]:
+    return seq["Items"]["$values"]
+
+
+class SequenceBehaviorTest(unittest.TestCase):
+    """Behavioral assertions on generated sequence contents.
+
+    The SnapshotBuildersTest only checks ``isinstance(result, dict)``; these
+    tests confirm that the right instructions and triggers actually appear in
+    the right places.
+    """
+
+    def _plan(self, **overrides):
+        data = {
+            "plan_id": "plan-test123",
+            "target": "M31",
+            "pointings": [{"ra_hours": 0.71, "dec_deg": 41.27, "label": "core"}],
+            "light": [
+                {
+                    "filter_name": "L",
+                    "exposure_time_seconds": 60.0,
+                    "total_count": 3,
+                }
+            ],
+            "flat": [
+                {
+                    "filter_name": "L",
+                    "exposure_time_seconds": 5.0,
+                    "total_count": 3,
+                }
+            ],
+            "dark": [{"exposure_time_seconds": 60.0, "total_count": 3}],
+            "bias": [{"total_count": 3}],
+        }
+        data.update(overrides)
+        return ObservationPlan(**data)
+
+    def test_lights_target_name_includes_label_and_plan_id(self):
+        plan = self._plan()
+        result = build_sequence_lights(plan, equipment=ObservatoryEquipment())
+        dsos = _deepsky_targets(result)
+        self.assertEqual(len(dsos), 1)
+        target = dsos[0]["Target"]["TargetName"]
+        self.assertIn("M31 - core", target)
+        self.assertIn("[plan-test123-1]", target)
+
+    def test_lights_without_pointing_label_omits_label_segment(self):
+        plan = self._plan(pointings=[{"ra_hours": 0.71, "dec_deg": 41.27}])
+        result = build_sequence_lights(plan, equipment=ObservatoryEquipment())
+        dsos = _deepsky_targets(result)
+        self.assertEqual(len(dsos), 1)
+        target = dsos[0]["Target"]["TargetName"]
+        self.assertTrue(target.startswith("M31 [plan-test123-1]"))
+
+    def test_lights_slew_and_center_when_position_angle_none(self):
+        plan = self._plan(pointings=[{"ra_hours": 0.71, "dec_deg": 41.27}])
+        result = build_sequence_lights(plan, equipment=ObservatoryEquipment())
+        centers = _find_items(result, "Platesolving.Center, NINA.Sequencer")
+        rotates = _find_items(result, "CenterAndRotate")
+        self.assertEqual(len(centers), 1)
+        self.assertEqual(rotates, [])
+
+    def test_lights_slew_center_and_rotate_when_position_angle_set(self):
+        plan = self._plan(
+            pointings=[{"ra_hours": 0.71, "dec_deg": 41.27, "position_angle_deg": 90.0}]
+        )
+        result = build_sequence_lights(plan, equipment=ObservatoryEquipment())
+        rotates = _find_items(result, "CenterAndRotate")
+        centers = _find_items(result, "Platesolving.Center, NINA.Sequencer")
+        self.assertEqual(len(rotates), 1)
+        self.assertEqual(centers, [])
+
+    def test_lights_contains_acquisition_starting_and_finished_events(self):
+        plan = self._plan()
+        result = build_sequence_lights(plan, equipment=ObservatoryEquipment())
+        events = _find_items(result, "SendEventInstruction")
+        messages = [e["Message"] for e in events]
+        self.assertTrue(
+            any("ACQUISITION-STARTING" in m for m in messages),
+            f"missing ACQUISITION-STARTING in {messages!r}",
+        )
+        self.assertTrue(
+            any("ACQUISITION-FINISHED" in m for m in messages),
+            f"missing ACQUISITION-FINISHED in {messages!r}",
+        )
+
+    def test_lights_image_object_uses_meridian_flip_trigger(self):
+        plan = self._plan()
+        result = build_sequence_lights(plan, equipment=ObservatoryEquipment())
+        flips = _find_items(result, "MeridianFlipTrigger")
+        self.assertGreaterEqual(len(flips), 1)
+
+    def test_lights_image_object_includes_all_autofocus_triggers(self):
+        plan = self._plan()
+        result = build_sequence_lights(plan, equipment=ObservatoryEquipment())
+        af_filter = _find_items(result, "AutofocusAfterFilterChange, NINA.Sequencer")
+        af_exposures = _find_items(result, "AutofocusAfterExposures, NINA.Sequencer")
+        af_temp = _find_items(
+            result, "AutofocusAfterTemperatureChangeTrigger, NINA.Sequencer"
+        )
+        af_hfr = _find_items(result, "AutofocusAfterHFRIncreaseTrigger, NINA.Sequencer")
+        self.assertEqual(len(af_filter), 1)
+        self.assertEqual(len(af_exposures), 1)
+        self.assertEqual(len(af_temp), 1)
+        self.assertEqual(len(af_hfr), 1)
+
+    def test_lights_image_object_includes_center_after_drift_trigger(self):
+        plan = self._plan()
+        result = build_sequence_lights(plan, equipment=ObservatoryEquipment())
+        drift = _find_items(result, "CenterAfterDriftTrigger")
+        self.assertEqual(len(drift), 1)
+        self.assertEqual(
+            drift[0]["AfterExposures"], plan.guiding.check_drift_every_n_exposures
+        )
+        self.assertEqual(drift[0]["DistanceArcMinutes"], plan.guiding.max_drift_arcmin)
+
+    def test_lights_respects_plan_constraints(self):
+        plan = self._plan(
+            constraints={
+                "min_altitude": 45.0,
+                "horizon_offset_degrees": 5.0,
+            }
+        )
+        result = build_sequence_lights(plan, equipment=ObservatoryEquipment())
+        waits = _find_items(result, "WaitUntilAboveHorizon")
+        alts = _find_items(result, "WaitForAltitude")
+        self.assertTrue(any(w["Data"]["Offset"] == 5.0 for w in waits))
+        self.assertTrue(any(a["Data"]["Offset"] == 45.0 for a in alts))
+
+    def test_lights_uses_smart_exposure_with_filter_and_dither(self):
+        plan = self._plan()
+        result = build_sequence_lights(plan, equipment=ObservatoryEquipment())
+        smart = _find_items(result, "SmartExposure, WhenPlugin")
+        self.assertEqual(len(smart), 1)
+        self.assertEqual(smart[0]["IterationsExpr"], 3)
+        self.assertEqual(smart[0]["FilterExpr"], "L")
+        self.assertEqual(smart[0]["DitherExpr"], plan.guiding.dither_every_n_exposures)
+
+    def test_lights_safetynet_wraps_with_park_scope_when_mount_can_park(self):
+        plan = self._plan()
+        mount = MountDevice(connected=True, name="m", can_park=True, can_find_home=True)
+        eq = ObservatoryEquipment(mount=mount)
+        result = build_sequence_lights(plan, equipment=eq)
+        parks = _find_items(result, "ParkScope")
+        homes = _find_items(result, "FindHome, NINA.Sequencer")
+        self.assertGreaterEqual(len(parks), 1)
+        self.assertEqual(homes, [])
+
+    def test_lights_safetynet_uses_find_home_when_only_can_find_home(self):
+        plan = self._plan()
+        mount = MountDevice(
+            connected=True,
+            name="m",
+            can_park=False,
+            can_find_home=True,
+        )
+        eq = ObservatoryEquipment(mount=mount)
+        result = build_sequence_lights(plan, equipment=eq)
+        parks = _find_items(result, "ParkScope")
+        homes = _find_items(result, "FindHome, NINA.Sequencer")
+        self.assertEqual(parks, [])
+        self.assertGreaterEqual(len(homes), 1)
+
+    def test_lights_safetynet_with_no_mount_omits_park_and_home(self):
+        plan = self._plan()
+        eq = ObservatoryEquipment(mount=None)
+        result = build_sequence_lights(plan, equipment=eq)
+        parks = _find_items(result, "ParkScope")
+        homes = _find_items(result, "FindHome, NINA.Sequencer")
+        self.assertEqual(parks, [])
+        self.assertEqual(homes, [])
+
+    def test_lights_with_cooler_emits_cool_camera_instruction(self):
+        plan = self._plan(cooler={"on": True, "setpoint_celsius": -15.0})
+        camera = CameraDevice(
+            connected=True,
+            name="cam",
+            can_set_temperature=True,
+            temperature=20.0,
+        )
+        eq = ObservatoryEquipment(camera=camera)
+        result = build_sequence_lights(plan, equipment=eq)
+        cools = _find_items(result, "CoolCamera")
+        self.assertEqual(len(cools), 1)
+        self.assertEqual(cools[0]["Temperature"], -15.0)
+
+    def test_lights_cooler_off_with_has_cooler_emits_warm_camera(self):
+        plan = self._plan(cooler={"on": False, "setpoint_celsius": -15.0})
+        camera = CameraDevice(connected=True, name="cam", can_set_temperature=True)
+        eq = ObservatoryEquipment(camera=camera)
+        result = build_sequence_lights(plan, equipment=eq)
+        warms = _find_items(result, "WarmCamera")
+        cools = _find_items(result, "CoolCamera")
+        self.assertGreaterEqual(len(warms), 1)
+        self.assertEqual(cools, [])
+
+    def test_lights_without_cooler_omits_camera_temperature_instructions(self):
+        plan = self._plan()
+        camera = CameraDevice(connected=True, name="cam", can_set_temperature=False)
+        eq = ObservatoryEquipment(camera=camera)
+        result = build_sequence_lights(plan, equipment=eq)
+        warms = _find_items(result, "WarmCamera")
+        cools = _find_items(result, "CoolCamera")
+        self.assertEqual(warms, [])
+        self.assertEqual(cools, [])
+
+    def test_darks_uses_dark_image_type(self):
+        from nina_planner.sequence import build_sequence_darks
+
+        plan = self._plan()
+        result = build_sequence_darks(plan, equipment=ObservatoryEquipment())
+        smart = _find_items(result, "SmartExposure, WhenPlugin")
+        self.assertEqual(len(smart), 1)
+        # SmartExposure stores ImageType inside its instructions
+        takes = _find_items(smart[0], "TakeExposure, WhenPlugin")
+        self.assertTrue(all(t["ImageType"] == "DARK" for t in takes))
+
+    def test_darks_with_bias_flag_uses_bias_image_type(self):
+        from nina_planner.sequence import build_sequence_darks
+
+        plan = self._plan()
+        result = build_sequence_darks(plan, equipment=ObservatoryEquipment(), bias=True)
+        smart = _find_items(result, "SmartExposure, WhenPlugin")
+        self.assertEqual(len(smart), 1)
+        takes = _find_items(smart[0], "TakeExposure, WhenPlugin")
+        self.assertTrue(all(t["ImageType"] == "BIAS" for t in takes))
+
+    def test_darks_start_area_parks_scope_when_mount_can_park(self):
+        from nina_planner.sequence import build_sequence_darks
+
+        plan = self._plan()
+        mount = MountDevice(connected=True, name="m", can_park=True)
+        eq = ObservatoryEquipment(mount=mount)
+        result = build_sequence_darks(plan, equipment=eq)
+        parks = _find_items(result, "ParkScope")
+        self.assertGreaterEqual(len(parks), 1)
+
+    def test_flats_dawn_uses_sunrise_wait_and_dawn_azimuth(self):
+        from nina_planner.sequence import build_sequence_flats
+
+        plan = self._plan()
+        result = build_sequence_flats(
+            plan,
+            equipment=ObservatoryEquipment(),
+            profile=_FlatProfileStub(),
+            dusk=False,
+        )
+        # Wait for dawn means SunsetProvider should not appear; DawnProvider should.
+        dawn = _find_items(result, "DawnProvider")
+        sunset = _find_items(result, "SunsetProvider")
+        self.assertGreaterEqual(len(dawn), 1)
+        self.assertEqual(sunset, [])
+
+    def test_flats_dusk_uses_sunset_wait_and_dusk_azimuth(self):
+        from nina_planner.sequence import build_sequence_flats
+
+        plan = self._plan()
+        result = build_sequence_flats(
+            plan,
+            equipment=ObservatoryEquipment(),
+            profile=_FlatProfileStub(),
+            dusk=True,
+        )
+        sunset = _find_items(result, "SunsetProvider")
+        dawn = _find_items(result, "DawnProvider")
+        self.assertGreaterEqual(len(sunset), 1)
+        self.assertEqual(dawn, [])
+
+
+class CoordinateHelpersTest(unittest.TestCase):
+    """The radec/coord helpers aren't directly imported elsewhere; cover them
+    through the public sequence_deepsky entry point that uses them."""
+
+    def test_negative_declination_sets_negative_flag(self):
+        plan = ObservationPlan(
+            plan_id="plan-test123",
+            target="Test",
+            pointings=[{"ra_hours": 5.0, "dec_deg": -10.0}],
+            light=[
+                {"filter_name": "L", "exposure_time_seconds": 60.0, "total_count": 1}
+            ],
+            flat=[{"filter_name": "L", "exposure_time_seconds": 5.0, "total_count": 1}],
+            dark=[{"exposure_time_seconds": 60.0, "total_count": 1}],
+            bias=[{"total_count": 1}],
+        )
+        result = build_sequence_lights(plan, equipment=ObservatoryEquipment())
+        dso = _deepsky_targets(result)[0]
+        coords = dso["Target"]["InputCoordinates"]
+        self.assertTrue(coords["NegativeDec"])
+        self.assertEqual(coords["DecDegrees"], 10)
+        self.assertEqual(coords["RAHours"], 5)
+
+    def test_fractional_minutes_and_seconds_extracted(self):
+        plan = ObservationPlan(
+            plan_id="plan-test123",
+            target="Test",
+            pointings=[{"ra_hours": 5.575, "dec_deg": 10.0125}],
+            light=[
+                {"filter_name": "L", "exposure_time_seconds": 60.0, "total_count": 1}
+            ],
+            flat=[{"filter_name": "L", "exposure_time_seconds": 5.0, "total_count": 1}],
+            dark=[{"exposure_time_seconds": 60.0, "total_count": 1}],
+            bias=[{"total_count": 1}],
+        )
+        result = build_sequence_lights(plan, equipment=ObservatoryEquipment())
+        coords = _deepsky_targets(result)[0]["Target"]["InputCoordinates"]
+        # 0.575 hours = 34.5 minutes → 34 minutes, 30 seconds
+        self.assertEqual(coords["RAMinutes"], 34)
+        self.assertEqual(coords["RASeconds"], 30)
+        # 0.0125 degrees = 0.75 minutes → 0 minutes, 45 seconds
+        self.assertEqual(coords["DecMinutes"], 0)
+        self.assertEqual(coords["DecSeconds"], 45)
+
+
+class RoundRobinEdgeCasesTest(unittest.TestCase):
+    def test_empty_exposures_returns_empty(self):
+        from nina_planner.sequence import _round_robin
+
+        self.assertEqual(_round_robin([], batch_size=0), [])
+        self.assertEqual(_round_robin([], batch_size=2), [])
+
+    def test_batch_size_larger_than_count_emits_single_entry(self):
+        from nina_planner.sequence import _round_robin
+
+        exps = [_Exp("L", 60.0, 2), _Exp("R", 60.0, 2)]
+        self.assertEqual(
+            _round_robin(exps, batch_size=10),
+            [(2, 60.0, "L"), (2, 60.0, "R")],
+        )
+
+    def test_uneven_counts_across_filters(self):
+        from nina_planner.sequence import _round_robin
+
+        exps = [_Exp("L", 60.0, 5), _Exp("R", 60.0, 2)]
+        # batch_size=2, R exhausts at iter 1; L continues with 2 + 1
+        self.assertEqual(
+            _round_robin(exps, batch_size=2),
+            [
+                (2, 60.0, "L"),
+                (2, 60.0, "R"),
+                (2, 60.0, "L"),
+                (1, 60.0, "L"),
+            ],
+        )
+
+    def test_exposure_without_filter_attribute_yields_none(self):
+        from nina_planner.sequence import _round_robin
+
+        @dataclass
+        class _NoFilter:
+            exposure_time_seconds: float = 30.0
+            total_count: int = 4
+
+        self.assertEqual(
+            _round_robin([_NoFilter()], batch_size=0),
+            [(4, 30.0, None)],
+        )
 
 
 class _FlatProfileStub:
