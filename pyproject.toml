@@ -19,6 +19,7 @@ dev = [
     "pytest>=8.0.0",
     "ruff>=0.3.0",
     "mypy>=1.9.0",
+    "pytest-cov>=7.1.0",
 ]
 
 [project.scripts]
@@ -42,7 +43,18 @@ line-length = 88
 # E/F = Basic errors, I = Auto-sorting imports, B = Common code bugs
 select = ["E", "F", "I", "B"]
 
+[tool.ruff.lint.per-file-ignores]
+# server.py docstrings are intentionally long for clarity; suppress E501 there.
+# sequence.py contains CLR type-name strings that cannot be broken.
+"nina_planner/server.py" = ["E501"]
+"nina_planner/sequence.py" = ["E501"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-v"
+
+[tool.coverage]
+source = ["nina_planner"]
+show_missing = true
+skip_empty = true
 

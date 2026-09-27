@@ -1,7 +1,8 @@
 from __future__ import annotations
 
+import math
 import re
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from typing import Any
 
 import anyio
@@ -86,7 +87,7 @@ def _quality_accepted(
             hfr = float(raw_hfr)
         except (TypeError, ValueError):
             return False
-        if hfr > max_hfr:
+        if not math.isfinite(hfr) or hfr > max_hfr:
             return False
     if min_detected_stars is not None:
         raw_stars = row.get("detected_stars")
@@ -106,7 +107,7 @@ def _quality_accepted(
             rms = float(raw_rms)
         except (TypeError, ValueError):
             return False
-        if rms > max_guiding_rms_arcsec:
+        if not math.isfinite(rms) or rms > max_guiding_rms_arcsec:
             return False
     return True
 
@@ -114,7 +115,7 @@ def _quality_accepted(
 def _within_age(
     row: dict[str, Any],
     max_age_days: int | None,
-    reference_date: datetime.date | None,
+    reference_date: date | None,
 ) -> bool:
     if max_age_days is None:
         return True
@@ -143,7 +144,7 @@ def _row_matches(
     min_detected_stars: int | None = None,
     max_guiding_rms_arcsec: float | None = None,
     max_age_days: int | None = None,
-    reference_date: datetime.date | None = None,
+    reference_date: date | None = None,
 ) -> bool:
     if (row.get("image_type") or row.get("frame_type") or "").upper() != image_type:
         return False
@@ -174,7 +175,7 @@ def _count_matching(
     min_detected_stars: int | None = None,
     max_guiding_rms_arcsec: float | None = None,
     max_age_days: int | None = None,
-    reference_date: datetime.date | None = None,
+    reference_date: date | None = None,
 ) -> int:
     count = 0
     for row in rows:
@@ -202,7 +203,7 @@ def filter_metadata_rows(
     *,
     pointing_index: int = 1,
     max_age_days: int | None = None,
-    reference_date: datetime.date | None = None,
+    reference_date: date | None = None,
 ) -> list[dict[str, Any]]:
     """Rows attributed to `plan` for `image_type`.
 
@@ -218,6 +219,7 @@ def filter_metadata_rows(
             for r in rows
             if _row_matches(r, "LIGHT", plan=plan, pointing_index=pointing_index)
         ]
+    specs: list[tuple[str | None, float | None]]
     if image_type_upper == "FLAT":
         specs = [(g.filter_name, g.exposure_time_seconds) for g in plan.flat]
     elif image_type_upper == "DARK":
@@ -295,7 +297,7 @@ def plan_with_remaining(
 ) -> ObservationPlan:
     def rebuild(groups: list[Any], key: str) -> list[Any]:
         out: list[Any] = []
-        for g, item in zip(groups, progress[key]):
+        for g, item in zip(groups, progress[key], strict=True):
             remaining = item["remaining_count"]
             if remaining <= 0:
                 continue

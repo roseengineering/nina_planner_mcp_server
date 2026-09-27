@@ -42,9 +42,11 @@ class MountDeviceHoursParsingTest(unittest.TestCase):
         mount = MountDevice(**self._base(coordinates={"ra": "5.5", "dec": "10.0"}))
         self.assertEqual(mount.pointing.ra_hours, 5.5)
 
-    def test_ra_minus_one_sentinel_is_none(self):
-        mount = MountDevice(**self._base(coordinates={"ra": -1, "dec": 10.0}))
-        self.assertIsNone(mount.pointing.ra_hours)
+    def test_ra_minus_one_caught_by_pydantic_range_check(self):
+        # -1 is preserved by ascom_float now, but RA must be in [0, 24);
+        # Pydantic validation rejects it.
+        with self.assertRaises(ValidationError):
+            MountDevice(**self._base(coordinates={"ra": -1, "dec": 10.0}))
 
     def test_ra_nan_string_sentinel_is_none(self):
         mount = MountDevice(**self._base(coordinates={"ra": "NaN", "dec": 10.0}))
@@ -147,9 +149,12 @@ class MountDeviceDecParsingTest(unittest.TestCase):
         mount = MountDevice(**self._base(coordinates={"ra": 5.5, "dec": "22.5"}))
         self.assertEqual(mount.pointing.dec_deg, 22.5)
 
-    def test_dec_minus_one_sentinel_is_none(self):
+    def test_dec_minus_one_caught_by_pydantic_range_check(self):
+        # Dec must be in [-90, 90]; -1 actually IS valid for declination
+        # (it's a real value, e.g., near the celestial equator going south),
+        # so this just verifies that -1 passes through cleanly.
         mount = MountDevice(**self._base(coordinates={"ra": 5.5, "dec": -1}))
-        self.assertIsNone(mount.pointing.dec_deg)
+        self.assertEqual(mount.pointing.dec_deg, -1.0)
 
     def test_dec_nan_string_sentinel_is_none(self):
         mount = MountDevice(**self._base(coordinates={"ra": 5.5, "dec": "NaN"}))
@@ -214,6 +219,70 @@ class MountDeviceDecValidationTest(unittest.TestCase):
     def test_ra_valid_with_dec_invalid_still_raises(self):
         with self.assertRaises(ValidationError):
             MountDevice(**self._base(coordinates={"ra": 5.5, "dec": 91.0}))
+
+
+class MountDeviceStatusTest(unittest.TestCase):
+    def _base(self, **overrides) -> dict:
+        data = {
+            "connected": True,
+            "name": "TestMount",
+            "description": "test mount",
+        }
+        data.update(overrides)
+        return data
+
+    def test_slewing_status_yields_slewing(self):
+        # slewing=True wins over tracking_enabled=False.
+        mount = MountDevice(**self._base(slewing=True, tracking_enabled=False))
+        self.assertEqual(mount.mount_status, "SLEWING")
+
+    def test_slewing_status_yields_slewing_even_when_tracking(self):
+        # slewing=True wins over tracking_enabled=True (priority order).
+        mount = MountDevice(**self._base(slewing=True, tracking_enabled=True))
+        self.assertEqual(mount.mount_status, "SLEWING")
+
+    def test_tracking_enabled_yields_tracking(self):
+        mount = MountDevice(**self._base(slewing=False, tracking_enabled=True))
+        self.assertEqual(mount.mount_status, "TRACKING")
+
+    def test_idle_when_neither_slewing_nor_tracking(self):
+        mount = MountDevice(**self._base(slewing=False, tracking_enabled=False))
+        self.assertEqual(mount.mount_status, "IDLE")
+
+
+class MountDeviceMeridianFlipTest(unittest.TestCase):
+    def _base(self, **overrides) -> dict:
+        data = {
+            "connected": True,
+            "name": "TestMount",
+            "description": "test mount",
+        }
+        data.update(overrides)
+        return data
+
+    def test_hours_to_flip_exactly_24_normalized_to_none(self):
+        """ASCOM sentinel: NINA returns 24.0 for time_to_meridian_flip when
+        the mount is parked/stopped ("no flip pending"). The validator
+        normalizes this to None so downstream code can use a uniform
+        `is None` check instead of remembering the magic 24.0.
+        """
+        mount = MountDevice(**self._base(time_to_meridian_flip=24.0))
+        self.assertIsNone(mount.meridian.hours_to_flip)
+
+    def test_hours_to_flip_real_value_preserved(self):
+        """A genuine fractional value (e.g. 4.5 hours) is NOT normalized."""
+        mount = MountDevice(**self._base(time_to_meridian_flip=4.5))
+        self.assertEqual(mount.meridian.hours_to_flip, 4.5)
+
+    def test_hours_to_flip_zero_preserved(self):
+        """Zero is a real value (flip is imminent) — not normalized."""
+        mount = MountDevice(**self._base(time_to_meridian_flip=0.0))
+        self.assertEqual(mount.meridian.hours_to_flip, 0.0)
+
+    def test_hours_to_flip_missing_yields_none(self):
+        """Missing time_to_meridian_flip → ascom_float returns None → None."""
+        mount = MountDevice(**self._base())
+        self.assertIsNone(mount.meridian.hours_to_flip)
 
 
 if __name__ == "__main__":

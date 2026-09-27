@@ -29,16 +29,15 @@ def ascom_float(value: object) -> float | None:
     if value is None:
         return None
     if isinstance(value, str):
-        if _missing_string(value):
+        stripped = value.strip()
+        if _missing_string(stripped):
             return None
-        return float(value)
+        return float(stripped)
     if isinstance(value, float):
-        if math.isnan(value) or value == -1.0:
+        if math.isnan(value):
             return None
         return value
     if isinstance(value, int) and not isinstance(value, bool):
-        if value == -1:
-            return None
         return float(value)
     if isinstance(value, bool):
         return float(value)
@@ -49,16 +48,15 @@ def ascom_int(value: object) -> int | None:
     if value is None:
         return None
     if isinstance(value, str):
-        if _missing_string(value):
+        stripped = value.strip()
+        if _missing_string(stripped):
             return None
-        return int(float(value))
+        return int(float(stripped))
     if isinstance(value, float):
-        if math.isnan(value) or value == -1.0:
+        if math.isnan(value):
             return None
         return int(value)
     if isinstance(value, int) and not isinstance(value, bool):
-        if value == -1:
-            return None
         return value
     if isinstance(value, bool):
         return int(value)
@@ -73,7 +71,17 @@ def ascom_datetime(value: object) -> datetime | None:
         if not stripped or stripped.lower() == "nan":
             return None
         try:
-            return datetime.fromisoformat(stripped)
+            parsed = datetime.fromisoformat(stripped)
         except (ValueError, TypeError):
             return None
+        # .NET DateTime.MinValue sentinel: ASCOM drivers emit
+        # "0001-01-01T00:00:00" for never-set timestamps. All four ISO forms
+        # — naive ("0001-01-01T00:00:00"), with ticks ("...0000000"), with
+        # "Z" suffix, or with explicit offset — collapse to datetime.min
+        # after `.replace(tzinfo=None)`. A real datetime at year 1 with
+        # non-zero components (e.g. "...0001-01-01T00:00:00.123") is
+        # preserved (microseconds != 0).
+        if parsed.replace(tzinfo=None) == datetime.min:
+            return None
+        return parsed
     return None

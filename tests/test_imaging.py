@@ -3,8 +3,11 @@ import os
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from nina_planner.imaging import (
+    _ascom_none,
+    _clean_metric,
     _norm_ts,
     _resolve_image_path,
     read_imaging_csv,
@@ -191,9 +194,7 @@ class RealNinaSampleTest(unittest.TestCase):
     )
 
     def test_read_imaging_csv_handles_real_nina_shapes(self):
-        rows = read_imaging_csv(
-            root=self.SAMPLES_DIR.parent.parent, image_type="light"
-        )
+        rows = read_imaging_csv(root=self.SAMPLES_DIR.parent.parent, image_type="light")
         if self.NINA_IMAGING_LIGHT_DIR.is_dir():
             # End-to-end: real .fits files visible, all 60 rows resolve
             # and surface with POSIX file_path values under /mnt/c/.
@@ -310,8 +311,14 @@ class MeltImagingMetadataTest(unittest.TestCase):
     def test_unpopulated_columns_listed(self):
         res = widen_imaging_metadata(self._rows())
         unpopulated = res["summary"]["unpopulated"]
-        for col in ("camera_temp", "detected_stars", "hfr", "fwhm",
-                    "guiding_rms_arc_sec", "pier_side"):
+        for col in (
+            "camera_temp",
+            "detected_stars",
+            "hfr",
+            "fwhm",
+            "guiding_rms_arc_sec",
+            "pier_side",
+        ):
             self.assertIn(col, unpopulated)
 
     def test_varying_metrics_become_columns(self):
@@ -332,8 +339,7 @@ class MeltImagingMetadataTest(unittest.TestCase):
     def test_rows_listed_once_with_identity(self):
         res = widen_imaging_metadata(self._rows())
         self.assertEqual(len(res["rows"]), 2)
-        self.assertEqual(res["rows"][0]["file_path"],
-                         "/d/2026-09-21/LIGHT/a.fits")
+        self.assertEqual(res["rows"][0]["file_path"], "/d/2026-09-21/LIGHT/a.fits")
         self.assertEqual(res["rows"][1]["filter_name"], "Clear")
         self.assertEqual(res["rows"][0]["exposure_number"], "0")
         self.assertEqual(res["rows"][1]["exposure_number"], "1")
@@ -493,9 +499,7 @@ class NormTsTest(unittest.TestCase):
         self.assertEqual(_norm_ts("2026-09-22T02:16:25Z"), "2026-09-22T02:16:25Z")
 
     def test_plus_zero_offset_to_z(self):
-        self.assertEqual(
-            _norm_ts("2026-09-22T02:16:25+00:00"), "2026-09-22T02:16:25Z"
-        )
+        self.assertEqual(_norm_ts("2026-09-22T02:16:25+00:00"), "2026-09-22T02:16:25Z")
 
     def test_microseconds_stripped(self):
         self.assertEqual(
@@ -503,9 +507,7 @@ class NormTsTest(unittest.TestCase):
         )
 
     def test_naive_treated_as_utc(self):
-        self.assertEqual(
-            _norm_ts("2026-09-22 02:16:25"), "2026-09-22T02:16:25Z"
-        )
+        self.assertEqual(_norm_ts("2026-09-22 02:16:25"), "2026-09-22T02:16:25Z")
 
     def test_naive_without_seconds(self):
         self.assertEqual(_norm_ts("2026-09-22 02:16"), "2026-09-22T02:16:00Z")
@@ -516,6 +518,201 @@ class NormTsTest(unittest.TestCase):
     def test_none_and_empty(self):
         self.assertIsNone(_norm_ts(None))
         self.assertIsNone(_norm_ts("  "))
+
+
+class AscomNoneTest(unittest.TestCase):
+    """Tests for the ASCOM sentinel normalizer used in imaging metadata.
+
+    Only universal sentinels (None, empty/whitespace, "nan", "n/a", NaN) are
+    normalized to None. ``-1`` is treated as a real value since errors arrive
+    as NaN in practice.
+    """
+
+    def test_none_passes_through(self):
+        self.assertIsNone(_ascom_none(None))
+
+    def test_string_minus_one_passes_through(self):
+        self.assertEqual(_ascom_none("-1"), "-1")
+
+    def test_string_minus_one_with_whitespace_passes_through(self):
+        self.assertEqual(_ascom_none(" -1 "), " -1 ")
+
+    def test_string_nan_is_sentinel(self):
+        self.assertIsNone(_ascom_none("nan"))
+
+    def test_string_NaN_is_sentinel(self):
+        self.assertIsNone(_ascom_none("NaN"))
+
+    def test_string_nan_with_whitespace_is_sentinel(self):
+        self.assertIsNone(_ascom_none(" NaN "))
+
+    def test_string_n_a_slash_a_is_sentinel(self):
+        self.assertIsNone(_ascom_none("n/a"))
+
+    def test_string_empty_is_sentinel(self):
+        self.assertIsNone(_ascom_none(""))
+
+    def test_string_whitespace_only_is_sentinel(self):
+        self.assertIsNone(_ascom_none("   "))
+
+    def test_string_negative_passes_through(self):
+        self.assertEqual(_ascom_none("-1.5"), "-1.5")
+        self.assertEqual(_ascom_none("-10"), "-10")
+        self.assertEqual(_ascom_none("+1"), "+1")
+
+    def test_string_positive_passes_through(self):
+        self.assertEqual(_ascom_none("42"), "42")
+        self.assertEqual(_ascom_none("1.5"), "1.5")
+
+    def test_float_minus_one_passes_through(self):
+        self.assertEqual(_ascom_none(-1.0), -1.0)
+
+    def test_float_nan_is_sentinel(self):
+        self.assertIsNone(_ascom_none(float("nan")))
+
+    def test_int_minus_one_passes_through(self):
+        self.assertEqual(_ascom_none(-1), -1)
+
+    def test_float_value_passes_through(self):
+        self.assertEqual(_ascom_none(1.5), 1.5)
+        self.assertEqual(_ascom_none(-10.0), -10.0)
+
+    def test_clean_metric_minus_one_string_passes_through(self):
+        self.assertEqual(_clean_metric("hfr", "-1"), -1.0)
+
+    def test_clean_metric_minus_one_string_with_whitespace_passes_through(self):
+        self.assertEqual(_clean_metric("hfr", " -1 "), -1.0)
+
+    def test_clean_metric_minus_one_int_passes_through(self):
+        self.assertEqual(_clean_metric("hfr", -1), -1.0)
+
+    def test_clean_metric_real_value_preserved(self):
+        self.assertEqual(_clean_metric("hfr", "1.5"), 1.5)
+
+    def test_clean_metric_minus_one_temperature_passes_through(self):
+        # Weather temperatures flow through widen_imaging_metadata; -1°C is
+        # a legitimate value, not a sentinel.
+        self.assertEqual(_clean_metric("temperature", "-1"), -1.0)
+        self.assertEqual(_clean_metric("dew_point", "-1"), -1.0)
+
+
+class ImagingDefensivePathsTest(unittest.TestCase):
+    """Defensive branches in imaging.py that handle malformed input,
+    mismatched types, or non-Windows platforms. Each test targets one
+    of the missed lines reported by coverage."""
+
+    # ---- windows_to_local (line 19): sys.platform == "win32" passthrough ----
+
+    def test_windows_to_local_passthrough_on_windows(self):
+        """When sys.platform is 'win32', windows_to_local returns
+        Path(windows_path) directly without any path rewriting."""
+        from nina_planner.imaging import windows_to_local
+
+        with patch("nina_planner.imaging.sys.platform", "win32"):
+            result = windows_to_local(r"D:\apps\NINA\foo.fits")
+        self.assertEqual(str(result), r"D:\apps\NINA\foo.fits")
+
+    # ---- _find_date_ancestor (line 38): no parent matches date regex ----
+
+    def test_find_date_ancestor_returns_none_when_no_parent_matches(self):
+        from nina_planner.imaging import _find_date_ancestor
+
+        # Path with parents that don't match YYYY-MM-DD.
+        path = Path("/tmp/random/folder/file.fits")
+        self.assertIsNone(_find_date_ancestor(path))
+
+    # ---- _resolve_image_path (line 46): file_path None or empty ----
+
+    def test_resolve_image_path_returns_none_when_file_path_none(self):
+        from nina_planner.imaging import _resolve_image_path
+
+        self.assertIsNone(_resolve_image_path(None))
+
+    def test_resolve_image_path_returns_none_when_file_path_empty(self):
+        from nina_planner.imaging import _resolve_image_path
+
+        self.assertIsNone(_resolve_image_path(""))
+
+    # ---- read_imaging_csv (line 80): skip rows where image_type mismatches ----
+
+    def test_read_imaging_csv_skips_rows_with_mismatched_image_type(self):
+        """When the CSV contains rows of multiple image types, only rows
+        matching the requested image_type are returned."""
+        from nina_planner.imaging import read_imaging_csv
+
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            light_dir = tmp_path / "2026-09-21" / "LIGHT"
+            light_dir.mkdir(parents=True)
+
+            # CSV has LIGHT, FLAT, and DARK rows mixed.
+            with open(light_dir / "ImageMetaData.csv", "w", newline="") as f:
+                writer = csv.writer(f)
+                writer.writerow(["ImageType", "Duration", "FilterName"])
+                writer.writerow(["LIGHT", "60.0", "L"])
+                writer.writerow(["FLAT", "5.0", "L"])
+                writer.writerow(["DARK", "60.0", ""])
+                writer.writerow(["LIGHT", "120.0", "R"])
+
+            rows = read_imaging_csv(root=tmp_path, image_type="light")
+            self.assertEqual(len(rows), 2)
+            self.assertTrue(all(r["frame_type"] == "LIGHT" for r in rows))
+
+    # ---- _counts (line 304): skip None values ----
+
+    def test_counts_skips_none_values(self):
+        from nina_planner.imaging import _counts
+
+        rows = [
+            {"filter": "L"},
+            {"filter": None},
+            {"filter": "R"},
+            {"filter": "L"},
+            {},
+        ]
+        result = _counts(rows, "filter")
+        self.assertEqual(result, {"L": 2, "R": 1})
+
+    # ---- widen_imaging_metadata (line 340): skip weather rows with bad ts ----
+
+    def test_widen_imaging_metadata_skips_weather_with_unparseable_ts(self):
+        """Weather rows whose exposure_start_utc can't be normalized (None
+        or empty string) are skipped — they don't get merged into any
+        frame. The good weather row still matches; the bad one is
+        silently dropped.
+
+        Note: ``_norm_ts`` falls back to the raw text for unparseable but
+        non-empty strings (preserving join-key stability), so only None or
+        empty strings trigger the skip — not e.g. ``"garbage"``.
+        """
+        from nina_planner.imaging import widen_imaging_metadata
+
+        rows = [
+            {
+                "image_type": "LIGHT",
+                "duration": "60.0",
+                "filter_name": "L",
+                "exposure_start_utc": "2026-09-21T02:16:25Z",
+            },
+        ]
+        weather_rows = [
+            {"exposure_start_utc": None},  # None → _norm_ts returns None → skip
+            {"exposure_start_utc": ""},  # empty → skip
+            {
+                "exposure_start_utc": "2026-09-21T02:16:25Z",
+                "temperature": 15.0,
+            },
+        ]
+        # Should not raise — the unparseable rows are silently dropped.
+        result = widen_imaging_metadata(rows, weather_rows=weather_rows)
+        self.assertEqual(len(result["rows"]), 1)
+        # The matched weather row's temperature is constant across the single
+        # frame, so it's recorded in summary.constants with the namespaced
+        # key (weather.temperature) rather than per-row.
+        self.assertEqual(
+            result["summary"]["constants"].get("weather.temperature"),
+            15.0,
+        )
 
 
 if __name__ == "__main__":

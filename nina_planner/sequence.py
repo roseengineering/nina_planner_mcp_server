@@ -111,11 +111,9 @@ def _round_robin(
     while True:
         done = True
         for d in exposures:
-            filter_name = d.filter_name if "filter_name" in d.model_fields else None
+            filter_name = d.filter_name if hasattr(d, "filter_name") else None
             exposure_time_seconds = (
-                d.exposure_time_seconds
-                if "exposure_time_seconds" in d.model_fields
-                else 0
+                d.exposure_time_seconds if hasattr(d, "exposure_time_seconds") else 0
             )
             count = min(d.total_count - current_count, batch_size)
             if batch_size == 0 or len(exposures) == 1:
@@ -670,6 +668,23 @@ def smart_exposure_plus(
 ####################################
 
 
+def sequence_deepsky(
+    plan: ObservationPlan, instructions: list, pointing_index: int = 1
+) -> dict[str, Any]:
+    pointing = plan.pointings[pointing_index - 1]
+    prefix = f"{plan.target} - {pointing.label}" if pointing.label else plan.target
+    target = f"{prefix} [{plan.effective_plan_id(pointing_index)}]"
+    posang = 0 if pointing.position_angle_deg is None else pointing.position_angle_deg
+    return container_deepsky(
+        name="Deep Sky Target Sequence",
+        target=target,
+        ra=pointing.ra_hours,
+        dec=pointing.dec_deg,
+        posang=posang,
+        instructions=instructions,
+    )
+
+
 def sequence_warm_camera(equipment: ObservatoryEquipment) -> list[dict[str, Any]]:
     return (
         [warm_camera()]
@@ -793,14 +808,19 @@ def build_sequence_darks(
         [
             container_start(sequence_park_scope(equipment)),
             container_target(
-                sequence_cool_camera(plan, equipment)
-                + [
-                    smart_exposure_plus(
-                        count=d[0],
-                        exposure=d[1],
-                        image_type="BIAS" if bias else "DARK",
-                    )
-                    for d in _round_robin(plan.bias if bias else plan.dark)
+                [
+                    sequence_deepsky(
+                        plan=plan,
+                        instructions=sequence_cool_camera(plan, equipment)
+                        + [
+                            smart_exposure_plus(
+                                count=d[0],
+                                exposure=d[1],
+                                image_type="BIAS" if bias else "DARK",
+                            )
+                            for d in _round_robin(plan.bias if bias else plan.dark)
+                        ],
+                    ),
                 ]
             ),
             container_end_park_when_unsafe(equipment),
@@ -817,21 +837,16 @@ def build_sequence_lights(
     if pointing_index < 1 or pointing_index > len(plan.pointings):
         raise ValueError(
             f"pointing_index={pointing_index} out of range "
-            f"(plan has {len(plan.pointings)} pointings; valid 1..{len(plan.pointings)})"
+            f"(plan has {len(plan.pointings)} pointings; "
+            f"valid 1..{len(plan.pointings)})"
         )
     pointing = plan.pointings[pointing_index - 1]
-    prefix = f"{plan.target} - {pointing.label}" if pointing.label else plan.target
-    target = f"{prefix} [{plan.effective_plan_id(pointing_index)}]"
-    posang = 0 if pointing.position_angle_deg is None else pointing.position_angle_deg
     return container_root_standby(
         equipment=equipment,
         instructions=[
-            container_deepsky(
-                name="Deep Sky Target Sequence",
-                target=target,
-                ra=pointing.ra_hours,
-                dec=pointing.dec_deg,
-                posang=posang,
+            sequence_deepsky(
+                plan=plan,
+                pointing_index=pointing_index,
                 instructions=[
                     sequence_safetynet(
                         name="Wait For Dusk",
@@ -844,6 +859,15 @@ def build_sequence_lights(
                         name="Wait For Object",
                         equipment=equipment,
                         conditions=[
+                            # Stay alive through the night, but exit early if
+                            # the target has already crossed the meridian (don't
+                            # waste the rest of the night on a target that's
+                            # gone past transit). Intentional, not a bug: when
+                            # the target transits, imaging starts on the eastern
+                            # side via the meridian flip trigger below. When the
+                            # target has already transited by the time this
+                            # container starts, the loop_until_meridian condition
+                            # is already false and we exit immediately.
                             loop_until_dawn(),
                             loop_until_meridian(),
                         ],
@@ -863,6 +887,11 @@ def build_sequence_lights(
                                 plan.constraints.horizon_offset_degrees
                             ),
                             loop_while_above_altitude(plan.constraints.min_altitude),
+                            # No loop_until_meridian() here: the imaging container
+                            # should keep running while the target is visible.
+                            # The meridian flip is handled by the trigger below,
+                            # which slews to the eastern side when transit happens
+                            # so imaging continues across the meridian.
                         ],
                         triggers=[
                             trigger_meridian_flip(),
@@ -920,49 +949,58 @@ def build_sequence_flats(
     equipment: ObservatoryEquipment,
     profile: Any,
     dusk: bool = False,
+    pointing_index: int = 1,
 ) -> dict[str, Any]:
     return container_root_standby(
         equipment=equipment,
         instructions=[
-            sequence_safetynet(
-                name="Wait For Time",
-                equipment=equipment,
+            sequence_deepsky(
+                plan=plan,
+                pointing_index=pointing_index,
                 instructions=[
-                    (wait_until_sunset() if dusk else wait_until_dawn()),
-                    (
-                        wait_if_sun_altitude_above(0)
-                        if dusk
-                        else wait_if_sun_altitude_below(-8)
+                    sequence_safetynet(
+                        name="Wait For Time",
+                        equipment=equipment,
+                        instructions=[
+                            (wait_until_sunset() if dusk else wait_until_dawn()),
+                            (
+                                wait_if_sun_altitude_above(0)
+                                if dusk
+                                else wait_if_sun_altitude_below(-8)
+                            ),
+                        ],
+                    ),
+                    sequence_safetynet(
+                        name="Image Flats",
+                        equipment=equipment,
+                        conditions=[
+                            (
+                                loop_until_sun_altitude_below(-8)
+                                if dusk
+                                else loop_until_sun_altitude_above(0)
+                            )
+                        ],
+                        instructions=sequence_cool_camera(plan, equipment)
+                        + [
+                            set_tracking(0),
+                            slew_to_azalt(
+                                az=NINA_FLATS_AZIMUTH_DUSK
+                                if dusk
+                                else NINA_FLATS_AZIMUTH_DAWN,
+                                alt=NINA_FLATS_ALTITUDE,
+                            ),
+                        ]
+                        + [
+                            sky_flats(
+                                count=d[0],
+                                filter_name=d[2],
+                                position=profile.filter_position(d[2]),
+                            )
+                            for d in _round_robin(plan.flat, reverse=dusk)
+                            if d[2] is not None
+                        ],
                     ),
                 ],
-            ),
-            sequence_safetynet(
-                name="Image Flats",
-                equipment=equipment,
-                conditions=[
-                    (
-                        loop_until_sun_altitude_below(-8)
-                        if dusk
-                        else loop_until_sun_altitude_above(0)
-                    )
-                ],
-                instructions=sequence_cool_camera(plan, equipment)
-                + [
-                    set_tracking(0),
-                    slew_to_azalt(
-                        az=NINA_FLATS_AZIMUTH_DUSK if dusk else NINA_FLATS_AZIMUTH_DAWN,
-                        alt=NINA_FLATS_ALTITUDE,
-                    ),
-                ]
-                + [
-                    sky_flats(
-                        count=d[0],
-                        filter_name=d[2],
-                        position=profile.filter_position(d[2]),
-                    )
-                    for d in _round_robin(plan.flat, reverse=dusk)
-                    if d[2] is not None
-                ],
-            ),
+            )
         ],
     )

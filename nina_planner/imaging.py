@@ -28,9 +28,7 @@ def windows_to_local(windows_path: str, drive_mount: str | None = None) -> Path:
 
 def _read_csv(path: Path) -> list[dict[str, Any]]:
     with open(path, "r", encoding="utf-8-sig", newline="") as f:
-        return [
-            {to_snake(k): v for k, v in row.items()} for row in csv.DictReader(f)
-        ]
+        return [{to_snake(k): v for k, v in row.items()} for row in csv.DictReader(f)]
 
 
 def _find_date_ancestor(path: Path) -> str | None:
@@ -205,20 +203,35 @@ _METRIC_GROUP.update({c: "weather" for c in _WEATHER_METRICS})
 
 
 def _ascom_none(value: Any) -> Any:
-    """Normalize ASCOM sentinel values (NaN, -1, empty, n/a) to None."""
+    """Normalize ASCOM sentinel values (NaN, empty, n/a) to None.
+
+    Single source of truth for ASCOM sentinel normalization. Used by
+    :func:`_clean_metric` for ImageMetaData.csv values, by weather
+    metadata loading, and indirectly by progress-quality filtering.
+
+    Sentinels collapsed to None:
+    - None itself.
+    - Empty or whitespace-only strings.
+    - Strings ``"nan"`` / ``"NaN"`` / ``"n/a"`` (case-insensitive, after strip).
+    - NaN floats (``float('nan')``).
+
+    Real values pass through: integers, finite floats, non-sentinel strings
+    (including negative numbers, "0", "-1", etc.).
+    """
     if value is None:
         return None
     if isinstance(value, str):
         stripped = value.strip()
+        # Empty / whitespace-only / "nan" / "n/a" / "na" → None.
         if not stripped or stripped.lower() in ("nan", "n/a"):
             return None
         return value
     if isinstance(value, float):
-        if math.isnan(value) or value == -1.0:
+        # NaN (float("nan")) → None. All other floats preserved.
+        if math.isnan(value):
             return None
         return value
-    if isinstance(value, int) and not isinstance(value, bool):
-        return None if value == -1 else value
+    # ints, bools, and anything else: preserve unchanged.
     return value
 
 
@@ -226,6 +239,12 @@ def _clean_metric(column: str, value: Any) -> Any:
     value = _ascom_none(value)
     if value is None:
         return None
+    # Quality-metric-only sentinel: NINA's ImageMetaData.csv serializes
+    # unmeasured ASCOM values as 0 (because the CSV layer coerces NaN to 0).
+    # For quality metrics (HFR, RMS, stars, etc.) 0 carries no information
+    # — it's a placeholder for "not measured", not a real reading. So we
+    # filter it. For non-quality columns (e.g. temperature) 0 IS a real
+    # value (legitimately cold) and is preserved.
     if column in _QUALITY_METRICS and value in (0, 0.0, "0"):
         return None
     if isinstance(value, str):
@@ -280,7 +299,10 @@ def _norm_ts(value: Any) -> str | None:
 def _counts(rows: list[dict[str, Any]], key: str) -> dict[str, int]:
     out: dict[str, int] = {}
     for row in rows:
-        out[row.get(key)] = out.get(row.get(key), 0) + 1
+        value = row.get(key)
+        if value is None:
+            continue
+        out[value] = out.get(value, 0) + 1
     return out
 
 
@@ -322,7 +344,8 @@ def widen_imaging_metadata(
     for row in rows:
         merged = dict(row)
         ts = row.get("exposure_start_utc")
-        weather = weather_by_ts.get(_norm_ts(ts)) if (ts and weather_by_ts) else None
+        ts_norm = _norm_ts(ts)
+        weather = weather_by_ts.get(ts_norm) if (ts_norm and weather_by_ts) else None
         for c in _WEATHER_METRICS:
             merged[c] = weather.get(c) if weather else None
         merged_rows.append(merged)

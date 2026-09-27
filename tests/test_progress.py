@@ -193,6 +193,78 @@ class QualityFilterTest(unittest.TestCase):
         ][0]
         self.assertEqual(lights["acquired_count"], 1)
 
+    def test_nan_hfr_string_rejected_when_threshold_set(self):
+        plan = _plan()
+        rows = [self._hfr_row("NaN")]
+        lights = plan_progress(plan, rows, max_hfr=5.0)["light"][0]
+        self.assertEqual(lights["acquired_count"], 0)
+
+    def test_lowercase_nan_hfr_rejected(self):
+        plan = _plan()
+        rows = [self._hfr_row("nan")]
+        lights = plan_progress(plan, rows, max_hfr=5.0)["light"][0]
+        self.assertEqual(lights["acquired_count"], 0)
+
+    def test_inf_hfr_rejected(self):
+        plan = _plan()
+        rows = [self._hfr_row(float("inf"))]
+        lights = plan_progress(plan, rows, max_hfr=5.0)["light"][0]
+        self.assertEqual(lights["acquired_count"], 0)
+
+    def test_neg_inf_hfr_rejected(self):
+        plan = _plan()
+        rows = [self._hfr_row(float("-inf"))]
+        lights = plan_progress(plan, rows, max_hfr=5.0)["light"][0]
+        self.assertEqual(lights["acquired_count"], 0)
+
+    def test_hfr_above_threshold_rejected(self):
+        plan = _plan()
+        rows = [self._hfr_row(6.0)]
+        lights = plan_progress(plan, rows, max_hfr=5.0)["light"][0]
+        self.assertEqual(lights["acquired_count"], 0)
+
+    def test_nan_hfr_accepted_when_no_threshold(self):
+        plan = _plan()
+        rows = [self._hfr_row("NaN")]
+        lights = plan_progress(plan, rows)["light"][0]
+        self.assertEqual(lights["acquired_count"], 1)
+
+    def test_nan_rms_string_rejected_when_threshold_set(self):
+        plan = _plan()
+        rows = [self._guiding_rms_row("NaN")]
+        lights = plan_progress(plan, rows, max_guiding_rms_arcsec=2.0)["light"][0]
+        self.assertEqual(lights["acquired_count"], 0)
+
+    def test_lowercase_nan_rms_rejected(self):
+        plan = _plan()
+        rows = [self._guiding_rms_row("nan")]
+        lights = plan_progress(plan, rows, max_guiding_rms_arcsec=2.0)["light"][0]
+        self.assertEqual(lights["acquired_count"], 0)
+
+    def test_inf_rms_rejected(self):
+        plan = _plan()
+        rows = [self._guiding_rms_row(float("inf"))]
+        lights = plan_progress(plan, rows, max_guiding_rms_arcsec=2.0)["light"][0]
+        self.assertEqual(lights["acquired_count"], 0)
+
+    def test_neg_inf_rms_rejected(self):
+        plan = _plan()
+        rows = [self._guiding_rms_row(float("-inf"))]
+        lights = plan_progress(plan, rows, max_guiding_rms_arcsec=2.0)["light"][0]
+        self.assertEqual(lights["acquired_count"], 0)
+
+    def test_rms_above_threshold_rejected(self):
+        plan = _plan()
+        rows = [self._guiding_rms_row(3.0)]
+        lights = plan_progress(plan, rows, max_guiding_rms_arcsec=2.0)["light"][0]
+        self.assertEqual(lights["acquired_count"], 0)
+
+    def test_nan_rms_accepted_when_no_threshold(self):
+        plan = _plan()
+        rows = [self._guiding_rms_row("NaN")]
+        lights = plan_progress(plan, rows)["light"][0]
+        self.assertEqual(lights["acquired_count"], 1)
+
 
 class PlanWithRemainingTest(unittest.TestCase):
     def test_reduces_and_drops_completed(self):
@@ -227,7 +299,7 @@ class PlanWithRemainingTest(unittest.TestCase):
         reduced = plan_with_remaining(plan, progress)
 
         self.assertEqual(len(reduced.light), 2)
-        counts = {l.filter_name: l.total_count for l in reduced.light}
+        counts = {exp.filter_name: exp.total_count for exp in reduced.light}
         self.assertEqual(counts["L"], 5)
         self.assertEqual(counts["SII"], 2)
 
@@ -261,8 +333,20 @@ class CalibrationAgeTest(unittest.TestCase):
         today = datetime.now(UTC).date().isoformat()
         yesterday = (datetime.now(UTC).date() - timedelta(days=1)).isoformat()
         rows = [
-            _row(image_type="FLAT", filter_name="LP", duration="5.0", target=None, date=today),
-            _row(image_type="FLAT", filter_name="LP", duration="5.0", target=None, date=yesterday),
+            _row(
+                image_type="FLAT",
+                filter_name="LP",
+                duration="5.0",
+                target=None,
+                date=today,
+            ),
+            _row(
+                image_type="FLAT",
+                filter_name="LP",
+                duration="5.0",
+                target=None,
+                date=yesterday,
+            ),
         ]
         prog = plan_progress(plan, rows)
         self.assertEqual(prog["flat"][0]["acquired_count"], 1)
@@ -292,16 +376,37 @@ class FilterMetadataRowsTest(unittest.TestCase):
             _row(image_type="DARK", duration="60.0", target=None, date=stale),
             _row(image_type="DARK", duration="300.0", target=None),
         ]
-        out = filter_metadata_rows(plan, rows, "dark", max_age_days=7, reference_date=ref)
+        out = filter_metadata_rows(
+            plan, rows, "dark", max_age_days=7, reference_date=ref
+        )
         self.assertEqual(len(out), 1)
         self.assertEqual(out[0]["duration"], "60.0")
 
     def test_flat_matches_filter_and_exposure(self):
         plan = _plan()
+        today = self._ref().isoformat()
         rows = [
-            _row(image_type="FLAT", filter_name="LP", duration="5.0", target=None),
-            _row(image_type="FLAT", filter_name="SII", duration="5.0", target=None),
-            _row(image_type="FLAT", filter_name="LP", duration="10.0", target=None),
+            _row(
+                image_type="FLAT",
+                filter_name="LP",
+                duration="5.0",
+                target=None,
+                date=today,
+            ),
+            _row(
+                image_type="FLAT",
+                filter_name="SII",
+                duration="5.0",
+                target=None,
+                date=today,
+            ),
+            _row(
+                image_type="FLAT",
+                filter_name="LP",
+                duration="10.0",
+                target=None,
+                date=today,
+            ),
         ]
         out = filter_metadata_rows(
             plan, rows, "flat", max_age_days=7, reference_date=self._ref()
@@ -317,7 +422,9 @@ class FilterMetadataRowsTest(unittest.TestCase):
             _row(image_type="BIAS", target=None),
             _row(image_type="BIAS", target=None, date=stale),
         ]
-        out = filter_metadata_rows(plan, rows, "bias", max_age_days=0, reference_date=ref)
+        out = filter_metadata_rows(
+            plan, rows, "bias", max_age_days=0, reference_date=ref
+        )
         self.assertEqual(len(out), 1)
 
     def test_missing_date_excluded_when_window_set(self):
@@ -362,11 +469,10 @@ class PointingIndexTest(unittest.TestCase):
         self.assertEqual(lights_p2["remaining_count"], 19)
 
     def test_out_of_range_pointing_index_excluded_via_filter(self):
-        plan = _plan(
-            pointings=[{"ra_hours": 0.71, "dec_deg": 41.27}]
-        )
+        plan = _plan(pointings=[{"ra_hours": 0.71, "dec_deg": 41.27}])
         with self.assertRaises(ValueError):
             from nina_planner.server import _check_pointing_index
+
             _check_pointing_index(plan, 0)
         with self.assertRaises(ValueError):
             _check_pointing_index(plan, 2)
@@ -380,6 +486,116 @@ class PointingIndexTest(unittest.TestCase):
         )
         self.assertEqual(plan.pointings[0].label, "Pane 1")
         self.assertEqual(plan.effective_plan_id(1), "plan-abc123-1")
+
+
+class PrivateHelperDefensivePathsTest(unittest.TestCase):
+    """Defensive branches in the private helpers of progress.py. Each test
+    targets one of the missed lines reported by coverage."""
+
+    def _plan(self, **overrides):
+        data = {
+            "plan_id": "plan-test123",
+            "target": "M31",
+            "pointings": [{"ra_hours": 0.71, "dec_deg": 41.27}],
+            "light": [
+                {"filter_name": "L", "exposure_time_seconds": 60.0, "total_count": 1}
+            ],
+            "flat": [
+                {"filter_name": "L", "exposure_time_seconds": 5.0, "total_count": 1}
+            ],
+            "dark": [{"exposure_time_seconds": 60.0, "total_count": 1}],
+            "bias": [{"total_count": 1}],
+        }
+        data.update(overrides)
+        return ObservationPlan(**data)
+
+    # ---- _exposure_matches (lines 57, 60-61) ----
+
+    def test_exposure_matches_returns_false_when_duration_empty(self):
+        from nina_planner.progress import _exposure_matches
+
+        self.assertFalse(_exposure_matches({"duration": ""}, 60.0))
+        self.assertFalse(_exposure_matches({"duration": None}, 60.0))
+        self.assertFalse(_exposure_matches({}, 60.0))
+
+    def test_exposure_matches_returns_false_when_duration_invalid(self):
+        from nina_planner.progress import _exposure_matches
+
+        self.assertFalse(_exposure_matches({"duration": "abc"}, 60.0))
+        self.assertFalse(_exposure_matches({"duration": "not a number"}, 60.0))
+
+    # ---- _light_target_matches (line 72) ----
+
+    def test_light_target_matches_returns_false_when_file_path_empty(self):
+        from nina_planner.progress import _light_target_matches
+
+        plan = self._plan()
+        self.assertFalse(_light_target_matches(plan, {}))
+        self.assertFalse(_light_target_matches(plan, {"file_path": ""}))
+        self.assertFalse(_light_target_matches(plan, {"file_path": "   "}))
+
+    # ---- _quality_accepted (lines 88-89, 95, 98-99, 108-109) ----
+
+    def test_quality_hfr_invalid_string_returns_false(self):
+        from nina_planner.progress import _quality_accepted
+
+        # HFR="abc" → float() raises ValueError → returns False.
+        self.assertFalse(_quality_accepted({"hfr": "abc"}, 5.0, None))
+
+    def test_quality_stars_empty_string_returns_false(self):
+        from nina_planner.progress import _quality_accepted
+
+        # detected_stars missing or "" → returns False.
+        self.assertFalse(_quality_accepted({}, None, 10))
+        self.assertFalse(_quality_accepted({"detected_stars": ""}, None, 10))
+
+    def test_quality_stars_invalid_string_returns_false(self):
+        from nina_planner.progress import _quality_accepted
+
+        # detected_stars="abc" → int() raises ValueError → returns False.
+        self.assertFalse(_quality_accepted({"detected_stars": "abc"}, None, 10))
+
+    def test_quality_rms_invalid_string_returns_false(self):
+        from nina_planner.progress import _quality_accepted
+
+        # guiding_rms_arc_sec="abc" → float() raises ValueError → returns False.
+        self.assertFalse(
+            _quality_accepted({"guiding_rms_arc_sec": "abc"}, None, None, 2.0)
+        )
+
+    # ---- _within_age (lines 121, 123, 129-130) ----
+
+    def test_within_age_returns_true_when_max_age_days_none(self):
+        from datetime import date
+
+        from nina_planner.progress import _within_age
+
+        self.assertTrue(_within_age({"date": "2026-09-22"}, None, date(2026, 9, 22)))
+
+    def test_within_age_returns_true_when_reference_date_none(self):
+        from nina_planner.progress import _within_age
+
+        self.assertTrue(_within_age({"date": "2026-09-22"}, 7, None))
+
+    def test_within_age_returns_false_when_date_string_invalid(self):
+        from datetime import date
+
+        from nina_planner.progress import _within_age
+
+        self.assertFalse(_within_age({"date": "garbage"}, 7, date(2026, 9, 22)))
+        self.assertFalse(_within_age({"date": ""}, 7, date(2026, 9, 22)))
+        self.assertFalse(_within_age({"date": None}, 7, date(2026, 9, 22)))
+
+    # ---- filter_metadata_rows (line 230) ----
+
+    def test_filter_metadata_returns_empty_for_unknown_image_type(self):
+        from nina_planner.progress import filter_metadata_rows
+
+        plan = self._plan()
+        rows = [{"image_type": "LIGHT", "duration": "60.0", "filter_name": "L"}]
+        self.assertEqual(filter_metadata_rows(plan, rows, "UNKNOWN"), [])
+        # Case-insensitive: lowercase form of an unrecognized type.
+        self.assertEqual(filter_metadata_rows(plan, rows, "unrecognized"), [])
 
 
 if __name__ == "__main__":

@@ -81,12 +81,17 @@ class ObservationPlan(BaseModel):
     )
     description: str = Field(
         default="",
-        description="explanation of the observation plan, including rationale, exposure goals, equipment, or sky constraints",
+        description=(
+            "explanation of the observation plan, including rationale, "
+            "exposure goals, equipment, or sky constraints"
+        ),
     )
     pointings: list[Pointing] = Field(
         min_length=1,
-        description="One or more target pointings (RA/Dec/PA, optional label) to image. "
-        "Each pointing of a plan is loaded separately by pointing_index.",
+        description=(
+            "One or more target pointings (RA/Dec/PA, optional label) to image. "
+            "Each pointing of a plan is loaded separately by pointing_index."
+        ),
     )
     batch_size: int = Field(
         default=5, ge=0, description="Exposures per batch. 0 means unbatch."
