@@ -10,7 +10,6 @@ from conftest import requires_wsl
 
 from nina_planner.system_time import (
     NINA_EXE_DEFAULT,
-    get_launcher_paths,
     kill_nina_command,
     local_to_windows,
     nina_exe_path,

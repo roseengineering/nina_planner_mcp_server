@@ -45,7 +45,6 @@ from .system_time import (
     DRIFT_TOLERANCE_SECONDS,
     kill_nina_command,
     nina_exe_path,
-    nina_running,
     read_windows_clock_powershell,
     restore_set_date_powershell,
     schtasks_create_command,
