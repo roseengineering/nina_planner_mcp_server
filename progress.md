@@ -6,67 +6,40 @@ Shared observatory progress file. Both the active session and automated worker s
 
 ## Created
 
-
-## 2026-09-26T21:23:11-05:00 — auto
-
-ensure_nina_running: NINA already running, no launch
-
-## 2026-09-26T21:25:11-05:00 — auto
-
-ensure_nina_running: launched NINA from C:\Program Files\N.I.N.A. - Nighttime Imaging 'N' Astronomy\NINA.exe
-
-## 2026-09-26T21:29:33-05:00 — auto
-
-simulate_observation_time(reset=True): killed NINA, ran w32tm /resync, relaunched NINA on real OS clock; converged=True, delta=-0.23s.
-
-## 2026-09-26T21:32:39-05:00 — auto
-
-ensure_nina_running: launched NINA from C:\Program Files\N.I.N.A. - Nighttime Imaging 'N' Astronomy\NINA.exe
-
-## 2026-09-26T22:33:18-05:00 — auto
-
-start_nina: launching NINA on real time; launched NINA from C:\Program Files\N.I.N.A. - Nighttime Imaging 'N' Astronomy\NINA.exe
-
-## 2026-09-26T22:33:59-05:00 — auto
-
-stop_nina: killed running NINA
-
-## 2026-09-27T09:11:35-05:00 — auto
-
-stop_nina: killed running NINA
-
-## 2026-09-27T11:11:35-05:00 — auto
-
-start_nina: simulating observation time 2026-09-27T11:11:19; shifted OS clock to 2026-09-27T11:11:19; launched NINA from C:\Program Files\N.I.N.A. - Nighttime Imaging 'N' Astronomy\NINA.exe; restored host clock to 2026-09-27T11:11:05.600265-05:00 (verified=True)
-
-## 2026-09-27T11:11:54-05:00 — auto
-
-stop_nina: killed running NINA
-
-## 2026-09-27T11:29:08-05:00 — auto
-
-start_nina: launching NINA on real time; launched NINA from C:\Program Files\N.I.N.A. - Nighttime Imaging 'N' Astronomy\NINA.exe
-
-## 2026-09-27T11:32:00-05:00 — auto
-
-Triggered by PROFILE-CHANGED event (NINA loading profile after start_nina launch). get_nina_time() responds OK; get_site_equipment_status() via MCP tool fails but raw curl to /v2/api/equipment/info returns full payload (all equipment Connected=false, no devices configured on this profile). No sequence loaded, no acquisition. Plan.md is empty (no targets). Nothing to do — appended this entry and stopped.
-
-## 2026-09-27T11:34:00-05:00 — auto
-
-restart_nina: stopped NINA (PID 14324), started NINA on real time. New PID 7620, Session# 1 (Console, visible desktop). get_nina_time() matches host clock (simulated=False).
-
-## 2026-09-27T11:35:30-05:00 — auto
-
-Triggered by equipment-reconnect cycle (mount/camera/focuser/guider/filterwheel/rotator/dome/weather/safety/switch all disconnected then reconnected). Final state: all devices connected, mount parked, dome parked with shutter closed, safety is_safe=false (enclosure closed). Sequence state is empty default containers — no sequence running, no targets in plan.md. Nothing to act on; logging and stopping.
-
-## 2026-09-27T11:36:30-05:00 — auto
-
-Profile name/id changed from `Default-2026-09-26T21:03:09` (1f4d07da-...) to `Default` (df137496-...) after restart. New profile is fully populated: site 31.5475N, -99.381667W, 470m; optics mine 500mm f/5 with 640x480 sim camera; filters Red/Green/Blue/Clear with focus offsets; ASTAP solver; image save C:\Users\george\Documents\N.I.N.A. All equipment configured (mount, camera, focuser, guider, filterwheel, rotator, dome, weather, safety, switch). User fetched profile after PROFILE-REMOVED event.
-
-## 2026-09-27T11:33:33-05:00 — auto
-
-stop_nina: killed running NINA
-
-## 2026-09-27T11:33:44-05:00 — auto
-
-start_nina: launching NINA on real time; launched NINA from C:\Program Files\N.I.N.A. - Nighttime Imaging 'N' Astronomy\NINA.exe
+## 2026-09-28T05:52:18Z
+- Status check: NINA responsive; mount parked, safety monitor safe, weather device connected (28.8 °C, 58% humidity, no rain); no sequence running. Prior logs contain repeated plate-solve errors.
+- Loaded `/mnt/c/Users/george/nina/veil.json` as a full light sequence (pointing 1), per request.
+- Started sequence and verified it is RUNNING on Veil Nebula; currently slewing/centering, then it will autofocus and acquire 60 × 60 s Clear lights. Safety remains true; mount is unparked. Simulator reports no connected guider or camera cooler, and the previous run had repeated plate-solve errors.
+- 2026-09-28T05:52:40Z trigger check: NINA responsive; safety is true, weather connected with no rain, mount tracking and unparked. `veil.json` sequence remains RUNNING and is slewing/centering on target (altitude ~53.7°). No intervention needed; left the in-progress observation uninterrupted.
+- 2026-09-28T05:52:55Z autofocus trigger check: NINA responsive; safety remains true and mount tracking/unparked. Sequence is RUNNING in autofocus; camera is exposing. Logs show slew-and-center failed (configured to continue on error) and autofocus step 1 detected no stars (HFR 0). Autofocus is still progressing, so left the active sequence uninterrupted.
+- 2026-09-28T05:53:31Z autofocus completion trigger check: all five autofocus samples (positions 15825–15625) reported HFR 0; NINA reports autofocus failed and restored focuser to 15625. Guiding also failed because no guider is connected. Sequence remains RUNNING and a 60 s light exposure is in progress (0/60 iterations complete); safety is true and mount is tracking/unparked. Left the requested active lights sequence running; recorded focus/guiding caveats.
+- 2026-09-28T05:54:42Z light-frame trigger check: first new full-run frame saved as `2026-09-28_00-53-29_Clear__60.00s_0000.fits`; stats confirm 0 stars, HFR 0, guiding RMS 0.00, camera temperature NaN. Sequence remains RUNNING at 1/60 current-run iterations with the next exposure underway; safety remains true and mount tracking/unparked. Plan-level metadata reports 61 attributed lights including earlier frames. Left acquisition running as requested and recorded the zero-star frame quality.
+- 2026-09-28T05:55:40Z light-frame trigger check: second consecutive 60 s Clear frame saved (`2026-09-28_00-54-29_Clear__60.00s_0001.fits`) with 0 stars, HFR 0, RMS 0.00, temperature NaN. Sequence remains RUNNING at 2/60 current-run iterations with the next exposure underway; mount tracking/unparked and safety true. Plan-level acquired count is now 62 including earlier frames. No safety intervention indicated; left the user-requested full sequence running and logged repeated zero-star quality.
+- 2026-09-28T05:56:41Z light-frame trigger check: third consecutive 60 s Clear frame saved (`2026-09-28_00-55-29_Clear__60.00s_0002.fits`) with 0 stars, HFR 0, RMS 0.00, temperature NaN. Sequence is RUNNING at 3/60 current-run iterations and the next exposure is underway; mount tracking/unparked, safety true. No safety trigger; kept the requested full acquisition running and noted the repeated zero-star results.
+- 2026-09-28T05:57:40Z light-frame trigger check: fourth consecutive 60 s Clear frame saved (`2026-09-28_00-56-29_Clear__60.00s_0003.fits`) with 0 stars, HFR 0, RMS 0.00, temperature NaN. Sequence remains RUNNING at 4/60 current-run iterations, camera now exposing; mount tracking/unparked and safety true. Left the active full sequence running; recorded continued zero-star frames.
+- 2026-09-28T05:58:39Z light-frame trigger check: fifth consecutive 60 s Clear frame saved (`2026-09-28_00-57-29_Clear__60.00s_0004.fits`) with 0 stars, HFR 0, RMS 0.00, temperature NaN. Sequence remains RUNNING at 5/60 current-run iterations and camera is exposing; mount tracking/unparked, safety true. Left the active sequence running and recorded the continued zero-star result.
+- 2026-09-28T05:59:43Z light-frame/plate-solve trigger check: sixth Clear frame saved (`2026-09-28_00-58-29_Clear__60.00s_0005.fits`); supplied stats report 0 stars, HFR 0, RMS 0.00, temperature NaN. Two ASTAP plate-solve failures followed. Sequence remains RUNNING at 6/60 current-run iterations with camera exposing; mount tracking/unparked at ~52.3° altitude and safety true. No safety condition requires interruption; left the user-requested sequence running and logged repeated imaging/solver failures.
+- 2026-09-28T06:00:41Z light-frame/plate-solve trigger check: seventh Clear frame saved (`2026-09-28_00-59-29_Clear__60.00s_0006.fits`); supplied stats report 0 stars, HFR 0, RMS 0.00, temperature NaN. Two more ASTAP plate-solve failures followed. Sequence remains RUNNING at 7/60 current-run iterations with camera exposing; mount tracking/unparked, safety true. Left the requested sequence running and logged recurring zero-star/solver failures.
+- 2026-09-28T06:01:43Z light-frame/plate-solve trigger check: eighth Clear frame saved (`2026-09-28_01-00-29_Clear__60.00s_0007.fits`); supplied stats report 0 stars, HFR 0, RMS 0.00, temperature NaN. Two ASTAP failures recurred. Sequence remains RUNNING at 8/60 current-run iterations with camera exposing; mount tracking/unparked and safety true. Weather device is connected with no rain. Left the requested run active and logged the repeated failures.
+- 2026-09-28T06:02:43Z light-frame/plate-solve trigger check: ninth Clear frame saved (`2026-09-28_01-01-29_Clear__60.00s_0008.fits`); supplied stats report 0 stars, HFR 0, RMS 0.00, temperature NaN. Two ASTAP plate-solve failures recurred. Sequence remains RUNNING at 9/60 with camera exposing; mount tracking/unparked and safety true. The simulator continues returning starless frames; left the user-requested sequence running and recorded the diagnostics.
+- 2026-09-28T06:03:43Z light-frame/plate-solve trigger check: tenth Clear frame saved (`2026-09-28_01-02-29_Clear__60.00s_0009.fits`); supplied stats report 0 stars, HFR 0, RMS 0.00, temperature NaN. Two ASTAP plate-solve failures recurred. Sequence is RUNNING at 10/60 with camera exposing; mount tracking/unparked, safety true, weather connected with no rain. Left the requested run active and logged the repeated zero-star/solver failures.
+- 2026-09-28T06:04:41Z light-frame/plate-solve trigger check: eleventh Clear frame saved (`2026-09-28_01-03-29_Clear__60.00s_0010.fits`); supplied stats report 0 stars, HFR 0, RMS 0.00, temperature NaN. Two ASTAP plate-solve failures recurred. Sequence is RUNNING at 11/60 and the next exposure is underway; mount tracking/unparked, safety true, weather connected with no rain. Left the requested run active and recorded the repeated issues.
+- 2026-09-28T06:05:42Z light-frame/plate-solve trigger check: frame `2026-09-28_01-04-29_Clear__60.00s_0011.fits` saved; supplied stats report 0 stars, HFR 0, RMS 0.00, temperature NaN, followed by two ASTAP failures. Sequence remains RUNNING (state reports 15/60 iterations) with camera exposing; mount tracking/unparked and safety true, weather connected with no rain. Left the active full sequence running and recorded the repeated imaging/solver failures.
+- 2026-09-28T06:06:44Z acquisition-done trigger: NINA confirmed the Veil target loop finished 60/60; safety remains true, mount tracking/unparked, weather connected/no rain. Stopped the running sequence as requested. A safety-wait sequence is now active. `plan.md` has no actual candidate entries; `/mnt/c/Users/george/nina/veil.json` has darks complete, 6 bias frames and 30 flats remaining. Proceeding with the remaining bias calibration.
+- 2026-09-28T06:09:32Z bias-calibration transition: safety-wait sequence stopped; remaining 6 bias frames from `/mnt/c/Users/george/nina/veil.json` loaded and started after the first load attempt was blocked by the standby sequence. NINA reports the bias sequence RUNNING in its start area, executing Park Scope; mount is slewing to park, safety true and weather connected/no rain. No bias exposures have started yet.
+- 2026-09-28T06:10:37Z bias trigger check: six 0 s Clear bias frames were saved and the sequence-finished event arrived. Mount is parked; safety true and weather connected/no rain. Plan progress attributes 28/30 bias frames, leaving 2. No actual candidates are listed in `plan.md`; loading the two remaining bias frames from `veil.json` before flats.
+- 2026-09-28T06:12:22Z bias-calibration completion: the remaining bias loop finished; plan progress now reports 30/30 bias, 20/20 dark, and 0/30 flats. Mount parked, safety true, weather connected with no rain. Stopped the post-acquisition safety wait per the acquisition-done trigger; proceeding to the remaining flats using the dawn-flat sequence.
+- 2026-09-28T06:19:42Z dawn-flat sequence started and verified RUNNING. Safety remains true; mount is parked and weather connected/no rain. Sequence is waiting until local 06:08:37 and Sun altitude reaches -8° before flats, then it will acquire the 30 Clear flats. Plan reports 30/30 bias complete and 0/30 flats acquired.
+- 2026-09-28T06:19:59Z dawn-flat trigger check: NINA is responsive; the dawn-flat sequence remains RUNNING in its sunrise wait (Sun altitude -60.4°, waiting for -8° then 0°). Mount has unparked per sequence startup; safety remains true, weather connected/no rain. No flat exposures have begun; kept the calibration sequence running under its guards.
+- 2026-09-28T06:19:24Z post-bias sequence-finished check: NINA safety-wait sequence was stopped; no wishlist targets are present, and the Veil plan has 30 flats remaining. Loaded `dawn_flat` for the Veil plan; current sequence structure waits for the sun to reach -8° and then 0° before imaging flats. Mount is parked, safety true, weather connected/no rain. Starting the guarded dawn-flat sequence.
+- 2026-09-28T06:32:38Z requested full Veil lights reload: NINA responsive, enclosure safety true, weather connected/no rain, mount unparked. Load attempt for `/mnt/c/Users/george/nina/veil.json` (`frame_type=light`, `mode=full`, pointing 1) failed with tool error `name 'Event' is not defined`; sequence state is unchanged and the dawn-flat sequence remains RUNNING in its time wait. No lights sequence was loaded or started.
+- 2026-09-28T06:34:51Z retrying requested full Veil lights reload: first load attempt was rejected because dawn-flat was still RUNNING. Stopped its time-wait sequence; verified it is no longer running. NINA responsive, enclosure safety true, weather connected/no rain, mount remains unparked. Retrying full light sequence load now.
+- 2026-09-28T06:35:09Z sequence-finished trigger received; confirmed dawn-flat sequence had finished/stopped, NINA responsive, enclosure safe, and weather connected with no rain. Loaded `/mnt/c/Users/george/nina/veil.json` as a full light sequence (`mode=full`, pointing 1). Starting the requested run.
+- 2026-09-28T06:39:17Z per user request, stopped the running full Veil lights sequence (2/60 exposures in this run) and verified it is no longer running. NINA responsive; enclosure safety true, weather connected/no rain (61% cloud cover), mount tracking and unparked at ~44.1° altitude. Loading a fresh full lights sequence from `/mnt/c/Users/george/nina/veil.json`.
+- 2026-09-28T06:39:31Z full lights load attempt failed with tool error `name 'json' is not defined`; sequence remains stopped. Retrying once; NINA was responsive and safety true at the preceding check.
+- 2026-09-28T06:40:52Z per user request, called stop_sequence; NINA confirms sequence stopped. Equipment check: mount tracking/unparked at ~43.7° altitude, enclosure safety true, weather connected/no rain (61% cloud). Loading a fresh full Veil lights sequence next.
+- 2026-09-28T06:41:03Z loaded `/mnt/c/Users/george/nina/veil.json` as `frame_type=light`, `mode=full`, pointing 1. Verified the Veil sequence is loaded but not running, with 0/60 light iterations completed. NINA responsive; safety true and weather connected/no rain. Per request, did not start the sequence.
+- 2026-09-28T06:42:38Z processed the new ACQUISITION-FINISHED event. The target section had finished and only the end-area indefinite wait was running; stopped the sequence and confirmed it is stopped. `plan.md` has no wishlist targets; `/mnt/c/Users/george/nina/veil.json` progress is lights 74/60 (complete), darks 20/20, bias 30/30, and flats 0/30. Safety monitor true, weather connected/no rain (85% cloud), mount tracking/unparked. Advancing to remaining dawn flats.
+- 2026-09-28T06:43:01Z the additional SEQUENCE-FINISHED event was confirmed in NINA events at 06:42:35Z; no sequence remained active. Loaded `/mnt/c/Users/george/nina/veil.json` as `dawn_flat` in remaining mode. Verified 30 Clear flats are queued; sequence waits until local 06:08:37 and Sun altitude -8° before imaging, then until 0° for the flat run. Starting this guarded calibration sequence.
+- 2026-09-28T06:57:59Z per user request, explicitly stopped the current sequence; NINA confirmed stopped. Before the stop, the dawn-flat sequence had FINISHED. NINA is responsive; enclosure safety true, weather connected/no rain (67% cloud cover), mount tracking/unparked at ~40.2° altitude. Loading `/mnt/c/Users/george/nina/veil.json` as a full lights sequence now; will leave it loaded but not started.
+- 2026-09-28T06:58:11Z loaded `/mnt/c/Users/george/nina/veil.json` as `frame_type=light`, `mode=full`, pointing 1. Verified a fresh Veil target sequence is loaded with 0/60 light iterations completed and is not running. NINA responsive; enclosure safety true, weather connected/no rain (67% cloud cover), mount tracking/unparked at ~40.1° altitude. Left the sequence loaded without starting it.

@@ -1237,6 +1237,134 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
             result = await get_nina_time()
         self.assertIn("delta_seconds", result)
 
+    async def test_get_nina_status_process_running_with_api(self):
+        from nina_planner.server import get_nina_status
+
+        fake_proc = unittest.mock.MagicMock()
+        fake_proc.stdout = (
+            "Image Name                     PID Session Name        "
+            "Session#    Mem Usage Status\n"
+            "========================= ======== ================ =========== "
+            "=========== ============\n"
+            "NINA.exe                       1234 Console            "
+            "1       123,456 K Running\n"
+        )
+
+        async def fake_time():
+            return {
+                "nina_time": "2026-09-22T03:00:00",
+                "host_time": "2026-09-22T03:00:01",
+                "delta_seconds": -1.0,
+                "simulated": False,
+            }
+
+        with (
+            patch(
+                "nina_planner.server._run_blocking",
+                AsyncMock(return_value=fake_proc),
+            ),
+            patch("nina_planner.server.get_nina_time", side_effect=fake_time),
+        ):
+            result = await get_nina_status()
+
+        self.assertTrue(result["process_running"])
+        self.assertTrue(result["api_responsive"])
+        self.assertEqual(result["pid"], 1234)
+        self.assertEqual(result["nina_time"], "2026-09-22T03:00:00")
+        self.assertEqual(result["host_time"], "2026-09-22T03:00:01")
+        self.assertEqual(result["delta_seconds"], -1.0)
+        self.assertFalse(result["simulated"])
+        self.assertIn("running", result["summary"])
+        self.assertIn("responsive", result["summary"])
+
+    async def test_get_nina_status_process_running_no_api(self):
+        from nina_planner.server import get_nina_status
+
+        fake_proc = unittest.mock.MagicMock()
+        fake_proc.stdout = (
+            "Image Name                     PID Session Name        "
+            "Session#    Mem Usage Status\n"
+            "========================= ======== ================ =========== "
+            "=========== ============\n"
+            "NINA.exe                       1234 Console            "
+            "1       123,456 K Running\n"
+        )
+
+        with (
+            patch(
+                "nina_planner.server._run_blocking",
+                AsyncMock(return_value=fake_proc),
+            ),
+            patch(
+                "nina_planner.server.get_nina_time",
+                AsyncMock(side_effect=RuntimeError("connection refused")),
+            ),
+        ):
+            result = await get_nina_status()
+
+        self.assertTrue(result["process_running"])
+        self.assertFalse(result["api_responsive"])
+        self.assertEqual(result["pid"], 1234)
+        self.assertIsNone(result["nina_time"])
+        self.assertIsNone(result["host_time"])
+        self.assertIsNone(result["delta_seconds"])
+        self.assertIsNone(result["simulated"])
+        self.assertIn("unresponsive", result["summary"])
+
+    async def test_get_nina_status_not_running(self):
+        from nina_planner.server import get_nina_status
+
+        fake_proc = unittest.mock.MagicMock()
+        fake_proc.stdout = (
+            "INFO: No tasks are running which match the specified criteria.\n"
+        )
+
+        with (
+            patch(
+                "nina_planner.server._run_blocking",
+                AsyncMock(return_value=fake_proc),
+            ),
+            patch(
+                "nina_planner.server.get_nina_time",
+                AsyncMock(side_effect=RuntimeError("connection refused")),
+            ),
+        ):
+            result = await get_nina_status()
+
+        self.assertFalse(result["process_running"])
+        self.assertFalse(result["api_responsive"])
+        self.assertIsNone(result["pid"])
+        self.assertIsNone(result["nina_time"])
+        self.assertIn("not running", result["summary"])
+
+    async def test_get_nina_status_tasklist_exception(self):
+        """When tasklist raises, process_running stays False but the API
+        probe still runs. The tool never raises itself.
+        """
+        from nina_planner.server import get_nina_status
+
+        async def fake_time():
+            return {
+                "nina_time": "2026-09-22T03:00:00",
+                "host_time": "2026-09-22T03:00:00",
+                "delta_seconds": 0.0,
+                "simulated": False,
+            }
+
+        with (
+            patch(
+                "nina_planner.server._run_blocking",
+                AsyncMock(side_effect=RuntimeError("tasklist crashed")),
+            ),
+            patch("nina_planner.server.get_nina_time", side_effect=fake_time),
+        ):
+            result = await get_nina_status()
+
+        self.assertFalse(result["process_running"])
+        self.assertTrue(result["api_responsive"])
+        self.assertIsNone(result["pid"])
+        self.assertEqual(result["nina_time"], "2026-09-22T03:00:00")
+
     async def test_start_nina_simulated_get_nina_time_fails(self):
         """When get_nina_time() never returns the simulated date during
         capture-check, start_nina restores the host clock and raises.

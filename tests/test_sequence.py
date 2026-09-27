@@ -186,6 +186,46 @@ class ContainerDefaultsTest(unittest.TestCase):
         result = container_deepsky(name="DSO", target="M31", ra=5.0, dec=10.0, posang=0)
         self.assertEqual(result["Items"]["$values"], [])
 
+    def test_container_deepsky_explicit_lists_are_preserved(self):
+        from nina_planner.sequence import container_deepsky
+
+        result = container_deepsky(
+            name="DSO",
+            target="M31",
+            ra=5.0,
+            dec=10.0,
+            triggers=[],
+            conditions=[],
+            instructions=[],
+        )
+
+        self.assertEqual(result["Conditions"]["$values"], [])
+        self.assertEqual(result["Triggers"]["$values"], [])
+        self.assertEqual(result["Items"]["$values"], [])
+
+
+class ReferenceNormalizationTest(unittest.TestCase):
+    def test_container_with_instructions_keeps_its_parent_reference(self):
+        from nina_planner.sequence import _add_refs
+
+        result = _add_refs(
+            {
+                "$id": None,
+                "Parent": None,
+                "Items": [
+                    {
+                        "$id": None,
+                        "Parent": None,
+                        "Instructions": [{"$id": None, "Parent": None}],
+                    }
+                ],
+            }
+        )
+
+        container = result["Items"][0]
+        self.assertEqual(container["Parent"], {"$ref": "1"})
+        self.assertEqual(container["Instructions"][0]["Parent"], {"$ref": "1"})
+
 
 class PointingIndexValidationTest(unittest.TestCase):
     """Covers line 838 in sequence.py: pointing_index out-of-range."""

@@ -4,7 +4,7 @@ import * as fs from "node:fs";
 import { WebSocket } from "ws";
 
 function fileLog(pluginLogs : string | null, message: string, data?: any) {
-  const payload = `${message} ${JSON.stringify(data)}`;
+  const payload = `${message} ${JSON.stringify(data, null, 2)}`;
   if (pluginLogs) {
     fs.appendFileSync(pluginLogs , `${payload}\n`);
   }
@@ -19,12 +19,13 @@ const plugin: Plugin = async (
     typeof options.intervalCheck === "number" ? options.intervalCheck : 10;
   const pluginLogs = options.pluginLogs as string || null;
 
-  async function triggerIntervention(events: string | null = null) {
+  async function triggerIntervention(events: any | null = null) {
     // get prompt
+    fileLog(pluginLogs, "events:", events);
+    const payload = JSON.stringify(events, null, 2);
     const text = (events == null
         ? "Trigger: Routine interval check. No new N.I.N.A. events."
-        : `Trigger: New N.I.N.A. events follow:\n\n\`\`\`json\n${events}\n\`\`\``);
-    fileLog(pluginLogs, "text:", text);
+        : `Trigger: New N.I.N.A. events follow:\n\n\`\`\`json\n${payload}\n\`\`\``);
 
     // get active session
     const sessions = await ctx.client.session.list().catch(() => null)
@@ -50,9 +51,16 @@ const plugin: Plugin = async (
 
   async function flushBatch() {
     if (eventBatch.length === 0) return;
-    const payload = JSON.stringify(eventBatch);
+    await triggerIntervention(eventBatch);
     eventBatch = [];
-    await triggerIntervention(payload);
+  }
+
+  function safeJsonParse(str) {
+    try {
+      return JSON.parse(str);
+    } catch {
+      return null;
+    }
   }
 
   function pushEvent(response: string) {
@@ -81,13 +89,12 @@ const plugin: Plugin = async (
     };
 
     ws.onmessage = (event: { data: unknown }) => {
-      try {
-        fileLog(pluginLogs, "nina-plugin: ws onmessage:", event.data);
-        const msg = JSON.parse(event.data as string);
-        if (msg.Response) {
-          pushEvent(msg.Response);
-        }
-      } catch {}
+      const msg = safeJsonParse(event.data as string);
+      if (msg && msg.Response) {
+        const response = typeof msg.Response == "string" ? { Event: msg.Response } : msg.Response
+        fileLog(pluginLogs, "nina-plugin: ws onmessage", response);
+        pushEvent(response);
+      }
     };
 
     ws.onclose = () => {
