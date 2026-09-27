@@ -346,8 +346,8 @@ class MeltImagingMetadataTest(unittest.TestCase):
 
     def test_exposure_start_normalized_utc(self):
         res = widen_imaging_metadata(self._rows())
-        self.assertEqual(res["rows"][0]["exposure_start"], "2026-09-22T02:16:25Z")
-        self.assertEqual(res["rows"][1]["exposure_start"], "2026-09-22T02:17:25Z")
+        self.assertEqual(res["rows"][0]["exposure_start"], "2026-09-22T02:16:25.000Z")
+        self.assertEqual(res["rows"][1]["exposure_start"], "2026-09-22T02:17:25.000Z")
         self.assertNotIn("exposure_start_utc", res["rows"][0])
         self.assertNotIn("exposure_start_utc", res["rows"][1])
 
@@ -437,6 +437,7 @@ class MeltWeatherTest(unittest.TestCase):
     def _weather(self):
         return [
             {
+                "exposure_number": "0",
                 "exposure_start_utc": "2026-09-22T02:16:25Z",
                 "exposure_start": "2026-09-21 21:16",
                 "temperature": "24.5",
@@ -445,6 +446,7 @@ class MeltWeatherTest(unittest.TestCase):
                 "sky_temperature": "NaN",
             },
             {
+                "exposure_number": "1",
                 "exposure_start_utc": "2026-09-22T02:17:25Z",
                 "exposure_start": "2026-09-21 21:17",
                 "temperature": "24.1",
@@ -454,13 +456,35 @@ class MeltWeatherTest(unittest.TestCase):
             },
         ]
 
-    def test_weather_metrics_merged_by_timestamp(self):
+    def test_weather_metrics_merged_by_exposure_identity(self):
         res = widen_imaging_metadata(self._rows(), weather_rows=self._weather())
         rows = res["rows"]
         self.assertEqual(rows[0]["weather.temperature"], 24.5)
         self.assertEqual(rows[1]["weather.temperature"], 24.1)
         self.assertEqual(rows[0]["weather.humidity"], 73.0)
         self.assertEqual(rows[1]["weather.humidity"], 75.0)
+
+    def test_weather_join_uses_exposure_number_when_timestamps_match(self):
+        rows = self._rows()
+        rows[1]["exposure_start_utc"] = rows[0]["exposure_start_utc"]
+        weather = self._weather()
+        weather[1]["exposure_start_utc"] = weather[0]["exposure_start_utc"]
+
+        res = widen_imaging_metadata(rows, weather_rows=weather)
+
+        self.assertEqual(res["rows"][0]["weather.temperature"], 24.5)
+        self.assertEqual(res["rows"][1]["weather.temperature"], 24.1)
+
+    def test_weather_join_normalizes_both_timestamps_to_milliseconds(self):
+        rows = self._rows()[:1]
+        rows[0]["exposure_start_utc"] = "2026-09-22T02:16:25.123456Z"
+        weather = [dict(self._weather()[0])]
+        weather[0]["exposure_start_utc"] = "2026-09-22T02:16:25.123999+00:00"
+
+        res = widen_imaging_metadata(rows, weather_rows=weather)
+
+        self.assertEqual(res["rows"][0]["exposure_start"], "2026-09-22T02:16:25.123Z")
+        self.assertEqual(res["summary"]["constants"]["weather.temperature"], 24.5)
 
     def test_weather_constant_goes_to_summary(self):
         res = widen_imaging_metadata(self._rows(), weather_rows=self._weather())
@@ -475,8 +499,8 @@ class MeltWeatherTest(unittest.TestCase):
         res = widen_imaging_metadata(self._rows(), weather_rows=self._weather())
         self.assertEqual(len(res["rows"]), 2)
         self.assertEqual(res["rows"][0]["file_path"], "/d/2026-09-21/LIGHT/a.fits")
-        self.assertEqual(res["rows"][0]["exposure_start"], "2026-09-22T02:16:25Z")
-        self.assertEqual(res["rows"][1]["exposure_start"], "2026-09-22T02:17:25Z")
+        self.assertEqual(res["rows"][0]["exposure_start"], "2026-09-22T02:16:25.000Z")
+        self.assertEqual(res["rows"][1]["exposure_start"], "2026-09-22T02:17:25.000Z")
 
     def test_unmatched_weather_frame_gets_no_weather(self):
         weather = self._weather()
@@ -486,31 +510,42 @@ class MeltWeatherTest(unittest.TestCase):
         self.assertEqual(res["rows"][1]["weather.temperature"], 24.1)
         self.assertEqual(res["rows"][1]["weather.cloud_cover"], 0.0)
 
+    def test_conflicting_duplicate_weather_identity_is_not_joined(self):
+        weather = self._weather()
+        weather.append(dict(weather[0], temperature="99"))
+
+        res = widen_imaging_metadata(self._rows(), weather_rows=weather)
+
+        self.assertIsNone(res["rows"][0]["weather.temperature"])
+        self.assertEqual(res["rows"][1]["weather.temperature"], 24.1)
+
     def test_no_weather_rows_leaves_output_unchanged(self):
         res = widen_imaging_metadata(self._rows())
         self.assertNotIn("temperature", res["summary"].get("constants", {}))
         self.assertNotIn("weather.temperature", res["rows"][0])
         self.assertEqual(res["rows"][0]["file_path"], "/d/2026-09-21/LIGHT/a.fits")
-        self.assertEqual(res["rows"][0]["exposure_start"], "2026-09-22T02:16:25Z")
+        self.assertEqual(res["rows"][0]["exposure_start"], "2026-09-22T02:16:25.000Z")
 
 
 class NormTsTest(unittest.TestCase):
     def test_utc_z_preserved(self):
-        self.assertEqual(_norm_ts("2026-09-22T02:16:25Z"), "2026-09-22T02:16:25Z")
+        self.assertEqual(_norm_ts("2026-09-22T02:16:25Z"), "2026-09-22T02:16:25.000Z")
 
     def test_plus_zero_offset_to_z(self):
-        self.assertEqual(_norm_ts("2026-09-22T02:16:25+00:00"), "2026-09-22T02:16:25Z")
-
-    def test_microseconds_stripped(self):
         self.assertEqual(
-            _norm_ts("2026-09-22T02:16:25.123456Z"), "2026-09-22T02:16:25Z"
+            _norm_ts("2026-09-22T02:16:25+00:00"), "2026-09-22T02:16:25.000Z"
+        )
+
+    def test_microseconds_truncated_to_milliseconds(self):
+        self.assertEqual(
+            _norm_ts("2026-09-22T02:16:25.123456Z"), "2026-09-22T02:16:25.123Z"
         )
 
     def test_naive_treated_as_utc(self):
-        self.assertEqual(_norm_ts("2026-09-22 02:16:25"), "2026-09-22T02:16:25Z")
+        self.assertEqual(_norm_ts("2026-09-22 02:16:25"), "2026-09-22T02:16:25.000Z")
 
     def test_naive_without_seconds(self):
-        self.assertEqual(_norm_ts("2026-09-22 02:16"), "2026-09-22T02:16:00Z")
+        self.assertEqual(_norm_ts("2026-09-22 02:16"), "2026-09-22T02:16:00.000Z")
 
     def test_unparseable_falls_back_raw(self):
         self.assertEqual(_norm_ts("n/a"), "n/a")
@@ -692,6 +727,7 @@ class ImagingDefensivePathsTest(unittest.TestCase):
                 "image_type": "LIGHT",
                 "duration": "60.0",
                 "filter_name": "L",
+                "exposure_number": "0",
                 "exposure_start_utc": "2026-09-21T02:16:25Z",
             },
         ]
@@ -699,6 +735,7 @@ class ImagingDefensivePathsTest(unittest.TestCase):
             {"exposure_start_utc": None},  # None → _norm_ts returns None → skip
             {"exposure_start_utc": ""},  # empty → skip
             {
+                "exposure_number": "0",
                 "exposure_start_utc": "2026-09-21T02:16:25Z",
                 "temperature": 15.0,
             },

@@ -123,7 +123,7 @@ _ID_VARS = (
 )
 
 # Output name for the UTC timestamp identity column: the CSV's ExposureStartUTC
-# is the only time-of-exposure column we keep (normalized to seconds-precision
+# is the only time-of-exposure column we keep (normalized to milliseconds-precision
 # UTC with a Z suffix), and the naive local ExposureStart is dropped entirely.
 _OUTPUT_ID_NAME = {
     "exposure_start_utc": "exposure_start",
@@ -272,10 +272,11 @@ def _summary_name(column: str) -> str:
 
 
 def _norm_ts(value: Any) -> str | None:
-    """Canonicalize a timestamp to seconds-precision UTC ISO-8601 with a Z
-    suffix (e.g. ``2026-09-22T02:16:25Z``).
+    """Canonicalize a timestamp to milliseconds-precision UTC ISO-8601 with a Z
+    suffix (e.g. ``2026-09-22T02:16:25.123Z``).
 
-    Timezone-bearing inputs are shifted to UTC and microseconds are dropped.
+    Timezone-bearing inputs are shifted to UTC and sub-millisecond precision is
+    truncated.
     Naive inputs (no timezone marker) are treated as already-UTC, matching the
     ExposureStartUTC column this function normalizes. Strings that cannot be
     parsed fall back to the raw text (exact match) so join keys stay stable.
@@ -293,7 +294,20 @@ def _norm_ts(value: Any) -> str | None:
         dt = dt.replace(tzinfo=UTC)
     else:
         dt = dt.astimezone(UTC)
-    return dt.replace(microsecond=0).strftime("%Y-%m-%dT%H:%M:%SZ")
+    milliseconds = dt.microsecond // 1000
+    return dt.strftime("%Y-%m-%dT%H:%M:%S.") + f"{milliseconds:03d}Z"
+
+
+def _weather_join_key(row: dict[str, Any]) -> tuple[str, str] | None:
+    """Return the stable per-exposure weather join key, if complete."""
+    exposure_number = row.get("exposure_number")
+    if exposure_number is None:
+        return None
+    exposure_number = str(exposure_number).strip()
+    timestamp = _norm_ts(row.get("exposure_start_utc"))
+    if not exposure_number or timestamp is None:
+        return None
+    return exposure_number, timestamp
 
 
 def _counts(rows: list[dict[str, Any]], key: str) -> dict[str, int]:
@@ -314,8 +328,8 @@ def widen_imaging_metadata(
 
     Identity fields (file_path, date, exposure_number, exposure_start,
     duration, filter_name, ...) keep their names; exposure_start is the
-    ExposureStartUTC value normalized to seconds-precision UTC ISO-8601 with a
-    Z suffix, and the naive local ExposureStart column is dropped. Metric
+    ExposureStartUTC value normalized to milliseconds-precision UTC ISO-8601
+    with a Z suffix, and the naive local ExposureStart column is dropped. Metric
     columns are namespaced by group (quality.hfr, guiding.rms,
     background.adu_mean, ...) and only genuinely varying metrics appear as
     columns: columns whose cleaned values are all identical (constants) move
@@ -324,28 +338,40 @@ def widen_imaging_metadata(
     quality/guiding/CCD metrics) move to summary.unpopulated.
 
     When ``weather_rows`` is given, per-exposure weather samples from
-    WeatherData.csv are merged onto each frame by its UTC exposure timestamp
-    (exposure_start_utc) and surface as weather.* columns in the same row
-    (weather.temperature, ...), with weather constants/unpopulated listed
-    under their namespaced weather.* names.
+    WeatherData.csv are merged onto each frame by exposure number and its
+    normalized UTC exposure timestamp, and surface as weather.* columns in the
+    same row (weather.temperature, ...), with weather constants/unpopulated
+    listed under their namespaced weather.* names.
     """
     if not rows:
         return {"summary": {"count": 0}, "rows": []}
 
-    weather_by_ts: dict[str, dict[str, Any]] = {}
+    weather_by_key: dict[tuple[str, str], dict[str, Any]] = {}
+    ambiguous_weather_keys: set[tuple[str, str]] = set()
     if weather_rows:
         for w in weather_rows:
-            key = _norm_ts(w.get("exposure_start_utc"))
+            key = _weather_join_key(w)
             if key is None:
                 continue
-            weather_by_ts.setdefault(key, w)
+            if key in ambiguous_weather_keys:
+                continue
+            existing = weather_by_key.get(key)
+            if existing is None:
+                weather_by_key[key] = w
+            elif any(
+                _clean_metric(c, existing.get(c)) != _clean_metric(c, w.get(c))
+                for c in _WEATHER_METRICS
+            ):
+                # Conflicting samples with the same identity cannot be
+                # attributed safely; leave that exposure's weather blank.
+                del weather_by_key[key]
+                ambiguous_weather_keys.add(key)
 
     merged_rows: list[dict[str, Any]] = []
     for row in rows:
         merged = dict(row)
-        ts = row.get("exposure_start_utc")
-        ts_norm = _norm_ts(ts)
-        weather = weather_by_ts.get(ts_norm) if (ts_norm and weather_by_ts) else None
+        key = _weather_join_key(row)
+        weather = weather_by_key.get(key) if key is not None else None
         for c in _WEATHER_METRICS:
             merged[c] = weather.get(c) if weather else None
         merged_rows.append(merged)
