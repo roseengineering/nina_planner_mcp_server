@@ -336,7 +336,7 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
             plate_solver=None,
             blind_plate_solver=None,
             image_save_path="C:\\NINA",
-            file_pattern=None,
+            file_pattern="$$DATEMINUS12$$\\$$IMAGETYPE$$\\$$TARGETNAME$$",
             equipment=EquipmentConfig(
                 has_mount=True,
                 has_camera=True,
@@ -1071,6 +1071,53 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
                 )
         self.assertTrue(captured_kwargs["dusk"])
         self.assertIn("`dusk_flat` sequence loaded", result)
+
+    async def test_load_light_sequence_requires_targetname_file_pattern(self):
+        from nina_planner.server import load_sequence_from_plan
+
+        plan_dict = {
+            "plan_id": "plan-test123",
+            "target": "M31",
+            "pointings": [{"ra_hours": 5.0, "dec_deg": 10.0}],
+            "light": [
+                {"filter_name": "L", "exposure_time_seconds": 60.0, "total_count": 1}
+            ],
+            "flat": [
+                {"filter_name": "L", "exposure_time_seconds": 5.0, "total_count": 1}
+            ],
+            "dark": [{"exposure_time_seconds": 60.0, "total_count": 1}],
+            "bias": [{"total_count": 1}],
+        }
+
+        with tempfile.TemporaryDirectory() as tmp:
+            plan_path = Path(tmp) / "plan.json"
+            plan_path.write_text(json.dumps(plan_dict))
+            api_post = AsyncMock(return_value={})
+
+            with (
+                patch(
+                    "nina_planner.server.get_site_profile",
+                    AsyncMock(
+                        return_value=self._full_profile().model_copy(
+                            update={"file_pattern": None}
+                        )
+                    ),
+                ),
+                patch(
+                    "nina_planner.server._get_site_equipment_status",
+                    AsyncMock(return_value=ObservatoryEquipment()),
+                ),
+                patch("nina_planner.server._api_post", api_post),
+            ):
+                with self.assertRaisesRegex(
+                    ValueError,
+                    r"N\.I\.N\.A\. FilePattern must contain \$\$TARGETNAME\$\$",
+                ):
+                    await load_sequence_from_plan(
+                        str(plan_path), frame_type="light", mode="full"
+                    )
+
+            api_post.assert_not_awaited()
 
     async def test_load_sequence_from_plan_full_mode(self):
         from unittest.mock import MagicMock as _MM

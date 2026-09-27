@@ -563,7 +563,7 @@ async def load_sequence_from_plan(
     min_detected_stars: int | None = None,
     max_guiding_rms_arcsec: float | None = None,
 ) -> str:
-    """Loads an acquisition sequence with safety guardrails from an observation-plan JSON file. Select the frame type: light, dark, bias, dawn_flat, or dusk_flat. `pointing_index` (1-based, default 1) selects which pointing of the plan to load — the lights target name embeds `{base_plan_id}-{pointing_index}` so each pointing's frames are attributed independently. In the default `remaining` mode the sequence only acquires frames still needed (total minus frames already attributed to this plan/pointing in the imaging metadata); if nothing remains it reports the plan as complete and loads nothing. max_hfr and/or min_detected_stars exclude light frames failing quality thresholds from the acquired count. Pass `mode="full"` to acquire the entire plan again. This tool only loads the sequence; call start_sequence afterward."""
+    """Loads an acquisition sequence with safety guardrails from an observation-plan JSON file. Select the frame type: light, dark, bias, dawn_flat, or dusk_flat. `pointing_index` (1-based, default 1) selects which pointing of the plan to load — the lights target name embeds `{base_plan_id}-{pointing_index}` so each pointing's frames are attributed independently. Light loads require `$$TARGETNAME$$` in the active profile's FilePattern for attribution. In the default `remaining` mode the sequence only acquires frames still needed (total minus frames already attributed to this plan/pointing in the imaging metadata); if nothing remains it reports the plan as complete and loads nothing. max_hfr and/or min_detected_stars exclude light frames failing quality thresholds from the acquired count. Pass `mode="full"` to acquire the entire plan again. This tool only loads the sequence; call start_sequence afterward."""
     plan = await _load_plan(file_path)
     profile = await get_site_profile()
     await _validate_filters(plan, profile)
@@ -605,6 +605,12 @@ async def load_sequence_from_plan(
         plan = plan_with_remaining(plan, progress)
     elif mode != "full":
         raise ValueError(f"Unsupported mode: {mode} (use 'remaining' or 'full')")
+
+    if frame_type == "light" and "$$TARGETNAME$$" not in (profile.file_pattern or ""):
+        raise ValueError(
+            "N.I.N.A. FilePattern must contain $$TARGETNAME$$ "
+            "for light-frame plan attribution."
+        )
 
     if frame_type == "light":
         seq = build_sequence_lights(plan, equipment, pointing_index=pointing_index)
