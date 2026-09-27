@@ -52,6 +52,7 @@ select = ["E", "F", "I", "B"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-v"
+markers = ["live: requires a running NINA instance (skipped if unreachable)"]
 
 [tool.coverage]
 source = ["nina_planner"]
