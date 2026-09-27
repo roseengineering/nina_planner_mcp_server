@@ -2,7 +2,6 @@ import json
 import os
 import re
 import subprocess
-import sys
 from collections.abc import Set as AbstractSet
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
