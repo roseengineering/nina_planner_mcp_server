@@ -669,13 +669,38 @@ async def _launch_nina_interactive(nina_exe: str) -> None:
     run_cmd = schtasks_run_command()
     del_cmd = schtasks_delete_command()
     _log_payload("_launch_nina_interactive: create", " ".join(create_cmd))
-    await _run_blocking(create_cmd, timeout=15.0)
+    create_result = await _run_blocking(create_cmd, timeout=15.0)
+    _raise_for_command_failure(
+        create_result, create_cmd, "Task Scheduler task creation"
+    )
     _log_payload("_launch_nina_interactive: run", " ".join(run_cmd))
-    await _run_blocking(run_cmd, timeout=15.0)
     try:
-        await _run_blocking(del_cmd, timeout=10.0)
-    except Exception as e:
-        _log_payload("_launch_nina_interactive: delete task warning", repr(e))
+        run_result = await _run_blocking(run_cmd, timeout=15.0)
+        _raise_for_command_failure(run_result, run_cmd, "Task Scheduler task execution")
+    finally:
+        # Remove the temporary task even when starting it fails.
+        try:
+            await _run_blocking(del_cmd, timeout=10.0)
+        except Exception as e:
+            _log_payload("_launch_nina_interactive: delete task warning", repr(e))
+
+
+def _raise_for_command_failure(result: Any, argv: list[str], action: str) -> None:
+    """Raise with command output when a completed subprocess exits nonzero."""
+    returncode = result.returncode
+    if returncode == 0:
+        return
+
+    output = "\n".join(
+        part.strip()
+        for part in (result.stdout or "", result.stderr or "")
+        if part.strip()
+    )
+    detail = f": {output}" if output else ""
+    raise RuntimeError(
+        f"{action} command {' '.join(argv)!r} failed with exit code "
+        f"{returncode}{detail}"
+    )
 
 
 async def _read_windows_clock() -> datetime:
@@ -768,10 +793,18 @@ async def start_nina(time: str | None = None) -> dict[str, Any]:
 
     try:
         probe = await _run_blocking(["tasklist.exe", "/FI", "IMAGENAME eq NINA.exe"])
+        if probe.returncode != 0:
+            raise RuntimeError(
+                f"tasklist exited with status {probe.returncode}: "
+                f"{(probe.stderr or '').strip()}"
+            )
         is_running = "NINA.exe" in (probe.stdout or "")
     except Exception as e:
         _log_payload("start_nina probe warning:", repr(e))
-        is_running = False
+        raise RuntimeError(
+            "start_nina failed: could not determine whether NINA.exe is running; "
+            "refusing to launch NINA or change the host clock."
+        ) from e
 
     if is_running:
         raise RuntimeError("NINA is already running. Call stop_nina() first.")
@@ -849,66 +882,89 @@ async def start_nina(time: str | None = None) -> dict[str, Any]:
         )
     log_extra.append(f"shifted OS clock to {time}")
 
-    # 4. Launch NINA in interactive session.
-    await _launch_nina_interactive(nina_exe)
-    log_extra.append(f"launched NINA from {nina_exe}")
-
-    # 5. Capture-check: poll NINA /time until it reports the simulated date.
-    async def _capture_check() -> bool:
-        try:
-            info = await get_nina_time()
-            nina_naive = datetime.fromisoformat(info["nina_time"])
-            nina_aware = (
-                nina_naive.replace(tzinfo=local_tz)
-                if nina_naive.tzinfo is None
-                else nina_naive.astimezone(local_tz)
-            )
-            # Tolerate up to 30s of drift: NINA captures the host clock at
-            # init and then advances on its own, so readings drift forward
-            # over time.
-            return abs((nina_aware - target_aware).total_seconds()) <= 30.0
-        except Exception:
-            return False
-
-    captured = await _poll_until_async(_capture_check, timeout=45.0, interval=1.0)
-
-    # 6. Always restore the host clock (deterministic: real0 + measured elapsed).
-    restore_at = datetime.now(UTC)
-    elapsed = (restore_at - shift_at).total_seconds()
-    restore_target_dt = real0 + timedelta(seconds=elapsed)
-    restore_target_naive = restore_target_dt.astimezone(local_tz).replace(tzinfo=None)
-    restore_cmd = restore_set_date_powershell(restore_target_naive.isoformat())
-    _log_payload("start_nina: restore", restore_cmd)
+    captured = False
+    launch_error: Exception | None = None
+    restored = False
     restore_error: str | None = None
+
     try:
-        await _run_blocking(
-            ["powershell.exe", "-NoProfile", "-Command", restore_cmd], timeout=10.0
-        )
+        # 4. Launch NINA in interactive session.
+        await _launch_nina_interactive(nina_exe)
+        log_extra.append(f"launched NINA from {nina_exe}")
+
+        # 5. Capture-check: poll NINA /time until it reports the simulated date.
+        async def _capture_check() -> bool:
+            try:
+                info = await get_nina_time()
+                nina_naive = datetime.fromisoformat(info["nina_time"])
+                nina_aware = (
+                    nina_naive.replace(tzinfo=local_tz)
+                    if nina_naive.tzinfo is None
+                    else nina_naive.astimezone(local_tz)
+                )
+                # Tolerate up to 30s of drift: NINA captures the host clock at
+                # init and then advances on its own, so readings drift forward
+                # over time.
+                return abs((nina_aware - target_aware).total_seconds()) <= 30.0
+            except Exception:
+                return False
+
+        captured = await _poll_until_async(_capture_check, timeout=45.0, interval=1.0)
     except Exception as e:
-        restore_error = repr(e)
-
-    # 7. Verify restore.
-    async def _restore_check() -> bool:
+        # Preserve the launch/capture failure until after the host clock has
+        # been restored and checked below.
+        launch_error = e
+    finally:
+        # 6. Always restore the host clock after a successful shift, including
+        # when launcher setup or NINA startup raises.
+        restore_at = datetime.now(UTC)
+        elapsed = (restore_at - shift_at).total_seconds()
+        restore_target_dt = real0 + timedelta(seconds=elapsed)
+        restore_target_naive = restore_target_dt.astimezone(local_tz).replace(
+            tzinfo=None
+        )
+        restore_cmd = restore_set_date_powershell(restore_target_naive.isoformat())
+        _log_payload("start_nina: restore", restore_cmd)
         try:
-            host_now = await _read_windows_clock()
-            return abs((host_now - restore_target_dt).total_seconds()) <= 2.0
-        except Exception:
-            return False
+            await _run_blocking(
+                ["powershell.exe", "-NoProfile", "-Command", restore_cmd],
+                timeout=10.0,
+            )
+        except Exception as e:
+            restore_error = repr(e)
 
-    restored = await _poll_until_async(_restore_check, timeout=10.0, interval=0.5)
-    log_extra.append(
-        f"restored host clock to {restore_target_dt.isoformat()} (verified={restored})"
-    )
+        # 7. Verify restore even if issuing Set-Date raised.
+        async def _restore_check() -> bool:
+            try:
+                host_now = await _read_windows_clock()
+                return abs((host_now - restore_target_dt).total_seconds()) <= 2.0
+            except Exception:
+                return False
 
+        restored = await _poll_until_async(_restore_check, timeout=10.0, interval=0.5)
+        log_extra.append(
+            f"restored host clock to {restore_target_dt.isoformat()} "
+            f"(verified={restored})"
+        )
+
+    if not restored:
+        launch_detail = (
+            f"; launch/capture error={launch_error!r}" if launch_error else ""
+        )
+        raise RuntimeError(
+            f"start_nina failed: host clock did not restore to "
+            f"{restore_target_dt.isoformat()} (restore_error={restore_error!r})"
+            f"{launch_detail}. Manual intervention may be required."
+        ) from launch_error
+    if launch_error is not None:
+        raise RuntimeError(
+            f"start_nina failed during launch/capture: {launch_error!r}. "
+            "Host clock was restored."
+        ) from launch_error
     if not captured:
         raise RuntimeError(
             f"start_nina failed: NINA never captured simulated date {time!r} within 45s. "
             "Host clock has been restored. Verify NINA launched with get_site_equipment_status()."
-        )
-    if not restored:
-        raise RuntimeError(
-            f"start_nina failed: host clock did not restore to {restore_target_dt.isoformat()} "
-            f"(restore_error={restore_error!r}). Manual intervention may be required."
         )
 
     # 8. Return correct simulated/delta now that host is real.

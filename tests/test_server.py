@@ -26,6 +26,7 @@ from nina_planner.server import (
     _validate_filters,
     _validate_position_angle,
 )
+from nina_planner.system_time import get_launcher_paths
 
 
 class ConvertToMetTest(unittest.IsolatedAsyncioTestCase):
@@ -1376,16 +1377,31 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
         from nina_planner.server import start_nina
 
         class FakeProcess:
+            returncode = 0
             stdout = ""
 
-        host_calls = {"n": 0}
+        host_calls = {"n": 0, "restored": None}
+        local_tz = _dt.fromisoformat("2026-09-26T16:55:00-05:00").tzinfo
 
         async def fake_read_windows_clock():
             host_calls["n"] += 1
-            # First call: real0. After that: shifted target so shift-check passes.
             if host_calls["n"] == 1:
                 return _dt.fromisoformat("2026-09-26T16:55:00-05:00")
+            if host_calls["restored"] is not None:
+                return host_calls["restored"]
+            # Until restore is issued, report the shifted target.
             return _dt.fromisoformat("2026-10-15T23:15:00-05:00")
+
+        def fake_run_blocking(argv, timeout=30.0):
+            if argv[0] == "powershell.exe":
+                command = argv[-1]
+                if command != "Set-Date -Date '2026-10-15T23:15:00'":
+                    restored_naive = _dt.fromisoformat(command.split("'")[1])
+                    host_calls["restored"] = restored_naive.replace(tzinfo=local_tz)
+            return FakeProcess()
+
+        async def fake_poll_until_async(check, timeout, interval):
+            return await check()
 
         with (
             patch(
@@ -1394,23 +1410,32 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
             ),
             patch(
                 "nina_planner.server._run_blocking",
-                return_value=FakeProcess(),
+                side_effect=fake_run_blocking,
             ),
             patch(
                 "nina_planner.server.write_nina_launcher",
-                return_value=(Path("/tmp/launch.cmd"), r"C:\tmp\launch.cmd"),
+                return_value=get_launcher_paths(),
             ),
             patch(
                 "nina_planner.server.get_nina_time",
                 AsyncMock(side_effect=RuntimeError("shift query failed")),
+            ),
+            patch(
+                "nina_planner.server._now_local",
+                return_value=_dt(2026, 9, 26, 16, 55, tzinfo=local_tz),
+            ),
+            patch(
+                "nina_planner.server._poll_until_async",
+                side_effect=fake_poll_until_async,
             ),
             patch("nina_planner.server.anyio.sleep", new=AsyncMockSleep()),
             patch("nina_planner.server._log_payload"),
         ):
             with self.assertRaises(RuntimeError) as ctx:
                 await start_nina("2026-10-15T23:15:00")
-        # Capture-check fails (NINA never reports simulated date); host restored.
+        # Capture-check fails (NINA never reports simulated date); restore succeeds.
         self.assertIn("NINA never captured simulated date", str(ctx.exception))
+        self.assertIsNotNone(host_calls["restored"])
 
     async def test_get_site_equipment_status_calls_log_payload(self):
         """When get_site_equipment_status runs, it calls _log_payload with
@@ -1444,6 +1469,7 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
         from nina_planner.server import start_nina
 
         class FakeProcess:
+            returncode = 0
             stdout = ""
 
         host_calls = {"n": 0}
@@ -1476,7 +1502,7 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
             ),
             patch(
                 "nina_planner.server.write_nina_launcher",
-                return_value=(Path("/tmp/launch.cmd"), r"C:\tmp\launch.cmd"),
+                return_value=get_launcher_paths(),
             ),
             patch(
                 "nina_planner.server.get_nina_time",
@@ -1500,6 +1526,7 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
         from nina_planner.server import start_nina
 
         class FakeProcess:
+            returncode = 0
             stdout = ""
 
         with (

@@ -62,12 +62,6 @@ def local_to_windows(local_path: Path | str, drive_mount: str | None = None) -> 
 
 def get_launcher_paths() -> tuple[Path, str]:
     """Return (local_path, windows_path) for the NINA launch batch file."""
-    user = os.environ.get("USER", "george")
-    default_wsl_temp = Path(f"/mnt/c/Users/{user}/AppData/Local/Temp")
-    if default_wsl_temp.is_dir():
-        local_p = default_wsl_temp / "launch_nina.cmd"
-        return local_p, f"C:\\Users\\{user}\\AppData\\Local\\Temp\\launch_nina.cmd"
-
     local_p = Path(tempfile.gettempdir()) / "launch_nina.cmd"
     return local_p, local_to_windows(local_p)
 
@@ -87,7 +81,7 @@ def write_nina_launcher(nina_exe: str | None = None) -> tuple[Path, str]:
 def schtasks_create_command(
     launcher_win_path: str, task_name: str = NINA_TASK_NAME
 ) -> list[str]:
-    """Command to create an interactive scheduled task for the current active user session."""
+    """Create an interactive scheduled task for the current active user session."""
     return [
         "schtasks.exe",
         "/Create",
