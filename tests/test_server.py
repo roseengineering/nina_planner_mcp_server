@@ -705,6 +705,165 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["target"], "M31")
         self.assertIn("light", result["frame_types"])
 
+    def _write_mosaic_source(self, directory: Path, *, pa: float = 0.0, rows: int = 2):
+        directory.mkdir(parents=True, exist_ok=True)
+        plan_path = directory / "base.json"
+        plan_path.write_text(
+            json.dumps(
+                {
+                    "target": "Veil Nebula",
+                    "intent": "Widefield supernova remnant",
+                    "plan_id": "plan-base123",
+                    "pointings": [{"ra_hours": 20.85, "dec_deg": 31.22}],
+                    "light": [
+                        {
+                            "filter_name": "L",
+                            "exposure_time_seconds": 60.0,
+                            "total_count": 2,
+                        }
+                    ],
+                    "flat": [
+                        {
+                            "filter_name": "L",
+                            "exposure_time_seconds": 5.0,
+                            "total_count": 1,
+                        }
+                    ],
+                    "dark": [{"exposure_time_seconds": 60.0, "total_count": 1}],
+                    "bias": [{"total_count": 1}],
+                }
+            )
+        )
+        header = (
+            "Pane, RA, DEC, Position Angle (East), Pane width (arcmins), "
+            "Pane height (arcmins), Overlap, Row, Column"
+        )
+        lines = [header]
+        for i in range(1, rows + 1):
+            lines.append(
+                f"Pane {i}, 0hr {55 + i:02d}' 00\", 45º 51' 18\", {pa:.2f}, "
+                f"309.00, 205.80, 10%, 1, {i}"
+            )
+        csv_path = directory / "mosaic.csv"
+        csv_path.write_text("\n".join(lines) + "\n")
+        return plan_path, csv_path
+
+    async def test_write_mosaic_plan_creates_multi_pointing_file(self):
+        from nina_planner.server import write_mosaic_plan
+
+        with tempfile.TemporaryDirectory() as tmp:
+            src = Path(tmp) / "src"
+            out = Path(tmp) / "out"
+            out.mkdir()
+            plan_path, csv_path = self._write_mosaic_source(src)
+            with (
+                patch("nina_planner.server.PROJECT_DIR", out),
+                patch(
+                    "nina_planner.server.get_site_profile",
+                    AsyncMock(return_value=self._full_profile()),
+                ),
+            ):
+                result = await write_mosaic_plan(str(plan_path), str(csv_path))
+
+            self.assertIn("Mosaic plan successfully written to", result)
+            self.assertIn("2 pointing(s)", result)
+            written = list(out.glob("*.json"))
+            self.assertEqual(len(written), 1)
+            data = json.loads(written[0].read_text())
+            self.assertEqual(len(data["pointings"]), 2)
+            self.assertEqual(data["pointings"][0]["label"], "Pane 1")
+            self.assertEqual(data["pointings"][0]["row"], 1)
+            self.assertEqual(data["pointings"][1]["column"], 2)
+            self.assertNotEqual(data["plan_id"], "plan-base123")
+            self.assertTrue(data["plan_id"])
+
+    async def test_write_mosaic_plan_zero_pa_without_rotator_ok(self):
+        from nina_planner.server import write_mosaic_plan
+
+        profile = self._full_profile()
+        profile = profile.model_copy(
+            update={
+                "equipment": profile.equipment.model_copy(update={"has_rotator": False})
+            }
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            src = Path(tmp) / "src"
+            out = Path(tmp) / "out"
+            out.mkdir()
+            plan_path, csv_path = self._write_mosaic_source(src, pa=0.0)
+            with (
+                patch("nina_planner.server.PROJECT_DIR", out),
+                patch(
+                    "nina_planner.server.get_site_profile",
+                    AsyncMock(return_value=profile),
+                ),
+            ):
+                result = await write_mosaic_plan(str(plan_path), str(csv_path))
+            self.assertIn("2 pointing(s)", result)
+
+    async def test_write_mosaic_plan_nonzero_pa_without_rotator_raises(self):
+        from nina_planner.server import write_mosaic_plan
+
+        profile = self._full_profile()
+        profile = profile.model_copy(
+            update={
+                "equipment": profile.equipment.model_copy(update={"has_rotator": False})
+            }
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            src = Path(tmp) / "src"
+            out = Path(tmp) / "out"
+            out.mkdir()
+            plan_path, csv_path = self._write_mosaic_source(src, pa=90.0)
+            with (
+                patch("nina_planner.server.PROJECT_DIR", out),
+                patch(
+                    "nina_planner.server.get_site_profile",
+                    AsyncMock(return_value=profile),
+                ),
+                self.assertRaises(ValueError) as ctx,
+            ):
+                await write_mosaic_plan(str(plan_path), str(csv_path))
+            self.assertIn("no rotator", str(ctx.exception))
+
+    async def test_get_plan_progress_all_pointings(self):
+        from nina_planner.server import get_plan_progress
+
+        plan_dict = {
+            "plan_id": "plan-test123",
+            "target": "M31",
+            "pointings": [
+                {"ra_hours": 5.0, "dec_deg": 10.0, "label": "Pane 1"},
+                {"ra_hours": 6.0, "dec_deg": 11.0, "label": "Pane 2"},
+            ],
+            "light": [
+                {"filter_name": "L", "exposure_time_seconds": 60.0, "total_count": 2}
+            ],
+            "flat": [
+                {"filter_name": "L", "exposure_time_seconds": 5.0, "total_count": 1}
+            ],
+            "dark": [{"exposure_time_seconds": 60.0, "total_count": 1}],
+            "bias": [{"total_count": 1}],
+        }
+
+        with tempfile.TemporaryDirectory() as tmp:
+            plan_path = Path(tmp) / "plan.json"
+            plan_path.write_text(json.dumps(plan_dict))
+            with patch(
+                "nina_planner.server._read_metadata",
+                AsyncMock(return_value=[]),
+            ):
+                result = await get_plan_progress(str(plan_path), all_pointings=True)
+
+        self.assertEqual(result["pointing_count"], 2)
+        self.assertFalse(result["complete"])
+        self.assertEqual(len(result["pointings"]), 2)
+        self.assertEqual(result["pointings"][0]["pointing_index"], 1)
+        self.assertEqual(result["pointings"][0]["label"], "Pane 1")
+        self.assertEqual(result["pointings"][0]["plan_id"], "plan-test123-1")
+        self.assertEqual(result["pointings"][1]["plan_id"], "plan-test123-2")
+        self.assertFalse(result["pointings"][0]["complete"])
+
     async def test_run_plan_remaining_mode(self):
         from nina_planner.server import run_plan
 

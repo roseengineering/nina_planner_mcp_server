@@ -1,17 +1,18 @@
 import unittest
+from typing import Any
 
 from pydantic import ValidationError
 
 from nina_planner.models.pointing import Pointing
 
 
-def _pointing(**overrides) -> Pointing:
-    data = {
+def _pointing(**overrides: Any) -> Pointing:
+    data: dict[str, Any] = {
         "ra_hours": 5.0,
         "dec_deg": 10.0,
     }
     data.update(overrides)
-    return Pointing(**data)
+    return Pointing.model_validate(data)
 
 
 class PointingPositionAngleDegValidationTest(unittest.TestCase):
@@ -64,6 +65,31 @@ class PointingPositionAngleDegValidationTest(unittest.TestCase):
         self.assertIn("position_angle_deg", msg)
         self.assertNotIn("ra_hours", msg)
         self.assertNotIn("dec_deg", msg)
+
+
+class PointingMosaicMetadataTest(unittest.TestCase):
+    def test_row_and_column_default_none(self):
+        p = _pointing()
+        self.assertIsNone(p.row)
+        self.assertIsNone(p.column)
+
+    def test_row_and_column_accepted(self):
+        p = _pointing(row=2, column=3)
+        self.assertEqual(p.row, 2)
+        self.assertEqual(p.column, 3)
+
+    def test_row_and_column_coerced_from_string(self):
+        p = _pointing(row="1", column="4")
+        self.assertEqual(p.row, 1)
+        self.assertEqual(p.column, 4)
+
+    def test_negative_row_raises_validation_error(self):
+        with self.assertRaises(ValidationError):
+            _pointing(row=-1)
+
+    def test_negative_column_raises_validation_error(self):
+        with self.assertRaises(ValidationError):
+            _pointing(column=-1)
 
 
 if __name__ == "__main__":

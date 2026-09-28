@@ -22,6 +22,7 @@ from .models.profile import (
     OpticalTrainInfo,
     SiteLocationInfo,
 )
+from .mosaic import load_pointings
 from .nina_utils import ascom_float, ascom_int, to_snake
 from .progress import (
     append_progress_entry,
@@ -169,16 +170,22 @@ def _validate_position_angle(
             f"pointings {unset_idxs} do not. Either set position_angle_deg on "
             "every pointing or omit it from all."
         )
-    if not profile.equipment.has_rotator and set_idxs:
+    nonzero_idxs = [
+        i
+        for i, p in enumerate(plan.pointings, start=1)
+        if p.position_angle_deg is not None and p.position_angle_deg != 0
+    ]
+    if not profile.equipment.has_rotator and nonzero_idxs:
         labeled = [
             f"pointing {i} ({p.label})" if p.label else f"pointing {i}"
             for i, p in enumerate(plan.pointings, start=1)
-            if p.position_angle_deg is not None
+            if p.position_angle_deg is not None and p.position_angle_deg != 0
         ]
         raise ValueError(
-            f"Plan sets position_angle_deg on {', '.join(labeled)} but profile "
-            f"'{profile.profile_name}' has no rotator. Either add a rotator to the "
-            "profile or omit position_angle_deg from the pointings."
+            f"Plan sets a nonzero position_angle_deg on {', '.join(labeled)} but "
+            f"profile '{profile.profile_name}' has no rotator. Without a rotator "
+            "every pointing must have position_angle_deg 0 (or omit it). Either "
+            "add a rotator to the profile or use position_angle_deg 0."
         )
 
 
@@ -515,30 +522,103 @@ async def write_plan_file(plan: ObservationPlan) -> str:
 
 
 @mcp.tool()
+async def write_mosaic_plan(
+    plan_path: str,
+    mosaic_csv: str,
+    output_path: str | None = None,
+) -> str:
+    """Expands a base observation plan into a multi-pointing mosaic plan from a Telescopius-formatted mosaic CSV. The base plan supplies every setting except the pointings (target, intent, exposure groups, calibration, cooler, autofocus, guiding, constraints); its pointings are replaced wholesale by one pointing per CSV row. The Telescopius CSV header is expected to include `Pane`, `RA`, `DEC`, `Position Angle (East)`, `Row`, and `Column` (RA/DEC may be sexagesimal like `0hr 56' 01"` / `45º 51' 18"` or decimal); `row`/`column` are stored on each pointing as metadata (N.I.N.A. does not consume them). The base plan's `plan_id` is cleared so the mosaic gets its own content-derived id, and each pane is attributed independently via `({plan_id}-{pointing_index})` when run with `run_plan(pointing_index=N)`. With no rotator, every pane's `position_angle_deg` must be 0; any nonzero PA fails loudly. Writes `<target>_<intent>_mosaic_<timestamp>.json` in the project directory unless `output_path` is given. This tool only creates the plan file; it does not load or start a sequence."""
+    base = await _load_plan(plan_path)
+    csv_path = Path(mosaic_csv)
+    if not csv_path.is_absolute():
+        csv_path = PROJECT_DIR / csv_path
+    pointings = load_pointings(csv_path)
+    plan = base.model_copy(update={"pointings": pointings, "plan_id": ""})
+    profile = await get_site_profile()
+    await _validate_filters(plan, profile)
+    _validate_position_angle(plan, profile)
+    if not plan.plan_id:
+        plan = plan.model_copy(update={"plan_id": plan._base_plan_id()})
+
+    if output_path:
+        path = Path(output_path)
+        if not path.is_absolute():
+            path = PROJECT_DIR / path
+    else:
+        timestamp = datetime.now(tz=UTC).astimezone().strftime("%Y%m%dT%H%M%S")
+        filename = (
+            f"{_sanitize_filename(plan.target.lower())}_"
+            f"{_sanitize_filename(plan.intent.lower())}_mosaic_{timestamp}.json"
+        )
+        filename = filename.replace(" ", "-")
+        path = PROJECT_DIR / filename
+
+    async with await anyio.open_file(path, "w", encoding="utf-8") as f:
+        await f.write(plan.model_dump_json(indent=2))
+    return (
+        f"Mosaic plan successfully written to {path}: {len(plan.pointings)} pointing(s)"
+    )
+
+
+@mcp.tool()
 async def get_plan_progress(
     file_path: str,
     pointing_index: int = 1,
     max_hfr: float | None = None,
     min_detected_stars: int | None = None,
     max_guiding_rms_arcsec: float | None = None,
+    all_pointings: bool = False,
 ) -> dict[str, Any]:
-    """Returns per-frame-type acquisition progress for an observation-plan JSON file and one of its pointings: for each exposure group, the total_count from the plan, the acquired_count attributed to this plan/pointing from the imaging metadata (ImageMetaData.csv + AcquisitionDetails.csv), and the remaining_count. Lights are attributed via the `{base_plan_id}-{pointing_index}` plan id embedded in the recorded file path (no target-name fallback); flats/darks/bias are matched by image type, filter, and exposure and must fall within the plan's calibration_max_age_days window of today (UTC). Pass max_hfr and/or min_detected_stars to exclude light frames that fail quality thresholds (frames missing the quality fields are excluded when a threshold is set). Use this before run_plan to decide what still needs acquiring."""
+    """Returns per-frame-type acquisition progress for an observation-plan JSON file: for each exposure group, the total_count from the plan, the acquired_count attributed to this plan/pointing from the imaging metadata (ImageMetaData.csv + AcquisitionDetails.csv), and the remaining_count. Lights are attributed via the `{base_plan_id}-{pointing_index}` plan id embedded in the recorded file path (no target-name fallback); flats/darks/bias are matched by image type, filter, and exposure and must fall within the plan's `calibration_max_age_days` window of today (UTC). Pass max_hfr and/or min_detected_stars to exclude light frames that fail quality thresholds (frames missing the quality fields are excluded when a threshold is set). Use this before run_plan to decide what still needs acquiring. Set `all_pointings=True` to summarize every pointing of a mosaic plan in one call: returns `complete` (all panes done) plus a `pointings` list of per-pane progress and per-pane `complete`, so a worker can acquire panes sequentially (finish pane N, then run pane N+1)."""
     plan = await _load_plan(file_path)
-    _check_pointing_index(plan, pointing_index)
     rows = await _read_metadata()
-    res = {
-        "plan_id": plan.effective_plan_id(pointing_index),
-        "pointing_index": pointing_index,
-        "target": plan.target,
-        "frame_types": plan_progress(
+
+    def progress_for(index: int) -> dict[str, list[dict[str, Any]]]:
+        return plan_progress(
             plan,
             rows,
-            pointing_index=pointing_index,
+            pointing_index=index,
             max_hfr=max_hfr,
             min_detected_stars=min_detected_stars,
             max_guiding_rms_arcsec=max_guiding_rms_arcsec,
-        ),
-    }
+        )
+
+    if all_pointings:
+        entries: list[dict[str, Any]] = []
+        complete = True
+        for index in range(1, len(plan.pointings) + 1):
+            pointings_progress = progress_for(index)
+            pane_done = all(
+                item["remaining_count"] == 0
+                for items in pointings_progress.values()
+                for item in items
+            )
+            complete = complete and pane_done
+            pointing = plan.pointings[index - 1]
+            entries.append(
+                {
+                    "pointing_index": index,
+                    "label": pointing.label,
+                    "plan_id": plan.effective_plan_id(index),
+                    "complete": pane_done,
+                    "frame_types": pointings_progress,
+                }
+            )
+        res = {
+            "plan_id": plan._base_plan_id(),
+            "target": plan.target,
+            "pointing_count": len(plan.pointings),
+            "complete": complete,
+            "pointings": entries,
+        }
+    else:
+        _check_pointing_index(plan, pointing_index)
+        res = {
+            "plan_id": plan.effective_plan_id(pointing_index),
+            "pointing_index": pointing_index,
+            "target": plan.target,
+            "frame_types": progress_for(pointing_index),
+        }
     _log_payload("Progress:", json.dumps(res, indent=2))
     return res
 

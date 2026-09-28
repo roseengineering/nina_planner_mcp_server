@@ -128,6 +128,6 @@ class ObservationPlan(BaseModel):
     def attribution_token(self, pointing_index: int) -> str:
         """Target-name token stamped on frames so they attribute to a pointing.
 
-        Parenthesised because N.I.N.A. mangles square brackets in target names.
+        Parenthesised because WebDAV mangles square brackets in target names.
         """
         return f"({self.effective_plan_id(pointing_index)})"

@@ -43,3 +43,19 @@ class Pointing(BaseModel):
             "current/synced position."
         ),
     )
+    row: int | None = Field(
+        default=None,
+        ge=0,
+        description=(
+            "Mosaic pane row. Not sent to NINA; kept for labeling, ordering, "
+            "and post-processing mosaic assembly."
+        ),
+    )
+    column: int | None = Field(
+        default=None,
+        ge=0,
+        description=(
+            "Mosaic pane column. Not sent to NINA; kept for labeling, ordering, "
+            "and post-processing mosaic assembly."
+        ),
+    )
