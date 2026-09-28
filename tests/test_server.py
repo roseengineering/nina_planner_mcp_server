@@ -704,8 +704,8 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["target"], "M31")
         self.assertIn("light", result["frame_types"])
 
-    async def test_load_sequence_from_plan_remaining_mode(self):
-        from nina_planner.server import load_sequence_from_plan
+    async def test_run_plan_remaining_mode(self):
+        from nina_planner.server import run_plan
 
         plan_dict = {
             "plan_id": "plan-test123",
@@ -782,14 +782,14 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
                     return_value=fake_progress,
                 ),
             ):
-                result = await load_sequence_from_plan(
+                result = await run_plan(
                     str(plan_path), frame_type="light", pointing_index=1
                 )
         self.assertIn("is complete", result)
         self.assertIn("nothing to load", result)
 
-    async def test_load_sequence_from_plan_read_metadata_fails(self):
-        from nina_planner.server import load_sequence_from_plan
+    async def test_run_plan_read_metadata_fails(self):
+        from nina_planner.server import run_plan
 
         plan_dict = {
             "plan_id": "plan-test123",
@@ -824,14 +824,12 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
                 ),
             ):
                 with self.assertRaises(ValueError) as ctx:
-                    await load_sequence_from_plan(
-                        str(plan_path), frame_type="light", pointing_index=1
-                    )
+                    await run_plan(str(plan_path), frame_type="light", pointing_index=1)
         self.assertIn("Cannot compute remaining frames", str(ctx.exception))
         self.assertIn("Pass mode='full'", str(ctx.exception))
 
-    async def test_load_sequence_from_plan_invalid_mode(self):
-        from nina_planner.server import load_sequence_from_plan
+    async def test_run_plan_invalid_mode(self):
+        from nina_planner.server import run_plan
 
         plan_dict = {
             "plan_id": "plan-test123",
@@ -866,7 +864,7 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
                 ),
             ):
                 with self.assertRaises(ValueError) as ctx:
-                    await load_sequence_from_plan(
+                    await run_plan(
                         str(plan_path),
                         frame_type="light",
                         pointing_index=1,
@@ -874,10 +872,10 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
                     )
         self.assertIn("Unsupported mode", str(ctx.exception))
 
-    async def test_load_sequence_from_plan_dark_frame(self):
+    async def test_run_plan_dark_frame(self):
         from unittest.mock import MagicMock as _MM
 
-        from nina_planner.server import load_sequence_from_plan
+        from nina_planner.server import run_plan
 
         plan_dict = {
             "plan_id": "plan-test123",
@@ -914,14 +912,18 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
                     "nina_planner.server._api_post",
                     AsyncMock(return_value={}),
                 ),
+                patch(
+                    "nina_planner.server._api_get",
+                    AsyncMock(return_value={}),
+                ),
             ):
-                result = await load_sequence_from_plan(
+                result = await run_plan(
                     str(plan_path), frame_type="dark", pointing_index=1
                 )
-        self.assertIn("`dark` sequence loaded", result)
+        self.assertIn("`dark` sequence started", result)
 
-    async def test_load_sequence_from_plan_bias_frame(self):
-        from nina_planner.server import load_sequence_from_plan
+    async def test_run_plan_bias_frame(self):
+        from nina_planner.server import run_plan
 
         plan_dict = {
             "plan_id": "plan-test123",
@@ -964,15 +966,19 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
                     "nina_planner.server._api_post",
                     AsyncMock(return_value={}),
                 ),
+                patch(
+                    "nina_planner.server._api_get",
+                    AsyncMock(return_value={}),
+                ),
             ):
-                result = await load_sequence_from_plan(
+                result = await run_plan(
                     str(plan_path), frame_type="bias", pointing_index=1
                 )
         self.assertTrue(captured_kwargs["bias"])
-        self.assertIn("`bias` sequence loaded", result)
+        self.assertIn("`bias` sequence started", result)
 
-    async def test_load_sequence_from_plan_dawn_flat(self):
-        from nina_planner.server import load_sequence_from_plan
+    async def test_run_plan_dawn_flat(self):
+        from nina_planner.server import run_plan
 
         plan_dict = {
             "plan_id": "plan-test123",
@@ -1015,15 +1021,19 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
                     "nina_planner.server._api_post",
                     AsyncMock(return_value={}),
                 ),
+                patch(
+                    "nina_planner.server._api_get",
+                    AsyncMock(return_value={}),
+                ),
             ):
-                result = await load_sequence_from_plan(
+                result = await run_plan(
                     str(plan_path), frame_type="dawn_flat", pointing_index=1
                 )
         self.assertFalse(captured_kwargs["dusk"])
-        self.assertIn("`dawn_flat` sequence loaded", result)
+        self.assertIn("`dawn_flat` sequence started", result)
 
-    async def test_load_sequence_from_plan_dusk_flat(self):
-        from nina_planner.server import load_sequence_from_plan
+    async def test_run_plan_dusk_flat(self):
+        from nina_planner.server import run_plan
 
         plan_dict = {
             "plan_id": "plan-test123",
@@ -1066,15 +1076,19 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
                     "nina_planner.server._api_post",
                     AsyncMock(return_value={}),
                 ),
+                patch(
+                    "nina_planner.server._api_get",
+                    AsyncMock(return_value={}),
+                ),
             ):
-                result = await load_sequence_from_plan(
+                result = await run_plan(
                     str(plan_path), frame_type="dusk_flat", pointing_index=1
                 )
         self.assertTrue(captured_kwargs["dusk"])
-        self.assertIn("`dusk_flat` sequence loaded", result)
+        self.assertIn("`dusk_flat` sequence started", result)
 
     async def test_load_light_sequence_requires_targetname_file_pattern(self):
-        from nina_planner.server import load_sequence_from_plan
+        from nina_planner.server import run_plan
 
         plan_dict = {
             "plan_id": "plan-test123",
@@ -1114,16 +1128,14 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
                     ValueError,
                     r"N\.I\.N\.A\. FilePattern must contain \$\$TARGETNAME\$\$",
                 ):
-                    await load_sequence_from_plan(
-                        str(plan_path), frame_type="light", mode="full"
-                    )
+                    await run_plan(str(plan_path), frame_type="light", mode="full")
 
             api_post.assert_not_awaited()
 
-    async def test_load_sequence_from_plan_full_mode(self):
+    async def test_run_plan_full_mode(self):
         from unittest.mock import MagicMock as _MM
 
-        from nina_planner.server import load_sequence_from_plan
+        from nina_planner.server import run_plan
 
         plan_dict = {
             "plan_id": "plan-test123",
@@ -1160,15 +1172,79 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
                 patch(
                     "nina_planner.server._api_post",
                     AsyncMock(return_value={}),
-                ),
+                ) as api_post,
+                patch(
+                    "nina_planner.server._api_get",
+                    AsyncMock(return_value={}),
+                ) as api_get,
             ):
-                result = await load_sequence_from_plan(
+                result = await run_plan(
                     str(plan_path),
                     frame_type="light",
                     pointing_index=1,
                     mode="full",
                 )
-        self.assertIn("`light` sequence loaded", result)
+        self.assertIn("`light` sequence started", result)
+        api_post.assert_awaited_once()
+        self.assertEqual(api_post.await_args.args[0], "/sequence/load")
+        api_get.assert_awaited_once_with("/sequence/start?skipValidation=true")
+
+    async def test_run_plan_load_only(self):
+        from unittest.mock import MagicMock as _MM
+
+        from nina_planner.server import run_plan
+
+        plan_dict = {
+            "plan_id": "plan-test123",
+            "target": "M31",
+            "pointings": [{"ra_hours": 5.0, "dec_deg": 10.0}],
+            "light": [
+                {"filter_name": "L", "exposure_time_seconds": 60.0, "total_count": 1}
+            ],
+            "flat": [
+                {"filter_name": "L", "exposure_time_seconds": 5.0, "total_count": 1}
+            ],
+            "dark": [{"exposure_time_seconds": 60.0, "total_count": 1}],
+            "bias": [{"total_count": 1}],
+        }
+
+        with tempfile.TemporaryDirectory() as tmp:
+            plan_path = Path(tmp) / "plan.json"
+            plan_path.write_text(json.dumps(plan_dict))
+
+            with (
+                patch(
+                    "nina_planner.server.get_site_profile",
+                    AsyncMock(return_value=self._full_profile()),
+                ),
+                patch(
+                    "nina_planner.server._get_site_equipment_status",
+                    AsyncMock(return_value=ObservatoryEquipment()),
+                ),
+                patch(
+                    "nina_planner.server._read_metadata",
+                    new=_MM(side_effect=AssertionError("should not be called")),
+                ),
+                patch(
+                    "nina_planner.server._api_post",
+                    AsyncMock(return_value={}),
+                ) as api_post,
+                patch(
+                    "nina_planner.server._api_get",
+                    AsyncMock(return_value={}),
+                ) as api_get,
+            ):
+                result = await run_plan(
+                    str(plan_path),
+                    frame_type="light",
+                    pointing_index=1,
+                    mode="full",
+                    load_only=True,
+                )
+        self.assertEqual(result, "`light` sequence loaded.")
+        api_post.assert_awaited_once()
+        self.assertEqual(api_post.await_args.args[0], "/sequence/load")
+        api_get.assert_not_awaited()
 
     async def test_stow_telescope_loads_and_starts(self):
         from nina_planner.server import stow_telescope
@@ -1197,16 +1273,6 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
         ):
             result = await enter_safety_standby()
         self.assertEqual(result, "Safety standby sequence started.")
-
-    async def test_start_sequence(self):
-        from nina_planner.server import start_sequence
-
-        with patch(
-            "nina_planner.server._api_get",
-            AsyncMock(return_value={}),
-        ):
-            result = await start_sequence()
-        self.assertEqual(result, "Sequence started.")
 
     async def test_stop_sequence(self):
         from nina_planner.server import stop_sequence

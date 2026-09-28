@@ -13,14 +13,14 @@
     "nina-planner": {
       "type": "local",
       "environment": {
-        // "NINA_ENDPOINT": "192.168.0.24:1888", // defaults to 127.0.0.1:1888
-	// "NINA_DRIVE_MOUNT": "/System/Volumes/Data/Network", // defaults to /mnt/<drive>
+        // "NINA_ENDPOINT": "192.168.0.24:1888", // default 127.0.0.1:1888
+	// "NINA_DRIVE_MOUNT": "/c", // default /mnt/<drive>
         "NINA_PLANNER_LOG": "/tmp/nina-planner-debug.log"
       },
-      "command": [ // don't use bash -c, hard for opencode to kill and restart
-        "python",
-       	"-m",
-       	"nina_planner"
+      "command": [
+       	"python",
+	"-m",
+	"nina_planner"
       ]
     }
   }

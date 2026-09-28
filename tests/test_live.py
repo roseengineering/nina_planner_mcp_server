@@ -15,9 +15,8 @@ from nina_planner.server import (
     get_sequence_state,
     get_site_equipment_status,
     get_site_profile,
-    load_sequence_from_plan,
+    run_plan,
     start_nina,
-    start_sequence,
     stop_nina,
     stop_sequence,
     stow_telescope,
@@ -133,56 +132,55 @@ class LiveNinaTest(unittest.TestCase):
         result = asyncio.run(stop_sequence())
         self.assertIsInstance(result, str)
 
-    def test_load_light_sequence(self):
+    def test_run_light_sequence(self):
         plan_path = str(_FIXTURES_DIR / "veil.json")
         result = asyncio.run(
-            load_sequence_from_plan(
-                file_path=plan_path, frame_type="light", mode="full"
-            )
+            run_plan(file_path=plan_path, frame_type="light", mode="full")
         )
-        self.assertIn("light", result)
+        self.assertIn("started", result)
         state = asyncio.run(get_sequence_state())
         self.assertIsInstance(state, (dict, list))
+        asyncio.run(stop_sequence())
 
-    def test_load_dark_sequence(self):
+    def test_run_dark_sequence(self):
         plan_path = str(_FIXTURES_DIR / "veil.json")
         result = asyncio.run(
-            load_sequence_from_plan(file_path=plan_path, frame_type="dark", mode="full")
+            run_plan(file_path=plan_path, frame_type="dark", mode="full")
         )
-        self.assertIn("dark", result)
+        self.assertIn("started", result)
         state = asyncio.run(get_sequence_state())
         self.assertIsInstance(state, (dict, list))
+        asyncio.run(stop_sequence())
 
-    def test_load_bias_sequence(self):
+    def test_run_bias_sequence(self):
         plan_path = str(_FIXTURES_DIR / "veil.json")
         result = asyncio.run(
-            load_sequence_from_plan(file_path=plan_path, frame_type="bias", mode="full")
+            run_plan(file_path=plan_path, frame_type="bias", mode="full")
         )
-        self.assertIn("bias", result)
+        self.assertIn("started", result)
         state = asyncio.run(get_sequence_state())
         self.assertIsInstance(state, (dict, list))
+        asyncio.run(stop_sequence())
 
-    def test_load_dawn_flat_sequence(self):
+    def test_run_dawn_flat_sequence(self):
         plan_path = str(_FIXTURES_DIR / "veil.json")
         result = asyncio.run(
-            load_sequence_from_plan(
-                file_path=plan_path, frame_type="dawn_flat", mode="full"
-            )
+            run_plan(file_path=plan_path, frame_type="dawn_flat", mode="full")
         )
-        self.assertIn("dawn_flat", result)
+        self.assertIn("started", result)
         state = asyncio.run(get_sequence_state())
         self.assertIsInstance(state, (dict, list))
+        asyncio.run(stop_sequence())
 
-    def test_load_dusk_flat_sequence(self):
+    def test_run_dusk_flat_sequence(self):
         plan_path = str(_FIXTURES_DIR / "veil.json")
         result = asyncio.run(
-            load_sequence_from_plan(
-                file_path=plan_path, frame_type="dusk_flat", mode="full"
-            )
+            run_plan(file_path=plan_path, frame_type="dusk_flat", mode="full")
         )
-        self.assertIn("dusk_flat", result)
+        self.assertIn("started", result)
         state = asyncio.run(get_sequence_state())
         self.assertIsInstance(state, (dict, list))
+        asyncio.run(stop_sequence())
 
     def test_get_plan_progress(self):
         plan_path = str(_FIXTURES_DIR / "veil.json")
@@ -214,25 +212,6 @@ class LiveNinaTest(unittest.TestCase):
         self.assertIsInstance(state, list)
         self.assertTrue(_is_running(state), "standby sequence should be running")
         asyncio.run(stop_sequence())
-
-    def test_start_sequence(self):
-        asyncio.run(stop_sequence())
-        _wait_for_sequence_running(expected=False)
-
-        try:
-            result = asyncio.run(enter_safety_standby())
-            self.assertIn("standby", result)
-            _wait_for_sequence_running(expected=True)
-            asyncio.run(stop_sequence())
-            _wait_for_sequence_running(expected=False)
-
-            result = asyncio.run(start_sequence())
-            self.assertEqual(result, "Sequence started.")
-            state = _wait_for_sequence_running(expected=True)
-            self.assertIsInstance(state, list)
-        finally:
-            asyncio.run(stop_sequence())
-            _wait_for_sequence_running(expected=False)
 
     def test_enter_teardown(self):
         result = asyncio.run(stow_telescope())

@@ -2,6 +2,7 @@ import json
 import os
 import re
 import subprocess
+from collections.abc import Awaitable, Callable
 from collections.abc import Set as AbstractSet
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -503,7 +504,7 @@ async def get_imaging_metadata(
 
 @mcp.tool()
 async def write_plan_file(plan: ObservationPlan) -> str:
-    """Validates and writes an observation plan to a JSON file for later use by load_sequence_from_plan. The plan defines one or more target pointings (RA/Dec/PA, optional label), acquisition intent, light and calibration frames, batching, cooling, autofocus, guiding, and observing constraints. This tool only creates the plan file; it does not load or start a sequence."""
+    """Validates and writes an observation plan to a JSON file for later use by run_plan. The plan defines one or more target pointings (RA/Dec/PA, optional label), acquisition intent, light and calibration frames, batching, cooling, autofocus, guiding, and observing constraints. This tool only creates the plan file; it does not load or start a sequence."""
     profile = await get_site_profile()
     await _validate_filters(plan, profile)
     _validate_position_angle(plan, profile)
@@ -526,7 +527,7 @@ async def get_plan_progress(
     min_detected_stars: int | None = None,
     max_guiding_rms_arcsec: float | None = None,
 ) -> dict[str, Any]:
-    """Returns per-frame-type acquisition progress for an observation-plan JSON file and one of its pointings: for each exposure group, the total_count from the plan, the acquired_count attributed to this plan/pointing from the imaging metadata (ImageMetaData.csv + AcquisitionDetails.csv), and the remaining_count. Lights are attributed via the `{base_plan_id}-{pointing_index}` plan id embedded in the recorded file path (no target-name fallback); flats/darks/bias are matched by image type, filter, and exposure and must fall within the plan's calibration_max_age_days window of today (UTC). Pass max_hfr and/or min_detected_stars to exclude light frames that fail quality thresholds (frames missing the quality fields are excluded when a threshold is set). Use this before load_sequence_from_plan to decide what still needs acquiring."""
+    """Returns per-frame-type acquisition progress for an observation-plan JSON file and one of its pointings: for each exposure group, the total_count from the plan, the acquired_count attributed to this plan/pointing from the imaging metadata (ImageMetaData.csv + AcquisitionDetails.csv), and the remaining_count. Lights are attributed via the `{base_plan_id}-{pointing_index}` plan id embedded in the recorded file path (no target-name fallback); flats/darks/bias are matched by image type, filter, and exposure and must fall within the plan's calibration_max_age_days window of today (UTC). Pass max_hfr and/or min_detected_stars to exclude light frames that fail quality thresholds (frames missing the quality fields are excluded when a threshold is set). Use this before run_plan to decide what still needs acquiring."""
     plan = await _load_plan(file_path)
     _check_pointing_index(plan, pointing_index)
     rows = await _read_metadata()
@@ -551,16 +552,17 @@ async def get_plan_progress(
 
 
 @mcp.tool()
-async def load_sequence_from_plan(
+async def run_plan(
     file_path: str,
     frame_type: FrameType = "light",
     pointing_index: int = 1,
     mode: str = "remaining",
+    load_only: bool = False,
     max_hfr: float | None = None,
     min_detected_stars: int | None = None,
     max_guiding_rms_arcsec: float | None = None,
 ) -> str:
-    """Loads an acquisition sequence with safety guardrails from an observation-plan JSON file. Select the frame type: light, dark, bias, dawn_flat, or dusk_flat. `pointing_index` (1-based, default 1) selects which pointing of the plan to load — the lights target name embeds `{base_plan_id}-{pointing_index}` so each pointing's frames are attributed independently. Light loads require `$$TARGETNAME$$` in the active profile's FilePattern for attribution. In the default `remaining` mode the sequence only acquires frames still needed (total minus frames already attributed to this plan/pointing in the imaging metadata); if nothing remains it reports the plan as complete and loads nothing. max_hfr and/or min_detected_stars exclude light frames failing quality thresholds from the acquired count. Pass `mode="full"` to acquire the entire plan again. This tool only loads the sequence; call start_sequence afterward."""
+    """Loads an acquisition sequence with safety guardrails from an observation-plan JSON file. Select the frame type: light, dark, bias, dawn_flat, or dusk_flat. `pointing_index` (1-based, default 1) selects which pointing of the plan to load — the lights target name embeds `{base_plan_id}-{pointing_index}` so each pointing's frames are attributed independently. Light loads require `$$TARGETNAME$$` in the active profile's FilePattern for attribution. In the default `remaining` mode the sequence only acquires frames still needed (total minus frames already attributed to this plan/pointing in the imaging metadata); if nothing remains it reports the plan as complete and loads nothing. max_hfr and/or min_detected_stars exclude light frames failing quality thresholds from the acquired count. Pass `mode="full"` to acquire the entire plan again. By default the loaded sequence is started immediately; pass `load_only=True` to load without starting (e.g. to start it manually from the NINA GUI)."""
     plan = await _load_plan(file_path)
     profile = await get_site_profile()
     await _validate_filters(plan, profile)
@@ -622,7 +624,11 @@ async def load_sequence_from_plan(
     else:
         raise ValueError(f"Unsupported frame type: {frame_type}")
     await _api_post("/sequence/load", seq)
-    return f"`{frame_type}` sequence loaded."
+    if load_only:
+        return f"`{frame_type}` sequence loaded."
+    else:
+        await _api_get("/sequence/start?skipValidation=true")
+        return f"`{frame_type}` sequence started."
 
 
 @mcp.tool()
@@ -637,7 +643,7 @@ async def stow_telescope() -> str:
 
 @mcp.tool()
 async def enter_safety_standby() -> str:
-    """Loads a non-acquisition standby sequence that keeps NINA sequence-level safety and stow guardrails active while the observatory is idle. After loading, call start_sequence. Stop it before loading an acquisition or teardown sequence. Use whenever equipment is deployed and no other sequence is running."""
+    """Loads and starts a non-acquisition standby sequence that keeps NINA sequence-level safety and stow guardrails active while the observatory is idle. Stop it before loading an acquisition or teardown sequence. Use whenever equipment is deployed and no other sequence is running."""
     equipment = await get_site_equipment_status()
     seq = build_sequence_standby(equipment)
     await _api_post("/sequence/load", seq)
@@ -646,15 +652,8 @@ async def enter_safety_standby() -> str:
 
 
 @mcp.tool()
-async def start_sequence() -> str:
-    """Starts or resumes the currently loaded sequence, activating its acquisition or safety workflow. Call get_sequence_state afterward to verify that it is running."""
-    await _api_get("/sequence/start?skipValidation=true")
-    return "Sequence started."
-
-
-@mcp.tool()
 async def stop_sequence() -> str:
-    """Stops the currently running NINA sequence immediately, leaving the telescope where it currently is — it does not stow the scope. Use for an urgent halt, to interrupt a stuck/looping sequence, or when the running sequence isn't what you wanted. If you then want to park/home the telescope, run stow_telescope separately. Note that load_sequence_from_plan and the teardown/standby entry tools already stop any running sequence before loading, so an explicit stop is only needed when you want to halt without loading anything new. Avoid stopping an in-progress teardown during the stow maneuver unless safety requires it, since interrupting mid-slew can leave the scope in an unsafe position. Call get_sequence_state afterward to confirm the sequence has stopped."""
+    """Stops the currently running NINA sequence immediately, leaving the telescope where it currently is — it does not stow the scope. Use for an urgent halt, to interrupt a stuck/looping sequence, or when the running sequence isn't what you wanted. If you then want to park/home the telescope, run stow_telescope separately. Note that run_plan and the teardown/standby entry tools already stop any running sequence before loading, so an explicit stop is only needed when you want to halt without loading anything new. Avoid stopping an in-progress teardown during the stow maneuver unless safety requires it, since interrupting mid-slew can leave the scope in an unsafe position. Call get_sequence_state afterward to confirm the sequence has stopped."""
     await _api_get("/sequence/stop")
     return "Sequence stopped."
 
@@ -718,7 +717,9 @@ async def _read_windows_clock() -> datetime:
     return datetime.fromisoformat(raw)
 
 
-async def _poll_until_async(check, timeout: float, interval: float) -> bool:
+async def _poll_until_async(
+    check: Callable[[], Awaitable[bool]], timeout: float, interval: float
+) -> bool:
     """Poll ``check`` (async callable returning bool) until it returns True or timeout."""
     deadline = anyio.current_time() + timeout
     while anyio.current_time() < deadline:
