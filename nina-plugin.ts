@@ -110,11 +110,16 @@ const plugin: Plugin = async (
     };
   }
 
+  function isSocketOpen(): boolean {
+    return ws !== null && ws.readyState === WebSocket.OPEN;
+  }
+
   connect();
 
   let intervalId: ReturnType<typeof setInterval> | null = null;
   if (intervalCheck > 0) {
     intervalId = setInterval(() => {
+      if (!isSocketOpen()) return;
       triggerIntervention().catch((err: unknown) =>
         fileLog(pluginLogs, "nina-plugin: interval trigger failed:", err),
       );

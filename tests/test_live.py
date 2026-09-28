@@ -4,6 +4,7 @@ import unittest
 from pathlib import Path
 
 import pytest
+from conftest import requires_windows_interop, windows_interop_available
 
 from nina_planner.server import (
     enter_safety_standby,
@@ -74,9 +75,22 @@ class LiveNinaTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         status = asyncio.run(get_nina_status())
-        if not status["process_running"]:
-            asyncio.run(start_nina())
-        _wait_for_nina_status(process_running=True, api_responsive=True)
+        if status["api_responsive"]:
+            # NINA is up, so the REST-only tests can run even when Windows
+            # interop is unavailable (tasklist.exe cannot confirm the process).
+            pass
+        elif windows_interop_available():
+            if not status["process_running"]:
+                asyncio.run(start_nina())
+            _wait_for_nina_status(process_running=True, api_responsive=True)
+        else:
+            # Nothing can be tested: NINA is down and there is no cmd.exe /
+            # tasklist.exe available to launch it. Skip instead of erroring so
+            # the cmd.exe-dependent tests do not take the whole class down.
+            raise unittest.SkipTest(
+                "NINA is not running (REST API unresponsive) and Windows interop "
+                "is unavailable to launch it (no cmd.exe/tasklist.exe on PATH)."
+            )
         for _ in range(10):
             try:
                 asyncio.run(get_site_equipment_status())
@@ -91,7 +105,7 @@ class LiveNinaTest(unittest.TestCase):
         self.assertIn("api_responsive", result)
         self.assertIn("simulated", result)
 
-    @pytest.mark.skip(reason="too burdensome to test")
+    @requires_windows_interop
     def test_zz_stop_and_restart_nina(self):
         initial_status = asyncio.run(get_nina_status())
         if not (initial_status["process_running"] and initial_status["api_responsive"]):

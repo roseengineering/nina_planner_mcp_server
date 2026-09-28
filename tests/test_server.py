@@ -6,9 +6,6 @@ from datetime import UTC, datetime
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
-import pytest
-from conftest import requires_wsl
-
 from nina_planner.models.observatory import ObservatoryEquipment
 from nina_planner.models.plan import ObservationPlan
 from nina_planner.models.profile import (
@@ -27,7 +24,11 @@ from nina_planner.server import (
     _validate_filters,
     _validate_position_angle,
 )
-from nina_planner.system_time import get_launcher_paths
+
+_STUB_LAUNCHER_PATHS = (
+    Path("/tmp/launch_nina.cmd"),
+    r"C:\Users\user\AppData\Local\Temp\launch_nina.cmd",
+)
 
 
 class ConvertToMetTest(unittest.IsolatedAsyncioTestCase):
@@ -1481,8 +1482,6 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(result["pid"])
         self.assertEqual(result["nina_time"], "2026-09-22T03:00:00")
 
-    @pytest.mark.live
-    @requires_wsl
     async def test_start_nina_simulated_get_nina_time_fails(self):
         """When get_nina_time() never returns the simulated date during
         capture-check, start_nina restores the host clock and raises.
@@ -1529,7 +1528,7 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
             ),
             patch(
                 "nina_planner.server.write_nina_launcher",
-                return_value=get_launcher_paths(),
+                return_value=_STUB_LAUNCHER_PATHS,
             ),
             patch(
                 "nina_planner.server.get_nina_time",
@@ -1574,8 +1573,6 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
             content = log_path.read_text()
             self.assertIn("Equipment:", content)
 
-    @pytest.mark.live
-    @requires_wsl
     async def test_start_nina_simulated_progress_entry_fails(self):
         """When append_progress_entry raises in start_nina simulated path, the tool
         still returns successfully — the except branch swallows the error.
@@ -1618,7 +1615,7 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
             ),
             patch(
                 "nina_planner.server.write_nina_launcher",
-                return_value=get_launcher_paths(),
+                return_value=_STUB_LAUNCHER_PATHS,
             ),
             patch(
                 "nina_planner.server.get_nina_time",
@@ -1627,6 +1624,10 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
             patch(
                 "nina_planner.server.append_progress_entry",
                 AsyncMock(side_effect=OSError("disk full")),
+            ),
+            patch(
+                "nina_planner.server._now_local",
+                return_value=_dt.fromisoformat("2026-09-26T16:55:00-05:00"),
             ),
             patch("nina_planner.server.anyio.sleep", new=AsyncMockSleep()),
             patch("nina_planner.server._log_payload"),

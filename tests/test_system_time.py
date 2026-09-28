@@ -6,9 +6,6 @@ from datetime import datetime
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
-import pytest
-from conftest import requires_wsl
-
 from nina_planner.system_time import (
     NINA_EXE_DEFAULT,
     get_launcher_paths,
@@ -571,8 +568,6 @@ class StartNinaTest(unittest.TestCase):
         )
         self.assertIn("/Delete", executed_cmds[-1])
 
-    @pytest.mark.live
-    @requires_wsl
     def test_start_simulated_time_runs_full_cycle(self):
         from datetime import datetime as _dt
 
@@ -634,9 +629,14 @@ class StartNinaTest(unittest.TestCase):
             patch("nina_planner.server._run_blocking", side_effect=fake_run_blocking),
             patch(
                 "nina_planner.server.write_nina_launcher",
-                return_value=get_launcher_paths(),
+                return_value=self._STUB_LAUNCHER_PATHS,
             ),
             patch("nina_planner.server.get_nina_time", side_effect=fake_get_nina_time),
+            patch(
+                "nina_planner.server._now_local",
+                return_value=_dt.fromisoformat("2026-09-26T16:55:00-05:00"),
+            ),
+            patch("nina_planner.server._poll_until_async", new=FastPollUntilAsync()),
             patch("nina_planner.server.anyio.sleep", new=AsyncMockSleep()),
             patch("nina_planner.server._log_payload"),
         ):
@@ -729,8 +729,6 @@ class StartNinaTest(unittest.TestCase):
         self.assertIsNotNone(clock_state["restored"])
         self.assertEqual(clock_state["reads"], 3)
 
-    @pytest.mark.live
-    @requires_wsl
     def test_start_simulated_shift_timeout_restores_and_raises(self):
         from datetime import datetime as _dt
 
@@ -754,6 +752,11 @@ class StartNinaTest(unittest.TestCase):
                 side_effect=fake_read_windows_clock,
             ),
             patch("nina_planner.server._run_blocking", side_effect=fake_run_blocking),
+            patch(
+                "nina_planner.server._now_local",
+                return_value=_dt.fromisoformat("2026-09-26T16:55:00-05:00"),
+            ),
+            patch("nina_planner.server._poll_until_async", new=FastPollUntilAsync()),
             patch("nina_planner.server.anyio.sleep", new=AsyncMockSleep()),
             patch("nina_planner.server._log_payload"),
         ):
@@ -764,8 +767,6 @@ class StartNinaTest(unittest.TestCase):
         restore_cmds = [c for c in ps_commands if c.startswith("Set-Date -Date '")]
         self.assertGreaterEqual(len(restore_cmds), 1)
 
-    @pytest.mark.live
-    @requires_wsl
     def test_start_simulated_nina_capture_timeout_restores_and_raises(self):
         from datetime import datetime as _dt
 
@@ -794,11 +795,6 @@ class StartNinaTest(unittest.TestCase):
                     host_calls["restored"] = restored_naive.replace(tzinfo=local_tz)
             return MagicMock(returncode=0, stdout="", stderr="")
 
-        async def fake_poll_until_async(check, timeout, interval):
-            if timeout == 45.0:
-                return False
-            return await check()
-
         # NINA never reports the simulated date.
         async def fake_get_nina_time():
             return {
@@ -817,13 +813,14 @@ class StartNinaTest(unittest.TestCase):
             patch("nina_planner.server._run_blocking", side_effect=fake_run_blocking),
             patch(
                 "nina_planner.server.write_nina_launcher",
-                return_value=get_launcher_paths(),
+                return_value=self._STUB_LAUNCHER_PATHS,
             ),
             patch("nina_planner.server.get_nina_time", side_effect=fake_get_nina_time),
             patch(
-                "nina_planner.server._poll_until_async",
-                side_effect=fake_poll_until_async,
+                "nina_planner.server._now_local",
+                return_value=_dt.fromisoformat("2026-09-26T16:55:00-05:00"),
             ),
+            patch("nina_planner.server._poll_until_async", new=FastPollUntilAsync()),
             patch("nina_planner.server.anyio.sleep", new=AsyncMockSleep()),
             patch("nina_planner.server._log_payload"),
         ):
@@ -834,8 +831,6 @@ class StartNinaTest(unittest.TestCase):
         restore_cmds = [c for c in ps_commands if c.startswith("Set-Date -Date '")]
         self.assertGreaterEqual(len(restore_cmds), 1)
 
-    @pytest.mark.live
-    @requires_wsl
     def test_start_simulated_restore_timeout_raises(self):
         from datetime import datetime as _dt
 
@@ -875,9 +870,14 @@ class StartNinaTest(unittest.TestCase):
             patch("nina_planner.server._run_blocking", side_effect=fake_run_blocking),
             patch(
                 "nina_planner.server.write_nina_launcher",
-                return_value=get_launcher_paths(),
+                return_value=self._STUB_LAUNCHER_PATHS,
             ),
             patch("nina_planner.server.get_nina_time", side_effect=fake_get_nina_time),
+            patch(
+                "nina_planner.server._now_local",
+                return_value=_dt.fromisoformat("2026-09-26T16:55:00-05:00"),
+            ),
+            patch("nina_planner.server._poll_until_async", new=FastPollUntilAsync()),
             patch("nina_planner.server.anyio.sleep", new=AsyncMockSleep()),
             patch("nina_planner.server._log_payload"),
         ):
@@ -989,6 +989,25 @@ class AsyncMockSleep:
 
     async def __call__(self, *_args, **_kwargs):
         return None
+
+
+class FastPollUntilAsync:
+    """Poll stand-in that runs ``check`` without real wall-clock waits.
+
+    The production ``_poll_until_async`` gates on ``anyio.current_time()``, so
+    mocking ``anyio.sleep`` alone still busy-waits for the full timeout when a
+    predicate never becomes true. This loops a bounded number of times instead,
+    so timeout tests resolve instantly and deterministically.
+    """
+
+    def __init__(self, max_iterations: int = 100):
+        self.max_iterations = max_iterations
+
+    async def __call__(self, check, timeout, interval):
+        for _ in range(self.max_iterations):
+            if await check():
+                return True
+        return False
 
 
 if __name__ == "__main__":
