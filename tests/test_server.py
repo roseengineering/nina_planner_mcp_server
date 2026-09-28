@@ -1645,10 +1645,19 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
             returncode = 0
             stdout = ""
 
+        stub_launcher_paths = (
+            Path("/tmp/launch_nina.cmd"),
+            r"C:\Users\user\AppData\Local\Temp\launch_nina.cmd",
+        )
+
         with (
             patch(
                 "nina_planner.server._run_blocking",
                 return_value=FakeProcess(),
+            ),
+            patch(
+                "nina_planner.server.write_nina_launcher",
+                return_value=stub_launcher_paths,
             ),
             patch(
                 "nina_planner.server.append_progress_entry",

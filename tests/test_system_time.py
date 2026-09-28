@@ -465,6 +465,11 @@ class StartNinaTest(unittest.TestCase):
         read_clock.assert_not_awaited()
         shift_clock.assert_not_called()
 
+    _STUB_LAUNCHER_PATHS = (
+        Path("/tmp/launch_nina.cmd"),
+        r"C:\Users\user\AppData\Local\Temp\launch_nina.cmd",
+    )
+
     def test_start_real_time_launches_interactive(self):
         from nina_planner.server import start_nina
 
@@ -483,7 +488,7 @@ class StartNinaTest(unittest.TestCase):
             patch("nina_planner.server._run_blocking", side_effect=fake_run),
             patch(
                 "nina_planner.server.write_nina_launcher",
-                return_value=get_launcher_paths(),
+                return_value=self._STUB_LAUNCHER_PATHS,
             ),
             patch("nina_planner.server._log_payload"),
         ):
@@ -499,7 +504,7 @@ class StartNinaTest(unittest.TestCase):
         )
         create_args = executed_cmds[1]
         self.assertIn("/IT", create_args)
-        self.assertIn(get_launcher_paths()[1], create_args)
+        self.assertIn(self._STUB_LAUNCHER_PATHS[1], create_args)
 
         content = self.progress.read_text(encoding="utf-8")
         self.assertIn("start_nina: launching NINA on real time", content)
@@ -520,7 +525,7 @@ class StartNinaTest(unittest.TestCase):
             patch("nina_planner.server._run_blocking", side_effect=fake_run),
             patch(
                 "nina_planner.server.write_nina_launcher",
-                return_value=get_launcher_paths(),
+                return_value=self._STUB_LAUNCHER_PATHS,
             ),
             patch("nina_planner.server._log_payload"),
         ):
@@ -551,7 +556,7 @@ class StartNinaTest(unittest.TestCase):
             patch("nina_planner.server._run_blocking", side_effect=fake_run),
             patch(
                 "nina_planner.server.write_nina_launcher",
-                return_value=get_launcher_paths(),
+                return_value=self._STUB_LAUNCHER_PATHS,
             ),
             patch("nina_planner.server._log_payload"),
         ):
