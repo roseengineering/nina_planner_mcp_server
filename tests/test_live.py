@@ -77,6 +77,12 @@ class LiveNinaTest(unittest.TestCase):
         if not status["process_running"]:
             asyncio.run(start_nina())
         _wait_for_nina_status(process_running=True, api_responsive=True)
+        for _ in range(10):
+            try:
+                asyncio.run(get_site_equipment_status())
+                break
+            except RuntimeError:
+                time.sleep(3)
 
     def test_get_nina_status(self):
         result = asyncio.run(get_nina_status())
