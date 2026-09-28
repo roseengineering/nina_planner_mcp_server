@@ -208,13 +208,16 @@ class LiveNinaTest(unittest.TestCase):
         result = asyncio.run(get_plan_progress(file_path=plan_path))
         self.assertIsInstance(result, dict)
         self.assertIn("plan_id", result)
-        self.assertIn("pointing_index", result)
+        self.assertIn("pointing_count", result)
         self.assertIn("target", result)
-        self.assertIn("frame_types", result)
+        self.assertIn("pointings", result)
         self.assertEqual(result["target"], "Veil Nebula")
-        self.assertIsInstance(result["frame_types"], dict)
+        self.assertIsInstance(result["pointings"], list)
+        first = result["pointings"][0]
+        self.assertIn("pointing_index", first)
+        self.assertIsInstance(first["frame_types"], dict)
         for frame_type in ("light", "flat", "dark", "bias"):
-            self.assertIn(frame_type, result["frame_types"])
+            self.assertIn(frame_type, first["frame_types"])
 
     def test_get_imaging_metadata(self):
         plan_path = str(_FIXTURES_DIR / "veil.json")

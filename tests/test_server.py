@@ -699,11 +699,14 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
                 "nina_planner.server._read_metadata",
                 AsyncMock(return_value=[]),
             ):
-                result = await get_plan_progress(str(plan_path), pointing_index=1)
-        self.assertEqual(result["plan_id"], "plan-test123-1")
-        self.assertEqual(result["pointing_index"], 1)
+                result = await get_plan_progress(str(plan_path))
+        self.assertEqual(result["plan_id"], "plan-test123")
         self.assertEqual(result["target"], "M31")
-        self.assertIn("light", result["frame_types"])
+        self.assertEqual(result["pointing_count"], 1)
+        self.assertFalse(result["complete"])
+        self.assertEqual(len(result["pointings"]), 1)
+        self.assertEqual(result["pointings"][0]["plan_id"], "plan-test123-1")
+        self.assertIn("light", result["pointings"][0]["frame_types"])
 
     def _write_mosaic_source(self, directory: Path, *, pa: float = 0.0, rows: int = 2):
         directory.mkdir(parents=True, exist_ok=True)
@@ -853,7 +856,7 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
                 "nina_planner.server._read_metadata",
                 AsyncMock(return_value=[]),
             ):
-                result = await get_plan_progress(str(plan_path), all_pointings=True)
+                result = await get_plan_progress(str(plan_path))
 
         self.assertEqual(result["pointing_count"], 2)
         self.assertFalse(result["complete"])

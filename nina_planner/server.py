@@ -563,13 +563,11 @@ async def write_mosaic_plan(
 @mcp.tool()
 async def get_plan_progress(
     file_path: str,
-    pointing_index: int = 1,
     max_hfr: float | None = None,
     min_detected_stars: int | None = None,
     max_guiding_rms_arcsec: float | None = None,
-    all_pointings: bool = False,
 ) -> dict[str, Any]:
-    """Returns per-frame-type acquisition progress for an observation-plan JSON file: for each exposure group, the total_count from the plan, the acquired_count attributed to this plan/pointing from the imaging metadata (ImageMetaData.csv + AcquisitionDetails.csv), and the remaining_count. Lights are attributed via the `{base_plan_id}-{pointing_index}` plan id embedded in the recorded file path (no target-name fallback); flats/darks/bias are matched by image type, filter, and exposure and must fall within the plan's `calibration_max_age_days` window of today (UTC). Pass max_hfr and/or min_detected_stars to exclude light frames that fail quality thresholds (frames missing the quality fields are excluded when a threshold is set). Use this before run_plan to decide what still needs acquiring. Set `all_pointings=True` to summarize every pointing of a mosaic plan in one call: returns `complete` (all panes done) plus a `pointings` list of per-pane progress and per-pane `complete`, so a worker can acquire panes sequentially (finish pane N, then run pane N+1)."""
+    """Returns per-frame-type acquisition progress for every pointing of an observation-plan JSON file: for each exposure group, the total_count from the plan, the acquired_count attributed to that plan/pointing from the imaging metadata (ImageMetaData.csv + AcquisitionDetails.csv), and the remaining_count. Lights are attributed via the `{base_plan_id}-{pointing_index}` plan id embedded in the recorded file path (no target-name fallback); flats/darks/bias are matched by image type, filter, and exposure and must fall within the plan's `calibration_max_age_days` window of today (UTC). Pass max_hfr and/or min_detected_stars to exclude light frames that fail quality thresholds (frames missing the quality fields are excluded when a threshold is set). Use this before run_plan to decide what still needs acquiring. Returns `complete` (all panes done) plus a `pointings` list of per-pane progress and per-pane `complete`, so a worker can acquire panes sequentially (finish pane N, then run pane N+1)."""
     plan = await _load_plan(file_path)
     rows = await _read_metadata()
 
@@ -583,42 +581,33 @@ async def get_plan_progress(
             max_guiding_rms_arcsec=max_guiding_rms_arcsec,
         )
 
-    if all_pointings:
-        entries: list[dict[str, Any]] = []
-        complete = True
-        for index in range(1, len(plan.pointings) + 1):
-            pointings_progress = progress_for(index)
-            pane_done = all(
-                item["remaining_count"] == 0
-                for items in pointings_progress.values()
-                for item in items
-            )
-            complete = complete and pane_done
-            pointing = plan.pointings[index - 1]
-            entries.append(
-                {
-                    "pointing_index": index,
-                    "label": pointing.label,
-                    "plan_id": plan.effective_plan_id(index),
-                    "complete": pane_done,
-                    "frame_types": pointings_progress,
-                }
-            )
-        res = {
-            "plan_id": plan._base_plan_id(),
-            "target": plan.target,
-            "pointing_count": len(plan.pointings),
-            "complete": complete,
-            "pointings": entries,
-        }
-    else:
-        _check_pointing_index(plan, pointing_index)
-        res = {
-            "plan_id": plan.effective_plan_id(pointing_index),
-            "pointing_index": pointing_index,
-            "target": plan.target,
-            "frame_types": progress_for(pointing_index),
-        }
+    entries: list[dict[str, Any]] = []
+    complete = True
+    for index in range(1, len(plan.pointings) + 1):
+        pointings_progress = progress_for(index)
+        pane_done = all(
+            item["remaining_count"] == 0
+            for items in pointings_progress.values()
+            for item in items
+        )
+        complete = complete and pane_done
+        pointing = plan.pointings[index - 1]
+        entries.append(
+            {
+                "pointing_index": index,
+                "label": pointing.label,
+                "plan_id": plan.effective_plan_id(index),
+                "complete": pane_done,
+                "frame_types": pointings_progress,
+            }
+        )
+    res = {
+        "plan_id": plan._base_plan_id(),
+        "target": plan.target,
+        "pointing_count": len(plan.pointings),
+        "complete": complete,
+        "pointings": entries,
+    }
     _log_payload("Progress:", json.dumps(res, indent=2))
     return res
 
