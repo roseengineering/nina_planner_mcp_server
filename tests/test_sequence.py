@@ -534,7 +534,7 @@ class SequenceBehaviorTest(unittest.TestCase):
         self.assertEqual(len(dsos), 1)
         target = dsos[0]["Target"]["TargetName"]
         self.assertIn("M31 - core", target)
-        self.assertIn("[plan-test123-1]", target)
+        self.assertIn("(plan-test123-1)", target)
 
     def test_lights_without_pointing_label_omits_label_segment(self):
         plan = self._plan(pointings=[{"ra_hours": 0.71, "dec_deg": 41.27}])
@@ -542,7 +542,7 @@ class SequenceBehaviorTest(unittest.TestCase):
         dsos = _deepsky_targets(result)
         self.assertEqual(len(dsos), 1)
         target = dsos[0]["Target"]["TargetName"]
-        self.assertTrue(target.startswith("M31 [plan-test123-1]"))
+        self.assertTrue(target.startswith("M31 (plan-test123-1)"))
 
     def test_lights_slew_and_center_when_position_angle_none(self):
         plan = self._plan(pointings=[{"ra_hours": 0.71, "dec_deg": 41.27}])

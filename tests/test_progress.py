@@ -13,7 +13,7 @@ def _row(
     image_type="LIGHT",
     filter_name="LP",
     duration="60.0",
-    target: str | None = "M31 [plan-abc123-1]",
+    target: str | None = "M31 (plan-abc123-1)",
     date: str | None = None,
 ):
     if date is None:
@@ -51,52 +51,78 @@ class PlanProgressTest(unittest.TestCase):
     def test_embedded_plan_id_matching(self):
         plan = _plan(plan_id="plan-abc123")
         rows = [
-            _row(target="M31 [plan-abc123-1]"),
-            _row(target="M31 [plan-abc123-1]"),
-            _row(target="M31 [other-id-1]"),  # different plan, ignored
+            _row(target="M31 (plan-abc123-1)"),
+            _row(target="M31 (plan-abc123-1)"),
+            _row(target="M31 (other-id-1)"),  # different plan, ignored
             _row(target="M31"),  # no embedded id, ignored
         ]
         lights = plan_progress(plan, rows)["light"][0]
         self.assertEqual(lights["acquired_count"], 2)
         self.assertEqual(lights["remaining_count"], 18)
 
-    def test_target_directory_and_filename_matching_ignore_ancestor_directories(self):
+    def test_legacy_bracket_token_not_attributed(self):
+        plan = _plan(plan_id="plan-abc123")
+        rows = [
+            _row(target="M31 [plan-abc123-1]"),
+            _row(target="M31 (plan-abc123-1)"),
+            _row(target="M31 [plan-abc123-2]"),
+        ]
+        lights = plan_progress(plan, rows)["light"][0]
+        self.assertEqual(lights["acquired_count"], 1)
+        self.assertEqual(lights["remaining_count"], 19)
+
+    def test_attribution_token_is_parenthesised(self):
+        plan = _plan(plan_id="plan-abc123")
+        self.assertEqual(plan.attribution_token(1), "(plan-abc123-1)")
+        self.assertEqual(plan.attribution_token(2), "(plan-abc123-2)")
+
+    def test_token_matches_in_any_path_segment(self):
         plan = _plan(plan_id="plan-abc123")
         rows = [
             {
+                # token in the target directory under LIGHT
                 **_row(target=None),
                 "file_path": (
-                    r"C:\NINA\[unrelated-bracket]\2026-09-28\LIGHT"
-                    r"\M31 [plan-abc123-1]\frame.fits"
+                    r"C:\NINA\2026-09-28\LIGHT"
+                    r"\M31 (plan-abc123-1)\frame.fits"
                 ),
             },
             {
+                # token in the filename
                 **_row(target=None),
                 "file_path": (
-                    "/NINA/[unrelated-bracket]/2026-09-28/LIGHT/"
-                    "M31 [plan-abc123-1]__60.00s_0000.fits"
+                    "/NINA/2026-09-28/LIGHT/M31 (plan-abc123-1)__60.00s_0000.fits"
                 ),
             },
             {
+                # token in an ancestor directory: FilePattern
+                # $$TARGETNAME$$\$$DATEMINUS12$$\$$IMAGETYPE$$\...
                 **_row(target=None),
-                "file_path": (
-                    "/NINA/M31 [plan-abc123-1]/2026-09-28/LIGHT/"
-                    "NGC 7331 [other-id-1]/frame.fits"
-                ),
+                "file_path": ("/NINA/M31 (plan-abc123-1)/2026-09-28/LIGHT/frame.fits"),
+            },
+            {
+                # no token anywhere
+                **_row(target=None),
+                "file_path": "/NINA/2026-09-28/LIGHT/M31/frame.fits",
+            },
+            {
+                # a different plan's token only
+                **_row(target=None),
+                "file_path": "/NINA/NGC 7331 (other-id-1)/2026-09-28/LIGHT/f.fits",
             },
         ]
 
         lights = plan_progress(plan, rows)["light"][0]
-        self.assertEqual(lights["acquired_count"], 2)
-        self.assertEqual(lights["remaining_count"], 18)
+        self.assertEqual(lights["acquired_count"], 3)
+        self.assertEqual(lights["remaining_count"], 17)
 
     def test_derived_plan_id_matching(self):
         plan = _plan(plan_id="")
         self.assertEqual(plan.plan_id, "")
         pid = plan._base_plan_id()
         rows = [
-            _row(target=f"M31 [{pid}-1]"),
-            _row(target=f"M31 [{pid}-1]"),
+            _row(target=f"M31 ({pid}-1)"),
+            _row(target=f"M31 ({pid}-1)"),
         ]
         lights = plan_progress(plan, rows)["light"][0]
         self.assertEqual(lights["acquired_count"], 2)
@@ -104,7 +130,7 @@ class PlanProgressTest(unittest.TestCase):
 
     def test_other_target_not_counted(self):
         plan = _plan()
-        rows = [_row(target="NGC 7331 [plan-other-1]")]
+        rows = [_row(target="NGC 7331 (plan-other-1)")]
         lights = plan_progress(plan, rows)["light"][0]
         self.assertEqual(lights["acquired_count"], 0)
         self.assertEqual(lights["remaining_count"], 20)
@@ -112,8 +138,8 @@ class PlanProgressTest(unittest.TestCase):
     def test_filter_and_exposure_match(self):
         plan = _plan()
         rows = [
-            _row(filter_name="SII", target="M31 [plan-abc123-1]"),  # wrong filter
-            _row(duration="30.0", target="M31 [plan-abc123-1]"),  # wrong exposure
+            _row(filter_name="SII", target="M31 (plan-abc123-1)"),  # wrong filter
+            _row(duration="30.0", target="M31 (plan-abc123-1)"),  # wrong exposure
             _row(),  # match
         ]
         lights = plan_progress(plan, rows)["light"][0]
@@ -135,8 +161,8 @@ class PlanProgressTest(unittest.TestCase):
     def test_non_light_rows_excluded_from_lights(self):
         plan = _plan()
         rows = [
-            _row(image_type="DARK", target="M31 [plan-x-1]"),
-            _row(image_type="FLAT", target="M31 [plan-x-1]"),
+            _row(image_type="DARK", target="M31 (plan-x-1)"),
+            _row(image_type="FLAT", target="M31 (plan-x-1)"),
         ]
         lights = plan_progress(plan, rows)["light"][0]
         self.assertEqual(lights["acquired_count"], 0)
@@ -389,8 +415,8 @@ class FilterMetadataRowsTest(unittest.TestCase):
     def test_lights_match_plan_id(self):
         plan = _plan()
         rows = [
-            _row(target="M31 [plan-abc123-1]"),
-            _row(target="M31 [other-id-1]"),
+            _row(target="M31 (plan-abc123-1)"),
+            _row(target="M31 (other-id-1)"),
             _row(target="M31"),
         ]
         out = filter_metadata_rows(plan, rows, "light")
@@ -487,9 +513,9 @@ class PointingIndexTest(unittest.TestCase):
             ],
         )
         rows = [
-            _row(target="M31 [plan-abc123-1]"),
-            _row(target="M31 [plan-abc123-1]"),
-            _row(target="M31 [plan-abc123-2]"),
+            _row(target="M31 (plan-abc123-1)"),
+            _row(target="M31 (plan-abc123-1)"),
+            _row(target="M31 (plan-abc123-2)"),
         ]
         lights_p1 = plan_progress(plan, rows, pointing_index=1)["light"][0]
         lights_p2 = plan_progress(plan, rows, pointing_index=2)["light"][0]

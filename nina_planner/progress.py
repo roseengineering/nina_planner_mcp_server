@@ -61,28 +61,21 @@ def _light_target_matches(
     *,
     pointing_index: int = 1,
 ) -> bool:
+    """True when the row's recorded path carries this pointing's plan-id token.
+
+    The token is unique to a plan pointing, so any single path segment may
+    carry it: N.I.N.A. puts `$$TARGETNAME$$` wherever the profile's
+    `FilePattern` places it — in the filename, in the directory under LIGHT,
+    or in an ancestor directory above the date folder.
+    """
     path = (row.get("file_path") or "").strip()
     if not path:
         return False
 
     components = _path_components(path)
-    expected_token = f"[{plan.effective_plan_id(pointing_index)}]"
-    light_indices = [
-        index
-        for index, component in enumerate(components)
-        if component.upper() == "LIGHT"
-    ]
+    expected_token = plan.attribution_token(pointing_index)
 
-    # N.I.N.A. can put the target name either in the first directory under
-    # LIGHT or in the image filename. Do not inspect ancestor directories:
-    # they are unrelated to the image's target identity.
-    target_components = [components[-1]] if components else []
-    if light_indices:
-        target_directory_index = light_indices[-1] + 1
-        if target_directory_index < len(components) - 1:
-            target_components.append(components[target_directory_index])
-
-    return any(expected_token in component for component in target_components)
+    return any(expected_token in component for component in components)
 
 
 def _quality_accepted(

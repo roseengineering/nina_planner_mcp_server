@@ -12,12 +12,7 @@ import anyio
 import httpx
 from mcp.server.fastmcp import FastMCP
 
-from .imaging import (
-    read_imaging_csv,
-    read_weather_csv,
-    widen_imaging_metadata,
-    windows_to_local,
-)
+from .imaging import read_imaging_csv, read_weather_csv, widen_imaging_metadata
 from .models.observatory import ObservatoryEquipment
 from .models.plan import ObservationPlan
 from .models.profile import (
@@ -226,7 +221,7 @@ async def _convert_to_met(
 
 async def _resolve_imaging_root() -> Path:
     profile = await get_site_profile()
-    return windows_to_local(profile.image_save_path)
+    return Path(profile.local_image_save_path)
 
 
 def _check_pointing_index(plan: ObservationPlan, pointing_index: int) -> None:
@@ -361,7 +356,7 @@ async def get_site_equipment_status() -> ObservatoryEquipment:
 
 @mcp.tool()
 async def get_site_profile() -> ObservatoryProfile:
-    """Returns the active NINA observatory profile and static configuration, including site location, optics, camera geometry, filters, plate solvers, and image-save path. Use get_site_equipment for live equipment state. This tool is read-only and takes no action."""
+    """Returns the active NINA observatory profile and static configuration, including site location, optics, camera geometry, filters, plate solvers, and image-save path. `image_save_path` is the raw Windows path from the profile; `local_image_save_path` is the derived path usable on this host (drive letter mapped through NINA_DRIVE_MOUNT, default `/mnt/<drive>`, on Linux/WSL; unchanged on Windows) and is the one to use for local file access. Use get_site_equipment for live equipment state. This tool is read-only and takes no action."""
     raw = await _api_get("/profile/show?active=true")
 
     astrometry = raw.get("AstrometrySettings", {})
@@ -562,7 +557,7 @@ async def run_plan(
     min_detected_stars: int | None = None,
     max_guiding_rms_arcsec: float | None = None,
 ) -> str:
-    """Loads an acquisition sequence with safety guardrails from an observation-plan JSON file. Select the frame type: light, dark, bias, dawn_flat, or dusk_flat. `pointing_index` (1-based, default 1) selects which pointing of the plan to load — the lights target name embeds `{base_plan_id}-{pointing_index}` so each pointing's frames are attributed independently. Light loads require `$$TARGETNAME$$` in the active profile's FilePattern for attribution. In the default `remaining` mode the sequence only acquires frames still needed (total minus frames already attributed to this plan/pointing in the imaging metadata); if nothing remains it reports the plan as complete and loads nothing. max_hfr and/or min_detected_stars exclude light frames failing quality thresholds from the acquired count. Pass `mode="full"` to acquire the entire plan again. By default the loaded sequence is started immediately; pass `load_only=True` to load without starting (e.g. to start it manually from the NINA GUI)."""
+    """Loads an acquisition sequence with safety guardrails from an observation-plan JSON file. Select the frame type: light, dark, bias, dawn_flat, or dusk_flat. `pointing_index` (1-based, default 1) selects which pointing of the plan to load — the lights target name embeds the `({base_plan_id}-{pointing_index})` token so each pointing's frames are attributed independently. Light loads require `$$TARGETNAME$$` in the active profile's FilePattern for attribution. In the default `remaining` mode the sequence only acquires frames still needed (total minus frames already attributed to this plan/pointing in the imaging metadata); if nothing remains it reports the plan as complete and loads nothing. max_hfr and/or min_detected_stars exclude light frames failing quality thresholds from the acquired count. Pass `mode="full"` to acquire the entire plan again. By default the loaded sequence is started immediately; pass `load_only=True` to load without starting (e.g. to start it manually from the NINA GUI)."""
     plan = await _load_plan(file_path)
     profile = await get_site_profile()
     await _validate_filters(plan, profile)

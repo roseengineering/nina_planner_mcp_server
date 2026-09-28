@@ -19,7 +19,7 @@
       },
       "command": [
        	"python",
-	"-m",
+        "-m",
 	"nina_planner"
       ]
     }

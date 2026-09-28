@@ -124,3 +124,10 @@ class ObservationPlan(BaseModel):
 
     def effective_plan_id(self, pointing_index: int) -> str:
         return f"{self._base_plan_id()}-{pointing_index}"
+
+    def attribution_token(self, pointing_index: int) -> str:
+        """Target-name token stamped on frames so they attribute to a pointing.
+
+        Parenthesised because N.I.N.A. mangles square brackets in target names.
+        """
+        return f"({self.effective_plan_id(pointing_index)})"

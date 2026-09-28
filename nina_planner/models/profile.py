@@ -3,7 +3,9 @@ from __future__ import annotations
 import math
 from typing import Self
 
-from pydantic import BaseModel, model_validator
+from pydantic import BaseModel, computed_field, model_validator
+
+from ..imaging import windows_to_local
 
 
 class FilterInfo(BaseModel):
@@ -83,6 +85,17 @@ class ObservatoryProfile(BaseModel):
     image_save_path: str
     file_pattern: str | None = None
     equipment: EquipmentConfig
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def local_image_save_path(self) -> str:
+        """`image_save_path` resolved to a path usable on this host.
+
+        On Windows this is the profile path unchanged; on Linux and WSL the
+        drive letter is mapped through `NINA_DRIVE_MOUNT` (default
+        `/mnt/<drive>`) so the imaging directory can be read locally.
+        """
+        return str(windows_to_local(self.image_save_path))
 
     def filter_position(self, name: str) -> int:
         filt = next((f for f in self.filters if f.name == name), None)

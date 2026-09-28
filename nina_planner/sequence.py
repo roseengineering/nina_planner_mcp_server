@@ -679,7 +679,7 @@ def sequence_deepsky(
 ) -> dict[str, Any]:
     pointing = plan.pointings[pointing_index - 1]
     prefix = f"{plan.target} - {pointing.label}" if pointing.label else plan.target
-    target = f"{prefix} [{plan.effective_plan_id(pointing_index)}]"
+    target = f"{prefix} {plan.attribution_token(pointing_index)}"
     posang = 0 if pointing.position_angle_deg is None else pointing.position_angle_deg
     starting = (
         "ACQUISITION-STARTING: Running sequence now on next target or calibration"
