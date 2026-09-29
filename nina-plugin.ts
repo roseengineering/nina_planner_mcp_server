@@ -21,11 +21,11 @@ const plugin: Plugin = async (
 
   async function triggerIntervention(events: any | null = null) {
     // get prompt
-    fileLog(pluginLogs, "events:", events);
     const payload = JSON.stringify(events, null, 2);
     const text = (events == null
         ? "Trigger: Routine interval check. No new N.I.N.A. events."
         : `Trigger: New N.I.N.A. events follow:\n\n\`\`\`json\n${payload}\n\`\`\``);
+    fileLog(pluginLogs, "events:", text);
 
     // get active session
     const sessions = await ctx.client.session.list().catch(() => null)
@@ -55,7 +55,7 @@ const plugin: Plugin = async (
     eventBatch = [];
   }
 
-  function safeJsonParse(str) {
+  function safeJsonParse(str: string) {
     try {
       return JSON.parse(str);
     } catch {
