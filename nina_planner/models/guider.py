@@ -33,32 +33,26 @@ class GuiderDevice(BaseModel):
                 data["pixel_scale"] = pixel_scale
 
             # ninaAPI nests guiding error under `RMSError`, e.g.
-            # {"RA": {"Pixel": .., "Arcseconds": ..}, "PeakRA": {...}, ...}.
-            # Flat `<prefix>_arcseconds` / `<prefix>_pixel` keys are still
-            # accepted as a fallback for other payload shapes.
+            # {"RA": {"Pixel": .., "Arcseconds": ..}, "PeakRA": {...}, ...},
+            # which `_convert_keys` snake-cases to `rms_error.ra.arcseconds` etc.
             nested = data.get("rms_error")
             if not isinstance(nested, dict):
                 nested = {}
 
-            def _build_metric(prefix: str, nested_key: str) -> GuiderMetric:
+            def _build_metric(nested_key: str) -> GuiderMetric:
                 entry = nested.get(nested_key)
                 if not isinstance(entry, dict):
                     entry = {}
 
-                arcsec = ascom_float(entry.get("arcseconds"))
-                if arcsec is None:
-                    arcsec = ascom_float(data.get(f"{prefix}_arcseconds"))
+                return GuiderMetric(
+                    arcseconds=ascom_float(entry.get("arcseconds")),
+                    pixel=ascom_float(entry.get("pixel")),
+                )
 
-                pix = ascom_float(entry.get("pixel"))
-                if pix is None:
-                    pix = ascom_float(data.get(f"{prefix}_pixel"))
-
-                return GuiderMetric(arcseconds=arcsec, pixel=pix)
-
-            data["ra_rms_error"] = _build_metric("ra_rms_error", "ra")
-            data["dec_rms_error"] = _build_metric("dec_rms_error", "dec")
-            data["total_rms_error"] = _build_metric("total_rms_error", "total")
-            data["peak_ra_excursion"] = _build_metric("peak_ra_excursion", "peak_ra")
-            data["peak_dec_excursion"] = _build_metric("peak_dec_excursion", "peak_dec")
+            data["ra_rms_error"] = _build_metric("ra")
+            data["dec_rms_error"] = _build_metric("dec")
+            data["total_rms_error"] = _build_metric("total")
+            data["peak_ra_excursion"] = _build_metric("peak_ra")
+            data["peak_dec_excursion"] = _build_metric("peak_dec")
 
         return data

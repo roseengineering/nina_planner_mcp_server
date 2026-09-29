@@ -33,77 +33,15 @@ class GuiderDeviceDeriveFieldsTest(unittest.TestCase):
         guider = GuiderDevice(**self._base(pixel_scale=None))
         self.assertIsNone(guider.pixel_scale)
 
-    def test_guider_ra_rms_error_metric_construction(self):
-        guider = GuiderDevice(
-            **self._base(
-                ra_rms_error_arcseconds=1.2,
-                ra_rms_error_pixel=0.5,
-            )
-        )
-        self.assertEqual(guider.ra_rms_error.arcseconds, 1.2)
-        self.assertEqual(guider.ra_rms_error.pixel, 0.5)
-
-    def test_guider_dec_rms_error_metric_construction(self):
-        guider = GuiderDevice(
-            **self._base(
-                dec_rms_error_arcseconds=0.8,
-                dec_rms_error_pixel=0.3,
-            )
-        )
-        self.assertEqual(guider.dec_rms_error.arcseconds, 0.8)
-        self.assertEqual(guider.dec_rms_error.pixel, 0.3)
-
-    def test_guider_total_rms_error_metric_construction(self):
-        guider = GuiderDevice(
-            **self._base(
-                total_rms_error_arcseconds=1.5,
-                total_rms_error_pixel=0.6,
-            )
-        )
-        self.assertEqual(guider.total_rms_error.arcseconds, 1.5)
-        self.assertEqual(guider.total_rms_error.pixel, 0.6)
-
-    def test_guider_peak_ra_excursion_metric_construction(self):
-        guider = GuiderDevice(
-            **self._base(
-                peak_ra_excursion_arcseconds=3.0,
-                peak_ra_excursion_pixel=1.2,
-            )
-        )
-        self.assertEqual(guider.peak_ra_excursion.arcseconds, 3.0)
-        self.assertEqual(guider.peak_ra_excursion.pixel, 1.2)
-
-    def test_guider_peak_dec_excursion_metric_construction(self):
-        guider = GuiderDevice(
-            **self._base(
-                peak_dec_excursion_arcseconds=2.5,
-                peak_dec_excursion_pixel=1.0,
-            )
-        )
-        self.assertEqual(guider.peak_dec_excursion.arcseconds, 2.5)
-        self.assertEqual(guider.peak_dec_excursion.pixel, 1.0)
-
-    def test_guider_metric_with_only_arcseconds(self):
-        """Partial data — only arcseconds, no pixel → pixel=None."""
-        guider = GuiderDevice(**self._base(ra_rms_error_arcseconds=1.0))
-        self.assertEqual(guider.ra_rms_error.arcseconds, 1.0)
-        self.assertIsNone(guider.ra_rms_error.pixel)
-
     def test_guider_full_integration(self):
         guider = GuiderDevice(
             **self._base(
                 app_state="Guiding",
                 pixel_scale=1.5,
-                ra_rms_error_arcseconds=1.2,
-                ra_rms_error_pixel=0.5,
-                dec_rms_error_arcseconds=0.8,
-                dec_rms_error_pixel=0.3,
-                total_rms_error_arcseconds=1.5,
-                total_rms_error_pixel=0.6,
-                peak_ra_excursion_arcseconds=3.0,
-                peak_ra_excursion_pixel=1.2,
-                peak_dec_excursion_arcseconds=2.5,
-                peak_dec_excursion_pixel=1.0,
+                rms_error={
+                    "ra": {"pixel": 0.5, "arcseconds": 1.2},
+                    "peak_dec": {"pixel": 1.0, "arcseconds": 2.5},
+                },
             )
         )
         self.assertEqual(guider.state, "Guiding")
@@ -151,20 +89,6 @@ class GuiderDeviceNestedRmsErrorTest(unittest.TestCase):
         guider = GuiderDevice(**self._base(rms_error={"ra": {"arcseconds": 0.43}}))
         self.assertEqual(guider.ra_rms_error.arcseconds, 0.43)
         self.assertIsNone(guider.ra_rms_error.pixel)
-
-    def test_flat_keys_still_work_without_nested_block(self):
-        guider = GuiderDevice(**self._base(ra_rms_error_arcseconds=1.0))
-        self.assertEqual(guider.ra_rms_error.arcseconds, 1.0)
-
-    def test_nested_block_takes_precedence_over_flat_keys(self):
-        guider = GuiderDevice(
-            **self._base(
-                ra_rms_error_arcseconds=9.9,
-                rms_error={"ra": {"arcseconds": 0.43, "pixel": 0.35}},
-            )
-        )
-        self.assertEqual(guider.ra_rms_error.arcseconds, 0.43)
-        self.assertEqual(guider.ra_rms_error.pixel, 0.35)
 
     def test_non_dict_nested_block_is_ignored(self):
         guider = GuiderDevice(**self._base(rms_error="n/a"))
