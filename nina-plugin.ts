@@ -15,8 +15,9 @@ const plugin: Plugin = async (
   options: PluginOptions = {},
 ) => {
   const ninaEndpoint = (options.ninaEndpoint as string) || "127.0.0.1:1888";
-  const intervalCheck: number =
-    typeof options.intervalCheck === "number" ? options.intervalCheck : 10;
+  const intervalCheckMinutes: number =
+    typeof options.intervalCheckMinutes === "number" ? 
+           options.intervalCheckMinutes : 10;
   const pluginLogs = options.pluginLogs as string || null;
 
   async function triggerIntervention(events: any | null = null) {
@@ -25,7 +26,7 @@ const plugin: Plugin = async (
     const text = (events == null
         ? "Trigger: Routine interval check. No new N.I.N.A. events."
         : `Trigger: New N.I.N.A. events follow:\n\n\`\`\`json\n${payload}\n\`\`\``);
-    fileLog(pluginLogs, "events:", text);
+    fileLog(pluginLogs, "nina-plugin: intervention:", text);
 
     // get active session
     const sessions = await ctx.client.session.list().catch(() => null)
@@ -117,13 +118,13 @@ const plugin: Plugin = async (
   connect();
 
   let intervalId: ReturnType<typeof setInterval> | null = null;
-  if (intervalCheck > 0) {
+  if (intervalCheckMinutes > 0) {
     intervalId = setInterval(() => {
       if (!isSocketOpen()) return;
       triggerIntervention().catch((err: unknown) =>
         fileLog(pluginLogs, "nina-plugin: interval trigger failed:", err),
       );
-    }, intervalCheck * 60_000);
+    }, intervalCheckMinutes * 60_000);
   }
 
   return {
