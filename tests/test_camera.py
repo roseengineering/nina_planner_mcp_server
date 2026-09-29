@@ -190,3 +190,41 @@ class CameraDeviceBinningModesTest(unittest.TestCase):
     def test_non_iterable_entries_are_dropped(self):
         cam = CameraDevice(**self._base(binning_modes=[1, None, [2, 2]]))
         self.assertEqual(cam.binning.supported_modes, [(2, 2)])
+
+
+class CameraDeviceDewHeaterTest(unittest.TestCase):
+    """`HasDewHeater` (capability) and `DewHeaterOn` (state) are distinct."""
+
+    def _base(self, **overrides) -> dict:
+        data = {
+            "connected": True,
+            "name": "TestCam",
+            "description": "test camera",
+        }
+        data.update(overrides)
+        return data
+
+    def test_heater_present_but_off_is_not_reported_as_on(self):
+        cam = CameraDevice(**self._base(has_dew_heater=True, dew_heater_on=False))
+        self.assertTrue(cam.thermal.has_dew_heater)
+        self.assertFalse(cam.thermal.dew_heater_on)
+
+    def test_heater_present_and_on(self):
+        cam = CameraDevice(**self._base(has_dew_heater=True, dew_heater_on=True))
+        self.assertTrue(cam.thermal.has_dew_heater)
+        self.assertTrue(cam.thermal.dew_heater_on)
+
+    def test_heater_absent_but_flag_on(self):
+        cam = CameraDevice(**self._base(has_dew_heater=False, dew_heater_on=True))
+        self.assertFalse(cam.thermal.has_dew_heater)
+        self.assertTrue(cam.thermal.dew_heater_on)
+
+    def test_heater_keys_absent_default_to_false(self):
+        cam = CameraDevice(**self._base())
+        self.assertFalse(cam.thermal.has_dew_heater)
+        self.assertFalse(cam.thermal.dew_heater_on)
+
+    def test_disconnected_camera_keeps_defaults(self):
+        cam = CameraDevice(connected=False, name="TestCam")
+        self.assertFalse(cam.thermal.has_dew_heater)
+        self.assertFalse(cam.thermal.dew_heater_on)

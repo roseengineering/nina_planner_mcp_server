@@ -88,7 +88,8 @@ class ThermalInfo(BaseModel):
     cooler_on: bool = False
     target_temperature_c: float | None = None
     cooler_power_pct: float | None = None
-    dew_heater: bool | None = None
+    has_dew_heater: bool = False
+    dew_heater_on: bool = False
 
 
 class ReadoutInfo(BaseModel):
@@ -195,9 +196,8 @@ class CameraDevice(BaseModel):
                 cooler_on=bool(data.get("cooler_on", False)),
                 target_temperature_c=ascom_float(data.get("target_temp")),
                 cooler_power_pct=ascom_float(data.get("cooler_power")),
-                dew_heater=bool(
-                    data.get("dew_heater_on") or data.get("has_dew_heater", False)
-                ),
+                has_dew_heater=bool(data.get("has_dew_heater", False)),
+                dew_heater_on=bool(data.get("dew_heater_on", False)),
             )
 
             raw_readout_modes = data.get("readout_modes", [])
