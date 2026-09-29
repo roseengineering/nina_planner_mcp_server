@@ -279,7 +279,7 @@ Rules:
       { 
         // "ninaEndpoint": "192.168.0.24:1888", // defaults to 127.0.0.1:1888
         "pluginLogs": "/tmp/nina-plugin-debug.log",
-        "intervalCheck": 0  // 0 disables interval check, defaults to every 10 minutes
+        "intervalCheckMinutes": 10
       } 
     ]
   ],
