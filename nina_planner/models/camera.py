@@ -7,6 +7,46 @@ from pydantic import BaseModel, Field, model_validator
 from ..nina_utils import ascom_datetime, ascom_float, ascom_int
 
 
+def _binning_axis(value: object) -> int | None:
+    try:
+        return ascom_int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _parse_binning_mode(mode: object) -> tuple[int, int] | None:
+    """Normalize one ``BinningModes`` entry to an ``(x, y)`` tuple.
+
+    ninaAPI serializes binning modes as ``{"Name": "2x2", "X": 2, "Y": 2}``
+    objects; other drivers/versions emit ``[2, 2]`` arrays or ``"2x2"``
+    strings. Unparseable entries are dropped instead of raising, so one odd
+    driver value cannot fail the whole equipment-status call.
+    """
+    if isinstance(mode, dict):
+        x = _binning_axis(mode.get("x"))
+        y = _binning_axis(mode.get("y"))
+        if x is not None and y is not None:
+            return (x, y)
+        mode = mode.get("name")
+
+    if isinstance(mode, (list, tuple)) and len(mode) == 2:
+        x = _binning_axis(mode[0])
+        y = _binning_axis(mode[1])
+        if x is not None and y is not None:
+            return (x, y)
+        return None
+
+    if isinstance(mode, str):
+        parts = mode.split("x")
+        if len(parts) == 2:
+            x = _binning_axis(parts[0])
+            y = _binning_axis(parts[1])
+            if x is not None and y is not None:
+                return (x, y)
+
+    return None
+
+
 class SensorInfo(BaseModel):
     bayer_offset: tuple[int, int] | None = None
     sensor_type: str | None = None
@@ -95,15 +135,9 @@ class CameraDevice(BaseModel):
             supported_modes: list[tuple[int, int]] = []
             if isinstance(raw_binning_modes, list):
                 for mode in raw_binning_modes:
-                    if isinstance(mode, (list, tuple)) and len(mode) == 2:
-                        supported_modes.append((int(mode[0]), int(mode[1])))
-                    elif isinstance(mode, str) and "x" in mode:
-                        parts = mode.split("x")
-                        if len(parts) == 2:
-                            try:
-                                supported_modes.append((int(parts[0]), int(parts[1])))
-                            except (ValueError, TypeError):
-                                pass
+                    parsed_mode = _parse_binning_mode(mode)
+                    if parsed_mode is not None:
+                        supported_modes.append(parsed_mode)
 
             data["sensor"] = SensorInfo(
                 bayer_offset=(

@@ -26,7 +26,13 @@ class RotatorDevice(BaseModel):
                 data["mechanical_position_deg"] = mechanical
 
             if "is_synced" not in data:
-                sync_state = data.get("sync_state", "Unsynced")
-                data["is_synced"] = sync_state in ("Synced", "Synchronized", True)
+                # ninaAPI reports a boolean `Synced`; other drivers expose a
+                # `sync_state` string instead.
+                synced = data.get("synced")
+                if synced is not None:
+                    data["is_synced"] = bool(synced)
+                else:
+                    sync_state = data.get("sync_state", "Unsynced")
+                    data["is_synced"] = sync_state in ("Synced", "Synchronized", True)
 
         return data

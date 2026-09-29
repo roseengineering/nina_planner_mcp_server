@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from pydantic import BaseModel, computed_field
+from pydantic import BaseModel, Field, computed_field
 
 
 class ReadonlySwitchInfo(BaseModel):
@@ -37,5 +37,5 @@ class Switch(BaseModel):
     driver_version: str | None = None
     device_id: str | None = None
     supported_actions: list[str] | None = None
-    writable_switches: list[WritableSwitchInfo]
-    readonly_switches: list[ReadonlySwitchInfo]
+    writable_switches: list[WritableSwitchInfo] = Field(default_factory=list)
+    readonly_switches: list[ReadonlySwitchInfo] = Field(default_factory=list)

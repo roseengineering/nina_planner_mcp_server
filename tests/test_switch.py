@@ -116,3 +116,17 @@ class SwitchTest(unittest.TestCase):
         assert switch.driver_version == "1.0"
         assert switch.device_id == "ASCOM.Simulator.Switch"
         assert switch.supported_actions == ["reset"]
+
+
+class SwitchMissingListsTest(unittest.TestCase):
+    """A payload without switch lists must not fail the equipment-status call."""
+
+    def test_missing_lists_default_to_empty(self):
+        switch = Switch(connected=True, name="PWR")
+        assert switch.writable_switches == []
+        assert switch.readonly_switches == []
+
+    def test_switch_lists_are_not_shared_between_instances(self):
+        first = Switch(connected=True, name="A")
+        second = Switch(connected=True, name="B")
+        assert first.writable_switches is not second.writable_switches

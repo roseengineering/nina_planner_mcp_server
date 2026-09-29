@@ -32,15 +32,33 @@ class GuiderDevice(BaseModel):
             if pixel_scale is not None:
                 data["pixel_scale"] = pixel_scale
 
-            def _build_metric(prefix: str) -> GuiderMetric:
-                arcsec = ascom_float(data.get(f"{prefix}_arcseconds"))
-                pix = ascom_float(data.get(f"{prefix}_pixel"))
+            # ninaAPI nests guiding error under `RMSError`, e.g.
+            # {"RA": {"Pixel": .., "Arcseconds": ..}, "PeakRA": {...}, ...}.
+            # Flat `<prefix>_arcseconds` / `<prefix>_pixel` keys are still
+            # accepted as a fallback for other payload shapes.
+            nested = data.get("rms_error")
+            if not isinstance(nested, dict):
+                nested = {}
+
+            def _build_metric(prefix: str, nested_key: str) -> GuiderMetric:
+                entry = nested.get(nested_key)
+                if not isinstance(entry, dict):
+                    entry = {}
+
+                arcsec = ascom_float(entry.get("arcseconds"))
+                if arcsec is None:
+                    arcsec = ascom_float(data.get(f"{prefix}_arcseconds"))
+
+                pix = ascom_float(entry.get("pixel"))
+                if pix is None:
+                    pix = ascom_float(data.get(f"{prefix}_pixel"))
+
                 return GuiderMetric(arcseconds=arcsec, pixel=pix)
 
-            data["ra_rms_error"] = _build_metric("ra_rms_error")
-            data["dec_rms_error"] = _build_metric("dec_rms_error")
-            data["total_rms_error"] = _build_metric("total_rms_error")
-            data["peak_ra_excursion"] = _build_metric("peak_ra_excursion")
-            data["peak_dec_excursion"] = _build_metric("peak_dec_excursion")
+            data["ra_rms_error"] = _build_metric("ra_rms_error", "ra")
+            data["dec_rms_error"] = _build_metric("dec_rms_error", "dec")
+            data["total_rms_error"] = _build_metric("total_rms_error", "total")
+            data["peak_ra_excursion"] = _build_metric("peak_ra_excursion", "peak_ra")
+            data["peak_dec_excursion"] = _build_metric("peak_dec_excursion", "peak_dec")
 
         return data
