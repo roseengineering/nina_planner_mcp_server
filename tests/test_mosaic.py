@@ -9,7 +9,7 @@ from nina_planner.mosaic import (
     parse_sexagesimal,
 )
 
-REPO_ROOT = Path(__file__).resolve().parent.parent
+FIXTURES = Path(__file__).resolve().parent / "fixtures"
 
 TELESCOPIUS_HEADER = (
     "Pane, RA, DEC, Position Angle (East), Pane width (arcmins), "
@@ -129,7 +129,7 @@ class LoadPointingsTextTest(unittest.TestCase):
 
 class LoadPointingsFileTest(unittest.TestCase):
     def test_reads_repo_mosaic_csv(self):
-        path = REPO_ROOT / "mosaic.csv"
+        path = FIXTURES / "mosaic.csv"
         if not path.exists():
             self.skipTest("mosaic.csv not present")
         pointings = load_pointings(path)
