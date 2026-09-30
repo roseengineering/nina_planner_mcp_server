@@ -53,10 +53,11 @@ class RotatorDeviceDeriveFieldsTest(unittest.TestCase):
         rotator = RotatorDevice(**self._base(sync_state="Unsynced", is_synced=True))
         self.assertTrue(rotator.is_synced)
 
-    def test_rotator_is_synced_defaults_to_unsynced(self):
-        """No sync_state and no is_synced → defaults to False."""
+    def test_rotator_is_synced_none_when_no_state_reported(self):
+        """No sync_state and no is_synced → stays None (unknown), rather than
+        being asserted as False."""
         rotator = RotatorDevice(**self._base())
-        self.assertFalse(rotator.is_synced)
+        self.assertIsNone(rotator.is_synced)
 
 
 class RotatorDeviceNinaSyncedKeyTest(unittest.TestCase):

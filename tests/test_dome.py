@@ -55,15 +55,14 @@ class DomeDeviceDeriveFieldsTest(unittest.TestCase):
         dome = DomeDevice(**data)
         self.assertIsNone(dome.azimuth_deg)
 
-    def test_dome_shutter_status_defaults_to_unknown(self):
-        """When the shutter_status key is absent, it defaults to 'Unknown'.
-        (dict.get with default only fires when the key is missing — passing
-        shutter_status=None does NOT trigger the default.)
+    def test_dome_shutter_status_missing_is_none(self):
+        """When the shutter_status key is absent on a connected dome, it stays
+        None rather than an invented "Unknown" sentinel.
         """
         data = self._base()
         del data["shutter_status"]
         dome = DomeDevice(**data)
-        self.assertEqual(dome.shutter_status, "Unknown")
+        self.assertIsNone(dome.shutter_status)
 
     def test_dome_shutter_status_preserved_when_provided(self):
         data = self._base(shutter_status="Closed")

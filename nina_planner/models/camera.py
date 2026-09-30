@@ -101,7 +101,7 @@ class CameraDevice(BaseModel):
     connected: bool
     name: str
     description: str | None = None
-    state: str = "Idle"
+    state: str | None = None
     sensor: SensorInfo = Field(default_factory=SensorInfo)
     exposure: ExposureInfo = Field(default_factory=ExposureInfo)
     gain: GainInfo = Field(default_factory=GainInfo)
@@ -117,7 +117,7 @@ class CameraDevice(BaseModel):
             if not data.get("connected", False):
                 return data
 
-            data["state"] = data.get("camera_state") or "CameraIdle"
+            data["state"] = data.get("camera_state")
 
             bin_x = data.get("bin_x", 1)
             bin_y = data.get("bin_y", 1)
@@ -145,7 +145,7 @@ class CameraDevice(BaseModel):
                     data.get("bayer_offset_x", 0) or 0,
                     data.get("bayer_offset_y", 0) or 0,
                 ),
-                sensor_type=data.get("sensor_type", "Unknown"),
+                sensor_type=data.get("sensor_type"),
                 resolution_px=(
                     data.get("x_size", 0) or 0,
                     data.get("y_size", 0) or 0,

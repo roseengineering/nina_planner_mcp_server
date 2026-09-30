@@ -205,7 +205,7 @@ async def _convert_to_met(
     for d in data:
         value = d[name]
         d = {
-            k: v.lower() if isinstance(v, str) else v for k, v in d.items() if k != name
+            k: v for k, v in d.items() if k != name
         }
         ts = datetime.fromisoformat(value)
         if ts.tzinfo is None:

@@ -18,28 +18,30 @@ class CameraDeviceValidationTest(unittest.TestCase):
         cam = CameraDevice(**self._base(camera_state="CameraExposing"))
         self.assertEqual(cam.state, "CameraExposing")
 
-    def test_null_camera_state_defaults_to_cameraidle(self):
-        # Regression: previously a None camera_state crashed Pydantic
-        # because CameraDevice.state is a required str.
+    def test_null_camera_state_is_none(self):
+        # Previously a None camera_state crashed Pydantic because
+        # CameraDevice.state was a required str; it is now optional.
         cam = CameraDevice(**self._base(camera_state=None))
-        self.assertEqual(cam.state, "CameraIdle")
+        self.assertIsNone(cam.state)
 
-    def test_missing_camera_state_defaults_to_cameraidle(self):
+    def test_missing_camera_state_is_none(self):
         cam = CameraDevice(
             **{k: v for k, v in self._base().items() if k != "camera_state"}
         )
-        self.assertEqual(cam.state, "CameraIdle")
+        self.assertIsNone(cam.state)
 
-    def test_empty_string_camera_state_defaults_to_cameraidle(self):
-        # The `or "CameraIdle"` defensive pattern also catches "" and 0,
-        # which are unlikely from NINA but possible from other producers.
+    def test_empty_string_camera_state_is_none(self):
         cam = CameraDevice(**self._base(camera_state=""))
+        self.assertEqual(cam.state, "")
+
+    def test_camera_idle_state_passes_through(self):
+        cam = CameraDevice(**self._base(camera_state="CameraIdle"))
         self.assertEqual(cam.state, "CameraIdle")
 
     def test_disconnected_does_not_invoke_validator_normalization(self):
         cam = CameraDevice(**self._base(connected=False, camera_state=None))
-        # Disconnected devices keep the model default; no validator crash.
-        self.assertEqual(cam.state, "Idle")
+        # Disconnected devices keep the model default None; no validator crash.
+        self.assertIsNone(cam.state)
 
 
 class CameraDeviceDeriveFieldsTest(unittest.TestCase):

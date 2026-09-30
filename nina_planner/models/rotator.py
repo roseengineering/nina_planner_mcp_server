@@ -32,7 +32,12 @@ class RotatorDevice(BaseModel):
                 if synced is not None:
                     data["is_synced"] = bool(synced)
                 else:
-                    sync_state = data.get("sync_state", "Unsynced")
-                    data["is_synced"] = sync_state in ("Synced", "Synchronized", True)
+                    sync_state = data.get("sync_state")
+                    if sync_state is not None:
+                        data["is_synced"] = sync_state in (
+                            "Synced",
+                            "Synchronized",
+                            True,
+                        )
 
         return data
