@@ -68,29 +68,6 @@ class CameraDeviceDeriveFieldsTest(unittest.TestCase):
         cam = CameraDevice(**self._base(bin_x="abc", bin_y="xyz"))
         self.assertEqual(cam.binning.current, (1, 1))
 
-    def test_binning_modes_tuple_parsing(self):
-        cam = CameraDevice(**self._base(binning_modes=[[1, 1], (2, 2)]))
-        self.assertEqual(cam.binning.supported_modes, [(1, 1), (2, 2)])
-
-    def test_binning_modes_string_parsing(self):
-        cam = CameraDevice(**self._base(binning_modes=["1x1", "2x2"]))
-        self.assertEqual(cam.binning.supported_modes, [(1, 1), (2, 2)])
-
-    def test_binning_modes_string_non_numeric_parts_dropped(self):
-        # "axb" → int("a") raises → silently dropped.
-        cam = CameraDevice(**self._base(binning_modes=[[1, 1], "axb"]))
-        self.assertEqual(cam.binning.supported_modes, [(1, 1)])
-
-    def test_binning_modes_malformed_tuple_silently_dropped(self):
-        # [1, 2, 3] has len != 2 → silently dropped.
-        cam = CameraDevice(**self._base(binning_modes=[[1, 2, 3], [2, 2]]))
-        self.assertEqual(cam.binning.supported_modes, [(2, 2)])
-
-    def test_binning_modes_string_no_x_silently_dropped(self):
-        # "abc" has no "x" → elif condition False → silently dropped.
-        cam = CameraDevice(**self._base(binning_modes=["abc", [2, 2]]))
-        self.assertEqual(cam.binning.supported_modes, [(2, 2)])
-
     def test_binning_modes_empty_list(self):
         cam = CameraDevice(**self._base(binning_modes=[]))
         self.assertEqual(cam.binning.supported_modes, [])
@@ -151,11 +128,11 @@ class CameraDeviceBinningModesTest(unittest.TestCase):
         )
         self.assertEqual(cam.binning.supported_modes, [(2, 2)])
 
-    def test_object_mode_without_axes_falls_back_to_name(self):
+    def test_object_mode_without_axes_is_dropped_without_name_fallback(self):
         cam = CameraDevice(
             **self._base(binning_modes=[{"name": "4x4", "x": None, "y": None}])
         )
-        self.assertEqual(cam.binning.supported_modes, [(4, 4)])
+        self.assertEqual(cam.binning.supported_modes, [])
 
     def test_object_mode_with_unparseable_axes_and_name_is_dropped(self):
         cam = CameraDevice(
@@ -167,31 +144,11 @@ class CameraDeviceBinningModesTest(unittest.TestCase):
         cam = CameraDevice(**self._base(binning_modes=[{"x": None, "y": None}]))
         self.assertEqual(cam.binning.supported_modes, [])
 
-    def test_mixed_shapes_are_all_parsed_in_order(self):
+    def test_non_dict_entries_are_dropped(self):
         cam = CameraDevice(
-            **self._base(
-                binning_modes=[
-                    {"name": "1x1", "x": 1, "y": 1},
-                    [2, 2],
-                    "3x3",
-                ]
-            )
+            **self._base(binning_modes=[[2, 2], "3x3", 1, None, {"x": 4, "y": 4}])
         )
-        self.assertEqual(cam.binning.supported_modes, [(1, 1), (2, 2), (3, 3)])
-
-    def test_null_axis_list_is_dropped_not_crashing(self):
-        # Regression: `int(None)` used to raise TypeError out of the
-        # equipment-status tool for the whole observatory.
-        cam = CameraDevice(**self._base(binning_modes=[[None, None], [2, 2]]))
-        self.assertEqual(cam.binning.supported_modes, [(2, 2)])
-
-    def test_non_numeric_axis_list_is_dropped_not_crashing(self):
-        cam = CameraDevice(**self._base(binning_modes=[["a", "b"], [2, 2]]))
-        self.assertEqual(cam.binning.supported_modes, [(2, 2)])
-
-    def test_non_iterable_entries_are_dropped(self):
-        cam = CameraDevice(**self._base(binning_modes=[1, None, [2, 2]]))
-        self.assertEqual(cam.binning.supported_modes, [(2, 2)])
+        self.assertEqual(cam.binning.supported_modes, [(4, 4)])
 
 
 class CameraDeviceDewHeaterTest(unittest.TestCase):

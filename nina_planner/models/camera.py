@@ -18,31 +18,16 @@ def _parse_binning_mode(mode: object) -> tuple[int, int] | None:
     """Normalize one ``BinningModes`` entry to an ``(x, y)`` tuple.
 
     ninaAPI serializes binning modes as ``{"Name": "2x2", "X": 2, "Y": 2}``
-    objects; other drivers/versions emit ``[2, 2]`` arrays or ``"2x2"``
-    strings. Unparseable entries are dropped instead of raising, so one odd
-    driver value cannot fail the whole equipment-status call.
+    objects — the only shape the ``api_spec.yaml`` ``CameraInfo.BinningModes``
+    schema defines. ``X`` and ``Y`` are required; entries missing either axis
+    (or carrying an unparseable one) are dropped instead of raising, so one
+    odd driver value cannot fail the whole equipment-status call.
     """
     if isinstance(mode, dict):
         x = _binning_axis(mode.get("x"))
         y = _binning_axis(mode.get("y"))
         if x is not None and y is not None:
             return (x, y)
-        mode = mode.get("name")
-
-    if isinstance(mode, (list, tuple)) and len(mode) == 2:
-        x = _binning_axis(mode[0])
-        y = _binning_axis(mode[1])
-        if x is not None and y is not None:
-            return (x, y)
-        return None
-
-    if isinstance(mode, str):
-        parts = mode.split("x")
-        if len(parts) == 2:
-            x = _binning_axis(parts[0])
-            y = _binning_axis(parts[1])
-            if x is not None and y is not None:
-                return (x, y)
 
     return None
 

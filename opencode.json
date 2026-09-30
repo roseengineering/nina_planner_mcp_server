@@ -3,9 +3,10 @@
   "plugin": [ 
     [ "./nina-plugin.ts", 
       { 
-        // "ninaEndpoint": "192.168.0.24:1888", // defaults to 127.0.0.1:1888
-        "pluginLogs": "/tmp/nina-plugin-debug.log",
-        "intervalCheckMinutes": 10
+        // "ninaEndpoint": "127.0.0.1:1888",
+        // "intervalCheckMinutes": 10,
+        // "disabled": true,
+        "pluginLogs": "/tmp/nina-plugin-debug.log"
       } 
     ]
   ],
@@ -13,12 +14,15 @@
     "nina-planner": {
       "type": "local",
       "environment": {
-        // "NINA_ENDPOINT": "192.168.0.24:1888", // default 127.0.0.1:1888
-        // "NINA_DRIVE_MOUNT": "/c", // default /mnt/<drive>
+        // "NINA_ENDPOINT": "127.0.0.1:1888",
+        // "NINA_DRIVE_MOUNT": "/mnt/c",
         "NINA_PLANNER_LOG": "/tmp/nina-planner-debug.log"
       },
       "command": [
-       	"python",
+       	"uv", 
+        "--directory",
+        ".",
+        "run",
         "-m",
         "nina_planner"
       ]

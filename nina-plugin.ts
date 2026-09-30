@@ -20,6 +20,10 @@ const plugin: Plugin = async (
            options.intervalCheckMinutes : 10;
   const pluginLogs = options.pluginLogs as string || null;
 
+  if (options.disabled === true) {
+    return { dispose: async () => {} };
+  }
+
   async function triggerIntervention(events: any | null = null) {
     // get prompt
     const payload = JSON.stringify(events, null, 2);
