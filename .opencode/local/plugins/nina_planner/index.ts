@@ -3,13 +3,10 @@ import * as fs from "node:fs";
 
 type Logs = string | null;
 
-function fileLog(pluginLogs: Logs, message: string, data?: unknown) {
+function fileLog(pluginLogs: Logs, message: string) {
   if (!pluginLogs) return;
   try {
-    fs.appendFileSync(
-      pluginLogs,
-      `${message} ${JSON.stringify(data, null, 2)}\n`,
-    );
+    fs.appendFileSync(pluginLogs, `${message}\n`);
   } catch {
     /* logging must never break the plugin */
   }
@@ -63,7 +60,7 @@ export default Plugin.define({
         }
       }
     })().catch((err) =>
-      fileLog(pluginLogs, "nina-plugin: event stream ended:", err),
+      fileLog(pluginLogs, `nina-plugin: event stream ended: ${err}`),
     );
 
     async function triggerIntervention(events: unknown = null) {
@@ -71,7 +68,7 @@ export default Plugin.define({
         events == null
           ? "Trigger: Routine interval check. No new N.I.N.A. events."
           : `Trigger: New N.I.N.A. events follow:\n\n\`\`\`json\n${JSON.stringify(events, null, 2)}\n\`\`\``;
-      fileLog(pluginLogs, "nina-plugin: intervention:", text);
+      fileLog(pluginLogs, `nina-plugin: intervention: ${text}`);
       if (!targetSessionID) {
         fileLog(
           pluginLogs,
@@ -105,7 +102,7 @@ export default Plugin.define({
       if (debounceTimer) clearTimeout(debounceTimer);
       debounceTimer = setTimeout(() => {
         flushBatch().catch((err) =>
-          fileLog(pluginLogs, "nina-plugin: flushBatch failed:", err),
+          fileLog(pluginLogs, `nina-plugin: flushBatch failed: ${err}`),
         );
       }, 5_000);
     }
@@ -117,7 +114,7 @@ export default Plugin.define({
     function connect() {
       if (closed) return;
       const url = `ws://${ninaEndpoint}/v2/socket`;
-      fileLog(pluginLogs, "nina-plugin: connecting to:", url);
+      fileLog(pluginLogs, `nina-plugin: connecting to: ${url}`);
       ws = new WebSocket(url);
       ws.onopen = () => {
         fileLog(pluginLogs, "nina-plugin: ws onopen");
@@ -130,7 +127,10 @@ export default Plugin.define({
             typeof msg.Response === "string"
               ? { Event: msg.Response }
               : msg.Response;
-          fileLog(pluginLogs, "nina-plugin: ws onmessage", response);
+          fileLog(
+            pluginLogs,
+            `nina-plugin: ws onmessage ${JSON.stringify(response, null, 2)}`,
+          );
           pushEvent(response);
         }
       };
@@ -152,7 +152,7 @@ export default Plugin.define({
       intervalId = setInterval(() => {
         if (!(ws && ws.readyState === WebSocket.OPEN)) return;
         triggerIntervention().catch((err) =>
-          fileLog(pluginLogs, "nina-plugin: interval trigger failed:", err),
+          fileLog(pluginLogs, `nina-plugin: interval trigger failed: ${err}`),
         );
       }, intervalCheckMinutes * 60_000);
     }
