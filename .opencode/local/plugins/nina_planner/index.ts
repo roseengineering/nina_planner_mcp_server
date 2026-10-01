@@ -40,8 +40,6 @@ export default Plugin.define({
         ? options.intervalCheckMinutes
         : 10;
 
-    if (options.disabled === true) return;
-
     let targetSessionID: string | undefined =
       typeof options.sessionID === "string" ? options.sessionID : undefined;
 
