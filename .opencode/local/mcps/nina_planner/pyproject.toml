@@ -51,6 +51,7 @@ select = ["E", "F", "I", "B"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+pythonpath = ["."]
 addopts = "-v -m 'not live'"
 markers = [
     "live: slow environment-specific integration tests (running NINA or WSL required)",

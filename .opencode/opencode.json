@@ -1,0 +1,24 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "plugins": [
+    {
+      "package": "./local/plugins/nina_planner",
+      "options": {
+        "pluginLogs": "/tmp/nina-plugin-debug.log",
+        "ninaEndpoint": "korolev.local:1888"
+      }
+    }
+  ],
+  "mcp": {
+    "nina-planner": {
+      "type": "local",
+      "environment": {
+        "NINA_PLANNER_LOG": "/tmp/nina-planner-debug.log",
+        "NINA_ENDPOINT": "korolev.local:1888"
+      },
+      "command": [
+        "uv", "--directory", "./.opencode/local/mcps/nina_planner", "run", "-m", "nina_planner"
+      ]
+    }
+  }
+}
