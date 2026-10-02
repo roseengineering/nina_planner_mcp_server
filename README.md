@@ -278,7 +278,6 @@ Rules:
     {
       "package": "./local/plugins/nina_planner",
       "options": {
-        "ninaEndpoint": "korolev.local:1888",
         // "pluginLogs": "C:/Windows/Temp/nina-plugin-debug.log"
         "pluginLogs": "/tmp/nina-plugin-debug.log"
       }
@@ -288,7 +287,6 @@ Rules:
     "nina-planner": {
       "type": "local",
       "environment": {
-        "NINA_ENDPOINT": "korolev.local:1888",
         // "NINA_PLANNER_LOG": "C:/Windows/Temp/nina-planner-debug.log"
         "NINA_PLANNER_LOG": "/tmp/nina-planner-debug.log"
       },
