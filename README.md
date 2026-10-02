@@ -271,30 +271,29 @@ Rules:
 
 ## `opencode.json` — Opencode v1 Sample Configuration
 
-```json opencode.json
+```json .opencode/opencode.json
 {
   "$schema": "https://opencode.ai/config.json",
-  "plugin": [ 
-    [ "./nina-plugin.ts", 
-      { 
-        // "ninaEndpoint": "192.168.0.24:1888", // defaults to 127.0.0.1:1888
-        "pluginLogs": "/tmp/nina-plugin-debug.log",
-        "intervalCheckMinutes": 10
-      } 
-    ]
+  "plugins": [
+    {
+      "package": "./local/plugins/nina_planner",
+      "options": {
+        "ninaEndpoint": "korolev.local:1888",
+        // "pluginLogs": "C:/Windows/Temp/nina-plugin-debug.log"
+        "pluginLogs": "/tmp/nina-plugin-debug.log"
+      }
+    }
   ],
   "mcp": {
     "nina-planner": {
       "type": "local",
       "environment": {
-        // "NINA_ENDPOINT": "192.168.0.24:1888", // default 127.0.0.1:1888
-        // "NINA_DRIVE_MOUNT": "/c", // default /mnt/<drive>
+        "NINA_ENDPOINT": "korolev.local:1888",
+        // "NINA_PLANNER_LOG": "C:/Windows/Temp/nina-planner-debug.log"
         "NINA_PLANNER_LOG": "/tmp/nina-planner-debug.log"
       },
       "command": [
-       	"python",
-        "-m",
-        "nina_planner"
+        "uv", "--directory", "./.opencode/local/mcps/nina_planner", "run", "-m", "nina_planner"
       ]
     }
   }
