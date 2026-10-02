@@ -1,6 +1,7 @@
 import math
 import os
 import unittest
+from pathlib import PurePosixPath, PureWindowsPath
 from unittest.mock import patch
 
 from nina_planner.models.profile import (
@@ -98,6 +99,10 @@ class ObservatoryProfileFilterPositionTest(unittest.TestCase):
 
 
 class ObservatoryProfileLocalSavePathTest(unittest.TestCase):
+    def setUp(self):
+        self.enterContext(patch.dict(os.environ))
+        os.environ.pop("NINA_DRIVE_MOUNT", None)
+
     def _build(self, image_save_path: str) -> ObservatoryProfile:
         return ObservatoryProfile(
             profile_name="TestProfile",
@@ -121,25 +126,36 @@ class ObservatoryProfileLocalSavePathTest(unittest.TestCase):
         )
 
     def test_windows_drive_translated_to_local_mount(self):
-        with patch("nina_planner.imaging.sys.platform", "linux"):
+        with (
+            patch("nina_planner.imaging.sys.platform", "linux"),
+            patch("nina_planner.imaging.Path", PurePosixPath),
+        ):
             profile = self._build(r"C:\Users\me\Documents\N.I.N.A")
             assert profile.local_image_save_path == "/mnt/c/Users/me/Documents/N.I.N.A"
 
     def test_env_drive_mount_honored(self):
         with (
             patch("nina_planner.imaging.sys.platform", "linux"),
+            patch("nina_planner.imaging.Path", PurePosixPath),
             patch.dict(os.environ, {"NINA_DRIVE_MOUNT": "/mnt/windows"}),
         ):
             profile = self._build(r"D:\N.I.N.A")
             assert profile.local_image_save_path == "/mnt/windows/N.I.N.A"
 
     def test_path_without_drive_passes_through(self):
-        with patch("nina_planner.imaging.sys.platform", "linux"):
+        with (
+            patch("nina_planner.imaging.sys.platform", "linux"),
+            patch("nina_planner.imaging.Path", PurePosixPath),
+        ):
             profile = self._build("/tmp/save")
             assert profile.local_image_save_path == "/tmp/save"
 
     def test_on_windows_the_profile_path_is_used_directly(self):
-        with patch("nina_planner.imaging.sys.platform", "win32"):
+        with (
+            patch("nina_planner.imaging.sys.platform", "win32"),
+            patch("nina_planner.imaging.Path", PureWindowsPath),
+            patch.dict(os.environ, {"NINA_DRIVE_MOUNT": "/ignored"}),
+        ):
             profile = self._build(r"C:\Users\me\N.I.N.A")
             assert profile.local_image_save_path == r"C:\Users\me\N.I.N.A"
 

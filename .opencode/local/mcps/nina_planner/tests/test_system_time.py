@@ -3,7 +3,7 @@ import os
 import tempfile
 import unittest
 from datetime import datetime
-from pathlib import Path
+from pathlib import Path, PurePosixPath, PureWindowsPath
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from nina_planner.system_time import (
@@ -117,15 +117,40 @@ class CommandBuildersTest(unittest.TestCase):
         )
 
     def test_local_to_windows_wsl_mount(self):
-        p = Path("/mnt/c/Users/george/AppData/Local/Temp/launch_nina.cmd")
-        self.assertEqual(
-            local_to_windows(p),
-            r"C:\Users\george\AppData\Local\Temp\launch_nina.cmd",
-        )
+        p = PurePosixPath("/mnt/c/Users/george/AppData/Local/Temp/launch_nina.cmd")
+        with (
+            patch("nina_planner.system_time.sys.platform", "linux"),
+            patch("nina_planner.system_time.Path") as path_constructor,
+            patch.dict(os.environ, {"NINA_DRIVE_MOUNT": "/ignored"}),
+        ):
+            # Model WSL resolution without resolving a POSIX path on Windows.
+            path_constructor.return_value.resolve.return_value = p
+            self.assertEqual(
+                local_to_windows(p),
+                r"C:\Users\george\AppData\Local\Temp\launch_nina.cmd",
+            )
+        path_constructor.assert_called_once_with(p)
+        path_constructor.return_value.resolve.assert_called_once_with()
+
+    def test_local_to_windows_preserves_native_windows_path(self):
+        with (
+            patch("nina_planner.system_time.sys.platform", "win32"),
+            patch("nina_planner.system_time.Path") as path_constructor,
+            patch.dict(os.environ, {"NINA_DRIVE_MOUNT": "/ignored"}),
+        ):
+            for p in (
+                r"D:\NINA Files\launch_nina.cmd",
+                PureWindowsPath(r"D:\NINA Files\launch_nina.cmd"),
+            ):
+                with self.subTest(path=p):
+                    self.assertEqual(local_to_windows(p), str(p))
+        path_constructor.assert_not_called()
 
     def test_write_nina_launcher(self):
         with tempfile.TemporaryDirectory() as tmp:
             with (
+                patch("nina_planner.system_time.sys.platform", "linux"),
+                # Keep the host Path for real I/O into the temporary directory.
                 patch(
                     "nina_planner.system_time.subprocess.run",
                     return_value=MagicMock(
@@ -157,6 +182,8 @@ class CommandBuildersTest(unittest.TestCase):
 
     def test_launcher_uses_windows_temp_directory_under_wsl(self):
         with (
+            patch("nina_planner.system_time.sys.platform", "linux"),
+            patch("nina_planner.system_time.Path", PurePosixPath),
             patch(
                 "nina_planner.system_time.subprocess.run",
                 return_value=MagicMock(
@@ -170,12 +197,51 @@ class CommandBuildersTest(unittest.TestCase):
 
         self.assertEqual(
             local_p,
-            Path("/mnt/c/Users/test/AppData/Local/Temp/launch_nina.cmd"),
+            PurePosixPath("/mnt/c/Users/test/AppData/Local/Temp/launch_nina.cmd"),
         )
         self.assertEqual(
             windows_p,
             r"C:\Users\test\AppData\Local\Temp\launch_nina.cmd",
         )
+
+    def test_launcher_uses_native_windows_temp_directory(self):
+        with (
+            patch("nina_planner.system_time.sys.platform", "win32"),
+            patch("nina_planner.system_time.Path", PureWindowsPath),
+            patch(
+                "nina_planner.system_time.tempfile.gettempdir",
+                return_value=r"D:\NINA Temp",
+            ) as gettempdir,
+            patch("nina_planner.system_time.subprocess.run") as run,
+            patch.dict(os.environ, {"NINA_DRIVE_MOUNT": "/ignored"}),
+        ):
+            local_p, windows_p = get_launcher_paths()
+
+        self.assertEqual(local_p, PureWindowsPath(r"D:\NINA Temp\launch_nina.cmd"))
+        self.assertEqual(windows_p, r"D:\NINA Temp\launch_nina.cmd")
+        gettempdir.assert_called_once_with()
+        run.assert_not_called()
+
+    def test_write_nina_launcher_on_windows(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            with (
+                patch("nina_planner.system_time.sys.platform", "win32"),
+                patch(
+                    "nina_planner.system_time.tempfile.gettempdir", return_value=tmp
+                ) as gettempdir,
+                patch("nina_planner.system_time.subprocess.run") as run,
+                patch.dict(os.environ, {"NINA_DRIVE_MOUNT": "/ignored"}),
+            ):
+                # Real writes use the host Path even when simulating win32.
+                local_p, windows_p = write_nina_launcher(r"C:\Test\NINA.exe")
+
+            self.assertEqual(local_p, Path(tmp) / "launch_nina.cmd")
+            self.assertEqual(windows_p, str(local_p))
+            content = local_p.read_text(encoding="utf-8")
+            self.assertIn("@echo off", content)
+            self.assertIn(r'start "" "C:\Test\NINA.exe"', content)
+            gettempdir.assert_called_once_with()
+            run.assert_not_called()
 
 
 class ValidateIsoLocalTest(unittest.TestCase):

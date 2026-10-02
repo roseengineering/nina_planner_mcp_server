@@ -2,7 +2,7 @@ import csv
 import os
 import tempfile
 import unittest
-from pathlib import Path
+from pathlib import Path, PurePosixPath, PureWindowsPath
 from unittest.mock import patch
 
 from nina_planner.imaging import (
@@ -73,12 +73,10 @@ class ReadImagingCsvTest(unittest.TestCase):
             img_dir / "ImageMetaData.csv",
             ["ImageType", "Duration", "FilterName", "FilePath"],
             [
-                ["LIGHT", "60.0", "LP", f"C:/NINA/2026-09-21/LIGHT/{present}"],
-                ["LIGHT", "60.0", "LP", "C:/NINA/2026-09-21/LIGHT/missing.fits"],
+                ["LIGHT", "60.0", "LP", str(img_dir / present)],
+                ["LIGHT", "60.0", "LP", str(img_dir / "missing.fits")],
             ],
         )
-        self.addCleanup(os.environ.pop, "NINA_DRIVE_MOUNT", None)
-        os.environ["NINA_DRIVE_MOUNT"] = str(mount)
 
         rows = read_imaging_csv(root=self.root, image_type="light")
 
@@ -175,11 +173,8 @@ class RealNinaSampleTest(unittest.TestCase):
     The CSV contains 60 real exposure rows, all using absolute Windows
     paths in the FilePath column (``C:/Users/<user>/Documents/N.I.N.A/...``).
 
-    Whether the corresponding ``.fits`` files are visible depends on the
-    host's WSL mount of the user's imaging directory. The tests adapt: if
-    the .fits files are reachable they verify the full end-to-end
-    resolution, otherwise they verify the function handles real NINA
-    shapes without error.
+    A temporary drive mount supplies placeholder images so results never
+    depend on the user's real imaging directory or the host platform.
     """
 
     SAMPLES_DIR = (
@@ -189,65 +184,103 @@ class RealNinaSampleTest(unittest.TestCase):
         / "2026-09-20"
         / "LIGHT"
     )
-    NINA_IMAGING_LIGHT_DIR = Path(
-        "/mnt/c/Users/george/Documents/N.I.N.A/2026-09-20/LIGHT"
-    )
-
     def test_read_imaging_csv_handles_real_nina_shapes(self):
-        rows = read_imaging_csv(root=self.SAMPLES_DIR.parent.parent, image_type="light")
-        if self.NINA_IMAGING_LIGHT_DIR.is_dir():
-            # End-to-end: real .fits files visible, all 60 rows resolve
-            # and surface with POSIX file_path values under /mnt/c/.
+        with (
+            tempfile.TemporaryDirectory() as tmp,
+            patch("nina_planner.imaging.sys.platform", "linux"),
+            patch.dict(os.environ, {"NINA_DRIVE_MOUNT": tmp}),
+        ):
+            # Exercise drive mapping using real files on the host filesystem.
+            # The captured absolute Windows paths must never reach real images.
+            with (self.SAMPLES_DIR / "ImageMetaData.csv").open(
+                encoding="utf-8-sig", newline=""
+            ) as f:
+                samples = list(csv.DictReader(f))
+            self.assertEqual(len(samples), 60)
+            for sample in samples:
+                image = windows_to_local(sample["FilePath"])
+                image.parent.mkdir(parents=True, exist_ok=True)
+                image.touch()
+
+            rows = read_imaging_csv(
+                root=self.SAMPLES_DIR.parent.parent, image_type="light"
+            )
             self.assertEqual(len(rows), 60)
             for row in rows:
-                self.assertTrue(
-                    row["file_path"].startswith("/mnt/c/"),
-                    f"row file_path not translated to POSIX: {row['file_path']!r}",
-                )
-                self.assertTrue(row["file_path"].endswith(".fits"))
-        else:
-            # Reduced environment: .fits files unreachable, all rows drop
-            # at the file-existence check. Pinned behavior is "no crash".
-            self.assertEqual(rows, [])
+                image = Path(row["file_path"])
+                self.assertTrue(image.is_relative_to(Path(tmp)))
+                self.assertEqual(image.suffix, ".fits")
+                self.assertTrue(image.is_file())
+                image.unlink()
+
+            self.assertEqual(
+                read_imaging_csv(
+                    root=self.SAMPLES_DIR.parent.parent, image_type="light"
+                ),
+                [],
+            )
 
     def test_resolver_transforms_real_nina_absolute_path(self):
-        # First FilePath value in the captured sample, verbatim.
-        self.assertEqual(
-            _resolve_image_path(
-                "C:/Users/george/Documents/N.I.N.A/2026-09-20/LIGHT/"
-                "2026-09-20_21-59-36_Clear__60.00s_0000.fits"
-            ),
-            "/mnt/c/Users/george/Documents/N.I.N.A/2026-09-20/LIGHT/"
-            "2026-09-20_21-59-36_Clear__60.00s_0000.fits",
-        )
+        # Pure paths model POSIX semantics without requiring a POSIX host.
+        with (
+            patch("nina_planner.imaging.sys.platform", "linux"),
+            patch("nina_planner.imaging.Path", PurePosixPath),
+            patch.dict(os.environ, {"NINA_DRIVE_MOUNT": "/mnt/c"}),
+        ):
+            self.assertEqual(
+                _resolve_image_path(
+                    "C:/Users/george/Documents/N.I.N.A/2026-09-20/LIGHT/"
+                    "2026-09-20_21-59-36_Clear__60.00s_0000.fits"
+                ),
+                "/mnt/c/Users/george/Documents/N.I.N.A/2026-09-20/LIGHT/"
+                "2026-09-20_21-59-36_Clear__60.00s_0000.fits",
+            )
 
 
 class WindowsToLocalTest(unittest.TestCase):
+    def setUp(self):
+        self.enterContext(patch("nina_planner.imaging.sys.platform", "linux"))
+        self.enterContext(patch("nina_planner.imaging.Path", PurePosixPath))
+        self.enterContext(patch.dict(os.environ))
+        os.environ.pop("NINA_DRIVE_MOUNT", None)
+
     def test_drive_letter_replaced(self):
         self.assertEqual(
             windows_to_local(r"C:\Users\me\N.I.N.A", "/mnt/c"),
-            Path("/mnt/c/Users/me/N.I.N.A"),
+            PurePosixPath("/mnt/c/Users/me/N.I.N.A"),
         )
 
     def test_default_mount_from_drive(self):
         self.assertEqual(
             windows_to_local(r"C:\Users\me\N.I.N.A"),
-            Path("/mnt/c/Users/me/N.I.N.A"),
+            PurePosixPath("/mnt/c/Users/me/N.I.N.A"),
         )
 
     def test_env_mount_when_no_arg(self):
-        self.addCleanup(os.environ.pop, "NINA_DRIVE_MOUNT", None)
         os.environ["NINA_DRIVE_MOUNT"] = "/mnt/windows"
         self.assertEqual(
             windows_to_local(r"C:\Users\me\N.I.N.A"),
-            Path("/mnt/windows/Users/me/N.I.N.A"),
+            PurePosixPath("/mnt/windows/Users/me/N.I.N.A"),
         )
 
     def test_no_drive_passthrough(self):
         self.assertEqual(
             windows_to_local(r"\share\N.I.N.A", "/mnt"),
-            Path(r"\share\N.I.N.A"),
+            PurePosixPath(r"\share\N.I.N.A"),
         )
+
+    def test_windows_ignores_mount_overrides(self):
+        with (
+            patch("nina_planner.imaging.sys.platform", "win32"),
+            patch("nina_planner.imaging.Path", PureWindowsPath),
+            patch.dict(os.environ, {"NINA_DRIVE_MOUNT": "/mnt/windows"}),
+        ):
+            for mount in (None, "/mnt/c"):
+                with self.subTest(mount=mount):
+                    self.assertEqual(
+                        windows_to_local(r"C:\Users\me\N.I.N.A", mount),
+                        PureWindowsPath(r"C:\Users\me\N.I.N.A"),
+                    )
 
 
 class MeltImagingMetadataTest(unittest.TestCase):

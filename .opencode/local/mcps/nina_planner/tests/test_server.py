@@ -748,7 +748,7 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
                 f"309.00, 205.80, 10%, 1, {i}"
             )
         csv_path = directory / "mosaic.csv"
-        csv_path.write_text("\n".join(lines) + "\n")
+        csv_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
         return plan_path, csv_path
 
     async def test_write_mosaic_plan_creates_multi_pointing_file(self):
