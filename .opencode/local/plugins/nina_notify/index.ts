@@ -27,11 +27,19 @@ export default Plugin.define({
         ? options.intervalCheckMinutes
         : 10;
 
-    let targetSessionID: string | undefined;
+    const savedSessionID = await ctx.storage.get("targetSessionID");
+    let targetSessionID =
+      typeof savedSessionID === "string" ? savedSessionID : undefined;
+    if (targetSessionID) {
+      fileLog(pluginLogs, `nina-plugin: restored target session: ${targetSessionID}`);
+    }
 
     const promptHook = await ctx.session.hook("prompt", (event) => {
       targetSessionID = event.sessionID;
       fileLog(pluginLogs, `nina-plugin: target session set from prompt: ${targetSessionID}`);
+      void ctx.storage.set("targetSessionID", event.sessionID).catch((err) =>
+        fileLog(pluginLogs, `nina-plugin: failed to persist session ID: ${err}`),
+      );
     });
 
     async function triggerIntervention(events: unknown = null) {
