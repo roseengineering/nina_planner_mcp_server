@@ -12,6 +12,11 @@ function fileLog(pluginLogs: Logs, message: string) {
   }
 }
 
+function sessionLog(pluginLogs: Logs, message: string) {
+  fileLog(pluginLogs, message);
+  console.info(message);
+}
+
 export default Plugin.define({
   id: "nina_notify",
   async setup(ctx) {
@@ -31,15 +36,18 @@ export default Plugin.define({
     let targetSessionID =
       typeof savedSessionID === "string" ? savedSessionID : undefined;
     if (targetSessionID) {
-      fileLog(pluginLogs, `nina-plugin: restored target session: ${targetSessionID}`);
+      sessionLog(pluginLogs, `nina-plugin: restored target session: ${targetSessionID}`);
     }
 
-    const promptHook = await ctx.session.hook("prompt", (event) => {
+    const promptHook = await ctx.session.hook("prompt", async (event) => {
       targetSessionID = event.sessionID;
-      fileLog(pluginLogs, `nina-plugin: target session set from prompt: ${targetSessionID}`);
-      void ctx.storage.set("targetSessionID", event.sessionID).catch((err) =>
-        fileLog(pluginLogs, `nina-plugin: failed to persist session ID: ${err}`),
-      );
+      sessionLog(pluginLogs, `nina-plugin: target session set from prompt: ${targetSessionID}`);
+      try {
+        await ctx.storage.set("targetSessionID", event.sessionID);
+        sessionLog(pluginLogs, `nina-plugin: persisted target session: ${event.sessionID}`);
+      } catch (err) {
+        fileLog(pluginLogs, `nina-plugin: failed to persist session ID: ${err}`);
+      }
     });
 
     async function triggerIntervention(events: unknown = null) {
