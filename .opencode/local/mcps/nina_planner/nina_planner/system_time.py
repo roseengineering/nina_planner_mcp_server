@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -42,6 +43,44 @@ def nina_running() -> bool:
 def kill_nina_command() -> list[str]:
     """Argv for ``subprocess.run`` to force-kill NINA.exe."""
     return ["taskkill.exe", "/F", "/IM", "NINA.exe"]
+
+
+_WINDOWS_INTEROP_EXES = (
+    "tasklist.exe",
+    "taskkill.exe",
+    "schtasks.exe",
+    "powershell.exe",
+)
+
+
+def _is_wsl() -> bool:
+    """True when running under the Windows Subsystem for Linux."""
+    if sys.platform != "linux":
+        return False
+    if os.environ.get("WSL_INTEROP") or os.environ.get("WSL_DISTRO_NAME"):
+        return True
+    try:
+        release = open("/proc/sys/kernel/osrelease", encoding="utf-8").read().lower()
+    except OSError:
+        return False
+    return "microsoft" in release or "wsl" in release
+
+
+def windows_interop_available() -> bool:
+    """True when this host can actually drive Windows executables.
+
+    NINA lifecycle control (``start_nina`` / ``stop_nina``) needs ``tasklist.exe``,
+    ``taskkill.exe``, ``schtasks.exe``, and ``powershell.exe``. On Windows this is
+    trivially true. Under WSL it requires interop to be enabled *and* the binaries
+    to be reachable on ``PATH``. Everywhere else (e.g. a Mac driving a remote NINA
+    REST endpoint) it is false: NINA may be reachable over the network, but this
+    host cannot launch or terminate it.
+    """
+    if sys.platform == "win32":
+        return True
+    if not _is_wsl():
+        return False
+    return all(shutil.which(exe) for exe in _WINDOWS_INTEROP_EXES)
 
 
 def local_to_windows(local_path: Path | str, drive_mount: str | None = None) -> str:

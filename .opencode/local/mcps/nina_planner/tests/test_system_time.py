@@ -20,6 +20,7 @@ from nina_planner.system_time import (
     schtasks_run_command,
     shift_clock_powershell,
     validate_iso_local,
+    windows_interop_available,
     write_nina_launcher,
 )
 
@@ -329,6 +330,43 @@ class NinaRunningTest(unittest.TestCase):
             self.assertFalse(nina_running())
 
 
+class WindowsInteropAvailableTest(unittest.TestCase):
+    def test_true_on_win32(self):
+        with patch("nina_planner.system_time.sys.platform", "win32"):
+            self.assertTrue(windows_interop_available())
+
+    def test_false_on_non_wsl(self):
+        with (
+            patch("nina_planner.system_time.sys.platform", "darwin"),
+            patch("nina_planner.system_time._is_wsl", return_value=False),
+        ):
+            self.assertFalse(windows_interop_available())
+
+    def test_wsl_true_when_binaries_present(self):
+        with (
+            patch("nina_planner.system_time.sys.platform", "linux"),
+            patch("nina_planner.system_time._is_wsl", return_value=True),
+            patch(
+                "nina_planner.system_time.shutil.which",
+                side_effect=lambda exe: f"/mnt/c/{exe}",
+            ),
+        ):
+            self.assertTrue(windows_interop_available())
+
+    def test_wsl_false_when_a_binary_is_missing(self):
+        with (
+            patch("nina_planner.system_time.sys.platform", "linux"),
+            patch("nina_planner.system_time._is_wsl", return_value=True),
+            patch(
+                "nina_planner.system_time.shutil.which",
+                side_effect=lambda exe: (
+                    None if exe == "schtasks.exe" else f"/mnt/c/{exe}"
+                ),
+            ),
+        ):
+            self.assertFalse(windows_interop_available())
+
+
 class AppendProgressEntryTest(unittest.TestCase):
     def setUp(self):
         self._tmp = tempfile.TemporaryDirectory()
@@ -377,33 +415,38 @@ class StopNinaTest(unittest.TestCase):
     def test_stop_when_not_running_is_noop(self):
         from nina_planner.server import stop_nina
 
-        absent_proc = MagicMock()
-        absent_proc.stdout = "INFO: No tasks running\n"
-
         with (
             patch("nina_planner.server.PROJECT_DIR", self.project_dir),
             patch(
-                "nina_planner.server._run_blocking", return_value=absent_proc
-            ) as mock_run,
+                "nina_planner.server._nina_api_responsive",
+                AsyncMock(return_value=False),
+            ),
+            patch("nina_planner.server._run_blocking") as mock_run,
             patch("nina_planner.server._log_payload"),
         ):
             result = asyncio.run(stop_nina())
 
         self.assertFalse(result["stopped"])
         self.assertIn("not running", result["summary"])
-        # Only tasklist probe was executed, no taskkill
-        self.assertEqual(mock_run.call_count, 1)
+        # API said NINA is down, so no taskkill was attempted.
+        mock_run.assert_not_called()
 
     def test_stop_when_running_kills_process(self):
         from nina_planner.server import stop_nina
 
-        running_proc = MagicMock()
-        running_proc.stdout = "NINA.exe                      12345 Console\n"
-
         with (
             patch("nina_planner.server.PROJECT_DIR", self.project_dir),
             patch(
-                "nina_planner.server._run_blocking", return_value=running_proc
+                "nina_planner.server._nina_api_responsive",
+                AsyncMock(return_value=True),
+            ),
+            patch(
+                "nina_planner.server.windows_interop_available",
+                return_value=True,
+            ),
+            patch(
+                "nina_planner.server._run_blocking",
+                AsyncMock(return_value=MagicMock(returncode=0)),
             ) as mock_run,
             patch("nina_planner.server.anyio.sleep", new=AsyncMockSleep()),
             patch("nina_planner.server._log_payload"),
@@ -412,26 +455,51 @@ class StopNinaTest(unittest.TestCase):
 
         self.assertTrue(result["stopped"])
         self.assertIn("terminated successfully", result["summary"])
-        self.assertEqual(mock_run.call_count, 2)
-        kill_argv = mock_run.call_args_list[1].args[0]
+        mock_run.assert_awaited_once()
+        kill_argv = mock_run.call_args.args[0]
         self.assertEqual(kill_argv, ["taskkill.exe", "/F", "/IM", "NINA.exe"])
         content = self.progress.read_text(encoding="utf-8")
         self.assertIn("stop_nina: killed running NINA", content)
 
-    def test_stop_when_taskkill_fails_raises_runtime_error(self):
+    def test_stop_when_remote_raises_runtime_error(self):
         from nina_planner.server import stop_nina
-
-        running_proc = MagicMock()
-        running_proc.stdout = "NINA.exe                      12345 Console\n"
-
-        def fake_run(argv, timeout=30.0):
-            if "tasklist.exe" in argv:
-                return running_proc
-            raise RuntimeError("Access denied")
 
         with (
             patch("nina_planner.server.PROJECT_DIR", self.project_dir),
-            patch("nina_planner.server._run_blocking", side_effect=fake_run),
+            patch(
+                "nina_planner.server._nina_api_responsive",
+                AsyncMock(return_value=True),
+            ),
+            patch(
+                "nina_planner.server.windows_interop_available",
+                return_value=False,
+            ),
+            patch("nina_planner.server._run_blocking") as mock_run,
+            patch("nina_planner.server._log_payload"),
+        ):
+            with self.assertRaises(RuntimeError) as ctx:
+                asyncio.run(stop_nina())
+            self.assertIn("remote host", str(ctx.exception))
+        mock_run.assert_not_called()
+
+    def test_stop_when_taskkill_fails_raises_runtime_error(self):
+        from nina_planner.server import stop_nina
+
+        with (
+            patch("nina_planner.server.PROJECT_DIR", self.project_dir),
+            patch(
+                "nina_planner.server._nina_api_responsive",
+                AsyncMock(return_value=True),
+            ),
+            patch(
+                "nina_planner.server.windows_interop_available",
+                return_value=True,
+            ),
+            patch(
+                "nina_planner.server._run_blocking",
+                AsyncMock(side_effect=RuntimeError("Access denied")),
+            ),
+            patch("nina_planner.server.anyio.sleep", new=AsyncMockSleep()),
             patch("nina_planner.server._log_payload"),
         ):
             with self.assertRaises(RuntimeError) as ctx:
@@ -452,13 +520,16 @@ class StartNinaTest(unittest.TestCase):
     def test_start_errors_when_already_running(self):
         from nina_planner.server import start_nina
 
-        running_proc = MagicMock()
-        running_proc.returncode = 0
-        running_proc.stdout = "NINA.exe                      12345 Console\n"
-
         with (
             patch("nina_planner.server.PROJECT_DIR", self.project_dir),
-            patch("nina_planner.server._run_blocking", return_value=running_proc),
+            patch(
+                "nina_planner.server._nina_api_responsive",
+                AsyncMock(return_value=True),
+            ),
+            patch(
+                "nina_planner.server.windows_interop_available",
+                return_value=True,
+            ),
             patch("nina_planner.server._log_payload"),
         ):
             with self.assertRaises(RuntimeError) as ctx:
@@ -473,14 +544,18 @@ class StartNinaTest(unittest.TestCase):
                 "NINA is already running. Call stop_nina() first.", str(ctx.exception)
             )
 
-    def test_start_aborts_when_tasklist_probe_raises(self):
+    def test_start_aborts_when_lifecycle_control_unavailable(self):
         from nina_planner.server import start_nina
 
         with (
             patch(
-                "nina_planner.server._run_blocking",
-                AsyncMock(side_effect=OSError("tasklist unavailable")),
-            ) as run_blocking,
+                "nina_planner.server._nina_api_responsive",
+                AsyncMock(return_value=False),
+            ),
+            patch(
+                "nina_planner.server.windows_interop_available",
+                return_value=False,
+            ),
             patch(
                 "nina_planner.server._launch_nina_interactive", new_callable=AsyncMock
             ) as launch,
@@ -490,40 +565,9 @@ class StartNinaTest(unittest.TestCase):
             patch("nina_planner.server.shift_clock_powershell") as shift_clock,
             patch("nina_planner.server._log_payload"),
         ):
-            with self.assertRaisesRegex(
-                RuntimeError, "could not determine whether NINA.exe is running"
-            ):
+            with self.assertRaisesRegex(RuntimeError, "cannot be launched from here"):
                 asyncio.run(start_nina("2026-10-15T23:15:00"))
 
-        run_blocking.assert_awaited_once()
-        launch.assert_not_awaited()
-        read_clock.assert_not_awaited()
-        shift_clock.assert_not_called()
-
-    def test_start_aborts_when_tasklist_probe_returns_failure(self):
-        from nina_planner.server import start_nina
-
-        failed_probe = MagicMock(returncode=1, stdout="", stderr="Access denied")
-        with (
-            patch(
-                "nina_planner.server._run_blocking",
-                AsyncMock(return_value=failed_probe),
-            ) as run_blocking,
-            patch(
-                "nina_planner.server._launch_nina_interactive", new_callable=AsyncMock
-            ) as launch,
-            patch(
-                "nina_planner.server._read_windows_clock", new_callable=AsyncMock
-            ) as read_clock,
-            patch("nina_planner.server.shift_clock_powershell") as shift_clock,
-            patch("nina_planner.server._log_payload"),
-        ):
-            with self.assertRaisesRegex(
-                RuntimeError, "could not determine whether NINA.exe is running"
-            ):
-                asyncio.run(start_nina())
-
-        run_blocking.assert_awaited_once()
         launch.assert_not_awaited()
         read_clock.assert_not_awaited()
         shift_clock.assert_not_called()
@@ -548,6 +592,14 @@ class StartNinaTest(unittest.TestCase):
 
         with (
             patch("nina_planner.server.PROJECT_DIR", self.project_dir),
+            patch(
+                "nina_planner.server._nina_api_responsive",
+                AsyncMock(return_value=False),
+            ),
+            patch(
+                "nina_planner.server.windows_interop_available",
+                return_value=True,
+            ),
             patch("nina_planner.server._run_blocking", side_effect=fake_run),
             patch(
                 "nina_planner.server.write_nina_launcher",
@@ -559,13 +611,10 @@ class StartNinaTest(unittest.TestCase):
 
         self.assertFalse(result["simulated"])
         self.assertIn("launched NINA on real time", result["summary"])
-        # Commands executed: tasklist probe, schtasks /Create, schtasks /Run,
-        # and schtasks /Delete.
+        # Commands executed: schtasks /Create, /Run, and /Delete.
         cmd_names = [c[0] for c in executed_cmds]
-        self.assertEqual(
-            cmd_names, ["tasklist.exe", "schtasks.exe", "schtasks.exe", "schtasks.exe"]
-        )
-        create_args = executed_cmds[1]
+        self.assertEqual(cmd_names, ["schtasks.exe", "schtasks.exe", "schtasks.exe"])
+        create_args = executed_cmds[0]
         self.assertIn("/IT", create_args)
         self.assertIn(self._STUB_LAUNCHER_PATHS[1], create_args)
 
@@ -579,12 +628,18 @@ class StartNinaTest(unittest.TestCase):
 
         def fake_run(argv, timeout=30.0):
             executed_cmds.append(argv)
-            if argv[0] == "tasklist.exe":
-                return MagicMock(returncode=0, stdout="", stderr="")
             return MagicMock(returncode=1, stdout="", stderr="Access denied")
 
         with (
             patch("nina_planner.server.PROJECT_DIR", self.project_dir),
+            patch(
+                "nina_planner.server._nina_api_responsive",
+                AsyncMock(return_value=False),
+            ),
+            patch(
+                "nina_planner.server.windows_interop_available",
+                return_value=True,
+            ),
             patch("nina_planner.server._run_blocking", side_effect=fake_run),
             patch(
                 "nina_planner.server.write_nina_launcher",
@@ -597,9 +652,7 @@ class StartNinaTest(unittest.TestCase):
             ):
                 asyncio.run(start_nina())
 
-        self.assertEqual(
-            [cmd[0] for cmd in executed_cmds], ["tasklist.exe", "schtasks.exe"]
-        )
+        self.assertEqual([cmd[0] for cmd in executed_cmds], ["schtasks.exe"])
 
     def test_start_real_time_raises_when_task_execution_fails(self):
         from nina_planner.server import start_nina
@@ -608,14 +661,20 @@ class StartNinaTest(unittest.TestCase):
 
         def fake_run(argv, timeout=30.0):
             executed_cmds.append(argv)
-            if argv[0] == "tasklist.exe":
-                return MagicMock(returncode=0, stdout="", stderr="")
             if "/Run" in argv:
                 return MagicMock(returncode=1, stdout="", stderr="Task failed")
             return MagicMock(returncode=0, stdout="", stderr="")
 
         with (
             patch("nina_planner.server.PROJECT_DIR", self.project_dir),
+            patch(
+                "nina_planner.server._nina_api_responsive",
+                AsyncMock(return_value=False),
+            ),
+            patch(
+                "nina_planner.server.windows_interop_available",
+                return_value=True,
+            ),
             patch("nina_planner.server._run_blocking", side_effect=fake_run),
             patch(
                 "nina_planner.server.write_nina_launcher",
@@ -630,7 +689,7 @@ class StartNinaTest(unittest.TestCase):
 
         self.assertEqual(
             [cmd[0] for cmd in executed_cmds],
-            ["tasklist.exe", "schtasks.exe", "schtasks.exe", "schtasks.exe"],
+            ["schtasks.exe", "schtasks.exe", "schtasks.exe"],
         )
         self.assertIn("/Delete", executed_cmds[-1])
 
@@ -691,6 +750,14 @@ class StartNinaTest(unittest.TestCase):
             patch(
                 "nina_planner.server._read_windows_clock",
                 side_effect=fake_read_windows_clock,
+            ),
+            patch(
+                "nina_planner.server._nina_api_responsive",
+                AsyncMock(return_value=False),
+            ),
+            patch(
+                "nina_planner.server.windows_interop_available",
+                return_value=True,
             ),
             patch("nina_planner.server._run_blocking", side_effect=fake_run_blocking),
             patch(
@@ -754,8 +821,6 @@ class StartNinaTest(unittest.TestCase):
             return shifted
 
         def fake_run_blocking(argv, timeout=30.0):
-            if argv[0] == "tasklist.exe":
-                return MagicMock(returncode=0, stdout="", stderr="")
             if argv[0] == "powershell.exe":
                 command = argv[-1]
                 ps_commands.append(command)
@@ -772,6 +837,14 @@ class StartNinaTest(unittest.TestCase):
             patch(
                 "nina_planner.server._read_windows_clock",
                 side_effect=fake_read_windows_clock,
+            ),
+            patch(
+                "nina_planner.server._nina_api_responsive",
+                AsyncMock(return_value=False),
+            ),
+            patch(
+                "nina_planner.server.windows_interop_available",
+                return_value=True,
             ),
             patch("nina_planner.server._run_blocking", side_effect=fake_run_blocking),
             patch("nina_planner.server._now_local", return_value=real0),
@@ -816,6 +889,14 @@ class StartNinaTest(unittest.TestCase):
             patch(
                 "nina_planner.server._read_windows_clock",
                 side_effect=fake_read_windows_clock,
+            ),
+            patch(
+                "nina_planner.server._nina_api_responsive",
+                AsyncMock(return_value=False),
+            ),
+            patch(
+                "nina_planner.server.windows_interop_available",
+                return_value=True,
             ),
             patch("nina_planner.server._run_blocking", side_effect=fake_run_blocking),
             patch(
@@ -876,6 +957,14 @@ class StartNinaTest(unittest.TestCase):
                 "nina_planner.server._read_windows_clock",
                 side_effect=fake_read_windows_clock,
             ),
+            patch(
+                "nina_planner.server._nina_api_responsive",
+                AsyncMock(return_value=False),
+            ),
+            patch(
+                "nina_planner.server.windows_interop_available",
+                return_value=True,
+            ),
             patch("nina_planner.server._run_blocking", side_effect=fake_run_blocking),
             patch(
                 "nina_planner.server.write_nina_launcher",
@@ -932,6 +1021,14 @@ class StartNinaTest(unittest.TestCase):
             patch(
                 "nina_planner.server._read_windows_clock",
                 side_effect=fake_read_windows_clock,
+            ),
+            patch(
+                "nina_planner.server._nina_api_responsive",
+                AsyncMock(return_value=False),
+            ),
+            patch(
+                "nina_planner.server.windows_interop_available",
+                return_value=True,
             ),
             patch("nina_planner.server._run_blocking", side_effect=fake_run_blocking),
             patch(

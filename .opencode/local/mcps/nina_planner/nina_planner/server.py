@@ -49,6 +49,7 @@ from .system_time import (
     schtasks_run_command,
     shift_clock_powershell,
     validate_iso_local,
+    windows_interop_available,
     write_nina_launcher,
 )
 
@@ -60,8 +61,6 @@ PROJECT_DIR = Path(__file__).resolve().parent.parent
 FrameType = Literal["light", "dark", "bias", "dawn_flat", "dusk_flat"]
 
 _INVALID_FILENAME_CHARS = re.compile(r'[\\/:*?"<>|\x00-\x1f\x7f]')
-
-_NINA_PROCESS_RE = re.compile(r"NINA\.exe\s+(\d+)")
 
 
 def _sanitize_filename(s: str) -> str:
@@ -104,6 +103,19 @@ async def _api_post(path: str, body: Any) -> dict[str, Any]:
         if not data.get("Success", False):
             raise RuntimeError(data.get("Error", "API request failed"))
         return cast(dict[str, Any], data.get("Response", {}))
+
+
+async def _nina_api_responsive() -> bool:
+    """True when NINA's REST API answers ``GET /time``.
+
+    This is the authoritative liveness signal: it works whether NINA runs on
+    this host or on a remote one reachable through ``NINA_ENDPOINT``.
+    """
+    try:
+        await _api_get("/time")
+        return True
+    except Exception:
+        return False
 
 
 async def _spawn_detached(argv: list[str]) -> subprocess.Popen[bytes]:
@@ -262,7 +274,7 @@ async def _read_metadata(image_type: str | None = None) -> list[dict[str, Any]]:
 
 mcp = FastMCP(
     name="nina-planner",
-    instructions="""Provides tools for controlling NINA (Nighttime Imaging 'N' Astronomy) software run observatories. Lets you inspect equipment, get observatory setup, write observation plans, and run NINA sequences generated from the plans. Focuses on orchestrating observation plans at a high level through NINA sequences rather than managing the individual commands that make up those sequences. Safety semantics: the safety monitor's is_safe field reflects whether the observatory enclosure (roof/dome) is open and it is safe to unpark and expose. is_safe=true means the enclosure is open and the scope may be unparked and acquisition may proceed; is_safe=false means the enclosure is closed, so the scope must remain stowed and acquisition is gated until it becomes safe. This is distinct from weather conditions, which are reported separately by the weather device. Stow behavior is capability-driven: sequences emit Park Scope only when the mount reports can_park=true, otherwise they use Find home when the mount reports can_find_home=true. Lifecycle: start_nina(time=None) launches NINA into the active interactive desktop session (pass time='YYYY-MM-DDTHH:MM:SS' to start on simulated time); stop_nina() terminates NINA immediately. If NINA is already running, start_nina will error and require calling stop_nina first. get_nina_status() reports process and REST-API liveness plus the clock in one call (cheaper than get_site_equipment_status and never raises on a down NINA). Progress tracking: maintain an observatory progress file (PROGRESS.md in the project directory). On session start, read it to restore context before acting. After significant actions — status checks, plan writes, sequence loads/starts/stops, errors, and interventions — append a short timestamped entry (ISO-8601 timestamp) recording what was done, the observed equipment and safety state, and any decisions. Both the active session and automated worker sessions append to this file so history is shared across sessions.""",
+    instructions="""Provides tools for controlling NINA (Nighttime Imaging 'N' Astronomy) software run observatories. Lets you inspect equipment, get observatory setup, write observation plans, and run NINA sequences generated from the plans. Focuses on orchestrating observation plans at a high level through NINA sequences rather than managing the individual commands that make up those sequences. Safety semantics: the safety monitor's is_safe field reflects whether the observatory enclosure (roof/dome) is open and it is safe to unpark and expose. is_safe=true means the enclosure is open and the scope may be unparked and acquisition may proceed; is_safe=false means the enclosure is closed, so the scope must remain stowed and acquisition is gated until it becomes safe. This is distinct from weather conditions, which are reported separately by the weather device. Stow behavior is capability-driven: sequences emit Park Scope only when the mount reports can_park=true, otherwise they use Find home when the mount reports can_find_home=true. Lifecycle: start_nina(time=None) launches NINA into the active interactive desktop session (pass time='YYYY-MM-DDTHH:MM:SS' to start on simulated time); stop_nina() terminates NINA immediately. If NINA is already running, start_nina will error and require calling stop_nina first. get_nina_status() reports authoritative REST-API liveness (running), whether this host can control NINA's lifecycle (lifecycle_control_available), and the clock in one call (cheaper than get_site_equipment_status and never raises on a down NINA). When lifecycle_control_available is false — e.g. the MCP server is remote from NINA — start_nina/stop_nina cannot operate on NINA: a down NINA must be restarted on its own host, and an already-running NINA cannot be stopped from here. Progress tracking: maintain an observatory progress file (PROGRESS.md in the project directory). On session start, read it to restore context before acting. After significant actions — status checks, plan writes, sequence loads/starts/stops, errors, and interventions — append a short timestamped entry (ISO-8601 timestamp) recording what was done, the observed equipment and safety state, and any decisions. Both the active session and automated worker sessions append to this file so history is shared across sessions.""",
 )
 
 
@@ -826,23 +838,29 @@ def _now_local() -> datetime:
 async def stop_nina() -> dict[str, Any]:
     """Terminate the NINA.exe application immediately.
 
-    Checks whether NINA.exe is currently running. If running, force-terminates
-    it via taskkill.exe and logs the action to PROGRESS.md. If NINA is not running,
-    returns cleanly as a no-op.
+    NINA liveness comes from its REST API (authoritative, and works against a
+    remote host). If the API is unresponsive NINA is already down and this is a
+    clean no-op. If NINA is up but this host has no Windows interop, NINA is
+    running on a remote host and cannot be terminated from here; the tool raises
+    with that explanation rather than attempting a doomed ``taskkill``.
     """
-    log_extra: list[str] = []
-    try:
-        probe = await _run_blocking(["tasklist.exe", "/FI", "IMAGENAME eq NINA.exe"])
-        is_running = "NINA.exe" in (probe.stdout or "")
-    except Exception as e:
-        log_extra.append(f"nina probe failed: {e!r}")
-        is_running = False
-
-    if not is_running:
-        summary = "stop_nina: NINA is not running — no action taken."
+    if not await _nina_api_responsive():
+        summary = (
+            "stop_nina: NINA is not running (REST API unresponsive) — no action taken."
+        )
         _log_payload("stop_nina:", summary)
         return {"stopped": False, "summary": summary}
 
+    if not windows_interop_available():
+        summary = (
+            "stop_nina failed: NINA is running on a remote host and Windows "
+            "interop is unavailable here, so it cannot be terminated from this "
+            "agent. Stop NINA on its host instead."
+        )
+        _log_payload("stop_nina error:", summary)
+        raise RuntimeError(summary)
+
+    log_extra: list[str] = []
     try:
         await _run_blocking(kill_nina_command(), timeout=15.0)
         await anyio.sleep(1.0)
@@ -883,23 +901,22 @@ async def start_nina(time: str | None = None) -> dict[str, Any]:
     if time is not None:
         validate_iso_local(time)
 
-    try:
-        probe = await _run_blocking(["tasklist.exe", "/FI", "IMAGENAME eq NINA.exe"])
-        if probe.returncode != 0:
-            raise RuntimeError(
-                f"tasklist exited with status {probe.returncode}: "
-                f"{(probe.stderr or '').strip()}"
-            )
-        is_running = "NINA.exe" in (probe.stdout or "")
-    except Exception as e:
-        _log_payload("start_nina probe warning:", repr(e))
+    # Liveness comes from the REST API so this works against a remote NINA too.
+    if await _nina_api_responsive():
+        if windows_interop_available():
+            raise RuntimeError("NINA is already running. Call stop_nina() first.")
         raise RuntimeError(
-            "start_nina failed: could not determine whether NINA.exe is running; "
-            "refusing to launch NINA or change the host clock."
-        ) from e
+            "NINA is already running. This host has no Windows interop, so it "
+            "cannot stop or restart a remote NINA — manage NINA on its own host."
+        )
 
-    if is_running:
-        raise RuntimeError("NINA is already running. Call stop_nina() first.")
+    # API unresponsive => NINA is down. Launching it needs local Windows interop.
+    if not windows_interop_available():
+        raise RuntimeError(
+            "start_nina failed: NINA's REST API is unresponsive and this host "
+            "has no Windows interop, so NINA cannot be launched from here. NINA "
+            "appears to run on a remote host; start it on that host instead."
+        )
 
     nina_exe = nina_exe_path()
     log_extra: list[str] = []
@@ -1111,47 +1128,37 @@ async def get_nina_time() -> dict[str, Any]:
 async def get_nina_status() -> dict[str, Any]:
     """Lightweight NINA lifecycle and clock probe.
 
-    Reports whether ``NINA.exe`` is running (via ``tasklist.exe``), whether the
-    REST API is responsive, the NINA process PID (when running), and the
-    simulated-time clock state. Cheaper than ``get_site_equipment_status``
-    (no device probes) and never raises on a down NINA — partial failures
-    degrade to ``None`` fields. Use this before ``start_nina()`` to confirm
-    a previous NINA instance is actually down, or as a quick "is NINA
-    alive?" check.
+    Liveness is taken from NINA's REST API, which is authoritative and works
+    whether NINA runs on this host or a remote one: ``running`` is ``True`` iff
+    ``GET /time`` answered. A missing local ``NINA.exe`` process does **not**
+    mean NINA is down — when the MCP server is remote from NINA the local
+    process is simply not visible.
+
+    ``lifecycle_control_available`` reports whether *this* host can actually
+    start/stop NINA (Windows interop present), which is what decides whether
+    ``start_nina``/``stop_nina`` will work. Cheaper than
+    ``get_site_equipment_status`` (no device probes) and never raises on a down
+    NINA — partial failures degrade to ``None`` fields. Use this before
+    ``start_nina()`` to confirm a previous instance is down, or as a quick
+    "is NINA alive?" check.
 
     Returns a dict with:
-    - ``process_running`` (bool): ``NINA.exe`` visible to ``tasklist.exe``
-    - ``api_responsive`` (bool): ``/time`` endpoint returned successfully
-    - ``pid`` (int | None): NINA.exe PID when running
+    - ``running`` (bool): authoritative liveness — ``GET /time`` answered
+    - ``lifecycle_control_available`` (bool): this host has Windows interop, so
+      ``start_nina``/``stop_nina`` can operate on NINA
     - ``nina_time``, ``host_time``, ``delta_seconds``, ``simulated``: same
-      fields as ``get_nina_time()``, populated only when ``api_responsive``
-      is ``True``; otherwise all ``None``
+      fields as ``get_nina_time()``, populated only when ``running`` is
+      ``True``; otherwise all ``None``
     - ``summary`` (str): human-readable one-line status
     """
-    process_running = False
-    pid: int | None = None
-    try:
-        proc = await _run_blocking(
-            ["tasklist.exe", "/FI", "IMAGENAME eq NINA.exe"],
-            timeout=5.0,
-        )
-        stdout = proc.stdout or ""
-        if "NINA.exe" in stdout:
-            process_running = True
-            match = _NINA_PROCESS_RE.search(stdout)
-            if match:
-                pid = int(match.group(1))
-    except Exception as e:
-        _log_payload("get_nina_status: proc probe failed", repr(e))
-
-    api_responsive = False
+    running = False
     nina_time: str | None = None
     host_time: str | None = None
     delta_seconds: float | None = None
     simulated: bool | None = None
     try:
         clock = await get_nina_time()
-        api_responsive = True
+        running = True
         nina_time = clock["nina_time"]
         host_time = clock["host_time"]
         delta_seconds = clock["delta_seconds"]
@@ -1159,20 +1166,22 @@ async def get_nina_status() -> dict[str, Any]:
     except Exception as e:
         _log_payload("get_nina_status: api probe failed", repr(e))
 
-    parts: list[str] = []
-    if process_running:
-        parts.append(f"NINA.exe running (pid {pid})" if pid else "NINA.exe running")
+    lifecycle_control_available = windows_interop_available()
+
+    if running:
+        summary = "NINA running — REST API responsive"
+        if not lifecycle_control_available:
+            summary += " (remote; lifecycle control unavailable)"
     else:
-        parts.append("NINA.exe not running")
-    parts.append("REST API responsive" if api_responsive else "REST API unresponsive")
+        summary = "NINA not running — REST API unresponsive"
+        if not lifecycle_control_available:
+            summary += " (remote; cannot be restarted from here)"
     if simulated is True:
-        parts.append("on simulated time")
-    summary = "; ".join(parts)
+        summary += ", on simulated time"
 
     return {
-        "process_running": process_running,
-        "api_responsive": api_responsive,
-        "pid": pid,
+        "running": running,
+        "lifecycle_control_available": lifecycle_control_available,
         "nina_time": nina_time,
         "host_time": host_time,
         "delta_seconds": delta_seconds,

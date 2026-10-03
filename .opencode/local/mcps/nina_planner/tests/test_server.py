@@ -1560,18 +1560,9 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
             result = await get_nina_time()
         self.assertIn("delta_seconds", result)
 
-    async def test_get_nina_status_process_running_with_api(self):
+    async def test_get_nina_status_running_with_api(self):
+        """API responsive => running, with the clock populated."""
         from nina_planner.server import get_nina_status
-
-        fake_proc = unittest.mock.MagicMock()
-        fake_proc.stdout = (
-            "Image Name                     PID Session Name        "
-            "Session#    Mem Usage Status\n"
-            "========================= ======== ================ =========== "
-            "=========== ============\n"
-            "NINA.exe                       1234 Console            "
-            "1       123,456 K Running\n"
-        )
 
         async def fake_time():
             return {
@@ -1582,88 +1573,52 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
             }
 
         with (
-            patch(
-                "nina_planner.server._run_blocking",
-                AsyncMock(return_value=fake_proc),
-            ),
             patch("nina_planner.server.get_nina_time", side_effect=fake_time),
+            patch(
+                "nina_planner.server.windows_interop_available",
+                return_value=True,
+            ),
         ):
             result = await get_nina_status()
 
-        self.assertTrue(result["process_running"])
-        self.assertTrue(result["api_responsive"])
-        self.assertEqual(result["pid"], 1234)
+        self.assertTrue(result["running"])
+        self.assertTrue(result["lifecycle_control_available"])
         self.assertEqual(result["nina_time"], "2026-09-22T03:00:00")
         self.assertEqual(result["host_time"], "2026-09-22T03:00:01")
         self.assertEqual(result["delta_seconds"], -1.0)
         self.assertFalse(result["simulated"])
-        self.assertIn("running", result["summary"])
+        self.assertIn("NINA running", result["summary"])
         self.assertIn("responsive", result["summary"])
 
-    async def test_get_nina_status_process_running_no_api(self):
+    async def test_get_nina_status_api_down_is_not_running(self):
+        """running follows the API: an unreachable REST API means NINA is not
+        running, regardless of any local process visibility."""
         from nina_planner.server import get_nina_status
 
-        fake_proc = unittest.mock.MagicMock()
-        fake_proc.stdout = (
-            "Image Name                     PID Session Name        "
-            "Session#    Mem Usage Status\n"
-            "========================= ======== ================ =========== "
-            "=========== ============\n"
-            "NINA.exe                       1234 Console            "
-            "1       123,456 K Running\n"
-        )
-
         with (
-            patch(
-                "nina_planner.server._run_blocking",
-                AsyncMock(return_value=fake_proc),
-            ),
             patch(
                 "nina_planner.server.get_nina_time",
                 AsyncMock(side_effect=RuntimeError("connection refused")),
             ),
+            patch(
+                "nina_planner.server.windows_interop_available",
+                return_value=True,
+            ),
         ):
             result = await get_nina_status()
 
-        self.assertTrue(result["process_running"])
-        self.assertFalse(result["api_responsive"])
-        self.assertEqual(result["pid"], 1234)
+        self.assertFalse(result["running"])
+        self.assertTrue(result["lifecycle_control_available"])
         self.assertIsNone(result["nina_time"])
         self.assertIsNone(result["host_time"])
         self.assertIsNone(result["delta_seconds"])
         self.assertIsNone(result["simulated"])
+        self.assertIn("NINA not running", result["summary"])
         self.assertIn("unresponsive", result["summary"])
 
-    async def test_get_nina_status_not_running(self):
-        from nina_planner.server import get_nina_status
-
-        fake_proc = unittest.mock.MagicMock()
-        fake_proc.stdout = (
-            "INFO: No tasks are running which match the specified criteria.\n"
-        )
-
-        with (
-            patch(
-                "nina_planner.server._run_blocking",
-                AsyncMock(return_value=fake_proc),
-            ),
-            patch(
-                "nina_planner.server.get_nina_time",
-                AsyncMock(side_effect=RuntimeError("connection refused")),
-            ),
-        ):
-            result = await get_nina_status()
-
-        self.assertFalse(result["process_running"])
-        self.assertFalse(result["api_responsive"])
-        self.assertIsNone(result["pid"])
-        self.assertIsNone(result["nina_time"])
-        self.assertIn("not running", result["summary"])
-
-    async def test_get_nina_status_tasklist_exception(self):
-        """When tasklist raises, process_running stays False but the API
-        probe still runs. The tool never raises itself.
-        """
+    async def test_get_nina_status_remote_running(self):
+        """API responsive but no Windows interop: running, but lifecycle
+        control is unavailable because NINA is remote."""
         from nina_planner.server import get_nina_status
 
         async def fake_time():
@@ -1675,18 +1630,41 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
             }
 
         with (
-            patch(
-                "nina_planner.server._run_blocking",
-                AsyncMock(side_effect=RuntimeError("tasklist crashed")),
-            ),
             patch("nina_planner.server.get_nina_time", side_effect=fake_time),
+            patch(
+                "nina_planner.server.windows_interop_available",
+                return_value=False,
+            ),
         ):
             result = await get_nina_status()
 
-        self.assertFalse(result["process_running"])
-        self.assertTrue(result["api_responsive"])
-        self.assertIsNone(result["pid"])
-        self.assertEqual(result["nina_time"], "2026-09-22T03:00:00")
+        self.assertTrue(result["running"])
+        self.assertFalse(result["lifecycle_control_available"])
+        self.assertIn("NINA running", result["summary"])
+        self.assertIn("remote", result["summary"])
+        self.assertIn("lifecycle control unavailable", result["summary"])
+
+    async def test_get_nina_status_remote_down(self):
+        """API unresponsive and no Windows interop: down and not restartable
+        from this host."""
+        from nina_planner.server import get_nina_status
+
+        with (
+            patch(
+                "nina_planner.server.get_nina_time",
+                AsyncMock(side_effect=RuntimeError("connection refused")),
+            ),
+            patch(
+                "nina_planner.server.windows_interop_available",
+                return_value=False,
+            ),
+        ):
+            result = await get_nina_status()
+
+        self.assertFalse(result["running"])
+        self.assertFalse(result["lifecycle_control_available"])
+        self.assertIn("NINA not running", result["summary"])
+        self.assertIn("cannot be restarted", result["summary"])
 
     async def test_start_nina_simulated_get_nina_time_fails(self):
         """When get_nina_time() never returns the simulated date during
@@ -1739,6 +1717,14 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
             patch(
                 "nina_planner.server.get_nina_time",
                 AsyncMock(side_effect=RuntimeError("shift query failed")),
+            ),
+            patch(
+                "nina_planner.server._nina_api_responsive",
+                AsyncMock(return_value=False),
+            ),
+            patch(
+                "nina_planner.server.windows_interop_available",
+                return_value=True,
             ),
             patch(
                 "nina_planner.server._now_local",
@@ -1828,6 +1814,14 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
                 AsyncMock(side_effect=fake_get_nina_time),
             ),
             patch(
+                "nina_planner.server._nina_api_responsive",
+                AsyncMock(return_value=False),
+            ),
+            patch(
+                "nina_planner.server.windows_interop_available",
+                return_value=True,
+            ),
+            patch(
                 "nina_planner.server.append_progress_entry",
                 AsyncMock(side_effect=OSError("disk full")),
             ),
@@ -1867,6 +1861,14 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
                 return_value=stub_launcher_paths,
             ),
             patch(
+                "nina_planner.server._nina_api_responsive",
+                AsyncMock(return_value=False),
+            ),
+            patch(
+                "nina_planner.server.windows_interop_available",
+                return_value=True,
+            ),
+            patch(
                 "nina_planner.server.append_progress_entry",
                 AsyncMock(side_effect=OSError("disk full")),
             ),
@@ -1875,6 +1877,104 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
             # Should not raise — the progress-entry failure is swallowed.
             result = await start_nina(None)
         self.assertEqual(result["simulated"], False)
+
+    async def test_start_nina_already_running_raises(self):
+        from nina_planner.server import start_nina
+
+        with (
+            patch(
+                "nina_planner.server._nina_api_responsive",
+                AsyncMock(return_value=True),
+            ),
+            patch(
+                "nina_planner.server.windows_interop_available",
+                return_value=True,
+            ),
+        ):
+            with self.assertRaises(RuntimeError) as ctx:
+                await start_nina(None)
+        self.assertIn("already running", str(ctx.exception))
+
+    async def test_start_nina_remote_unavailable_raises(self):
+        """API down and no Windows interop: cannot launch a remote NINA."""
+        from nina_planner.server import start_nina
+
+        with (
+            patch(
+                "nina_planner.server._nina_api_responsive",
+                AsyncMock(return_value=False),
+            ),
+            patch(
+                "nina_planner.server.windows_interop_available",
+                return_value=False,
+            ),
+        ):
+            with self.assertRaises(RuntimeError) as ctx:
+                await start_nina(None)
+        self.assertIn("cannot be launched", str(ctx.exception))
+
+    async def test_stop_nina_api_down_is_noop(self):
+        from nina_planner.server import stop_nina
+
+        with (
+            patch(
+                "nina_planner.server._nina_api_responsive",
+                AsyncMock(return_value=False),
+            ),
+            patch("nina_planner.server._log_payload"),
+        ):
+            result = await stop_nina()
+        self.assertFalse(result["stopped"])
+        self.assertIn("not running", result["summary"])
+
+    async def test_stop_nina_remote_unavailable_raises(self):
+        from nina_planner.server import stop_nina
+
+        with (
+            patch(
+                "nina_planner.server._nina_api_responsive",
+                AsyncMock(return_value=True),
+            ),
+            patch(
+                "nina_planner.server.windows_interop_available",
+                return_value=False,
+            ),
+            patch("nina_planner.server._log_payload"),
+        ):
+            with self.assertRaises(RuntimeError) as ctx:
+                await stop_nina()
+        self.assertIn("remote host", str(ctx.exception))
+
+    async def test_stop_nina_terminates_local(self):
+        from nina_planner.server import stop_nina
+
+        class FakeProcess:
+            returncode = 0
+            stdout = ""
+
+        with (
+            patch(
+                "nina_planner.server._nina_api_responsive",
+                AsyncMock(return_value=True),
+            ),
+            patch(
+                "nina_planner.server.windows_interop_available",
+                return_value=True,
+            ),
+            patch(
+                "nina_planner.server._run_blocking",
+                AsyncMock(return_value=FakeProcess()),
+            ),
+            patch(
+                "nina_planner.server.append_progress_entry",
+                AsyncMock(),
+            ),
+            patch("nina_planner.server.anyio.sleep", new=AsyncMockSleep()),
+            patch("nina_planner.server._log_payload"),
+        ):
+            result = await stop_nina()
+        self.assertTrue(result["stopped"])
+        self.assertIn("terminated", result["summary"])
 
     async def test_get_site_equipment_status_missing_device_data(self):
         """When a device is marked has_X=True but the raw response has no

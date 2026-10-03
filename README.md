@@ -32,8 +32,9 @@
 | `enter_safety_standby()` | Start a non-imaging sequence with safety guardrails. |
 | `stow_telescope()` | Start a teardown sequence, parking scope. |
 | `get_sequence_state()` | Return the loaded sequence structure and the current status of its containers, instructions, conditions, and triggers (whether loaded, running, completed, failed, or waiting). |
-| `stop_nina()` | Terminate the NINA.exe application immediately via taskkill. |
-| `start_nina(time=None)` | Launch NINA into the active interactive desktop session (GUI visible). With `time=None`, launches on current real time. With `time="YYYY-MM-DDTHH:MM:SS"`, shifts host clock, launches NINA, and restores real clock so NINA runs on simulated time. Errors if NINA is already running (call `stop_nina()` first). |
+| `stop_nina()` | Terminate the NINA.exe application immediately via taskkill. Liveness comes from the REST API: it no-ops when NINA is already down, and errors when NINA is up but remote (no local Windows interop) since it cannot be terminated from here. |
+| `start_nina(time=None)` | Launch NINA into the active interactive desktop session (GUI visible). With `time=None`, launches on current real time. With `time="YYYY-MM-DDTHH:MM:SS"`, shifts host clock, launches NINA, and restores real clock so NINA runs on simulated time. Errors if NINA is already running (call `stop_nina()` first), and errors when this host has no Windows interop to launch a remote NINA. |
+| `get_nina_status()` | REST-API-authoritative liveness probe: `running` (true iff `GET /time` answered), `lifecycle_control_available` (whether this host can start/stop NINA via Windows interop), the NINA/host clock fields, and a one-line summary. Never raises on a down NINA. |
 | `get_nina_time()` | Report NINA's clock versus host clock, delta in seconds, and whether NINA is on simulated time. |
 
 ---
@@ -324,7 +325,7 @@ Configured under `opencode.json > plugin` as the second array element (see [`ope
 
 | Variable | Default | Description |
 |---|---|---|
-| `NINA_ENDPOINT` | `127.0.0.1:1888` | N.I.N.A. host and port for the REST API (`host:port`).  For WSL, try `192.168.0.24:1888` |
+| `NINA_ENDPOINT` | `127.0.0.1:1888` | N.I.N.A. host and port for the REST API (`host:port`).  For WSL, try `192.168.0.24:1888`. When this points at a remote host (not the MCP server's own machine), `get_nina_status().lifecycle_control_available` is false and `start_nina`/`stop_nina` cannot operate on NINA. |
 | `NINA_DRIVE_MOUNT` | — | Local mount root for the drive letter in the profile's `image_save_path`, used by `get_imaging_metadata` to resolve the imaging directory on Linux and WSL (e.g. `/mnt` on a Mac with C: mounted there, `/mnt/c` in WSL). Defaults to `/mnt/<drive>` (e.g. `/mnt/c`). On Windows (`win32`) the profile `image_save_path` is used directly. The resolved value is also exposed as the derived `local_image_save_path` field on the profile returned by `get_site_profile`. |
 | `NINA_FLATS_ALTITUDE` | `80` | Altitude in degrees for flat panel calibration frames |
 | `NINA_FLATS_AZIMUTH_DAWN` | `270` | Azimuth in degrees pointing west for dawn flats |

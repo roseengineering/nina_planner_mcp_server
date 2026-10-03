@@ -51,23 +51,17 @@ def _wait_for_sequence_running(expected: bool, timeout: float = 10.0):
     )
 
 
-def _wait_for_nina_status(
-    *, process_running: bool, api_responsive: bool, timeout: float = 120.0
-):
+def _wait_for_nina_status(*, running: bool, timeout: float = 120.0):
     deadline = time.monotonic() + timeout
     status = None
     while time.monotonic() < deadline:
         status = asyncio.run(get_nina_status())
-        if (
-            status["process_running"] is process_running
-            and status["api_responsive"] is api_responsive
-        ):
+        if status["running"] is running:
             return status
         time.sleep(0.5)
     raise AssertionError(
         "NINA did not reach the expected status "
-        f"(process_running={process_running}, api_responsive={api_responsive}) "
-        f"within {timeout}s; last status: {status!r}"
+        f"(running={running}) within {timeout}s; last status: {status!r}"
     )
 
 
@@ -76,18 +70,19 @@ class LiveNinaTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         status = asyncio.run(get_nina_status())
-        if status["api_responsive"]:
+        if status["running"]:
             # NINA is up, so the REST-only tests can run even when Windows
-            # interop is unavailable (tasklist.exe cannot confirm the process).
+            # interop is unavailable (a remote NINA is simply not visible as a
+            # local process; the REST API is authoritative).
             pass
         elif windows_interop_available():
-            if not status["process_running"]:
+            if not status["running"]:
                 asyncio.run(start_nina())
-            _wait_for_nina_status(process_running=True, api_responsive=True)
+            _wait_for_nina_status(running=True)
         else:
-            # Nothing can be tested: NINA is down and there is no cmd.exe /
-            # tasklist.exe available to launch it. Skip instead of erroring so
-            # the cmd.exe-dependent tests do not take the whole class down.
+            # Nothing can be tested: NINA is down and this host has no Windows
+            # interop to launch it (e.g. a Mac driving a remote endpoint). Skip
+            # instead of erroring so the interop tests do not take the class down.
             raise unittest.SkipTest(
                 "NINA is not running (REST API unresponsive) and Windows interop "
                 "is unavailable to launch it (no cmd.exe/tasklist.exe on PATH)."
@@ -102,29 +97,29 @@ class LiveNinaTest(unittest.TestCase):
     def test_get_nina_status(self):
         result = asyncio.run(get_nina_status())
         self.assertIsInstance(result, dict)
-        self.assertIn("process_running", result)
-        self.assertIn("api_responsive", result)
+        self.assertIn("running", result)
+        self.assertIn("lifecycle_control_available", result)
         self.assertIn("simulated", result)
 
     @requires_windows_interop
     def test_zz_stop_and_restart_nina(self):
         initial_status = asyncio.run(get_nina_status())
-        if not (initial_status["process_running"] and initial_status["api_responsive"]):
+        if not initial_status["running"]:
             self.skipTest("NINA must already be running and reachable for this test")
 
         try:
             result = asyncio.run(stop_nina())
             self.assertTrue(result["stopped"], result["summary"])
-            _wait_for_nina_status(process_running=False, api_responsive=False)
+            _wait_for_nina_status(running=False)
 
             result = asyncio.run(start_nina())
             self.assertIn("launched NINA", result["summary"])
-            _wait_for_nina_status(process_running=True, api_responsive=True)
+            _wait_for_nina_status(running=True)
         finally:
             status = asyncio.run(get_nina_status())
-            if not status["process_running"]:
+            if not status["running"]:
                 asyncio.run(start_nina())
-            _wait_for_nina_status(process_running=True, api_responsive=True)
+            _wait_for_nina_status(running=True)
 
     def test_get_site_equipment_status(self):
         result = asyncio.run(get_site_equipment_status())
