@@ -1,0 +1,26 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "model": "opencode-go/gpt-6-luna#max",
+  "plugins": [
+    {
+      "package": "./local/plugins/nina_notify",
+      "options": {
+        "pluginLogs": "/tmp/nina-notify-debug.log"
+      }
+    }
+  ],
+  "permissions": [
+    { "action": "*", "resource": ".opencode/**", "effect": "deny" }
+  ],
+  "mcp": {
+    "nina-planner": {
+      "type": "local",
+      "environment": {
+        "NINA_PLANNER_LOG": "/tmp/nina-planner-debug.log"
+      },
+      "command": [
+        "uv", "--directory", ".opencode/local/mcps/nina_planner", "run", "-m", "nina_planner"
+      ]
+    }
+  }
+}
