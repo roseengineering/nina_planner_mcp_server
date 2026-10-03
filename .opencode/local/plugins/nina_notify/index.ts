@@ -30,7 +30,7 @@ export default Plugin.define({
     const intervalCheckMinutes =
       typeof options.intervalCheckMinutes === "number"
         ? options.intervalCheckMinutes
-        : 10;
+        : -1;
 
     const savedSessionID = await ctx.storage.get("targetSessionID");
     let targetSessionID =
