@@ -9,6 +9,7 @@ from nina_planner.models.profile import (
     FilterInfo,
     ObservatoryProfile,
     OpticalTrainInfo,
+    ProfileSummary,
     SiteLocationInfo,
 )
 
@@ -96,6 +97,28 @@ class ObservatoryProfileFilterPositionTest(unittest.TestCase):
         assert "X" in msg
         assert "TestProfile" in msg
         assert "L" in msg
+
+
+class ProfileSummaryTest(unittest.TestCase):
+    def test_full_meta_round_trips(self):
+        summary = ProfileSummary(
+            profile_id="abc-123",
+            profile_name="Backyard",
+            description="Backyard rig",
+            last_used="2026-09-30T02:15:00Z",
+            active=True,
+        )
+        assert summary.profile_id == "abc-123"
+        assert summary.profile_name == "Backyard"
+        assert summary.description == "Backyard rig"
+        assert summary.last_used is not None
+        assert summary.active is True
+
+    def test_optional_fields_default(self):
+        summary = ProfileSummary(profile_id="abc-123", profile_name="Minimal")
+        assert summary.description is None
+        assert summary.last_used is None
+        assert summary.active is False
 
 
 class ObservatoryProfileLocalSavePathTest(unittest.TestCase):

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import math
+from datetime import datetime
 from typing import Self
 
 from pydantic import BaseModel, computed_field, model_validator
@@ -71,6 +72,14 @@ class OpticalTrainInfo(BaseModel):
             )
             self.field_of_view_deg = (round(fov_x, 4), round(fov_y, 4))
         return self
+
+
+class ProfileSummary(BaseModel):
+    profile_id: str
+    profile_name: str
+    description: str | None = None
+    last_used: datetime | None = None
+    active: bool = False
 
 
 class ObservatoryProfile(BaseModel):

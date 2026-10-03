@@ -23,7 +23,7 @@ function sessionIDFromEvent(event: any): string | undefined {
 }
 
 export default Plugin.define({
-  id: "nina.notify",
+  id: "nina_notify",
   async setup(ctx) {
     const options = ctx.options ?? {};
     const ninaEndpoint =

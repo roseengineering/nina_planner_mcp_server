@@ -20,6 +20,7 @@ from .models.profile import (
     FilterInfo,
     ObservatoryProfile,
     OpticalTrainInfo,
+    ProfileSummary,
     SiteLocationInfo,
 )
 from .mosaic import load_pointings
@@ -204,9 +205,7 @@ async def _convert_to_met(
     res = []
     for d in data:
         value = d[name]
-        d = {
-            k: v for k, v in d.items() if k != name
-        }
+        d = {k: v for k, v in d.items() if k != name}
         ts = datetime.fromisoformat(value)
         if ts.tzinfo is None:
             ts = ts.replace(tzinfo=tzinfo)
@@ -446,6 +445,31 @@ async def get_site_profile() -> ObservatoryProfile:
     )
     _log_payload("Profile:", profile.model_dump_json(indent=2))
     return profile
+
+
+@mcp.tool()
+async def list_site_profiles() -> list[ProfileSummary]:
+    """Returns every NINA observatory profile as a list of summaries — each with its id, name, description, and last-used time — marking the currently active profile with `active: true`. Use it to discover which profiles exist and to find the id of the one you want, then pass that id to switch_site_profile. Only the active profile exposes full site/optics/filter detail, so use get_site_profile to inspect the active one. This tool is read-only and takes no action."""
+    metas = await _api_get("/profile/show?active=false")
+    active_id = (await _api_get("/profile/show?active=true")).get("Id", "")
+    profiles = [
+        ProfileSummary(
+            profile_id=meta.get("Id", ""),
+            profile_name=meta.get("Name", ""),
+            description=meta.get("Description") or None,
+            last_used=meta.get("LastUsed") or None,
+            active=meta.get("Id") == active_id,
+        )
+        for meta in metas
+    ]
+    _log_payload("Profiles:", json.dumps([p.model_dump(mode="json") for p in profiles]))
+    return profiles
+
+
+@mcp.tool()
+async def switch_site_profile(profile_id: str) -> str:
+    """Switches the active NINA observatory profile to the one with the given `profile_id` (a GUID obtained from list_site_profiles). Passes the id straight through to NINA; if the id is unknown or NINA otherwise refuses, the API's error is returned. Switching disconnects and reconnects equipment and changes site, filters, image-save path, and file pattern, so do not call it while a sequence is running. Confirm the result with get_site_profile afterward."""
+    return await _api_get(f"/profile/switch?profileid={profile_id}")
 
 
 @mcp.tool()

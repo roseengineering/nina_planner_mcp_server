@@ -16,6 +16,7 @@ from nina_planner.server import (
     get_sequence_state,
     get_site_equipment_status,
     get_site_profile,
+    list_site_profiles,
     run_plan,
     start_nina,
     stop_nina,
@@ -136,6 +137,19 @@ class LiveNinaTest(unittest.TestCase):
         result_dict = result.model_dump()
         self.assertIn("profile_name", result_dict)
         self.assertIn("site", result_dict)
+
+    def test_list_site_profiles(self):
+        result = asyncio.run(list_site_profiles())
+        self.assertIsInstance(result, list)
+        self.assertTrue(len(result) > 0, "at least one profile should exist")
+        for profile in result:
+            self.assertTrue(profile.profile_id)
+            self.assertTrue(profile.profile_name)
+        active = [p for p in result if p.active]
+        self.assertEqual(len(active), 1, "exactly one profile should be active")
+        # The active profile from the list should match get_site_profile.
+        current = asyncio.run(get_site_profile())
+        self.assertEqual(active[0].profile_id, current.profile_id)
 
     def test_get_sequence_state(self):
         result = asyncio.run(get_sequence_state())

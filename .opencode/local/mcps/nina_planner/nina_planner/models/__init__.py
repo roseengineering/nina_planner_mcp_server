@@ -20,6 +20,7 @@ from .profile import (
     FilterInfo,
     ObservatoryProfile,
     OpticalTrainInfo,
+    ProfileSummary,
     SiteLocationInfo,
 )
 from .rotator import RotatorDevice
@@ -46,6 +47,7 @@ __all__ = [
     "OpticalTrainInfo",
     "Pointing",
     "PointingInfo",
+    "ProfileSummary",
     "ReadonlySwitchInfo",
     "ReadoutInfo",
     "RotatorDevice",

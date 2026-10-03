@@ -501,6 +501,50 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result.filters[0].position, 1)
         self.assertEqual(result.filters[1].name, "R")
 
+    async def test_list_site_profiles_marks_active(self):
+        from nina_planner.server import list_site_profiles
+
+        metas = [
+            {
+                "Id": "p1",
+                "Name": "Backyard",
+                "Description": "home",
+                "LastUsed": "2026-09-30T02:00:00Z",
+            },
+            {
+                "Id": "p2",
+                "Name": "Remote",
+                "Description": "",
+                "LastUsed": "2026-09-01T02:00:00Z",
+            },
+        ]
+        active = {"Id": "p2", "Name": "Remote"}
+
+        async def fake(path):
+            return metas if path == "/profile/show?active=false" else active
+
+        with patch("nina_planner.server._api_get", side_effect=fake):
+            result = await list_site_profiles()
+        self.assertEqual([p.profile_id for p in result], ["p1", "p2"])
+        self.assertFalse(result[0].active)
+        self.assertTrue(result[1].active)
+        self.assertEqual(result[0].description, "home")
+        self.assertIsNone(result[1].description)
+
+    async def test_switch_site_profile_calls_api_with_id(self):
+        from nina_planner.server import switch_site_profile
+
+        seen = {}
+
+        async def fake(path):
+            seen["path"] = path
+            return "Successfully switched profile"
+
+        with patch("nina_planner.server._api_get", side_effect=fake):
+            result = await switch_site_profile("p2")
+        self.assertEqual(seen["path"], "/profile/switch?profileid=p2")
+        self.assertEqual(result, "Successfully switched profile")
+
     async def test_get_site_equipment_status_returns_empty_when_all_false(self):
         from nina_planner.server import _get_site_equipment_status
 
