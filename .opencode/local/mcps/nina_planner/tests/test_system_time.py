@@ -371,7 +371,7 @@ class AppendProgressEntryTest(unittest.TestCase):
     def setUp(self):
         self._tmp = tempfile.TemporaryDirectory()
         self.project_dir = Path(self._tmp.name)
-        self.progress = self.project_dir / "progress.md"
+        self.progress = self.project_dir / "PROGRESS.md"
         self.progress.write_text("# progress.md\n\nShared observatory progress file.\n")
 
     def tearDown(self):
@@ -406,7 +406,7 @@ class StopNinaTest(unittest.TestCase):
     def setUp(self):
         self._tmp = tempfile.TemporaryDirectory()
         self.project_dir = Path(self._tmp.name)
-        self.progress = self.project_dir / "progress.md"
+        self.progress = self.project_dir / "PROGRESS.md"
         self.progress.write_text("# progress.md\n")
 
     def tearDown(self):
@@ -511,7 +511,7 @@ class StartNinaTest(unittest.TestCase):
     def setUp(self):
         self._tmp = tempfile.TemporaryDirectory()
         self.project_dir = Path(self._tmp.name)
-        self.progress = self.project_dir / "progress.md"
+        self.progress = self.project_dir / "PROGRESS.md"
         self.progress.write_text("# progress.md\n")
 
     def tearDown(self):
