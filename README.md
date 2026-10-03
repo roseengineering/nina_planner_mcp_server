@@ -224,8 +224,7 @@ The plugin auto-reconnects on websocket disconnection with a 5-second retry. On 
 
 ---
 
-```json PLAN.md
-# `PLAN.md` — the living wishlist
+### `PLAN.md` — the living wishlist
 
 A markdown file at the project root, **edited by the user at any time** (before or during the night). It is intentionally lightweight — entries can be as simple as a target name:
 
@@ -243,11 +242,13 @@ A markdown file at the project root, **edited by the user at any time** (before 
 
 Example shapes (illustrative — both are valid):
 
-# Tonight
+```json PLAN.md
+# Tonight — 2026-10-03
 
-- M31          "before the moon comes up"
-- Veil Nebula  plan=veil-nebula_..._20260913.json   prio 1
-- M33          "if high targets done"
+- M27       plan=m27_planetary-nebula_20261003T112008.json    prio 1
+- M57       plan=m57_planetary-nebula_20261003T112008.json    prio 1
+- M15       plan=m15_globular-cluster_20261003T112008.json    prio 1
+- NGC 7331  plan=ngc-7331_spiral-galaxy_20261003T112008.json  prio 1
 
 Rules:
 - min_altitude: 30
