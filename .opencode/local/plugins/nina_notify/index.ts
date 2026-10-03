@@ -12,16 +12,6 @@ function fileLog(pluginLogs: Logs, message: string) {
   }
 }
 
-// V2 has no session.list(); probe the common carriers of a session id.
-function sessionIDFromEvent(event: any): string | undefined {
-  return [
-    event?.data?.sessionID,
-    event?.data?.session?.id,
-    event?.data?.id,
-    event?.durable?.aggregateID,
-  ].find((v) => typeof v === "string" && v.startsWith("ses"));
-}
-
 export default Plugin.define({
   id: "nina_notify",
   async setup(ctx) {
@@ -37,31 +27,12 @@ export default Plugin.define({
         ? options.intervalCheckMinutes
         : 10;
 
-    let targetSessionID: string | undefined =
-      typeof options.sessionID === "string" ? options.sessionID : undefined;
+    let targetSessionID: string | undefined;
 
-    // Learn the active session from prompt admission...
-    await ctx.session.hook("prompt", (event) => {
+    const promptHook = await ctx.session.hook("prompt", (event) => {
       targetSessionID = event.sessionID;
+      fileLog(pluginLogs, `nina-plugin: target session set from prompt: ${targetSessionID}`);
     });
-
-    // ...and keep it current from the session event stream.
-    const controller = new AbortController();
-    void (async () => {
-      for await (const event of ctx.event.subscribe({
-        signal: controller.signal,
-      })) {
-        if (
-          typeof (event as any)?.type === "string" &&
-          (event as any).type.startsWith("session.")
-        ) {
-          const id = sessionIDFromEvent(event);
-          if (id) targetSessionID = id;
-        }
-      }
-    })().catch((err) =>
-      fileLog(pluginLogs, `nina-plugin: event stream ended: ${err}`),
-    );
 
     async function triggerIntervention(events: unknown = null) {
       const text =
@@ -70,10 +41,7 @@ export default Plugin.define({
           : `Trigger: New N.I.N.A. events follow:\n\n\`\`\`json\n${JSON.stringify(events, null, 2)}\n\`\`\``;
       fileLog(pluginLogs, `nina-plugin: intervention: ${text}`);
       if (!targetSessionID) {
-        fileLog(
-          pluginLogs,
-          "nina-plugin: no target session yet; skipping injection",
-        );
+        fileLog(pluginLogs, "nina-plugin: no target session yet; skipping injection");
         return;
       }
       await ctx.session.prompt({ sessionID: targetSessionID as any, text });
@@ -88,14 +56,6 @@ export default Plugin.define({
       eventBatch = [];
       await triggerIntervention(batch);
     }
-
-    const safeJsonParse = (str: string) => {
-      try {
-        return JSON.parse(str);
-      } catch {
-        return null;
-      }
-    };
 
     function pushEvent(response: unknown) {
       eventBatch.push(response);
@@ -121,7 +81,12 @@ export default Plugin.define({
         ws?.send("SUB /socket");
       };
       ws.onmessage = (event) => {
-        const msg = safeJsonParse(String(event.data)) as any;
+        let msg: any;
+        try {
+          msg = JSON.parse(String(event.data));
+        } catch {
+          return;
+        }
         if (msg?.Response) {
           const response =
             typeof msg.Response === "string"
@@ -157,9 +122,9 @@ export default Plugin.define({
       }, intervalCheckMinutes * 60_000);
     }
 
-    return () => {
+    return async () => {
       closed = true;
-      controller.abort();
+      await promptHook.dispose();
       if (intervalId !== null) clearInterval(intervalId);
       if (debounceTimer) clearTimeout(debounceTimer);
       if (reconnectTimer) clearTimeout(reconnectTimer);
