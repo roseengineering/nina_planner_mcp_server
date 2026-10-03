@@ -278,10 +278,9 @@ Rules:
   "$schema": "https://opencode.ai/config.json",
   "plugins": [
     {
-      "package": "./local/plugins/nina_planner",
+      "package": "./local/plugins/nina_notify",
       "options": {
-        // "pluginLogs": "C:/Windows/Temp/nina-plugin-debug.log"
-        "pluginLogs": "/tmp/nina-plugin-debug.log"
+        "pluginLogs": "C:/Windows/Temp/nina-notify-debug.log"
       }
     }
   ],
@@ -289,8 +288,7 @@ Rules:
     "nina-planner": {
       "type": "local",
       "environment": {
-        // "NINA_PLANNER_LOG": "C:/Windows/Temp/nina-planner-debug.log"
-        "NINA_PLANNER_LOG": "/tmp/nina-planner-debug.log"
+        "NINA_PLANNER_LOG": "C:/Windows/Temp/nina-planner-debug.log"
       },
       "command": [
         "uv", "--directory", "./.opencode/local/mcps/nina_planner", "run", "-m", "nina_planner"
