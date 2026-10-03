@@ -1,7 +1,4 @@
-# PLAN.md 
-
-<!--
-## `PLAN.md` — the living wishlist
+# `PLAN.md` — the living wishlist
 
 A markdown file at the project root, **edited by the user at any time** (before or during the night). It is intentionally lightweight — entries can be as simple as a target name:
 
@@ -29,5 +26,4 @@ Rules:
 - min_altitude: 30
 - horizon_offset_degrees: 2
 - tie_break: priority, then altitude
--->
 
