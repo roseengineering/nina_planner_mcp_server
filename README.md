@@ -223,11 +223,13 @@ The plugin auto-reconnects on websocket disconnection with a 5-second retry. On 
 
 ---
 
-## `plan.md` — Planning a Night's Session
+```json PLAN.md
+# PLAN.md 
 
-`plan.md` is the user's **living wishlist** for the night — a markdown file at the project root that you edit at any time (before or during the night). It is deliberately lightweight: entries can be as simple as a target name. The `worker` agent reads it fresh on each trigger to decide which target to image next, so no `write_plan_file` call is needed up front.
+<!--
+## `PLAN.md` — the living wishlist
 
-### Structure
+A markdown file at the project root, **edited by the user at any time** (before or during the night). It is intentionally lightweight — entries can be as simple as a target name:
 
 1. **Metadata** — night date, overall intent (optional).
 2. **Candidate targets** — each with:
@@ -237,13 +239,12 @@ The plugin auto-reconnects on websocket disconnection with a 5-second retry. On 
    - priority (1 = highest, optional)
    - optional time window / note
 3. **Selection rules** — how the worker picks among candidates:
-   - `min_altitude` floor (default e.g. 30°)
-   - `horizon_offset_degrees` safety buffer (default 2°)
+   - altitude floor (default e.g. 30°)
+   - horizon buffer
    - tie-break order (priority, then highest current altitude, then earliest available)
 
-### Example
+Example shapes (illustrative — both are valid):
 
-```markdown
 # Tonight
 
 - M31          "before the moon comes up"
@@ -254,20 +255,21 @@ Rules:
 - min_altitude: 30
 - horizon_offset_degrees: 2
 - tie_break: priority, then altitude
+-->
 ```
 
 ### How the night runs
 
 - The worker evaluates each un-imaged candidate, computes its current altitude (or loads its plan sequence and lets N.I.N.A. report it), and picks the best target: highest priority, then highest current altitude, then earliest available. It never interrupts a running observation — re-selection only happens after a sequence finishes.
-- For the chosen target, the worker loads the referenced plan JSON if given, otherwise generates one via `write_plan_file` (using coords/filter/count from `plan.md`, or sensible defaults), then `run_plan(frame_type="light")` (which loads and starts the sequence).
-- When no candidate is viable (all below the altitude floor, or the night is over), the worker writes `report.md` (overwriting any previous one) with the night's results, stows the scope, and stops. Editing `plan.md` later triggers re-evaluation.
-- You can add/remove/reorder lines at any moment. The worker records completion in `progress.md` instead and leaves `plan.md` untouched, so your editing isn't fought over.
+- For the chosen target, the worker loads the referenced plan JSON if given, otherwise generates one via `write_plan_file` (using coords/filter/count from `PLAN.md`, or sensible defaults), then `run_plan(frame_type="light")` (which loads and starts the sequence).
+- When no candidate is viable (all below the altitude floor, or the night is over), the worker writes `report.md` (overwriting any previous one) with the night's results, stows the scope, and stops. Editing `PLAN.md` later triggers re-evaluation.
+- You can add/remove/reorder lines at any moment. The worker records completion in `PROGRESS.md` instead and leaves `PLAN.md` untouched, so your editing isn't fought over.
 
 ---
 
-## `progress.md` — Shared Progress File
+## `PROGRESS.md` — Shared Progress File
 
-`progress.md` is a shared observatory progress file in the project directory. Both the active session and the automated `worker` sessions read it on start to restore context before acting, and append a short ISO-8601-timestamped entry after each significant action (status checks, plan writes, sequence loads/starts/stops, errors, and interventions), recording what was done, the observed equipment and safety state, and any decisions. This keeps history shared across sessions.
+`PROGRESS.md` is a shared observatory progress file in the project directory. Both the active session and the automated `worker` sessions read it on start to restore context before acting, and append a short ISO-8601-timestamped entry after each significant action (status checks, plan writes, sequence loads/starts/stops, errors, and interventions), recording what was done, the observed equipment and safety state, and any decisions. This keeps history shared across sessions.
 
 ---
 
@@ -284,6 +286,9 @@ Rules:
       }
     }
   ],
+  "permissions": [
+    { "action": "*", "resource": ".opencode/**", "effect": "deny" }
+  ],
   "mcp": {
     "nina-planner": {
       "type": "local",
@@ -291,7 +296,7 @@ Rules:
         "NINA_PLANNER_LOG": "C:/Windows/Temp/nina-planner-debug.log"
       },
       "command": [
-        "uv", "--directory", "./.opencode/local/mcps/nina_planner", "run", "-m", "nina_planner"
+        "uv", "--directory", ".opencode/local/mcps/nina_planner", "run", "-m", "nina_planner"
       ]
     }
   }
