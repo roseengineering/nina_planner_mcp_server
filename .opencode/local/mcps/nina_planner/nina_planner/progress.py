@@ -17,7 +17,7 @@ __all__ = [
 
 
 async def append_progress_entry(text: str) -> None:
-    """Append an ISO-8601 timestamped entry to ``progress.md``.
+    """Append an ISO-8601 timestamped entry to ``PROGRESS.md``.
 
     Matches the convention described in ``AGENTS.md`` — each significant
     action gets one entry. The block is appended as a markdown ``##`` section
@@ -25,7 +25,7 @@ async def append_progress_entry(text: str) -> None:
     and later agent sessions can grep it by header. Existing content is
     preserved; the file always ends in a newline.
 
-    The path to ``progress.md`` is taken from :data:`nina_planner.server.PROJECT_DIR`,
+    The path to ``PROGRESS.md`` is taken from :data:`nina_planner.server.PROJECT_DIR`,
     imported lazily to avoid a module-load cycle with ``server.py``.
     """
     from .server import PROJECT_DIR
@@ -33,7 +33,7 @@ async def append_progress_entry(text: str) -> None:
     now = datetime.now().astimezone()
     timestamp = now.isoformat(timespec="seconds")
     block = f"\n## {timestamp} — auto\n\n{text.strip()}\n"
-    path = PROJECT_DIR / "progress.md"
+    path = PROJECT_DIR / "PROGRESS.md"
     async with await anyio.open_file(path, "a", encoding="utf-8") as f:
         await f.write(block)
 
