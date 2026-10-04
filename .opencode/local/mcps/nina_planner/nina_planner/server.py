@@ -759,6 +759,13 @@ async def stop_sequence() -> str:
 
 
 @mcp.tool()
+async def start_sequence() -> str:
+    """Starts the currently loaded NINA sequence immediately."""
+    await _api_get("/sequence/start?skipValidation=true")
+    return "Sequence started."
+
+
+@mcp.tool()
 async def get_sequence_state() -> Any:
     """Returns the loaded sequence structure and the current status of its containers, instructions, conditions, and triggers. Use it to determine whether a sequence is loaded, running, completed, failed, or waiting. This tool is read-only and takes no action."""
     return await _api_get("/sequence/json")

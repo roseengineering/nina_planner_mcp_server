@@ -647,7 +647,7 @@ def wait_indefinitely() -> dict[str, Any]:
 
 
 def end_instruction(name: str) -> dict[str, Any]:
-    return _child("WhenPlugin.When.EndInstructionSet, WhenPlugin") | {
+    return _child("NINA.Plugin.SequencerPlus.EndInstructionSet, NINA.Plugin.SequencerPlus") | {
         "InstructionSetName": name
     }
 
