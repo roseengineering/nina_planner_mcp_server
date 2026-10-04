@@ -621,27 +621,7 @@ def smart_exposure(
     )
 
 
-### plugin
-
-
-def loop_while(expression: str) -> dict[str, Any]:
-    return _child("WhenPlugin.When.LoopWhile, WhenPlugin") | {
-        "PredicateExpr": _child("WhenPlugin.When.Expr, WhenPlugin")
-        | {
-            "Expression": expression,
-            "Type": "Any",
-        },
-    }
-
-
-def wait_indefinitely() -> dict[str, Any]:
-    return _child("WhenPlugin.When.WaitIndefinitely, WhenPlugin")
-
-
-def end_instruction(name: str) -> dict[str, Any]:
-    return _child("WhenPlugin.When.EndInstructionSet, WhenPlugin") | {
-        "InstructionSetName": name
-    }
+### ninaapi
 
 
 def send_event(text: str) -> dict[str, Any]:
@@ -649,6 +629,27 @@ def send_event(text: str) -> dict[str, Any]:
         "Message": text
     }
 
+
+### plugin
+
+
+def loop_while(expression: str) -> dict[str, Any]:
+    return _child("NINA.Plugin.SequencerPlus.LoopWhile, NINA.Plugin.SequencerPlus") | {
+        "PredicateExpr": _child("NINA.Plugin.SequencerPlus.Expr, NINA.Plugin.SequencerPlus") | {
+            "Expression": expression,
+            "Type": "Any",
+        }
+    }
+
+
+def wait_indefinitely() -> dict[str, Any]:
+    return _child("NINA.Plugin.SequencerPlus.WaitIndefinitely, NINA.Plugin.SequencerPlus")
+
+
+def end_instruction(name: str) -> dict[str, Any]:
+    return _child("WhenPlugin.When.EndInstructionSet, WhenPlugin") | {
+        "InstructionSetName": name
+    }
 
 
 ####################################
