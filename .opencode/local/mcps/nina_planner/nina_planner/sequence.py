@@ -5,6 +5,7 @@ from typing import Any
 
 from .models.observatory import ObservatoryEquipment
 from .models.plan import ObservationPlan
+from .models.profile import ObservatoryProfile
 
 NINA_FLATS_ALTITUDE = float(os.environ.get("NINA_FLATS_ALTITUDE", "80"))
 NINA_FLATS_AZIMUTH_DAWN = float(os.environ.get("NINA_FLATS_AZIMUTH_DAWN", "270"))
@@ -397,23 +398,23 @@ def annotation() -> dict[str, Any]:
     }
 
 
-def switch_filter(name: str, position: int) -> dict[str, Any]:
+def switch_filter(filter_name: str, filter_position: int) -> dict[str, Any]:
     return _child(
         "NINA.Sequencer.SequenceItem.FilterWheel.SwitchFilter, NINA.Sequencer"
     ) | {
         "Filter": _child("NINA.Core.Model.Equipment.FilterInfo, NINA.Core")
-        | {"_name": name, "_position": position}
+        | {"_name": filter_name, "_position": filter_position}
     }
 
 
-def sky_flats(count: int, filter_name: str, position: int) -> dict[str, Any]:
+def sky_flats(count: int, filter_name: str, filter_position: int) -> dict[str, Any]:
     return _container_base(
         "NINA.Sequencer.SequenceItem.FlatDevice.SkyFlat, NINA.Sequencer",
         name="Twilight Sky Flats",
         instructions=[
             annotation(),
             annotation(),
-            switch_filter(filter_name, position),
+            switch_filter(filter_name, filter_position),
             annotation(),
             container_sequential(
                 "NINA.Sequencer.Container.SequentialContainer, NINA.Sequencer",
@@ -580,6 +581,46 @@ def loop_for_iterations(count: int) -> dict[str, Any]:
     }
 
 
+def dither_after_exposures(exposures: int) -> dict[str, Any]:
+    return _child("NINA.Sequencer.Trigger.Guider.DitherAfterExposures, NINA.Sequencer") | {
+        "AfterExposures": exposures
+    }
+
+
+def take_exposure(exposure: float, image_type: str, count: int = 0) -> dict[str, Any]:
+    return _child(
+        "NINA.Sequencer.SequenceItem.Imaging.TakeExposure, NINA.Sequencer"
+    ) | {
+        "ImageType": image_type,
+        "ExposureTime": exposure,
+        "Gain": -1,
+        "Offset": -1,
+        "ExposureCount": count,
+        "Binning": _child("NINA.Core.Model.Equipment.BinningMode, NINA.Core")
+            | {"X": 1, "Y": 1},
+    }
+
+
+def smart_exposure(
+    count: int,
+    exposure: float,
+    image_type: str,
+    filter_name: str | None = None,
+    filter_position: int | None = None,
+    dither: int | None = None,
+) -> dict[str, Any]:
+    return _container_base(
+        "NINA.Sequencer.SequenceItem.Imaging.SmartExposure, NINA.Sequencer",
+        name="Smart Exposure",
+        conditions=[loop_for_iterations(count)],
+        triggers=[dither_after_exposures(dither)] if dither is not None else [],
+        instructions=[
+            switch_filter(filter_name, filter_position),
+            take_exposure(exposure, image_type)
+        ]
+    )
+
+
 ### plugin
 
 
@@ -603,72 +644,11 @@ def end_instruction(name: str) -> dict[str, Any]:
     }
 
 
-def switch_filter_plus(position: str) -> dict[str, Any]:
-    return _child("WhenPlugin.When.SwitchFilter, WhenPlugin") | {
-        "FilterExpr": position,
-    }
-
-
-def trigger_dither_after_exposures(exposures: int) -> dict[str, Any]:
-    return _child("WhenPlugin.When.DitherAfterExposures, WhenPlugin") | {
-        "AfterExpr": _child("WhenPlugin.When.Expr, WhenPlugin")
-        | {"Expression": exposures}
-    }
-
-
-def take_exposure(exposure: float, image_type: str) -> dict[str, Any]:
-    return _child(
-        "NINA.Sequencer.SequenceItem.Imaging.TakeExposure, NINA.Sequencer"
-    ) | {
-        "ImageType": image_type,
-        "ExposureTime": exposure,
-        "Gain": -1,
-        "Offset": -1,
-        "Binning": _child("NINA.Core.Model.Equipment.BinningMode, NINA.Core")
-        | {"X": 1, "Y": 1},
-    }
-
-
-def take_exposure_plus(exposure: float, image_type: str) -> dict[str, Any]:
-    return _child("WhenPlugin.When.TakeExposure, WhenPlugin") | {
-        "ImageType": image_type,
-        "ExposureTimeExpr": exposure,
-        "GainExpr": None,
-        "OffsetExpr": None,
-        "Binning": _child("NINA.Core.Model.Equipment.BinningMode, NINA.Core")
-        | {"X": 1, "Y": 1},
-    }
-
-
 def send_event(text: str) -> dict[str, Any]:
     return _child("ninaAPI.SequenceItems.SendEventInstruction, ninaAPI") | {
         "Message": text
     }
 
-
-def smart_exposure_plus(
-    count: int,
-    exposure: float,
-    image_type: str,
-    filter_name: str | None = None,
-    dither: int | None = None,
-) -> dict[str, Any]:
-    return _container_base(
-        "WhenPlugin.When.SmartExposure, WhenPlugin",
-        name="Smart Exposure +",
-        conditions=[loop_for_iterations(count)],
-        triggers=[trigger_dither_after_exposures(dither)] if dither is not None else [],
-        instructions=[
-            switch_filter_plus(filter_name)
-            if filter_name is not None
-            else annotation(),
-            take_exposure_plus(exposure=exposure, image_type=image_type),
-        ],
-    ) | {
-        "IterationsExpr": count,
-        "FilterExpr": filter_name,
-        "DitherExpr": dither,
-    }
 
 
 ####################################
@@ -823,7 +803,7 @@ def build_sequence_darks(
                         plan=plan,
                         instructions=sequence_cool_camera(plan, equipment)
                         + [
-                            smart_exposure_plus(
+                            smart_exposure(
                                 count=d[0],
                                 exposure=d[1],
                                 image_type="BIAS" if bias else "DARK",
@@ -841,6 +821,7 @@ def build_sequence_darks(
 def build_sequence_lights(
     plan: ObservationPlan,
     equipment: ObservatoryEquipment,
+    profile: ObservatoryProfile,
     *,
     pointing_index: int = 1,
 ) -> dict[str, Any]:
@@ -851,6 +832,8 @@ def build_sequence_lights(
             f"valid 1..{len(plan.pointings)})"
         )
     pointing = plan.pointings[pointing_index - 1]
+    reference_filter_name = plan.autofocus.reference_filter_name
+    reference_filter_position = profile.filter_position(reference_filter_name)
     return container_root_standby(
         equipment=equipment,
         instructions=[
@@ -925,7 +908,7 @@ def build_sequence_lights(
                         instructions=sequence_cool_camera(plan, equipment)
                         + [
                             set_tracking(0),
-                            switch_filter_plus(plan.autofocus.reference_filter_name),
+                            switch_filter(reference_filter_name, reference_filter_position),
                         ]
                         + [
                             slew_and_center()
@@ -937,10 +920,11 @@ def build_sequence_lights(
                             start_guiding(),
                         ]
                         + [
-                            smart_exposure_plus(
+                            smart_exposure(
                                 count=d[0],
                                 exposure=d[1],
                                 filter_name=d[2],
+                                filter_position=profile.filter_position(d[2]),
                                 dither=plan.guiding.dither_every_n_exposures,
                                 image_type="LIGHT",
                             )
@@ -957,7 +941,7 @@ def build_sequence_lights(
 def build_sequence_flats(
     plan: ObservationPlan,
     equipment: ObservatoryEquipment,
-    profile: Any,
+    profile: ObservatoryProfile,
     dusk: bool = False,
     pointing_index: int = 1,
 ) -> dict[str, Any]:
@@ -1004,7 +988,7 @@ def build_sequence_flats(
                             sky_flats(
                                 count=d[0],
                                 filter_name=d[2],
-                                position=profile.filter_position(d[2]),
+                                filter_position=profile.filter_position(d[2]),
                             )
                             for d in _round_robin(plan.flat, reverse=dusk)
                             if d[2] is not None
@@ -1014,3 +998,6 @@ def build_sequence_flats(
             )
         ],
     )
+
+
+

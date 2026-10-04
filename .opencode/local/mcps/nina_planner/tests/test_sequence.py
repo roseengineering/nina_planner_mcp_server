@@ -6,6 +6,7 @@ from nina_planner.models.camera import CameraDevice
 from nina_planner.models.mount import MountDevice
 from nina_planner.models.observatory import ObservatoryEquipment
 from nina_planner.models.plan import ObservationPlan
+from nina_planner.models.profile import FilterInfo, ObservatoryProfile
 from nina_planner.sequence import build_sequence_lights
 
 
@@ -25,24 +26,59 @@ def _plan(**overrides):
     return ObservationPlan(**data)
 
 
+def _profile() -> ObservatoryProfile:
+    """Real profile with the filters used by the test plans.
+
+    ``build_sequence_lights``/``build_sequence_flats`` resolve filter
+    positions through this, so every filter referenced by a plan must be
+    present here.
+    """
+    return ObservatoryProfile(
+        profile_name="test",
+        profile_id="profile-test123",
+        site={},
+        optics={},
+        filters=[FilterInfo(name="L", position=3)],
+        image_save_path="C:\\images",
+        equipment={
+            "has_mount": True,
+            "has_camera": True,
+            "has_focuser": True,
+            "has_guider": True,
+            "has_filter_wheel": True,
+            "has_rotator": True,
+            "has_dome": True,
+            "has_weather": True,
+            "has_safety_monitor": True,
+            "has_switch": True,
+        },
+    )
+
+
 class BuildSequenceLightsTest(unittest.TestCase):
     def test_pointing_with_no_position_angle_does_not_raise_name_error(self):
         plan = _plan(
             pointings=[{"ra_hours": 5.0, "dec_deg": 10.0, "position_angle_deg": None}]
         )
-        result = build_sequence_lights(plan, equipment=ObservatoryEquipment())
+        result = build_sequence_lights(
+            plan, equipment=ObservatoryEquipment(), profile=_profile()
+        )
         self.assertIsInstance(result, dict)
 
     def test_pointing_with_position_angle_does_not_raise_name_error(self):
         plan = _plan(
             pointings=[{"ra_hours": 5.0, "dec_deg": 10.0, "position_angle_deg": 90.0}]
         )
-        result = build_sequence_lights(plan, equipment=ObservatoryEquipment())
+        result = build_sequence_lights(
+            plan, equipment=ObservatoryEquipment(), profile=_profile()
+        )
         self.assertIsInstance(result, dict)
 
     def test_pointing_without_position_angle_field_does_not_raise_name_error(self):
         plan = _plan(pointings=[{"ra_hours": 5.0, "dec_deg": 10.0}])
-        result = build_sequence_lights(plan, equipment=ObservatoryEquipment())
+        result = build_sequence_lights(
+            plan, equipment=ObservatoryEquipment(), profile=_profile()
+        )
         self.assertIsInstance(result, dict)
 
 
@@ -239,7 +275,10 @@ class PointingIndexValidationTest(unittest.TestCase):
         plan = _plan()
         with self.assertRaises(ValueError):
             build_sequence_lights(
-                plan, equipment=ObservatoryEquipment(), pointing_index=0
+                plan,
+                equipment=ObservatoryEquipment(),
+                profile=_profile(),
+                pointing_index=0,
             )
 
     def test_pointing_index_too_high_raises(self):
@@ -248,7 +287,10 @@ class PointingIndexValidationTest(unittest.TestCase):
         plan = _plan()
         with self.assertRaises(ValueError):
             build_sequence_lights(
-                plan, equipment=ObservatoryEquipment(), pointing_index=99
+                plan,
+                equipment=ObservatoryEquipment(),
+                profile=_profile(),
+                pointing_index=99,
             )
 
 
@@ -417,7 +459,7 @@ class SequenceBuildersTest(unittest.TestCase):
         return ObservationPlan(**data)
 
     def _profile(self):
-        return _FlatProfileStub()
+        return _profile()
 
     def test_build_sequence_standby(self):
         from nina_planner.sequence import build_sequence_standby
@@ -529,7 +571,9 @@ class SequenceBehaviorTest(unittest.TestCase):
 
     def test_lights_target_name_includes_label_and_plan_id(self):
         plan = self._plan()
-        result = build_sequence_lights(plan, equipment=ObservatoryEquipment())
+        result = build_sequence_lights(
+            plan, equipment=ObservatoryEquipment(), profile=_profile()
+        )
         dsos = _deepsky_targets(result)
         self.assertEqual(len(dsos), 1)
         target = dsos[0]["Target"]["TargetName"]
@@ -538,7 +582,9 @@ class SequenceBehaviorTest(unittest.TestCase):
 
     def test_lights_without_pointing_label_omits_label_segment(self):
         plan = self._plan(pointings=[{"ra_hours": 0.71, "dec_deg": 41.27}])
-        result = build_sequence_lights(plan, equipment=ObservatoryEquipment())
+        result = build_sequence_lights(
+            plan, equipment=ObservatoryEquipment(), profile=_profile()
+        )
         dsos = _deepsky_targets(result)
         self.assertEqual(len(dsos), 1)
         target = dsos[0]["Target"]["TargetName"]
@@ -546,7 +592,9 @@ class SequenceBehaviorTest(unittest.TestCase):
 
     def test_lights_slew_and_center_when_position_angle_none(self):
         plan = self._plan(pointings=[{"ra_hours": 0.71, "dec_deg": 41.27}])
-        result = build_sequence_lights(plan, equipment=ObservatoryEquipment())
+        result = build_sequence_lights(
+            plan, equipment=ObservatoryEquipment(), profile=_profile()
+        )
         centers = _find_items(result, "Platesolving.Center, NINA.Sequencer")
         rotates = _find_items(result, "CenterAndRotate")
         self.assertEqual(len(centers), 1)
@@ -556,7 +604,9 @@ class SequenceBehaviorTest(unittest.TestCase):
         plan = self._plan(
             pointings=[{"ra_hours": 0.71, "dec_deg": 41.27, "position_angle_deg": 90.0}]
         )
-        result = build_sequence_lights(plan, equipment=ObservatoryEquipment())
+        result = build_sequence_lights(
+            plan, equipment=ObservatoryEquipment(), profile=_profile()
+        )
         rotates = _find_items(result, "CenterAndRotate")
         centers = _find_items(result, "Platesolving.Center, NINA.Sequencer")
         self.assertEqual(len(rotates), 1)
@@ -564,7 +614,9 @@ class SequenceBehaviorTest(unittest.TestCase):
 
     def test_lights_contains_acquisition_starting_and_finished_events(self):
         plan = self._plan()
-        result = build_sequence_lights(plan, equipment=ObservatoryEquipment())
+        result = build_sequence_lights(
+            plan, equipment=ObservatoryEquipment(), profile=_profile()
+        )
         events = _find_items(result, "SendEventInstruction")
         messages = [e["Message"] for e in events]
         self.assertTrue(
@@ -578,13 +630,17 @@ class SequenceBehaviorTest(unittest.TestCase):
 
     def test_lights_image_object_uses_meridian_flip_trigger(self):
         plan = self._plan()
-        result = build_sequence_lights(plan, equipment=ObservatoryEquipment())
+        result = build_sequence_lights(
+            plan, equipment=ObservatoryEquipment(), profile=_profile()
+        )
         flips = _find_items(result, "MeridianFlipTrigger")
         self.assertGreaterEqual(len(flips), 1)
 
     def test_lights_image_object_includes_all_autofocus_triggers(self):
         plan = self._plan()
-        result = build_sequence_lights(plan, equipment=ObservatoryEquipment())
+        result = build_sequence_lights(
+            plan, equipment=ObservatoryEquipment(), profile=_profile()
+        )
         af_filter = _find_items(result, "AutofocusAfterFilterChange, NINA.Sequencer")
         af_exposures = _find_items(result, "AutofocusAfterExposures, NINA.Sequencer")
         af_temp = _find_items(
@@ -598,7 +654,9 @@ class SequenceBehaviorTest(unittest.TestCase):
 
     def test_lights_image_object_includes_center_after_drift_trigger(self):
         plan = self._plan()
-        result = build_sequence_lights(plan, equipment=ObservatoryEquipment())
+        result = build_sequence_lights(
+            plan, equipment=ObservatoryEquipment(), profile=_profile()
+        )
         drift = _find_items(result, "CenterAfterDriftTrigger")
         self.assertEqual(len(drift), 1)
         self.assertEqual(
@@ -613,7 +671,9 @@ class SequenceBehaviorTest(unittest.TestCase):
                 "horizon_offset_degrees": 5.0,
             }
         )
-        result = build_sequence_lights(plan, equipment=ObservatoryEquipment())
+        result = build_sequence_lights(
+            plan, equipment=ObservatoryEquipment(), profile=_profile()
+        )
         waits = _find_items(result, "WaitUntilAboveHorizon")
         alts = _find_items(result, "WaitForAltitude")
         self.assertTrue(any(w["Data"]["Offset"] == 5.0 for w in waits))
@@ -621,18 +681,31 @@ class SequenceBehaviorTest(unittest.TestCase):
 
     def test_lights_uses_smart_exposure_with_filter_and_dither(self):
         plan = self._plan()
-        result = build_sequence_lights(plan, equipment=ObservatoryEquipment())
-        smart = _find_items(result, "SmartExposure, WhenPlugin")
+        result = build_sequence_lights(
+            plan, equipment=ObservatoryEquipment(), profile=_profile()
+        )
+        smart = _find_items(result, "Imaging.SmartExposure, NINA.Sequencer")
         self.assertEqual(len(smart), 1)
-        self.assertEqual(smart[0]["IterationsExpr"], 3)
-        self.assertEqual(smart[0]["FilterExpr"], "L")
-        self.assertEqual(smart[0]["DitherExpr"], plan.guiding.dither_every_n_exposures)
+        # count -> the LoopCondition inside the SmartExposure container
+        conditions = smart[0]["Conditions"]["$values"]
+        self.assertEqual(len(conditions), 1)
+        self.assertEqual(conditions[0]["Iterations"], 3)
+        # filter -> the SwitchFilter instruction inside the container
+        switches = _find_items(smart[0], "FilterWheel.SwitchFilter, NINA.Sequencer")
+        self.assertEqual(len(switches), 1)
+        self.assertEqual(switches[0]["Filter"]["_name"], "L")
+        # dither -> the native DitherAfterExposures trigger
+        dithers = _find_items(smart[0], "Guider.DitherAfterExposures, NINA.Sequencer")
+        self.assertEqual(len(dithers), 1)
+        self.assertEqual(
+            dithers[0]["AfterExposures"], plan.guiding.dither_every_n_exposures
+        )
 
     def test_lights_safetynet_wraps_with_park_scope_when_mount_can_park(self):
         plan = self._plan()
         mount = MountDevice(connected=True, name="m", can_park=True, can_find_home=True)
         eq = ObservatoryEquipment(mount=mount)
-        result = build_sequence_lights(plan, equipment=eq)
+        result = build_sequence_lights(plan, equipment=eq, profile=_profile())
         parks = _find_items(result, "ParkScope")
         homes = _find_items(result, "FindHome, NINA.Sequencer")
         self.assertGreaterEqual(len(parks), 1)
@@ -647,7 +720,7 @@ class SequenceBehaviorTest(unittest.TestCase):
             can_find_home=True,
         )
         eq = ObservatoryEquipment(mount=mount)
-        result = build_sequence_lights(plan, equipment=eq)
+        result = build_sequence_lights(plan, equipment=eq, profile=_profile())
         parks = _find_items(result, "ParkScope")
         homes = _find_items(result, "FindHome, NINA.Sequencer")
         self.assertEqual(parks, [])
@@ -656,7 +729,7 @@ class SequenceBehaviorTest(unittest.TestCase):
     def test_lights_safetynet_with_no_mount_omits_park_and_home(self):
         plan = self._plan()
         eq = ObservatoryEquipment(mount=None)
-        result = build_sequence_lights(plan, equipment=eq)
+        result = build_sequence_lights(plan, equipment=eq, profile=_profile())
         parks = _find_items(result, "ParkScope")
         homes = _find_items(result, "FindHome, NINA.Sequencer")
         self.assertEqual(parks, [])
@@ -671,7 +744,7 @@ class SequenceBehaviorTest(unittest.TestCase):
             temperature=20.0,
         )
         eq = ObservatoryEquipment(camera=camera)
-        result = build_sequence_lights(plan, equipment=eq)
+        result = build_sequence_lights(plan, equipment=eq, profile=_profile())
         cools = _find_items(result, "CoolCamera")
         self.assertEqual(len(cools), 1)
         self.assertEqual(cools[0]["Temperature"], -15.0)
@@ -680,7 +753,7 @@ class SequenceBehaviorTest(unittest.TestCase):
         plan = self._plan(cooler={"on": False, "setpoint_celsius": -15.0})
         camera = CameraDevice(connected=True, name="cam", can_set_temperature=True)
         eq = ObservatoryEquipment(camera=camera)
-        result = build_sequence_lights(plan, equipment=eq)
+        result = build_sequence_lights(plan, equipment=eq, profile=_profile())
         warms = _find_items(result, "WarmCamera")
         cools = _find_items(result, "CoolCamera")
         self.assertGreaterEqual(len(warms), 1)
@@ -690,7 +763,7 @@ class SequenceBehaviorTest(unittest.TestCase):
         plan = self._plan()
         camera = CameraDevice(connected=True, name="cam", can_set_temperature=False)
         eq = ObservatoryEquipment(camera=camera)
-        result = build_sequence_lights(plan, equipment=eq)
+        result = build_sequence_lights(plan, equipment=eq, profile=_profile())
         warms = _find_items(result, "WarmCamera")
         cools = _find_items(result, "CoolCamera")
         self.assertEqual(warms, [])
@@ -701,10 +774,10 @@ class SequenceBehaviorTest(unittest.TestCase):
 
         plan = self._plan()
         result = build_sequence_darks(plan, equipment=ObservatoryEquipment())
-        smart = _find_items(result, "SmartExposure, WhenPlugin")
+        smart = _find_items(result, "Imaging.SmartExposure, NINA.Sequencer")
         self.assertEqual(len(smart), 1)
         # SmartExposure stores ImageType inside its instructions
-        takes = _find_items(smart[0], "TakeExposure, WhenPlugin")
+        takes = _find_items(smart[0], "Imaging.TakeExposure, NINA.Sequencer")
         self.assertTrue(all(t["ImageType"] == "DARK" for t in takes))
 
     def test_darks_with_bias_flag_uses_bias_image_type(self):
@@ -712,9 +785,9 @@ class SequenceBehaviorTest(unittest.TestCase):
 
         plan = self._plan()
         result = build_sequence_darks(plan, equipment=ObservatoryEquipment(), bias=True)
-        smart = _find_items(result, "SmartExposure, WhenPlugin")
+        smart = _find_items(result, "Imaging.SmartExposure, NINA.Sequencer")
         self.assertEqual(len(smart), 1)
-        takes = _find_items(smart[0], "TakeExposure, WhenPlugin")
+        takes = _find_items(smart[0], "Imaging.TakeExposure, NINA.Sequencer")
         self.assertTrue(all(t["ImageType"] == "BIAS" for t in takes))
 
     def test_darks_start_area_parks_scope_when_mount_can_park(self):
@@ -734,7 +807,7 @@ class SequenceBehaviorTest(unittest.TestCase):
         result = build_sequence_flats(
             plan,
             equipment=ObservatoryEquipment(),
-            profile=_FlatProfileStub(),
+            profile=_profile(),
             dusk=False,
         )
         # Wait for dawn means SunsetProvider should not appear; DawnProvider should.
@@ -750,7 +823,7 @@ class SequenceBehaviorTest(unittest.TestCase):
         result = build_sequence_flats(
             plan,
             equipment=ObservatoryEquipment(),
-            profile=_FlatProfileStub(),
+            profile=_profile(),
             dusk=True,
         )
         sunset = _find_items(result, "SunsetProvider")
@@ -775,7 +848,9 @@ class CoordinateHelpersTest(unittest.TestCase):
             dark=[{"exposure_time_seconds": 60.0, "total_count": 1}],
             bias=[{"total_count": 1}],
         )
-        result = build_sequence_lights(plan, equipment=ObservatoryEquipment())
+        result = build_sequence_lights(
+            plan, equipment=ObservatoryEquipment(), profile=_profile()
+        )
         dso = _deepsky_targets(result)[0]
         coords = dso["Target"]["InputCoordinates"]
         self.assertTrue(coords["NegativeDec"])
@@ -794,7 +869,9 @@ class CoordinateHelpersTest(unittest.TestCase):
             dark=[{"exposure_time_seconds": 60.0, "total_count": 1}],
             bias=[{"total_count": 1}],
         )
-        result = build_sequence_lights(plan, equipment=ObservatoryEquipment())
+        result = build_sequence_lights(
+            plan, equipment=ObservatoryEquipment(), profile=_profile()
+        )
         coords = _deepsky_targets(result)[0]["Target"]["InputCoordinates"]
         # 0.575 hours = 34.5 minutes → 34 minutes, 30 seconds
         self.assertEqual(coords["RAMinutes"], 34)
@@ -847,14 +924,6 @@ class RoundRobinEdgeCasesTest(unittest.TestCase):
             _round_robin([_NoFilter()], batch_size=0),
             [(4, 30.0, None)],
         )
-
-
-class _FlatProfileStub:
-    """Minimal profile stub for build_sequence_flats — only needs
-    filter_position(name) → int."""
-
-    def filter_position(self, name: str) -> int:
-        return {"L": 3}.get(name, 0)
 
 
 if __name__ == "__main__":

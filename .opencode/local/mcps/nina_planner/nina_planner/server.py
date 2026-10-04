@@ -712,15 +712,15 @@ async def run_plan(
         )
 
     if frame_type == "light":
-        seq = build_sequence_lights(plan, equipment, pointing_index=pointing_index)
+        seq = build_sequence_lights(plan, equipment, profile, pointing_index=pointing_index)
     elif frame_type == "dark":
         seq = build_sequence_darks(plan, equipment)
     elif frame_type == "bias":
         seq = build_sequence_darks(plan, equipment, bias=True)
     elif frame_type == "dawn_flat":
-        seq = build_sequence_flats(plan, equipment, profile=profile)
+        seq = build_sequence_flats(plan, equipment, profile)
     elif frame_type == "dusk_flat":
-        seq = build_sequence_flats(plan, equipment, profile=profile, dusk=True)
+        seq = build_sequence_flats(plan, equipment, profile, dusk=True)
     else:
         raise ValueError(f"Unsupported frame type: {frame_type}")
     await _api_post("/sequence/load", seq)
