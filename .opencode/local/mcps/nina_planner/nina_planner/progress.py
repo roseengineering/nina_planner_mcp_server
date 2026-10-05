@@ -117,21 +117,52 @@ def _quality_accepted(
     return True
 
 
+def _session_start(
+    plan: ObservationPlan,
+    rows: list[dict[str, Any]],
+    pointing_index: int,
+) -> datetime | None:
+    """Earliest light exposure attributed to the pointing, or ``None``.
+
+    This is the anchor for the calibration window. Anchoring to the plan's own
+    (fixed) light session rather than a moving "now" means calibration acquired
+    for the session stays valid, instead of expiring and being re-acquired on
+    every later run. Timezone offsets are dropped, matching :func:`_within_age`.
+    """
+    stamps: list[datetime] = []
+    for row in rows:
+        if (row.get("image_type") or row.get("frame_type") or "").upper() != "LIGHT":
+            continue
+        if not _light_target_matches(plan, row, pointing_index=pointing_index):
+            continue
+        raw = row.get("exposure_start")
+        if raw is None or raw == "":
+            continue
+        try:
+            stamp = datetime.fromisoformat(str(raw).strip())
+        except (TypeError, ValueError):
+            continue
+        stamps.append(stamp.replace(tzinfo=None) if stamp.tzinfo else stamp)
+    return min(stamps) if stamps else None
+
+
 def _within_age(
     row: dict[str, Any],
     max_age_days: int | None,
-    reference_now: datetime | None,
+    session_start: datetime | None,
 ) -> bool:
-    """True when the frame was shot within ``max_age_days`` of ``reference_now``.
+    """True when a calibration frame is not older than the plan's session.
 
-    Both times are on N.I.N.A.'s clock: the frame's own ``ExposureStart`` from
-    ImageMetaData.csv and N.I.N.A.'s current time. Any timezone offset on either
-    value is dropped rather than converted, so the comparison uses N.I.N.A.'s
-    wall-clock time and does not assume the host shares N.I.N.A.'s timezone.
+    The frame counts when it was shot at or after
+    ``session_start - max_age_days``. There is no upper bound, so frames taken
+    at or after the session count too (e.g. darks shot after the lights).
+
+    Both times are on N.I.N.A.'s clock; any timezone offset is dropped rather
+    than converted, so the comparison is host-timezone independent.
     """
     if max_age_days is None:
         return True
-    if reference_now is None:
+    if session_start is None:
         return True
     raw = row.get("exposure_start")
     if raw is None or raw == "":
@@ -142,9 +173,9 @@ def _within_age(
         return False
     if shot_at.tzinfo is not None:
         shot_at = shot_at.replace(tzinfo=None)
-    if reference_now.tzinfo is not None:
-        reference_now = reference_now.replace(tzinfo=None)
-    return reference_now - shot_at <= timedelta(days=max_age_days)
+    if session_start.tzinfo is not None:
+        session_start = session_start.replace(tzinfo=None)
+    return shot_at >= session_start - timedelta(days=max_age_days)
 
 
 def _row_matches(
@@ -159,7 +190,7 @@ def _row_matches(
     min_detected_stars: int | None = None,
     max_guiding_rms_arcsec: float | None = None,
     max_age_days: int | None = None,
-    reference_now: datetime | None = None,
+    session_start: datetime | None = None,
 ) -> bool:
     if (row.get("image_type") or row.get("frame_type") or "").upper() != image_type:
         return False
@@ -175,7 +206,7 @@ def _row_matches(
         return _quality_accepted(
             row, max_hfr, min_detected_stars, max_guiding_rms_arcsec
         )
-    return _within_age(row, max_age_days, reference_now)
+    return _within_age(row, max_age_days, session_start)
 
 
 def _count_matching(
@@ -190,7 +221,7 @@ def _count_matching(
     min_detected_stars: int | None = None,
     max_guiding_rms_arcsec: float | None = None,
     max_age_days: int | None = None,
-    reference_now: datetime | None = None,
+    session_start: datetime | None = None,
 ) -> int:
     count = 0
     for row in rows:
@@ -205,7 +236,7 @@ def _count_matching(
             min_detected_stars=min_detected_stars,
             max_guiding_rms_arcsec=max_guiding_rms_arcsec,
             max_age_days=max_age_days,
-            reference_now=reference_now,
+            session_start=session_start,
         ):
             count += 1
     return count
@@ -218,14 +249,17 @@ def filter_metadata_rows(
     *,
     pointing_index: int = 1,
     max_age_days: int | None = None,
-    reference_now: datetime | None = None,
+    now: datetime | None = None,
 ) -> list[dict[str, Any]]:
     """Rows attributed to `plan` for `image_type`.
 
     Lights match by the plan_id embedded in their file path (with the
-    pointing_index suffix appended at load time); dark/bias/flat frames
-    match the plan's exposure specs (filter too, for flats) and must fall
-    within the calibration age window when one is configured.
+    pointing_index suffix appended at load time); dark/bias/flat frames match
+    the plan's exposure specs (filter too, for flats). Calibration is anchored
+    to the plan's light session: a frame counts when it was shot at or after
+    ``session_start - max_age_days``, where ``session_start`` is the earliest
+    attributed light exposure (falling back to ``now`` when the plan has no
+    lights yet).
     """
     image_type_upper = image_type.upper()
     if image_type_upper == "LIGHT":
@@ -243,6 +277,7 @@ def filter_metadata_rows(
         specs = [(None, None)]
     else:
         return []
+    session_start = _session_start(plan, rows, pointing_index) or now or datetime.now()
     out: list[dict[str, Any]] = []
     for row in rows:
         for filter_name, exposure in specs:
@@ -252,7 +287,7 @@ def filter_metadata_rows(
                 filter_name=filter_name,
                 exposure=exposure,
                 max_age_days=max_age_days,
-                reference_now=reference_now,
+                session_start=session_start,
             ):
                 out.append(row)
                 break
@@ -267,10 +302,9 @@ def plan_progress(
     max_hfr: float | None = None,
     min_detected_stars: int | None = None,
     max_guiding_rms_arcsec: float | None = None,
-    reference_now: datetime | None = None,
+    now: datetime | None = None,
 ) -> dict[str, list[dict[str, Any]]]:
-    if reference_now is None:
-        reference_now = datetime.now()
+    session_start = _session_start(plan, rows, pointing_index) or now or datetime.now()
 
     def group(image_type: str, groups: list[Any]) -> list[dict[str, Any]]:
         out: list[dict[str, Any]] = []
@@ -289,8 +323,8 @@ def plan_progress(
                 max_hfr=max_hfr,
                 min_detected_stars=min_detected_stars,
                 max_guiding_rms_arcsec=max_guiding_rms_arcsec,
-                max_age_days=plan.calibration_max_age_days,
-                reference_now=reference_now,
+                max_age_days=plan.calibration_window_days,
+                session_start=session_start,
             )
             out.append(
                 {

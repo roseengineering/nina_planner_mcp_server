@@ -363,12 +363,12 @@ class PlanWithRemainingTest(unittest.TestCase):
 
 
 class CalibrationAgeTest(unittest.TestCase):
-    def test_calibration_max_age_days_default_and_override(self):
-        self.assertEqual(_plan().calibration_max_age_days, 7)
-        self.assertEqual(_plan(calibration_max_age_days=1).calibration_max_age_days, 1)
+    def test_calibration_window_days_default_and_override(self):
+        self.assertEqual(_plan().calibration_window_days, 7)
+        self.assertEqual(_plan(calibration_window_days=1).calibration_window_days, 1)
         # 0 is reserved (ge=1), so it is rejected.
         with self.assertRaises(ValidationError):
-            _plan(calibration_max_age_days=0)
+            _plan(calibration_window_days=0)
 
     def test_stale_calibration_excluded_from_progress(self):
         plan = _plan()
@@ -391,7 +391,7 @@ class CalibrationAgeTest(unittest.TestCase):
         self.assertEqual(prog["bias"][0]["acquired_count"], 0)
 
     def test_one_day_window_counts_recent_only(self):
-        plan = _plan(calibration_max_age_days=1)
+        plan = _plan(calibration_window_days=1)
         now = datetime.now()
         recent = now.strftime("%Y-%m-%d %H:%M:%S")
         old = (now - timedelta(days=3)).strftime("%Y-%m-%d %H:%M:%S")
@@ -413,6 +413,57 @@ class CalibrationAgeTest(unittest.TestCase):
         ]
         prog = plan_progress(plan, rows)
         self.assertEqual(prog["flat"][0]["acquired_count"], 1)
+
+    def test_calibration_after_lights_counts_without_reacquisition(self):
+        # Session-anchored: darks shot *after* the lights stay counted, so the
+        # plan does not keep re-acquiring them on later runs (no infinite loop).
+        plan = _plan()
+        session = datetime(2026, 9, 1, 22, 0, 0)
+        light = _row(exposure_start=session.strftime("%Y-%m-%d %H:%M:%S"))
+        dark = _row(
+            image_type="DARK",
+            duration="60.0",
+            target=None,
+            exposure_start=(session + timedelta(days=30)).strftime("%Y-%m-%d %H:%M:%S"),
+        )
+        prog = plan_progress(plan, [light, dark], now=session + timedelta(days=60))
+        self.assertEqual(prog["light"][0]["acquired_count"], 1)
+        self.assertEqual(prog["dark"][0]["acquired_count"], 1)
+        self.assertEqual(prog["dark"][0]["remaining_count"], 9)
+
+    def test_pre_session_calibration_older_than_window_excluded(self):
+        plan = _plan(calibration_window_days=7)
+        session = datetime(2026, 9, 1, 22, 0, 0)
+        light = _row(exposure_start=session.strftime("%Y-%m-%d %H:%M:%S"))
+        old = _row(
+            image_type="DARK",
+            duration="60.0",
+            target=None,
+            exposure_start=(session - timedelta(days=10)).strftime("%Y-%m-%d %H:%M:%S"),
+        )
+        recent = _row(
+            image_type="DARK",
+            duration="60.0",
+            target=None,
+            exposure_start=(session - timedelta(days=3)).strftime("%Y-%m-%d %H:%M:%S"),
+        )
+        prog = plan_progress(plan, [light, old, recent], now=session)
+        # Only the pre-session frame inside the window counts.
+        self.assertEqual(prog["dark"][0]["acquired_count"], 1)
+
+    def test_no_lights_falls_back_to_now(self):
+        plan = _plan()
+        now = datetime.now()
+        rows = [
+            _row(
+                image_type="DARK",
+                duration="60.0",
+                target=None,
+                exposure_start=now.strftime("%Y-%m-%d %H:%M:%S"),
+            )
+        ]
+        prog = plan_progress(plan, rows, now=now)
+        self.assertEqual(prog["dark"][0]["acquired_count"], 1)
 
 
 class FilterMetadataRowsTest(unittest.TestCase):
@@ -442,9 +493,7 @@ class FilterMetadataRowsTest(unittest.TestCase):
                 image_type="DARK", duration="300.0", target=None, exposure_start=fresh
             ),
         ]
-        out = filter_metadata_rows(
-            plan, rows, "dark", max_age_days=7, reference_now=ref
-        )
+        out = filter_metadata_rows(plan, rows, "dark", max_age_days=7, now=ref)
         self.assertEqual(len(out), 1)
         self.assertEqual(out[0]["duration"], "60.0")
 
@@ -455,9 +504,7 @@ class FilterMetadataRowsTest(unittest.TestCase):
             _row(image_type="FLAT", filter_name="SII", duration="5.0", target=None),
             _row(image_type="FLAT", filter_name="LP", duration="10.0", target=None),
         ]
-        out = filter_metadata_rows(
-            plan, rows, "flat", max_age_days=7, reference_now=self._ref()
-        )
+        out = filter_metadata_rows(plan, rows, "flat", max_age_days=7, now=self._ref())
         self.assertEqual(len(out), 1)
         self.assertEqual(out[0]["filter_name"], "LP")
 
@@ -470,18 +517,14 @@ class FilterMetadataRowsTest(unittest.TestCase):
             _row(image_type="BIAS", target=None, exposure_start=fresh),
             _row(image_type="BIAS", target=None, exposure_start=stale),
         ]
-        out = filter_metadata_rows(
-            plan, rows, "bias", max_age_days=1, reference_now=ref
-        )
+        out = filter_metadata_rows(plan, rows, "bias", max_age_days=1, now=ref)
         self.assertEqual(len(out), 1)
 
     def test_missing_time_excluded_when_window_set(self):
         plan = _plan()
         row = _row(image_type="BIAS", target=None)
         del row["exposure_start"]
-        out = filter_metadata_rows(
-            plan, [row], "bias", max_age_days=7, reference_now=self._ref()
-        )
+        out = filter_metadata_rows(plan, [row], "bias", max_age_days=7, now=self._ref())
         self.assertEqual(out, [])
 
     def test_empty_result(self):
@@ -624,7 +667,7 @@ class PrivateHelperDefensivePathsTest(unittest.TestCase):
             )
         )
 
-    def test_within_age_returns_true_when_reference_now_none(self):
+    def test_within_age_returns_true_when_session_start_none(self):
         from nina_planner.progress import _within_age
 
         self.assertTrue(_within_age({"exposure_start": "2026-09-22 10:00:00"}, 7, None))
@@ -637,24 +680,38 @@ class PrivateHelperDefensivePathsTest(unittest.TestCase):
         self.assertFalse(_within_age({"exposure_start": ""}, 7, ref))
         self.assertFalse(_within_age({"exposure_start": None}, 7, ref))
 
-    def test_within_age_compares_shot_time_to_reference(self):
+    def test_within_age_counts_from_session_minus_window(self):
         from nina_planner.progress import _within_age
 
-        ref = datetime(2026, 9, 22, 12, 0)
-        self.assertTrue(_within_age({"exposure_start": "2026-09-20 12:00:00"}, 2, ref))
-        self.assertFalse(_within_age({"exposure_start": "2026-09-19 11:59:00"}, 2, ref))
+        session = datetime(2026, 9, 22, 12, 0)
+        # At or after session - window counts (inclusive)...
+        self.assertTrue(
+            _within_age({"exposure_start": "2026-09-20 12:00:00"}, 2, session)
+        )
+        # ...earlier does not...
+        self.assertFalse(
+            _within_age({"exposure_start": "2026-09-20 11:59:00"}, 2, session)
+        )
+        # ...and there is no upper bound: a frame after the session counts.
+        self.assertTrue(
+            _within_age({"exposure_start": "2026-10-05 00:00:00"}, 2, session)
+        )
 
     def test_within_age_ignores_offset_not_converts(self):
         from nina_planner.progress import _within_age
 
-        # Reference carries N.I.N.A.'s UTC offset; the wall clock is what counts,
-        # so this must not be shifted through the host's timezone.
-        ref = datetime.fromisoformat("2026-09-22T12:00:00-05:00")
-        self.assertTrue(_within_age({"exposure_start": "2026-09-20 12:00:00"}, 2, ref))
-        self.assertFalse(_within_age({"exposure_start": "2026-09-20 11:59:00"}, 2, ref))
+        # Session start carries N.I.N.A.'s UTC offset; the wall clock is what
+        # counts, so this must not be shifted through the host's timezone.
+        session = datetime.fromisoformat("2026-09-22T12:00:00-05:00")
+        self.assertTrue(
+            _within_age({"exposure_start": "2026-09-20 12:00:00"}, 2, session)
+        )
+        self.assertFalse(
+            _within_age({"exposure_start": "2026-09-20 11:59:00"}, 2, session)
+        )
         # A shot value that carries an offset keeps its wall clock too.
         self.assertTrue(
-            _within_age({"exposure_start": "2026-09-20T12:00:00-05:00"}, 2, ref)
+            _within_age({"exposure_start": "2026-09-20T12:00:00-05:00"}, 2, session)
         )
 
     # ---- filter_metadata_rows (line 230) ----

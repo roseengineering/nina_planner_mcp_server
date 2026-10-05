@@ -96,11 +96,12 @@ class ObservationPlan(BaseModel):
     batch_size: int = Field(
         default=5, ge=0, description="Exposures per batch. 0 means unbatch."
     )
-    calibration_max_age_days: int = Field(
+    calibration_window_days: int = Field(
         default=7,
         ge=1,
-        description="Calibration frames (darks, bias, flats) shot more than this "
-        "many days before N.I.N.A.'s current time are not attributed to the plan.",
+        description="Calibration frames (darks, bias, flats) shot before the "
+        "plan's light session start minus this many days are not attributed; "
+        "frames shot at or after the session always count.",
     )
 
     # hardware
