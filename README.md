@@ -48,6 +48,7 @@ A plan is a JSON document that describes one complete imaging session. It encode
 An example json plan:
 
 ```json veil-nebula_widefield-supernova-remnant_20260913T080623.json
+[veil-nebula_widefield-supernova-remnant_20260913T080623.json](veil-nebula_widefield-supernova-remnant_20260913T080623.json)
 {
   "target": "Veil Nebula",
   "intent": "Widefield supernova remnant",
@@ -205,9 +206,9 @@ At session end:
 
 ---
 
-## `nina-plugin.ts` — OpenCode v1 Autonomous Plugin
+## `nina-plugin.ts` — OpenCode v2 Autonomous Plugin
 
-`nina-plugin.ts` is an [opencode](https://opencode.ai) v1 plugin (not compatible with Claude Code or other MCP clients). Once registered in `opencode.json`, it runs as a background server inside opencode and does two things:
+`nina-plugin.ts` is an [opencode](https://opencode.ai) v2 plugin (not compatible with Claude Code or other MCP clients). Once registered in `opencode.json`, it runs as a background server inside opencode and does two things:
 
 1. **Websocket event monitoring** — Connects to the N.I.N.A. event socket (`ws://<host:port>/v2/socket`), subscribes to all events, and forwards them to the active agent as intervention prompts. Events are batched with a 1-second debounce to avoid flooding the conversation.
 
@@ -244,6 +245,7 @@ A markdown file at the project root, **edited by the user at any time** (before 
 Example shapes (illustrative — both are valid):
 
 ```json PLAN.md
+[PLAN.md](PLAN.md)
 # Tonight
 
 - M31          "before the moon comes up"
@@ -271,9 +273,10 @@ Rules:
 
 ---
 
-## `opencode.json` — Opencode v1 Sample Configuration
+## `opencode.json` — Opencode v2 Sample Configuration
 
 ```json .opencode/opencode.json
+[.opencode/opencode.json](.opencode/opencode.json)
 {
   "$schema": "https://opencode.ai/config.json",
   "plugins": [
@@ -307,9 +310,9 @@ Registers the opencode plugin and the `nina_planner` MCP server so both run toge
 
 ## Plugin Options
 
-### `nina-plugin.ts` (opencode v1 plugin)
+### `nina-plugin.ts` (opencode v2 plugin)
 
-Configured under `opencode.json > plugin` as the second array element (see [`opencode.json`](#opencodejson--opencode-v1-sample-configuration)).
+Configured under `opencode.json > plugin` as the second array element (see [`opencode.json`](#opencodejson--opencode-v2-sample-configuration)).
 
 | Option | Type | Default | Description |
 |---|---|---|---|
