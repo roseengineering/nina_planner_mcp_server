@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import math
-from datetime import UTC, date, datetime, timedelta
+from datetime import datetime, timedelta
 from typing import Any
 
 import anyio
@@ -120,21 +120,31 @@ def _quality_accepted(
 def _within_age(
     row: dict[str, Any],
     max_age_days: int | None,
-    reference_date: date | None,
+    reference_now: datetime | None,
 ) -> bool:
+    """True when the frame was shot within ``max_age_days`` of ``reference_now``.
+
+    Both times are on N.I.N.A.'s clock: the frame's own ``ExposureStart`` from
+    ImageMetaData.csv and N.I.N.A.'s current time. Any timezone offset on either
+    value is dropped rather than converted, so the comparison uses N.I.N.A.'s
+    wall-clock time and does not assume the host shares N.I.N.A.'s timezone.
+    """
     if max_age_days is None:
         return True
-    if reference_date is None:
+    if reference_now is None:
         return True
-    raw = row.get("date")
-    if not raw:
+    raw = row.get("exposure_start")
+    if raw is None or raw == "":
         return False
     try:
-        frame_date = datetime.fromisoformat(str(raw)).date()
+        shot_at = datetime.fromisoformat(str(raw).strip())
     except (TypeError, ValueError):
         return False
-    cutoff = reference_date - timedelta(days=max_age_days)
-    return frame_date >= cutoff
+    if shot_at.tzinfo is not None:
+        shot_at = shot_at.replace(tzinfo=None)
+    if reference_now.tzinfo is not None:
+        reference_now = reference_now.replace(tzinfo=None)
+    return reference_now - shot_at <= timedelta(days=max_age_days)
 
 
 def _row_matches(
@@ -149,7 +159,7 @@ def _row_matches(
     min_detected_stars: int | None = None,
     max_guiding_rms_arcsec: float | None = None,
     max_age_days: int | None = None,
-    reference_date: date | None = None,
+    reference_now: datetime | None = None,
 ) -> bool:
     if (row.get("image_type") or row.get("frame_type") or "").upper() != image_type:
         return False
@@ -165,7 +175,7 @@ def _row_matches(
         return _quality_accepted(
             row, max_hfr, min_detected_stars, max_guiding_rms_arcsec
         )
-    return _within_age(row, max_age_days, reference_date)
+    return _within_age(row, max_age_days, reference_now)
 
 
 def _count_matching(
@@ -180,7 +190,7 @@ def _count_matching(
     min_detected_stars: int | None = None,
     max_guiding_rms_arcsec: float | None = None,
     max_age_days: int | None = None,
-    reference_date: date | None = None,
+    reference_now: datetime | None = None,
 ) -> int:
     count = 0
     for row in rows:
@@ -195,7 +205,7 @@ def _count_matching(
             min_detected_stars=min_detected_stars,
             max_guiding_rms_arcsec=max_guiding_rms_arcsec,
             max_age_days=max_age_days,
-            reference_date=reference_date,
+            reference_now=reference_now,
         ):
             count += 1
     return count
@@ -208,7 +218,7 @@ def filter_metadata_rows(
     *,
     pointing_index: int = 1,
     max_age_days: int | None = None,
-    reference_date: date | None = None,
+    reference_now: datetime | None = None,
 ) -> list[dict[str, Any]]:
     """Rows attributed to `plan` for `image_type`.
 
@@ -242,7 +252,7 @@ def filter_metadata_rows(
                 filter_name=filter_name,
                 exposure=exposure,
                 max_age_days=max_age_days,
-                reference_date=reference_date,
+                reference_now=reference_now,
             ):
                 out.append(row)
                 break
@@ -257,8 +267,10 @@ def plan_progress(
     max_hfr: float | None = None,
     min_detected_stars: int | None = None,
     max_guiding_rms_arcsec: float | None = None,
+    reference_now: datetime | None = None,
 ) -> dict[str, list[dict[str, Any]]]:
-    reference_date = datetime.now(UTC).date()
+    if reference_now is None:
+        reference_now = datetime.now()
 
     def group(image_type: str, groups: list[Any]) -> list[dict[str, Any]]:
         out: list[dict[str, Any]] = []
@@ -278,7 +290,7 @@ def plan_progress(
                 min_detected_stars=min_detected_stars,
                 max_guiding_rms_arcsec=max_guiding_rms_arcsec,
                 max_age_days=plan.calibration_max_age_days,
-                reference_date=reference_date,
+                reference_now=reference_now,
             )
             out.append(
                 {

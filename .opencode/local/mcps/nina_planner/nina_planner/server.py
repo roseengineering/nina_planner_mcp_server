@@ -269,6 +269,24 @@ async def _read_metadata(image_type: str | None = None) -> list[dict[str, Any]]:
     return rows
 
 
+async def _reference_now() -> datetime:
+    """N.I.N.A.'s current time as a naive local datetime.
+
+    Calibration age is measured against N.I.N.A.'s own clock so the window
+    tracks the observation session, including simulated time. Falls back to the
+    host's local clock when N.I.N.A. is unreachable, keeping metadata-only
+    queries working.
+    """
+    try:
+        clock = await get_nina_time()
+        # Drop the UTC offset but keep the wall-clock fields: N.I.N.A.'s
+        # reported local time is what the CSV ExposureStart column records, so
+        # this matches without converting through the host's timezone.
+        return datetime.fromisoformat(clock["nina_time"]).replace(tzinfo=None)
+    except Exception:
+        return datetime.now().replace(microsecond=0)
+
+
 ### mcp tools
 
 
@@ -515,7 +533,7 @@ async def get_imaging_metadata(
     pointing_index: int = 1,
     image_type: str = "light",
 ) -> dict[str, Any]:
-    """Returns imaging metadata for a plan and one of its pointings, parsed from the ImageMetaData.csv files in the frame folders (LIGHT, DARK, BIAS, FLAT, etc.) of the mounted N.I.N.A imaging directory. The plan file scopes the result: light frames are attributed to the plan via the `{base_plan_id}-{pointing_index}` plan id embedded in the recorded file path (no target-name fallback); dark/bias/flat frames are matched by image type/filter/exposure and must fall within the plan's `calibration_max_age_days` window of today (UTC). Returns a wide table with one row per exposure, each carrying the frame identity fields (file_path, date, exposure_number, exposure_start, duration, filter_name) plus its metrics as columns, namespaced by group (quality.hfr, guiding.rms, background.adu_mean, pointing.airmass, ...). Timestamps are normalized to milliseconds-precision UTC ISO-8601 with a `Z` suffix (e.g. 2026-09-22T02:16:25.123Z). Per-exposure weather samples from `WeatherData.csv` are joined onto the same row (weather.temperature, humidity, cloud_cover, ...) by exposure number and normalized UTC exposure start. Dead columns are dropped dynamically: columns constant across the returned frames are listed once under summary.constants, and columns with no real values (ASCOM NaN/-1, empty, 'n/a', and the 0 sentinel NINA writes for unmeasured quality/guiding/CCD metrics) are listed under summary.unpopulated. Defaults to lights frames for star-quality checks; pass another image type (light, dark, bias, flat — case-insensitive)."""
+    """Returns imaging metadata for a plan and one of its pointings, parsed from the ImageMetaData.csv files in the frame folders (LIGHT, DARK, BIAS, FLAT, etc.) of the mounted N.I.N.A imaging directory. The plan file scopes the result: light frames are attributed to the plan via the `{base_plan_id}-{pointing_index}` plan id embedded in the recorded file path (no target-name fallback); dark/bias/flat frames are matched by image type/filter/exposure and must fall within the plan's `calibration_max_age_days` window ending at N.I.N.A.'s current time. Returns a wide table with one row per exposure, each carrying the frame identity fields (file_path, exposure_number, exposure_start, duration, filter_name) plus its metrics as columns, namespaced by group (quality.hfr, guiding.rms, background.adu_mean, pointing.airmass, ...). Timestamps are normalized to milliseconds-precision UTC ISO-8601 with a `Z` suffix (e.g. 2026-09-22T02:16:25.123Z). Per-exposure weather samples from `WeatherData.csv` are joined onto the same row (weather.temperature, humidity, cloud_cover, ...) by exposure number and normalized UTC exposure start. Dead columns are dropped dynamically: columns constant across the returned frames are listed once under summary.constants, and columns with no real values (ASCOM NaN/-1, empty, 'n/a', and the 0 sentinel NINA writes for unmeasured quality/guiding/CCD metrics) are listed under summary.unpopulated. Defaults to lights frames for star-quality checks; pass another image type (light, dark, bias, flat — case-insensitive)."""
     root = await _resolve_imaging_root()
     plan = await _load_plan(file_path)
     _check_pointing_index(plan, pointing_index)
@@ -526,7 +544,7 @@ async def get_imaging_metadata(
         image_type,
         pointing_index=pointing_index,
         max_age_days=plan.calibration_max_age_days,
-        reference_date=datetime.now(UTC).date(),
+        reference_now=await _reference_now(),
     )
     weather = read_weather_csv(root=root)
     res = widen_imaging_metadata(rows, weather_rows=weather)
@@ -603,9 +621,10 @@ async def get_plan_progress(
     min_detected_stars: int | None = None,
     max_guiding_rms_arcsec: float | None = None,
 ) -> dict[str, Any]:
-    """Returns per-frame-type acquisition progress for every pointing of an observation-plan JSON file: for each exposure group, the total_count from the plan, the acquired_count attributed to that plan/pointing from the imaging metadata (ImageMetaData.csv + AcquisitionDetails.csv), and the remaining_count. Lights are attributed via the `{base_plan_id}-{pointing_index}` plan id embedded in the recorded file path (no target-name fallback); flats/darks/bias are matched by image type, filter, and exposure and must fall within the plan's `calibration_max_age_days` window of today (UTC). Pass max_hfr and/or min_detected_stars to exclude light frames that fail quality thresholds (frames missing the quality fields are excluded when a threshold is set). Use this before run_plan to decide what still needs acquiring. Returns `complete` (all panes done) plus a `pointings` list of per-pane progress and per-pane `complete`, so a worker can acquire panes sequentially (finish pane N, then run pane N+1)."""
+    """Returns per-frame-type acquisition progress for every pointing of an observation-plan JSON file: for each exposure group, the total_count from the plan, the acquired_count attributed to that plan/pointing from the imaging metadata (ImageMetaData.csv + AcquisitionDetails.csv), and the remaining_count. Lights are attributed via the `{base_plan_id}-{pointing_index}` plan id embedded in the recorded file path (no target-name fallback); flats/darks/bias are matched by image type, filter, and exposure and must fall within the plan's `calibration_max_age_days` window ending at N.I.N.A.'s current time. Pass max_hfr and/or min_detected_stars to exclude light frames that fail quality thresholds (frames missing the quality fields are excluded when a threshold is set). Use this before run_plan to decide what still needs acquiring. Returns `complete` (all panes done) plus a `pointings` list of per-pane progress and per-pane `complete`, so a worker can acquire panes sequentially (finish pane N, then run pane N+1)."""
     plan = await _load_plan(file_path)
     rows = await _read_metadata()
+    reference_now = await _reference_now()
 
     def progress_for(index: int) -> dict[str, list[dict[str, Any]]]:
         return plan_progress(
@@ -615,6 +634,7 @@ async def get_plan_progress(
             max_hfr=max_hfr,
             min_detected_stars=min_detected_stars,
             max_guiding_rms_arcsec=max_guiding_rms_arcsec,
+            reference_now=reference_now,
         )
 
     entries: list[dict[str, Any]] = []
@@ -693,6 +713,7 @@ async def run_plan(
             max_hfr=max_hfr,
             min_detected_stars=min_detected_stars,
             max_guiding_rms_arcsec=max_guiding_rms_arcsec,
+            reference_now=await _reference_now(),
         )
         items = progress[group_key]
         if all(item["remaining_count"] == 0 for item in items):
@@ -1110,21 +1131,26 @@ async def get_nina_time() -> dict[str, Any]:
     Use this to detect whether NINA is running on simulated time (``simulated=True``)
     or real time (``simulated=False`` and ``delta_seconds`` ≈ 0).
 
-    Timestamps are returned as naive ISO 8601 local datetimes (no timezone
-    suffix); ``delta_seconds`` is computed in UTC after attaching the host's
-    local timezone to whichever side is naive.
+    ``nina_time`` and ``host_time`` are timezone-aware ISO 8601 datetimes:
+    ``nina_time`` keeps the UTC offset N.I.N.A.'s Advanced API reports (e.g.
+    ``2026-10-05T12:19:46-05:00``), and ``host_time`` carries the host's local
+    offset. A naive ``/time`` value is interpreted as host-local so both fields
+    are always offset-aware. ``delta_seconds`` is the instant difference
+    ``nina_time − host_time``.
     """
     timestamp = await _api_get("/time")
     nina_dt = datetime.fromisoformat(timestamp)
     host_dt = datetime.now().astimezone()
-    if nina_dt.tzinfo is None:
-        nina_utc = nina_dt.replace(tzinfo=host_dt.tzinfo).astimezone(UTC)
-    else:
-        nina_utc = nina_dt.astimezone(UTC)
+    # Emit an offset-aware value either way: keep N.I.N.A.'s own offset when the
+    # API supplies one, otherwise treat the naive value as host-local.
+    nina_aware = (
+        nina_dt.replace(tzinfo=host_dt.tzinfo) if nina_dt.tzinfo is None else nina_dt
+    )
+    nina_utc = nina_aware.astimezone(UTC)
     host_utc = host_dt.astimezone(UTC)
     delta_seconds = (nina_utc - host_utc).total_seconds()
     return {
-        "nina_time": nina_dt.replace(microsecond=0).isoformat(),
+        "nina_time": nina_aware.replace(microsecond=0).isoformat(),
         "host_time": host_dt.replace(microsecond=0).isoformat(),
         "delta_seconds": delta_seconds,
         "simulated": abs(delta_seconds) > DRIFT_TOLERANCE_SECONDS,

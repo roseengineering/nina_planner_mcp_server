@@ -98,9 +98,9 @@ class ObservationPlan(BaseModel):
     )
     calibration_max_age_days: int = Field(
         default=7,
-        ge=0,
-        description="Calibration frames (darks, bias, flats) older than this "
-        "many days are not attributed to the plan.",
+        ge=1,
+        description="Calibration frames (darks, bias, flats) shot more than this "
+        "many days before N.I.N.A.'s current time are not attributed to the plan.",
     )
 
     # hardware

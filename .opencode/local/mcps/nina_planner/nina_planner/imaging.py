@@ -3,15 +3,12 @@ from __future__ import annotations
 import csv
 import math
 import os
-import re
 import sys
 from datetime import UTC, datetime
 from pathlib import Path, PureWindowsPath
 from typing import Any
 
 from .nina_utils import to_snake
-
-_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 
 
 def windows_to_local(windows_path: str, drive_mount: str | None = None) -> Path:
@@ -29,13 +26,6 @@ def windows_to_local(windows_path: str, drive_mount: str | None = None) -> Path:
 def _read_csv(path: Path) -> list[dict[str, Any]]:
     with open(path, "r", encoding="utf-8-sig", newline="") as f:
         return [{to_snake(k): v for k, v in row.items()} for row in csv.DictReader(f)]
-
-
-def _find_date_ancestor(path: Path) -> str | None:
-    for parent in path.parents:
-        if _DATE_RE.match(parent.name):
-            return parent.name
-    return None
 
 
 def _resolve_image_path(
@@ -71,9 +61,8 @@ def read_imaging_csv(root: Path, image_type: str) -> list[dict[str, Any]]:
     image_type_upper = image_type.upper()
     for meta_path in root.rglob("ImageMetaData.csv"):
         csv_dir = meta_path.parent
-        date_dir = csv_dir.parent
-        bases = (csv_dir, date_dir, root)
-        date = _find_date_ancestor(meta_path)
+        parent_dir = csv_dir.parent
+        bases = (csv_dir, parent_dir, root)
         for row in _read_csv(meta_path):
             row_image_type = (row.get("image_type") or "").upper()
             if row_image_type != image_type_upper:
@@ -85,9 +74,7 @@ def read_imaging_csv(root: Path, image_type: str) -> list[dict[str, Any]]:
             if resolved:
                 row["file_path"] = resolved
             enriched = dict(row)
-            enriched.update(
-                {"date": date, "frame_type": row_image_type, "source": "image_metadata"}
-            )
+            enriched.update({"frame_type": row_image_type, "source": "image_metadata"})
             rows.append(enriched)
     return rows
 
@@ -95,18 +82,14 @@ def read_imaging_csv(root: Path, image_type: str) -> list[dict[str, Any]]:
 def read_weather_csv(root: Path) -> list[dict[str, Any]]:
     """Read per-exposure weather samples from every WeatherData.csv in ``root``.
 
-    Mirrors ``read_imaging_csv``: keys are snake-cased and each row is stamped
-    with the ``date`` of its enclosing date folder. Rows share the exposure
+    Mirrors ``read_imaging_csv``: keys are snake-cased. Rows share the exposure
     timestamps used by ``ImageMetaData.csv`` so they can be joined to frames.
     """
     rows: list[dict[str, Any]] = []
     for meta_path in root.rglob("WeatherData.csv"):
-        date = _find_date_ancestor(meta_path)
         for row in _read_csv(meta_path):
             enriched = dict(row)
-            enriched.update(
-                {"date": date, "frame_type": "WEATHER", "source": "weather"}
-            )
+            enriched.update({"frame_type": "WEATHER", "source": "weather"})
             rows.append(enriched)
     return rows
 
@@ -115,7 +98,6 @@ def read_weather_csv(root: Path) -> list[dict[str, Any]]:
 # their raw CSV names and anchor the metrics in that row).
 _ID_VARS = (
     "file_path",
-    "date",
     "exposure_number",
     "exposure_start_utc",
     "duration",
@@ -326,7 +308,7 @@ def widen_imaging_metadata(
 ) -> dict[str, Any]:
     """Reshape wide metadata rows into a wide table with one row per exposure.
 
-    Identity fields (file_path, date, exposure_number, exposure_start,
+    Identity fields (file_path, exposure_number, exposure_start,
     duration, filter_name, ...) keep their names; exposure_start is the
     ExposureStartUTC value normalized to milliseconds-precision UTC ISO-8601
     with a Z suffix, and the naive local ExposureStart column is dropped. Metric
@@ -414,7 +396,6 @@ def widen_imaging_metadata(
     summary = {
         "count": len(rows),
         "by_filter": _counts(rows, "filter_name"),
-        "by_date": _counts(rows, "date"),
     }
     if constants:
         summary["constants"] = constants

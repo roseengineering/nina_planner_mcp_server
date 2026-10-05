@@ -40,13 +40,13 @@ class ReadImagingCsvTest(unittest.TestCase):
             header = ["ImageType", "Duration", "FilterName"]
         _write_csv(self.light_dir / "ImageMetaData.csv", header, rows)
 
-    def test_returns_rows_with_date_and_frametype(self):
+    def test_returns_rows_with_frametype(self):
         self._write_images([["LIGHT", "60.0", "LP"]])
 
         rows = read_imaging_csv(root=self.root, image_type="light")
 
         self.assertEqual(len(rows), 1)
-        self.assertEqual(rows[0]["date"], "2026-09-21")
+        self.assertNotIn("date", rows[0])
         self.assertEqual(rows[0]["frame_type"], "LIGHT")
         self.assertEqual(rows[0]["duration"], "60.0")
         self.assertEqual(rows[0]["filter_name"], "LP")
@@ -96,13 +96,13 @@ class ReadImagingCsvTest(unittest.TestCase):
         self.assertEqual(len(rows), 1)
         self.assertEqual(rows[0]["duration"], "60.0")
 
-    def test_no_date_filter(self):
+    def test_rows_have_no_folder_date(self):
         self._write_images([["LIGHT", "60.0", "LP"]])
 
         rows = read_imaging_csv(root=self.root, image_type="light")
 
         self.assertEqual(len(rows), 1)
-        self.assertEqual(rows[0]["date"], "2026-09-21")
+        self.assertNotIn("date", rows[0])
 
     def test_relative_path_resolved_against_csv_sibling(self):
         # Regression: a relative FilePath like "foo.fits" previously checked
@@ -388,7 +388,7 @@ class MeltImagingMetadataTest(unittest.TestCase):
         res = widen_imaging_metadata(self._rows())
         self.assertEqual(res["summary"]["count"], 2)
         self.assertEqual(res["summary"]["by_filter"], {"Clear": 2})
-        self.assertEqual(res["summary"]["by_date"], {"2026-09-21": 2})
+        self.assertNotIn("by_date", res["summary"])
 
     def test_quality_metric_surfaces_when_populated(self):
         rows = self._rows()
@@ -414,7 +414,7 @@ class ReadWeatherCsvTest(unittest.TestCase):
     def tearDown(self):
         self._tmp.cleanup()
 
-    def test_returns_rows_with_date_and_snake_cased_keys(self):
+    def test_returns_rows_with_snake_cased_keys(self):
         _write_csv(
             self.date_dir / "WeatherData.csv",
             [
@@ -430,7 +430,7 @@ class ReadWeatherCsvTest(unittest.TestCase):
         rows = read_weather_csv(root=self.root)
 
         self.assertEqual(len(rows), 1)
-        self.assertEqual(rows[0]["date"], "2026-09-21")
+        self.assertNotIn("date", rows[0])
         self.assertEqual(rows[0]["exposure_number"], "0")
         self.assertEqual(rows[0]["temperature"], "24.5")
         self.assertEqual(rows[0]["humidity"], "73")
@@ -679,15 +679,6 @@ class ImagingDefensivePathsTest(unittest.TestCase):
         with patch("nina_planner.imaging.sys.platform", "win32"):
             result = windows_to_local(r"D:\apps\NINA\foo.fits")
         self.assertEqual(str(result), r"D:\apps\NINA\foo.fits")
-
-    # ---- _find_date_ancestor (line 38): no parent matches date regex ----
-
-    def test_find_date_ancestor_returns_none_when_no_parent_matches(self):
-        from nina_planner.imaging import _find_date_ancestor
-
-        # Path with parents that don't match YYYY-MM-DD.
-        path = Path("/tmp/random/folder/file.fits")
-        self.assertIsNone(_find_date_ancestor(path))
 
     # ---- _resolve_image_path (line 46): file_path None or empty ----
 

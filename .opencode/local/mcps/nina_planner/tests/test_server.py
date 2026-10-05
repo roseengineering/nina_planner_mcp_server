@@ -1549,6 +1549,9 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn("host_time", result)
         self.assertIn("delta_seconds", result)
         self.assertIn("simulated", result)
+        # A naive /time is normalized to an offset-aware value.
+        self.assertIsNotNone(datetime.fromisoformat(result["nina_time"]).tzinfo)
+        self.assertIsNotNone(datetime.fromisoformat(result["host_time"]).tzinfo)
 
     async def test_get_nina_time_with_offset(self):
         from nina_planner.server import get_nina_time
@@ -1559,6 +1562,29 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
         ):
             result = await get_nina_time()
         self.assertIn("delta_seconds", result)
+        # N.I.N.A.'s own offset is preserved.
+        self.assertEqual(result["nina_time"], "2026-09-22T03:00:00-05:00")
+
+    async def test_reference_now_drops_offset_keeping_wall_clock(self):
+        """N.I.N.A.'s offset is dropped, not converted through the host tz."""
+        from nina_planner.server import _reference_now
+
+        clock = {"nina_time": "2026-09-22T03:00:00-05:00"}
+        with patch("nina_planner.server.get_nina_time", AsyncMock(return_value=clock)):
+            ref = await _reference_now()
+        self.assertEqual(ref, datetime(2026, 9, 22, 3, 0, 0))
+        self.assertIsNone(ref.tzinfo)
+
+    async def test_reference_now_falls_back_to_host_clock(self):
+        from nina_planner.server import _reference_now
+
+        with patch(
+            "nina_planner.server.get_nina_time",
+            AsyncMock(side_effect=RuntimeError("NINA down")),
+        ):
+            ref = await _reference_now()
+        self.assertIsNone(ref.tzinfo)
+        self.assertLess(abs((datetime.now() - ref).total_seconds()), 5)
 
     async def test_get_nina_status_running_with_api(self):
         """API responsive => running, with the clock populated."""
