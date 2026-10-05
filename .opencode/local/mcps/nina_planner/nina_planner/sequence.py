@@ -662,8 +662,8 @@ def sequence_deepsky(
     prefix = f"{plan.target} - {pointing.label}" if pointing.label else plan.target
     target = f"{prefix} {plan.attribution_token(pointing_index)}"
     posang = 0 if pointing.position_angle_deg is None else pointing.position_angle_deg
-    starting = f"ACQUISITION-STARTING: begun acquiring target: {target}"
-    finished = f"ACQUISITION-FINISHED: done acquiring target: {target}"
+    starting = f"ACQUISITION-STARTING: {target}"
+    finished = f"ACQUISITION-FINISHED: {target}"
     return container_deepsky(
         name="Deep Sky Target Sequence",
         target=target,
