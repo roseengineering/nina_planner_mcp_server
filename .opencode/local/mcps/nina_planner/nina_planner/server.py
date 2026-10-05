@@ -2,6 +2,7 @@ import json
 import os
 import re
 import subprocess
+import time
 from collections.abc import Awaitable, Callable
 from collections.abc import Set as AbstractSet
 from datetime import UTC, datetime, timedelta
@@ -103,6 +104,85 @@ async def _api_post(path: str, body: Any) -> dict[str, Any]:
         if not data.get("Success", False):
             raise RuntimeError(data.get("Error", "API request failed"))
         return cast(dict[str, Any], data.get("Response", {}))
+
+
+def _sequence_running(state: Any) -> bool:
+    """True when any node in a ``/sequence/json`` payload reports ``RUNNING``."""
+    if isinstance(state, dict):
+        if state.get("Status") == "RUNNING":
+            return True
+        return any(_sequence_running(value) for value in state.values())
+    if isinstance(state, list):
+        return any(_sequence_running(item) for item in state)
+    return False
+
+
+async def _sequence_is_running() -> bool:
+    return _sequence_running(await _api_get("/sequence/json"))
+
+
+async def _stop_running_sequence_and_wait(timeout: float = 15.0) -> bool:
+    """Stop the running sequence (if any) and wait until NINA reports it stopped.
+
+    ``GET /sequence/stop`` acknowledges before the sequencer has finished
+    unwinding, so a following ``POST /sequence/load`` can race it and be
+    rejected with "Sequence is already running". This blocks until every node
+    reports a non-running status. Returns True when a stop was needed.
+    """
+    if not await _sequence_is_running():
+        return False
+    await _api_get("/sequence/stop")
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if not await _sequence_is_running():
+            return True
+        await anyio.sleep(0.2)
+    raise RuntimeError(f"NINA sequence did not stop within {timeout:.0f}s")
+
+
+async def _assert_sequence_idle() -> None:
+    """Raise a clear, actionable error if a sequence is currently running.
+
+    Loading a new sequence over a running one is refused on purpose: the agent
+    must decide to stop the running sequence itself via ``stop_sequence``.
+    """
+    if await _sequence_is_running():
+        raise RuntimeError(
+            "A sequence is already running. Call stop_sequence() and wait for it "
+            "to stop before loading a new sequence."
+        )
+
+
+async def _load_sequence_payload(seq: Any, *, timeout: float = 10.0) -> None:
+    """Load ``seq``, refusing if a sequence is already running.
+
+    A running sequence is never stopped on the caller's behalf — the agent must
+    call ``stop_sequence`` first. Because ``stop_sequence`` waits until the
+    sequencer has stopped, the short retry below only absorbs NINA's internal
+    settle lag; it does not stop anything.
+    """
+    await _assert_sequence_idle()
+    deadline = time.monotonic() + timeout
+    delay = 0.2
+    while True:
+        try:
+            await _api_post("/sequence/load", seq)
+            return
+        except RuntimeError as e:
+            if "already running" not in str(e).lower():
+                raise
+            if await _sequence_is_running():
+                raise RuntimeError(
+                    "A sequence is already running. Call stop_sequence() and wait "
+                    "for it to stop before loading a new sequence."
+                ) from e
+            if time.monotonic() >= deadline:
+                raise RuntimeError(
+                    "NINA still reports a running sequence; call stop_sequence() "
+                    "and retry."
+                ) from e
+            await anyio.sleep(delay)
+            delay = min(delay * 2, 1.0)
 
 
 async def _nina_api_responsive() -> bool:
@@ -687,7 +767,7 @@ async def run_plan(
     min_detected_stars: int | None = None,
     max_guiding_rms_arcsec: float | None = None,
 ) -> str:
-    """Loads an acquisition sequence with safety guardrails from an observation-plan JSON file. Select the frame type: light, dark, bias, dawn_flat, or dusk_flat. `pointing_index` (1-based, default 1) selects which pointing of the plan to load — the lights target name embeds the `({base_plan_id}-{pointing_index})` token so each pointing's frames are attributed independently. Light loads require `$$TARGETNAME$$` in the active profile's FilePattern for attribution. In the default `remaining` mode the sequence only acquires frames still needed (total minus frames already attributed to this plan/pointing in the imaging metadata); if nothing remains it reports the plan as complete and loads nothing. max_hfr and/or min_detected_stars exclude light frames failing quality thresholds from the acquired count. Pass `mode="full"` to acquire the entire plan again. By default the loaded sequence is started immediately; pass `load_only=True` to load without starting (e.g. to start it manually from the NINA GUI)."""
+    """Loads an acquisition sequence with safety guardrails from an observation-plan JSON file. Select the frame type: light, dark, bias, dawn_flat, or dusk_flat. `pointing_index` (1-based, default 1) selects which pointing of the plan to load — the lights target name embeds the `({base_plan_id}-{pointing_index})` token so each pointing's frames are attributed independently. Light loads require `$$TARGETNAME$$` in the active profile's FilePattern for attribution. In the default `remaining` mode the sequence only acquires frames still needed (total minus frames already attributed to this plan/pointing in the imaging metadata); if nothing remains it reports the plan as complete and loads nothing. max_hfr and/or min_detected_stars exclude light frames failing quality thresholds from the acquired count. Pass `mode="full"` to acquire the entire plan again. By default the loaded sequence is started immediately; pass `load_only=True` to load without starting (e.g. to start it manually from the NINA GUI). Refuses to load while a sequence is already running — call stop_sequence() first."""
     plan = await _load_plan(file_path)
     profile = await get_site_profile()
     await _validate_filters(plan, profile)
@@ -738,7 +818,9 @@ async def run_plan(
         )
 
     if frame_type == "light":
-        seq = build_sequence_lights(plan, equipment, profile, pointing_index=pointing_index)
+        seq = build_sequence_lights(
+            plan, equipment, profile, pointing_index=pointing_index
+        )
     elif frame_type == "dark":
         seq = build_sequence_darks(plan, equipment)
     elif frame_type == "bias":
@@ -749,7 +831,7 @@ async def run_plan(
         seq = build_sequence_flats(plan, equipment, profile, dusk=True)
     else:
         raise ValueError(f"Unsupported frame type: {frame_type}")
-    await _api_post("/sequence/load", seq)
+    await _load_sequence_payload(seq)
     if load_only:
         return f"`{frame_type}` sequence loaded."
     else:
@@ -759,28 +841,28 @@ async def run_plan(
 
 @mcp.tool()
 async def stow_telescope() -> str:
-    """Loads and starts the non-acquisition teardown sequence, safely stowing the telescope (park or home, per mount capability) while NINA's sequence-level safety guardrails remain active. Use for end-of-observation close-down — when you are done observing and want to shut down the scope — or before leaving the observatory unattended. Allow it to complete without interruption. This is separate from stop_sequence, which halts the current sequence but does not stow the scope."""
+    """Loads and starts the non-acquisition teardown sequence, safely stowing the telescope (park or home, per mount capability) while NINA's sequence-level safety guardrails remain active. Use for end-of-observation close-down — when you are done observing and want to shut down the scope — or before leaving the observatory unattended. Allow it to complete without interruption. This is separate from stop_sequence, which halts the current sequence but does not stow the scope. Refuses to load while a sequence is already running — call stop_sequence() first."""
     equipment = await get_site_equipment_status()
     seq = build_sequence_teardown(equipment)
-    await _api_post("/sequence/load", seq)
+    await _load_sequence_payload(seq)
     await _api_get("/sequence/start?skipValidation=true")
     return "Teardown sequence started."
 
 
 @mcp.tool()
 async def enter_safety_standby() -> str:
-    """Loads and starts a non-acquisition standby sequence that keeps NINA sequence-level safety and stow guardrails active while the observatory is idle. Stop it before loading an acquisition or teardown sequence. Use whenever equipment is deployed and no other sequence is running."""
+    """Loads and starts a non-acquisition standby sequence that keeps NINA sequence-level safety and stow guardrails active while the observatory is idle. Stop it before loading an acquisition or teardown sequence. Use whenever equipment is deployed and no other sequence is running. Refuses to load while a sequence is already running — call stop_sequence() first."""
     equipment = await get_site_equipment_status()
     seq = build_sequence_standby(equipment)
-    await _api_post("/sequence/load", seq)
+    await _load_sequence_payload(seq)
     await _api_get("/sequence/start?skipValidation=true")
     return "Safety standby sequence started."
 
 
 @mcp.tool()
 async def stop_sequence() -> str:
-    """Stops the currently running NINA sequence immediately, leaving the telescope where it currently is — it does not stow the scope. Use for an urgent halt, to interrupt a stuck/looping sequence, or when the running sequence isn't what you wanted. If you then want to park/home the telescope, run stow_telescope separately. Note that run_plan and the teardown/standby entry tools already stop any running sequence before loading, so an explicit stop is only needed when you want to halt without loading anything new. Avoid stopping an in-progress teardown during the stow maneuver unless safety requires it, since interrupting mid-slew can leave the scope in an unsafe position. Call get_sequence_state afterward to confirm the sequence has stopped."""
-    await _api_get("/sequence/stop")
+    """Stops the currently running NINA sequence immediately, leaving the telescope where it currently is — it does not stow the scope. Use for an urgent halt, to interrupt a stuck/looping sequence, or when the running sequence isn't what you wanted. If you then want to park/home the telescope, run stow_telescope separately. The load tools (run_plan, stow_telescope, enter_safety_standby) refuse to load while a sequence is running, so call this first and wait — it returns once NINA reports the sequencer has actually stopped. Avoid stopping an in-progress teardown during the stow maneuver unless safety requires it, since interrupting mid-slew can leave the scope in an unsafe position."""
+    await _stop_running_sequence_and_wait()
     return "Sequence stopped."
 
 

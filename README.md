@@ -27,8 +27,8 @@
 
 | Tool | Purpose |
 |---|---|
-| `run_plan(file_path, frame_type, pointing_index=1, mode="remaining", load_only=False, max_hfr?, min_detected_stars?, max_guiding_rms_arcsec?)` | Load a plan file as a sequence (light, dark, bias, dawn_flat, or dusk_flat) and start it. `pointing_index` (1-based, default 1) selects which pointing of the plan to load — lights embed `{base_plan_id}-{pointing_index}` in the NINA target name so each pointing's frames are attributed independently. Default `remaining` mode acquires only frames not yet attributed to that pointing; `mode="full"` acquires the whole plan. Quality thresholds exclude light frames that fail them from the acquired count. Reports "pointing complete" and loads nothing when nothing remains. Pass `load_only=True` to load the sequence without starting it. |
-| `stop_sequence()` | Stop any running sequence. |
+| `run_plan(file_path, frame_type, pointing_index=1, mode="remaining", load_only=False, max_hfr?, min_detected_stars?, max_guiding_rms_arcsec?)` | Load a plan file as a sequence (light, dark, bias, dawn_flat, or dusk_flat) and start it. `pointing_index` (1-based, default 1) selects which pointing of the plan to load — lights embed `{base_plan_id}-{pointing_index}` in the NINA target name so each pointing's frames are attributed independently. Default `remaining` mode acquires only frames not yet attributed to that pointing; `mode="full"` acquires the whole plan. Quality thresholds exclude light frames that fail them from the acquired count. Reports "pointing complete" and loads nothing when nothing remains. Pass `load_only=True` to load the sequence without starting it. Refuses to load while a sequence is already running — call `stop_sequence()` first. |
+| `stop_sequence()` | Stop any running sequence and wait until NINA reports it has actually stopped. |
 | `enter_safety_standby()` | Start a non-imaging sequence with safety guardrails. |
 | `stow_telescope()` | Start a teardown sequence, parking scope. |
 | `get_sequence_state()` | Return the loaded sequence structure and the current status of its containers, instructions, conditions, and triggers (whether loaded, running, completed, failed, or waiting). |
@@ -159,7 +159,7 @@ Use `write_plan_file` with the plan object. This validates the filter names agai
 
 ### 2. Load and run each calibration type, including lights
 
-Each call to `run_plan` builds the appropriate container (lights, darks, flats, or bias), posts it to N.I.N.A., and starts it. Use `load_only=True` if you only want to load the sequence (e.g. to start it manually from the NINA GUI).
+Each call to `run_plan` builds the appropriate container (lights, darks, flats, or bias), posts it to N.I.N.A., and starts it. Use `load_only=True` if you only want to load the sequence (e.g. to start it manually from the NINA GUI). N.I.N.A. rejects a load while a sequence is running, so stop any running sequence first with `stop_sequence()` (which blocks until it has actually stopped); `run_plan` returns a clear error telling you to do so otherwise.
 
 **Example order:**
 

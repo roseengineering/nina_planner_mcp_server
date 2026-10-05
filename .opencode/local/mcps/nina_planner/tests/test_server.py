@@ -1394,7 +1394,8 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn("`light` sequence started", result)
         api_post.assert_awaited_once()
         self.assertEqual(api_post.await_args.args[0], "/sequence/load")
-        api_get.assert_awaited_once_with("/sequence/start?skipValidation=true")
+        api_get.assert_any_await("/sequence/json")
+        api_get.assert_any_await("/sequence/start?skipValidation=true")
 
     async def test_run_plan_load_only(self):
         from unittest.mock import MagicMock as _MM
@@ -1451,7 +1452,9 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result, "`light` sequence loaded.")
         api_post.assert_awaited_once()
         self.assertEqual(api_post.await_args.args[0], "/sequence/load")
-        api_get.assert_not_awaited()
+        # The load helper checks that nothing is running before loading, but
+        # does not start the sequence in load-only mode.
+        api_get.assert_awaited_once_with("/sequence/json")
 
     async def test_stow_telescope_loads_and_starts(self):
         from nina_planner.server import stow_telescope
@@ -1484,12 +1487,74 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
     async def test_stop_sequence(self):
         from nina_planner.server import stop_sequence
 
-        with patch(
-            "nina_planner.server._api_get",
-            AsyncMock(return_value={}),
-        ):
+        calls: list[str] = []
+
+        async def fake_get(path: str):
+            calls.append(path)
+            if path == "/sequence/stop":
+                return "Sequence stopped"
+            # Report running on the first poll, then stopped.
+            if calls.count("/sequence/json") == 1:
+                return [{"Name": "Root", "Status": "RUNNING"}]
+            return [{"Name": "Root", "Status": "CREATED"}]
+
+        with patch("nina_planner.server._api_get", side_effect=fake_get):
             result = await stop_sequence()
         self.assertEqual(result, "Sequence stopped.")
+        self.assertIn("/sequence/stop", calls)
+        self.assertGreaterEqual(calls.count("/sequence/json"), 2)
+
+    async def test_stop_sequence_when_not_running_does_not_post_stop(self):
+        from nina_planner.server import stop_sequence
+
+        calls: list[str] = []
+
+        async def fake_get(path: str):
+            calls.append(path)
+            return [{"Name": "Root", "Status": "CREATED"}]
+
+        with patch("nina_planner.server._api_get", side_effect=fake_get):
+            result = await stop_sequence()
+        self.assertEqual(result, "Sequence stopped.")
+        self.assertNotIn("/sequence/stop", calls)
+
+    async def test_run_plan_retries_load_when_already_running(self):
+        from nina_planner.server import _load_sequence_payload
+
+        post_calls = {"n": 0}
+
+        async def fake_post(path: str, body):
+            post_calls["n"] += 1
+            if post_calls["n"] == 1:
+                raise RuntimeError("Sequence is already running")
+            return {}
+
+        async def fake_get(path: str):
+            return [{"Name": "Root", "Status": "CREATED"}]
+
+        with (
+            patch("nina_planner.server._api_post", side_effect=fake_post),
+            patch("nina_planner.server._api_get", side_effect=fake_get),
+            patch("nina_planner.server.anyio.sleep", AsyncMock()),
+        ):
+            await _load_sequence_payload({"x": 1})
+        self.assertEqual(post_calls["n"], 2)
+
+    async def test_load_sequence_refuses_when_running(self):
+        from nina_planner.server import _load_sequence_payload
+
+        api_post = AsyncMock(return_value={})
+
+        async def fake_get(path: str):
+            return [{"Name": "Root", "Status": "RUNNING"}]
+
+        with (
+            patch("nina_planner.server._api_post", api_post),
+            patch("nina_planner.server._api_get", side_effect=fake_get),
+        ):
+            with self.assertRaisesRegex(RuntimeError, "already running"):
+                await _load_sequence_payload({"x": 1})
+        api_post.assert_not_awaited()
 
     async def test_get_sequence_state_returns_json(self):
         from nina_planner.server import get_sequence_state
