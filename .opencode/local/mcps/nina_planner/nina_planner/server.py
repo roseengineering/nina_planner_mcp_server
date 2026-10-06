@@ -1,6 +1,7 @@
 import json
 import os
 import re
+import base64
 import subprocess
 import time
 from collections.abc import Awaitable, Callable
@@ -11,7 +12,7 @@ from typing import Any, Literal, cast
 
 import anyio
 import httpx
-from mcp.server.fastmcp import FastMCP
+from mcp.server.fastmcp import FastMCP, Image
 
 from .imaging import read_imaging_csv, read_weather_csv, widen_imaging_metadata
 from .models.observatory import ObservatoryEquipment
@@ -574,6 +575,14 @@ async def list_site_profiles() -> list[ProfileSummary]:
     ]
     _log_payload("Profiles:", json.dumps([p.model_dump(mode="json") for p in profiles]))
     return profiles
+
+
+@mcp.tool()
+async def screenshot_dashboard() -> Image:
+    await _api_get("/application/switch-tab?tab=imaging")
+    text = await _api_get("/application/screenshot")
+    data = base64.b64decode(text)
+    return Image(data=data, format='png')
 
 
 @mcp.tool()

@@ -47,8 +47,8 @@ A plan is a JSON document that describes one complete imaging session. It encode
 
 An example json plan:
 
+[veil-nebula_widefield-supernova-remnant_20260913T080623.json](./veil-nebula_widefield-supernova-remnant_20260913T080623.json)
 ```json veil-nebula_widefield-supernova-remnant_20260913T080623.json
-[veil-nebula_widefield-supernova-remnant_20260913T080623.json](veil-nebula_widefield-supernova-remnant_20260913T080623.json)
 {
   "target": "Veil Nebula",
   "intent": "Widefield supernova remnant",
@@ -244,8 +244,8 @@ A markdown file at the project root, **edited by the user at any time** (before 
 
 Example shapes (illustrative — both are valid):
 
+[PLAN.md](./PLAN.md)
 ```json PLAN.md
-[PLAN.md](PLAN.md)
 # Tonight
 
 - M31          "before the moon comes up"
@@ -275,8 +275,8 @@ Rules:
 
 ## `opencode.json` — Opencode v2 Sample Configuration
 
+[.opencode/opencode.json](./.opencode/opencode.json)
 ```json .opencode/opencode.json
-[.opencode/opencode.json](.opencode/opencode.json)
 {
   "$schema": "https://opencode.ai/config.json",
   "plugins": [
