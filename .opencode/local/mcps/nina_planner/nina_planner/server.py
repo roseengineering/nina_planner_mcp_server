@@ -38,7 +38,6 @@ from .sequence import (
     build_sequence_darks,
     build_sequence_flats,
     build_sequence_lights,
-    build_sequence_standby,
     build_sequence_teardown,
 )
 from .system_time import (
@@ -875,18 +874,8 @@ async def stow_telescope() -> str:
 
 
 @mcp.tool()
-async def enter_safety_standby() -> str:
-    """Loads and starts a non-acquisition standby sequence that keeps NINA sequence-level safety and stow guardrails active while the observatory is idle. Stop it before loading an acquisition or teardown sequence. Use whenever equipment is deployed and no other sequence is running. Refuses to load while a sequence is already running — call stop_sequence() first."""
-    equipment = await get_site_equipment_status()
-    seq = build_sequence_standby(equipment)
-    await _load_sequence_payload(seq)
-    await _api_get("/sequence/start?skipValidation=true")
-    return "Safety standby sequence started."
-
-
-@mcp.tool()
 async def stop_sequence() -> str:
-    """Stops the currently running NINA sequence immediately, leaving the telescope where it currently is — it does not stow the scope. Use for an urgent halt, to interrupt a stuck/looping sequence, or when the running sequence isn't what you wanted. If you then want to park/home the telescope, run stow_telescope separately. The load tools (run_plan, stow_telescope, enter_safety_standby) refuse to load while a sequence is running, so call this first and wait — it returns once NINA reports the sequencer has actually stopped. Avoid stopping an in-progress teardown during the stow maneuver unless safety requires it, since interrupting mid-slew can leave the scope in an unsafe position."""
+    """Stops the currently running NINA sequence immediately, leaving the telescope where it currently is — it does not stow the scope. Use for an urgent halt, to interrupt a stuck/looping sequence, or when the running sequence isn't what you wanted. If you then want to park/home the telescope, run stow_telescope separately. The load tools (run_plan, stow_telescope) refuse to load while a sequence is running, so call this first and wait — it returns once NINA reports the sequencer has actually stopped. Avoid stopping an in-progress teardown during the stow maneuver unless safety requires it, since interrupting mid-slew can leave the scope in an unsafe position."""
     await _stop_running_sequence_and_wait()
     return "Sequence stopped."
 

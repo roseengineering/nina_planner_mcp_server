@@ -512,7 +512,9 @@ def wait_if_sun_altitude_below(degrees: float) -> dict[str, Any]:
 
 
 def wait_for_time_span(seconds: float) -> dict[str, Any]:
-    return _child("NINA.Sequencer.SequenceItem.Utility.WaitForTimeSpan, NINA.Sequencer") | {
+    return _child(
+        "NINA.Sequencer.SequenceItem.Utility.WaitForTimeSpan, NINA.Sequencer"
+    ) | {
         "Time": seconds,
     }
 
@@ -594,9 +596,9 @@ def loop_for_iterations(count: int) -> dict[str, Any]:
 
 
 def dither_after_exposures(exposures: int) -> dict[str, Any]:
-    return _child("NINA.Sequencer.Trigger.Guider.DitherAfterExposures, NINA.Sequencer") | {
-        "AfterExposures": exposures
-    }
+    return _child(
+        "NINA.Sequencer.Trigger.Guider.DitherAfterExposures, NINA.Sequencer"
+    ) | {"AfterExposures": exposures}
 
 
 def take_exposure(exposure: float, image_type: str, count: int = 0) -> dict[str, Any]:
@@ -609,7 +611,7 @@ def take_exposure(exposure: float, image_type: str, count: int = 0) -> dict[str,
         "Offset": -1,
         "ExposureCount": count,
         "Binning": _child("NINA.Core.Model.Equipment.BinningMode, NINA.Core")
-            | {"X": 1, "Y": 1},
+        | {"X": 1, "Y": 1},
     }
 
 
@@ -628,8 +630,8 @@ def smart_exposure(
         triggers=[dither_after_exposures(dither)] if dither is not None else [],
         instructions=[
             switch_filter(filter_name, filter_position),
-            take_exposure(exposure, image_type)
-        ]
+            take_exposure(exposure, image_type),
+        ],
     )
 
 
@@ -646,9 +648,9 @@ def send_event(text: str) -> dict[str, Any]:
 
 
 def end_instruction(name: str) -> dict[str, Any]:
-    return _child("NINA.Plugin.SequencerPlus.EndInstructionSet, NINA.Plugin.SequencerPlus") | {
-        "InstructionSetName": name
-    }
+    return _child(
+        "NINA.Plugin.SequencerPlus.EndInstructionSet, NINA.Plugin.SequencerPlus"
+    ) | {"InstructionSetName": name}
 
 
 ####################################
@@ -743,7 +745,12 @@ def container_end_park_when_unsafe(equipment: ObservatoryEquipment) -> dict[str,
         [
             container_sequential(
                 name="While Safe",
-                conditions=[loop_while_safe()],
+                # Bounded on both axes: the loop exits as soon as the enclosure
+                # goes unsafe OR at sunrise, so a sequence whose target is long
+                # gone still completes instead of spinning here all morning.
+                # park_scope/warm_camera below run unconditionally on either
+                # exit, so the scope is always stowed before the sequence ends.
+                conditions=[loop_while_safe(), loop_until_sunrise()],
                 instructions=[wait_for_time_span(60)],
             ),
         ]
@@ -771,10 +778,6 @@ def container_root_standby(
 
 
 #########################################
-
-
-def build_sequence_standby(equipment: ObservatoryEquipment) -> dict[str, Any]:
-    return container_root_standby(equipment)
 
 
 def build_sequence_teardown(equipment: ObservatoryEquipment) -> dict[str, Any]:
@@ -906,7 +909,9 @@ def build_sequence_lights(
                         instructions=sequence_cool_camera(plan, equipment)
                         + [
                             set_tracking(0),
-                            switch_filter(reference_filter_name, reference_filter_position),
+                            switch_filter(
+                                reference_filter_name, reference_filter_position
+                            ),
                         ]
                         + [
                             slew_and_center()
@@ -996,6 +1001,3 @@ def build_sequence_flats(
             )
         ],
     )
-
-
-

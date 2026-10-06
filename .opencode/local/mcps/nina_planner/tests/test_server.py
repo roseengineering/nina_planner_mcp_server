@@ -1472,20 +1472,6 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
             result = await stow_telescope()
         self.assertEqual(result, "Teardown sequence started.")
 
-    async def test_enter_safety_standby_loads_and_starts(self):
-        from nina_planner.server import enter_safety_standby
-
-        with (
-            patch(
-                "nina_planner.server.get_site_equipment_status",
-                AsyncMock(return_value=ObservatoryEquipment()),
-            ),
-            patch("nina_planner.server._api_post", AsyncMock(return_value={})),
-            patch("nina_planner.server._api_get", AsyncMock(return_value={})),
-        ):
-            result = await enter_safety_standby()
-        self.assertEqual(result, "Safety standby sequence started.")
-
     async def test_stop_sequence(self):
         from nina_planner.server import stop_sequence
 

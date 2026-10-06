@@ -8,7 +8,6 @@ from conftest import requires_windows_interop, windows_interop_available
 
 from nina_planner.server import (
     _api_get,
-    enter_safety_standby,
     get_events,
     get_imaging_metadata,
     get_logs,
@@ -268,14 +267,6 @@ class LiveNinaTest(unittest.TestCase):
         self.assertIn("target", result)
         self.assertEqual(result["target"], "Veil Nebula")
         self.assertEqual(result["pointing_index"], 1)
-
-    def test_start_safety_standby(self):
-        result = asyncio.run(enter_safety_standby())
-        self.assertIn("standby", result)
-        state = asyncio.run(get_sequence_state())
-        self.assertIsInstance(state, list)
-        self.assertTrue(_is_running(state), "standby sequence should be running")
-        asyncio.run(stop_sequence())
 
     def test_enter_teardown(self):
         result = asyncio.run(stow_telescope())

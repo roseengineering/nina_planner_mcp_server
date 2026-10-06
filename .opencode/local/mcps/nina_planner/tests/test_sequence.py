@@ -436,7 +436,7 @@ class JsonTemplateBuildersTest(unittest.TestCase):
 
 
 class SequenceBuildersTest(unittest.TestCase):
-    """Coverage of build_sequence_* entry points: standby, teardown, darks,
+    """Coverage of build_sequence_* entry points: teardown, darks,
     flats. The flats builder was missing the pointing_index parameter;
     fixed in the same commit.
     """
@@ -460,13 +460,6 @@ class SequenceBuildersTest(unittest.TestCase):
 
     def _profile(self):
         return _profile()
-
-    def test_build_sequence_standby(self):
-        from nina_planner.sequence import build_sequence_standby
-
-        result = build_sequence_standby(ObservatoryEquipment())
-        self.assertIsInstance(result, dict)
-        self.assertIn("$type", result)
 
     def test_build_sequence_teardown(self):
         from nina_planner.sequence import build_sequence_teardown
@@ -768,6 +761,44 @@ class SequenceBehaviorTest(unittest.TestCase):
         cools = _find_items(result, "CoolCamera")
         self.assertEqual(warms, [])
         self.assertEqual(cools, [])
+
+    def test_end_while_safe_loop_is_bounded_by_sunrise_and_parks_afterwards(self):
+        """The End area used to wait on SafetyMonitorCondition alone, so a
+        sequence whose target was long gone kept re-running every 60 s until
+        the enclosure closed. It must also exit at sunrise, and must park on
+        either exit path.
+        """
+        from nina_planner.sequence import container_end_park_when_unsafe
+
+        mount = MountDevice(connected=True, name="m", can_park=True)
+        camera = CameraDevice(connected=True, name="cam", can_set_temperature=True)
+        end = container_end_park_when_unsafe(
+            ObservatoryEquipment(mount=mount, camera=camera)
+        )
+
+        loops = [
+            c
+            for c in _find_items(end, "SequentialContainer")
+            if c.get("Name") == "While Safe"
+        ]
+        self.assertEqual(len(loops), 1)
+
+        conditions = loops[0]["Conditions"]["$values"]
+        self.assertEqual(len(conditions), 2, conditions)
+        self.assertTrue(
+            any("SafetyMonitorCondition" in c["$type"] for c in conditions),
+            conditions,
+        )
+        time_conds = [c for c in conditions if "TimeCondition" in c["$type"]]
+        self.assertEqual(len(time_conds), 1, conditions)
+        self.assertIn("SunriseProvider", time_conds[0]["SelectedProvider"]["$type"])
+
+        items = end["Items"]["$values"]
+        loop_index = next(i for i, item in enumerate(items) if item is loops[0])
+        after = items[loop_index + 1 :]
+        self.assertTrue(after, "park/warm must follow the wait loop")
+        self.assertTrue(_find_items(after, "ParkScope"))
+        self.assertTrue(_find_items(after, "WarmCamera"))
 
     def test_darks_uses_dark_image_type(self):
         from nina_planner.sequence import build_sequence_darks
