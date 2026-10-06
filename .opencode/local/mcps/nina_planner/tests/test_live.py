@@ -5,7 +5,6 @@ from pathlib import Path
 
 import pytest
 from conftest import requires_windows_interop, windows_interop_available
-from mcp.server.fastmcp import Image
 
 from nina_planner.server import (
     _api_get,
@@ -168,13 +167,16 @@ class LiveNinaTest(unittest.TestCase):
         asyncio.run(_api_get("/application/switch-tab?tab=equipment"))
         self.assertEqual(asyncio.run(_api_get("/application/get-tab")), "equipment")
 
-        img = asyncio.run(screenshot_dashboard())
-        self.assertIsInstance(img, Image)
-        self.assertIsNotNone(img.data)
-        self.assertTrue(img.data.startswith(b"\x89PNG\r\n\x1a\n"))
+        path = asyncio.run(screenshot_dashboard())
+        self.assertIsInstance(path, str)
+        png = Path(path)
+        self.assertTrue(png.is_absolute())
+        self.assertEqual(png.suffix, ".png")
+        self.assertTrue(png.is_file())
         # A real dashboard capture is ~150 KB; guard against a blank stub.
-        self.assertGreater(len(img.data), 10_000)
-        self.assertEqual(img.to_image_content().mimeType, "image/png")
+        data = png.read_bytes()
+        self.assertGreater(len(data), 10_000)
+        self.assertTrue(data.startswith(b"\x89PNG\r\n\x1a\n"))
 
         # The switch really happened: get-tab now reports the imaging tab.
         self.assertEqual(asyncio.run(_api_get("/application/get-tab")), "imaging")

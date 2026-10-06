@@ -2108,31 +2108,108 @@ class ScreenshotDashboardTest(unittest.IsolatedAsyncioTestCase):
         "AhKmMIQAAAABJRU5ErkJggg=="
     )
 
+    def setUp(self):
+        # Screenshot output is redirected to a throwaway directory per test.
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.out_dir = Path(self._tmp.name)
+        patcher = patch("nina_planner.server.SCREENSHOT_DIR", self.out_dir)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        # Unit tests do not need to wait on NINA's repaint.
+        settle = patch("nina_planner.server.SCREENSHOT_SETTLE_SECONDS", 0.0)
+        settle.start()
+        self.addCleanup(settle.stop)
+
+    def _payload(self) -> str:
+        return base64.b64encode(self._PNG).decode()
+
     def test_tool_has_docstring(self):
         from nina_planner.server import screenshot_dashboard
 
         self.assertTrue(screenshot_dashboard.__doc__)
 
-    async def test_returns_png_image(self):
-        from mcp.server.fastmcp import Image
-
+    async def test_writes_png_and_returns_path(self):
         from nina_planner.server import screenshot_dashboard
 
-        payload = base64.b64encode(self._PNG).decode()
-
-        async def fake(path):
-            return payload
-
-        with patch("nina_planner.server._api_get", side_effect=fake):
+        with patch(
+            "nina_planner.server._api_get",
+            AsyncMock(side_effect=["imaging tab switched", self._payload()]),
+        ):
             result = await screenshot_dashboard()
 
-        self.assertIsInstance(result, Image)
-        self.assertEqual(result.data, self._PNG)
-        self.assertTrue(result.data.startswith(b"\x89PNG\r\n\x1a\n"))
-        content = result.to_image_content()
-        self.assertEqual(content.type, "image")
-        self.assertEqual(content.mimeType, "image/png")
-        self.assertEqual(base64.b64decode(content.data), self._PNG)
+        self.assertIsInstance(result, str)
+        path = Path(result)
+        self.assertTrue(path.is_absolute())
+        self.assertEqual(path.suffix, ".png")
+        self.assertTrue(path.name.startswith("dashboard_"))
+        self.assertEqual(path.parent, self.out_dir)
+        self.assertTrue(path.is_file())
+        data = path.read_bytes()
+        self.assertTrue(data.startswith(b"\x89PNG\r\n\x1a\n"))
+        self.assertEqual(data, self._PNG)
+
+    async def test_waits_for_tab_repaint_before_capture(self):
+        from nina_planner.server import screenshot_dashboard
+
+        calls = []
+
+        async def fake_api(path):
+            calls.append(path)
+            return self._payload()
+
+        async def fake_sleep(seconds):
+            calls.append(("sleep", seconds))
+
+        with (
+            patch("nina_planner.server._api_get", side_effect=fake_api),
+            patch("nina_planner.server.SCREENSHOT_SETTLE_SECONDS", 0.5),
+            patch("nina_planner.server.anyio.sleep", fake_sleep),
+        ):
+            await screenshot_dashboard()
+
+        self.assertEqual(
+            calls,
+            [
+                "/application/switch-tab?tab=imaging",
+                ("sleep", 0.5),
+                "/application/screenshot",
+            ],
+        )
+
+    async def test_creates_screenshot_directory(self):
+        from nina_planner.server import screenshot_dashboard
+
+        missing = self.out_dir / "nested"
+        with patch("nina_planner.server.SCREENSHOT_DIR", missing):
+            with patch(
+                "nina_planner.server._api_get",
+                AsyncMock(side_effect=["imaging tab switched", self._payload()]),
+            ):
+                await screenshot_dashboard()
+
+        self.assertTrue(missing.is_dir())
+
+    async def test_each_call_returns_a_new_file(self):
+        from nina_planner.server import screenshot_dashboard
+
+        with patch(
+            "nina_planner.server._api_get",
+            AsyncMock(
+                side_effect=[
+                    "imaging tab switched",
+                    self._payload(),
+                    "imaging tab switched",
+                    self._payload(),
+                ]
+            ),
+        ):
+            first = await screenshot_dashboard()
+            second = await screenshot_dashboard()
+
+        self.assertNotEqual(first, second)
+        self.assertTrue(Path(first).is_file())
+        self.assertTrue(Path(second).is_file())
 
     async def test_switches_tab_before_capture(self):
         from nina_planner.server import screenshot_dashboard
@@ -2141,15 +2218,16 @@ class ScreenshotDashboardTest(unittest.IsolatedAsyncioTestCase):
 
         async def fake(path):
             seen.append(path)
-            return base64.b64encode(self._PNG).decode()
+            return self._payload()
 
         with patch("nina_planner.server._api_get", side_effect=fake):
-            await screenshot_dashboard()
+            path = await screenshot_dashboard()
 
         self.assertEqual(
             seen,
             ["/application/switch-tab?tab=imaging", "/application/screenshot"],
         )
+        self.assertTrue(Path(path).is_file())
 
     async def test_propagates_api_failure(self):
         from nina_planner.server import screenshot_dashboard
@@ -2161,6 +2239,8 @@ class ScreenshotDashboardTest(unittest.IsolatedAsyncioTestCase):
             with self.assertRaisesRegex(RuntimeError, "API request failed"):
                 await screenshot_dashboard()
 
+        self.assertEqual(list(self.out_dir.iterdir()), [])
+
     async def test_invalid_base64_raises(self):
         from nina_planner.server import screenshot_dashboard
 
@@ -2170,6 +2250,9 @@ class ScreenshotDashboardTest(unittest.IsolatedAsyncioTestCase):
         ):
             with self.assertRaises(binascii.Error):
                 await screenshot_dashboard()
+
+        # Decoding happens before anything is written, so no partial file is left.
+        self.assertEqual(list(self.out_dir.iterdir()), [])
 
 
 class AsyncMockSleep:

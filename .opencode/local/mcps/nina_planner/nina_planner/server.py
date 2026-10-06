@@ -3,6 +3,7 @@ import json
 import os
 import re
 import subprocess
+import tempfile
 import time
 from collections.abc import Awaitable, Callable
 from collections.abc import Set as AbstractSet
@@ -12,7 +13,7 @@ from typing import Any, Literal, cast
 
 import anyio
 import httpx
-from mcp.server.fastmcp import FastMCP, Image
+from mcp.server.fastmcp import FastMCP
 
 from .imaging import read_imaging_csv, read_weather_csv, widen_imaging_metadata
 from .models.observatory import ObservatoryEquipment
@@ -59,6 +60,13 @@ NINA_ENDPOINT = os.environ.get("NINA_ENDPOINT", "127.0.0.1:1888")
 NINA_API_URL = f"http://{NINA_ENDPOINT}/v2/api"
 NINA_PLANNER_LOG = os.environ.get("NINA_PLANNER_LOG")
 PROJECT_DIR = Path(__file__).resolve().parent.parent
+# Screenshots are transient visual checks, so they go to the system temp dir rather
+# than the project directory. Patched directly in tests, like PROJECT_DIR.
+SCREENSHOT_DIR = Path(tempfile.gettempdir()) / "nina_screenshots"
+# NINA's screenshot endpoint captures the window as last painted, so a capture taken
+# right after switch-tab can show the previous tab. The repaint settles within a
+# couple of seconds on a remote host.
+SCREENSHOT_SETTLE_SECONDS = 2.0
 
 FrameType = Literal["light", "dark", "bias", "dawn_flat", "dusk_flat"]
 
@@ -578,12 +586,19 @@ async def list_site_profiles() -> list[ProfileSummary]:
 
 
 @mcp.tool()
-async def screenshot_dashboard() -> Image:
-    """Returns a PNG screenshot of the NINA dashboard as an image. It first switches NINA to the Imaging tab so the capture shows the main imaging workspace, then requests the screenshot from the REST API. Use it to visually verify UI state — which panel is active, whether a sequence is running, and any on-screen errors. The only side effect is switching the active tab; no sequence or equipment state is changed."""
+async def screenshot_dashboard() -> str:
+    """Switches NINA to the Imaging tab, waits briefly for the repaint to settle, captures the dashboard as a PNG, writes it to the system temp screenshot directory, and returns the absolute path of the written file (e.g. /var/folders/.../T/nina_screenshots/dashboard_20261005T120000123456.png). Open that path with the read tool to view the image. Use it to visually verify UI state — which panel is active, whether a sequence is running, and any on-screen errors. Each call writes a new uniquely named file; nothing is overwritten. Side effects: switching the active tab and creating the PNG — no sequence or equipment state is changed."""
     await _api_get("/application/switch-tab?tab=imaging")
+    if SCREENSHOT_SETTLE_SECONDS:
+        await anyio.sleep(SCREENSHOT_SETTLE_SECONDS)
     text = await _api_get("/application/screenshot")
     data = base64.b64decode(text)
-    return Image(data=data, format="png")
+    SCREENSHOT_DIR.mkdir(parents=True, exist_ok=True)
+    timestamp = datetime.now(tz=UTC).astimezone().strftime("%Y%m%dT%H%M%S%f")
+    path = SCREENSHOT_DIR / f"dashboard_{timestamp}.png"
+    async with await anyio.open_file(path, "wb") as f:
+        await f.write(data)
+    return str(path)
 
 
 @mcp.tool()
