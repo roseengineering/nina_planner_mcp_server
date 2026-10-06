@@ -1,5 +1,4 @@
 import asyncio
-import base64
 import time
 import unittest
 from pathlib import Path
@@ -168,10 +167,14 @@ class LiveNinaTest(unittest.TestCase):
         self.assertEqual(asyncio.run(_api_get("/application/get-tab")), "equipment")
 
         result = asyncio.run(screenshot_dashboard())
+        self.assertIsInstance(result, list)
+        self.assertEqual(len(result), 2)
+        path, image = result
+        self.assertIsInstance(path, str)
         from mcp.server.fastmcp import Image
 
-        self.assertIsInstance(result, Image)
-        png = Path(result.path)
+        self.assertIsInstance(image, Image)
+        png = Path(path)
         self.assertTrue(png.is_absolute())
         self.assertEqual(png.suffix, ".png")
         self.assertTrue(png.is_file())
@@ -179,9 +182,8 @@ class LiveNinaTest(unittest.TestCase):
         data = png.read_bytes()
         self.assertGreater(len(data), 10_000)
         self.assertTrue(data.startswith(b"\x89PNG\r\n\x1a\n"))
-        # The image block is built from the file on disk, so it carries exactly
-        # the bytes just written.
-        self.assertEqual(base64.b64decode(result.to_image_content().data), data)
+        # The inline image block carries exactly the bytes written to disk.
+        self.assertEqual(image.data, data)
 
         # The switch really happened: get-tab now reports the imaging tab.
         self.assertEqual(asyncio.run(_api_get("/application/get-tab")), "imaging")
