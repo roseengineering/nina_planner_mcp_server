@@ -167,8 +167,14 @@ class LiveNinaTest(unittest.TestCase):
         asyncio.run(_api_get("/application/switch-tab?tab=equipment"))
         self.assertEqual(asyncio.run(_api_get("/application/get-tab")), "equipment")
 
-        path = asyncio.run(screenshot_dashboard())
+        result = asyncio.run(screenshot_dashboard())
+        self.assertIsInstance(result, list)
+        self.assertEqual(len(result), 2)
+        path, image = result
         self.assertIsInstance(path, str)
+        from mcp.server.fastmcp import Image
+
+        self.assertIsInstance(image, Image)
         png = Path(path)
         self.assertTrue(png.is_absolute())
         self.assertEqual(png.suffix, ".png")
@@ -177,6 +183,8 @@ class LiveNinaTest(unittest.TestCase):
         data = png.read_bytes()
         self.assertGreater(len(data), 10_000)
         self.assertTrue(data.startswith(b"\x89PNG\r\n\x1a\n"))
+        # The inline image block carries exactly the bytes written to disk.
+        self.assertEqual(image.data, data)
 
         # The switch really happened: get-tab now reports the imaging tab.
         self.assertEqual(asyncio.run(_api_get("/application/get-tab")), "imaging")

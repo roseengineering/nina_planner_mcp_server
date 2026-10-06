@@ -18,7 +18,7 @@
 | `switch_site_profile(profile_id)` | Switch the active NINA profile to the one with the given id (from `list_site_profiles`). The id is passed straight through to NINA, so an unknown id surfaces NINA's own error. Switching disconnects/reconnects equipment and changes site, filters, image-save path, and file pattern, so do not call it while a sequence is running. |
 | `get_events(since)` | Get latest observatory event log entries from `since` seconds. |
 | `get_logs(since)` | Get latest N.I.N.A. application log entries from `since` seconds. |
-| `screenshot_dashboard()` | Capture the N.I.N.A. dashboard as a PNG and return the **absolute file path** (e.g. `/var/folders/.../T/nina_screenshots/dashboard_20261005T120000123456.png`) — the image is written to the system temp dir under `nina_screenshots/`, one uniquely named file per call, nothing overwritten. Open the returned path with the read tool to view it. Switches NINA to the Imaging tab first so the capture shows the main imaging workspace; that tab switch is the only side effect, no sequence or equipment state changes. |
+| `screenshot_dashboard()` | Capture the N.I.N.A. dashboard as a PNG and return **two content blocks: the absolute file path as text, then the image itself** (e.g. `/var/folders/.../T/nina_screenshots/dashboard_20261005T120000123456.png`) — the image is written to the system temp dir under `nina_screenshots/`, one uniquely named file per call, nothing overwritten. Clients that render MCP image blocks show the capture inline; otherwise open the returned path with the read tool to view it. The tool is unstructured (no `outputSchema`) because it carries mixed text/image content. Switches NINA to the Imaging tab first so the capture shows the main imaging workspace; that tab switch is the only side effect, no sequence or equipment state changes. |
 | `get_imaging_metadata(file_path, pointing_index=1, image_type="light")` | Return imaging metadata for an observation-plan JSON file and one of its pointings, for the image type (light, dark, bias, flat — case-insensitive) as a wide table with one row per exposure. Light frames are attributed via the `{base_plan_id}-{pointing_index}` id embedded in the recorded file path; dark/bias/flat frames are matched by image type/filter/exposure and are anchored to the plan's light session: they count when shot at or after the session start minus `calibration_window_days`. Each row carries the frame identity fields (`file_path`, `exposure_number`, `exposure_start`, `duration`, `filter_name`) plus its metrics as columns, namespaced by group (`quality.hfr`, `guiding.rms`, `background.adu_mean`, `pointing.airmass`, ...). Timestamps are normalized to milliseconds-precision UTC ISO-8601 with a `Z` suffix (e.g. `2026-09-22T02:16:25.123Z`). Per-exposure weather samples from `WeatherData.csv` are joined onto the same row (`weather.temperature`, `humidity`, `cloud_cover`, ...) by exposure number and normalized UTC exposure start. Dead columns are dropped dynamically: columns constant across the returned frames are listed once under `summary.constants`; columns with no real values (ASCOM NaN/-1, empty, `n/a`, and the `0` sentinel N.I.N.A writes for unmeasured quality/guiding/CCD metrics) are listed under `summary.unpopulated`. The result also carries the plan's `plan_id`, `pointing_index`, and `target`. |
 | `write_plan_file(plan)` | Write out an observation plan JSON file. |
 | `write_mosaic_plan(plan_path, mosaic_csv, output_path?)` | Expand a base plan into a multi-pointing mosaic plan from a Telescopius-formatted mosaic CSV (one pointing per pane). Replaces the base plan's pointings, clears its `plan_id` so the mosaic gets its own content-derived id, and writes `<target>_<intent>_mosaic_<timestamp>.json` (or `output_path`). Pane `row`/`column` are stored as metadata; N.I.N.A. does not consume them. With no rotator, every pane's `position_angle_deg` must be `0`. |
@@ -280,6 +280,7 @@ Rules:
 ```json .opencode/opencode.json
 {
   "$schema": "https://opencode.ai/config.json",
+  "model": "opencode-go/mimo-v2.6-flash",
   "plugins": [
     {
       "package": "./local/plugins/nina_notify",
@@ -287,9 +288,6 @@ Rules:
         "pluginLogs": "C:/Windows/Temp/nina-notify-debug.log"
       }
     }
-  ],
-  "permissions": [
-    { "action": "*", "resource": ".opencode/**", "effect": "deny" }
   ],
   "mcp": {
     "nina-planner": {

@@ -433,7 +433,7 @@ def sky_flats(count: int, filter_name: str, filter_position: int) -> dict[str, A
     }
 
 
-### wait until
+### wait
 
 
 def wait_until_safe() -> dict[str, Any]:
@@ -511,6 +511,12 @@ def wait_if_sun_altitude_below(degrees: float) -> dict[str, Any]:
     return wait_if_sun_altitude(degrees, 1)
 
 
+def wait_for_time_span(seconds: float) -> dict[str, Any]:
+    return _child("NINA.Sequencer.SequenceItem.Utility.WaitForTimeSpan, NINA.Sequencer") | {
+        "Time": seconds,
+    }
+
+
 ### conditions
 
 
@@ -536,6 +542,12 @@ def loop_until_time(source: str) -> dict[str, Any]:
         "MinutesOffset": 0,
         "SelectedProvider": _child(source),
     }
+
+
+def loop_until_sunrise() -> dict[str, Any]:
+    return loop_until_time(
+        "NINA.Sequencer.Utility.DateTimeProvider.SunriseProvider, NINA.Sequencer"
+    )
 
 
 def loop_until_dawn() -> dict[str, Any]:
@@ -633,19 +645,6 @@ def send_event(text: str) -> dict[str, Any]:
 ### plugin
 
 
-def loop_while(expression: str) -> dict[str, Any]:
-    return _child("NINA.Plugin.SequencerPlus.LoopWhile, NINA.Plugin.SequencerPlus") | {
-        "PredicateExpr": _child("NINA.Plugin.SequencerPlus.Expr, NINA.Plugin.SequencerPlus") | {
-            "Expression": expression,
-            "Type": "Any",
-        }
-    }
-
-
-def wait_indefinitely() -> dict[str, Any]:
-    return _child("NINA.Plugin.SequencerPlus.WaitIndefinitely, NINA.Plugin.SequencerPlus")
-
-
 def end_instruction(name: str) -> dict[str, Any]:
     return _child("NINA.Plugin.SequencerPlus.EndInstructionSet, NINA.Plugin.SequencerPlus") | {
         "InstructionSetName": name
@@ -722,7 +721,7 @@ def sequence_safetynet(
     return container_sequential(
         name=name,
         triggers=triggers,
-        conditions=[loop_while("true")] + conditions,
+        conditions=[loop_until_sunrise()] + conditions,
         instructions=[
             container_sequential(
                 name="On Safe",
@@ -745,7 +744,7 @@ def container_end_park_when_unsafe(equipment: ObservatoryEquipment) -> dict[str,
             container_sequential(
                 name="While Safe",
                 conditions=[loop_while_safe()],
-                instructions=[wait_indefinitely()],
+                instructions=[wait_for_time_span(60)],
             ),
         ]
         + sequence_park_scope(equipment)

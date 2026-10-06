@@ -13,7 +13,7 @@ from typing import Any, Literal, cast
 
 import anyio
 import httpx
-from mcp.server.fastmcp import FastMCP
+from mcp.server.fastmcp import FastMCP, Image
 
 from .imaging import read_imaging_csv, read_weather_csv, widen_imaging_metadata
 from .models.observatory import ObservatoryEquipment
@@ -585,9 +585,9 @@ async def list_site_profiles() -> list[ProfileSummary]:
     return profiles
 
 
-@mcp.tool()
-async def screenshot_dashboard() -> str:
-    """Switches NINA to the Imaging tab, waits briefly for the repaint to settle, captures the dashboard as a PNG, writes it to the system temp screenshot directory, and returns the absolute path of the written file (e.g. /var/folders/.../T/nina_screenshots/dashboard_20261005T120000123456.png). Open that path with the read tool to view the image. Use it to visually verify UI state — which panel is active, whether a sequence is running, and any on-screen errors. Each call writes a new uniquely named file; nothing is overwritten. Side effects: switching the active tab and creating the PNG — no sequence or equipment state is changed."""
+@mcp.tool(structured_output=False)
+async def screenshot_dashboard() -> list[Image | str]:
+    """Switches NINA to the Imaging tab, waits briefly for the repaint to settle, captures the dashboard as a PNG, writes it to the system temp screenshot directory, and returns two content blocks: the absolute path of the written file as text (e.g. /var/folders/.../T/nina_screenshots/dashboard_20261005T120000123456.png), followed by the image itself. If your client renders MCP image blocks you see the capture inline; otherwise open the returned path with the read tool to view it. Use it to visually verify UI state — which panel is active, whether a sequence is running, and any on-screen errors. Each call writes a new uniquely named file; nothing is overwritten. Side effects: switching the active tab and creating the PNG — no sequence or equipment state is changed."""
     await _api_get("/application/switch-tab?tab=imaging")
     if SCREENSHOT_SETTLE_SECONDS:
         await anyio.sleep(SCREENSHOT_SETTLE_SECONDS)
@@ -598,7 +598,7 @@ async def screenshot_dashboard() -> str:
     path = SCREENSHOT_DIR / f"dashboard_{timestamp}.png"
     async with await anyio.open_file(path, "wb") as f:
         await f.write(data)
-    return str(path)
+    return [str(path), Image(data=data, format="png")]
 
 
 @mcp.tool()

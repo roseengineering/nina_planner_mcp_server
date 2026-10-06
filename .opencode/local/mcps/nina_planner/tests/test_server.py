@@ -2124,12 +2124,53 @@ class ScreenshotDashboardTest(unittest.IsolatedAsyncioTestCase):
     def _payload(self) -> str:
         return base64.b64encode(self._PNG).decode()
 
+    def _unpack(self, result):
+        """screenshot_dashboard returns ``[path, Image]``; split and check it."""
+        from mcp.server.fastmcp import Image
+
+        self.assertIsInstance(result, list)
+        self.assertEqual(len(result), 2)
+        path, image = result
+        self.assertIsInstance(path, str)
+        self.assertIsInstance(image, Image)
+        return path, image
+
     def test_tool_has_docstring(self):
         from nina_planner.server import screenshot_dashboard
 
         self.assertTrue(screenshot_dashboard.__doc__)
 
-    async def test_writes_png_and_returns_path(self):
+    async def test_returns_no_structured_output_schema(self):
+        # The tool carries both a text and an image block, which cannot be
+        # expressed as structured output, so it registers unstructured.
+        from nina_planner.server import mcp
+
+        tool = mcp._tool_manager.get_tool("screenshot_dashboard")
+        self.assertIsNotNone(tool)
+        self.assertIsNone(tool.output_schema)
+
+    async def test_content_blocks_are_path_text_then_image(self):
+        from mcp.types import ImageContent, TextContent
+
+        from nina_planner.server import mcp
+
+        with patch(
+            "nina_planner.server._api_get",
+            AsyncMock(side_effect=["imaging tab switched", self._payload()]),
+        ):
+            blocks = await mcp._tool_manager.call_tool(
+                "screenshot_dashboard", {}, convert_result=True
+            )
+
+        self.assertEqual(len(blocks), 2)
+        text, image = blocks
+        self.assertIsInstance(text, TextContent)
+        self.assertEqual(Path(text.text).parent, self.out_dir)
+        self.assertIsInstance(image, ImageContent)
+        self.assertEqual(image.mimeType, "image/png")
+        self.assertEqual(base64.b64decode(image.data), self._PNG)
+
+    async def test_writes_png_and_returns_path_and_image(self):
         from nina_planner.server import screenshot_dashboard
 
         with patch(
@@ -2138,8 +2179,9 @@ class ScreenshotDashboardTest(unittest.IsolatedAsyncioTestCase):
         ):
             result = await screenshot_dashboard()
 
-        self.assertIsInstance(result, str)
-        path = Path(result)
+        path, image = self._unpack(result)
+        self.assertEqual(image.data, self._PNG)
+        path = Path(path)
         self.assertTrue(path.is_absolute())
         self.assertEqual(path.suffix, ".png")
         self.assertTrue(path.name.startswith("dashboard_"))
@@ -2204,8 +2246,8 @@ class ScreenshotDashboardTest(unittest.IsolatedAsyncioTestCase):
                 ]
             ),
         ):
-            first = await screenshot_dashboard()
-            second = await screenshot_dashboard()
+            first = self._unpack(await screenshot_dashboard())[0]
+            second = self._unpack(await screenshot_dashboard())[0]
 
         self.assertNotEqual(first, second)
         self.assertTrue(Path(first).is_file())
@@ -2221,7 +2263,7 @@ class ScreenshotDashboardTest(unittest.IsolatedAsyncioTestCase):
             return self._payload()
 
         with patch("nina_planner.server._api_get", side_effect=fake):
-            path = await screenshot_dashboard()
+            path = self._unpack(await screenshot_dashboard())[0]
 
         self.assertEqual(
             seen,
