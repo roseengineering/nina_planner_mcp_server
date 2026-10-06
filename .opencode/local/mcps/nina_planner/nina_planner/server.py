@@ -1,7 +1,7 @@
+import base64
 import json
 import os
 import re
-import base64
 import subprocess
 import time
 from collections.abc import Awaitable, Callable
@@ -579,10 +579,11 @@ async def list_site_profiles() -> list[ProfileSummary]:
 
 @mcp.tool()
 async def screenshot_dashboard() -> Image:
+    """Returns a PNG screenshot of the NINA dashboard as an image. It first switches NINA to the Imaging tab so the capture shows the main imaging workspace, then requests the screenshot from the REST API. Use it to visually verify UI state — which panel is active, whether a sequence is running, and any on-screen errors. The only side effect is switching the active tab; no sequence or equipment state is changed."""
     await _api_get("/application/switch-tab?tab=imaging")
     text = await _api_get("/application/screenshot")
     data = base64.b64decode(text)
-    return Image(data=data, format='png')
+    return Image(data=data, format="png")
 
 
 @mcp.tool()

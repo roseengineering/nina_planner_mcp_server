@@ -1,4 +1,6 @@
 import asyncio
+import base64
+import binascii
 import json
 import tempfile
 import unittest
@@ -2095,6 +2097,79 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
         with patch("nina_planner.server._api_get", AsyncMock(return_value=raw)):
             equipment = await _get_site_equipment_status(profile)
         self.assertIsNone(equipment.mount)
+
+
+class ScreenshotDashboardTest(unittest.IsolatedAsyncioTestCase):
+    """Unit tests for the screenshot_dashboard MCP tool."""
+
+    # Minimal valid 1x1 RGBA PNG, used as the stand-in screenshot payload.
+    _PNG = base64.b64decode(
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQG"
+        "AhKmMIQAAAABJRU5ErkJggg=="
+    )
+
+    def test_tool_has_docstring(self):
+        from nina_planner.server import screenshot_dashboard
+
+        self.assertTrue(screenshot_dashboard.__doc__)
+
+    async def test_returns_png_image(self):
+        from mcp.server.fastmcp import Image
+
+        from nina_planner.server import screenshot_dashboard
+
+        payload = base64.b64encode(self._PNG).decode()
+
+        async def fake(path):
+            return payload
+
+        with patch("nina_planner.server._api_get", side_effect=fake):
+            result = await screenshot_dashboard()
+
+        self.assertIsInstance(result, Image)
+        self.assertEqual(result.data, self._PNG)
+        self.assertTrue(result.data.startswith(b"\x89PNG\r\n\x1a\n"))
+        content = result.to_image_content()
+        self.assertEqual(content.type, "image")
+        self.assertEqual(content.mimeType, "image/png")
+        self.assertEqual(base64.b64decode(content.data), self._PNG)
+
+    async def test_switches_tab_before_capture(self):
+        from nina_planner.server import screenshot_dashboard
+
+        seen = []
+
+        async def fake(path):
+            seen.append(path)
+            return base64.b64encode(self._PNG).decode()
+
+        with patch("nina_planner.server._api_get", side_effect=fake):
+            await screenshot_dashboard()
+
+        self.assertEqual(
+            seen,
+            ["/application/switch-tab?tab=imaging", "/application/screenshot"],
+        )
+
+    async def test_propagates_api_failure(self):
+        from nina_planner.server import screenshot_dashboard
+
+        with patch(
+            "nina_planner.server._api_get",
+            AsyncMock(side_effect=RuntimeError("API request failed")),
+        ):
+            with self.assertRaisesRegex(RuntimeError, "API request failed"):
+                await screenshot_dashboard()
+
+    async def test_invalid_base64_raises(self):
+        from nina_planner.server import screenshot_dashboard
+
+        with patch(
+            "nina_planner.server._api_get",
+            AsyncMock(side_effect=["imaging tab switched", "not-base64!!"]),
+        ):
+            with self.assertRaises(binascii.Error):
+                await screenshot_dashboard()
 
 
 class AsyncMockSleep:

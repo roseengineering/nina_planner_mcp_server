@@ -5,6 +5,7 @@ from pathlib import Path
 
 import pytest
 from conftest import requires_windows_interop, windows_interop_available
+from mcp.server.fastmcp import Image
 
 from nina_planner.server import (
     enter_safety_standby,
@@ -18,6 +19,7 @@ from nina_planner.server import (
     get_site_profile,
     list_site_profiles,
     run_plan,
+    screenshot_dashboard,
     start_nina,
     stop_nina,
     stop_sequence,
@@ -158,6 +160,15 @@ class LiveNinaTest(unittest.TestCase):
     def test_get_logs(self):
         result = asyncio.run(get_logs(since=60))
         self.assertIsInstance(result, list)
+
+    def test_screenshot_dashboard(self):
+        img = asyncio.run(screenshot_dashboard())
+        self.assertIsInstance(img, Image)
+        self.assertIsNotNone(img.data)
+        self.assertTrue(img.data.startswith(b"\x89PNG\r\n\x1a\n"))
+        # A real dashboard capture is ~150 KB; guard against a blank stub.
+        self.assertGreater(len(img.data), 10_000)
+        self.assertEqual(img.to_image_content().mimeType, "image/png")
 
     def test_stop_sequence(self):
         result = asyncio.run(stop_sequence())

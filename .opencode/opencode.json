@@ -1,21 +1,21 @@
 {
   "$schema": "https://opencode.ai/config.json",
+  "model": "opencode-go/mimo-v2.6-flash",
   "plugins": [
     {
       "package": "./local/plugins/nina_notify",
       "options": {
-        "pluginLogs": "C:/Windows/Temp/nina-notify-debug.log"
+        "ninaEndpoint": "korolev.local:1888",
+        "pluginLogs": "/tmp/nina-notify-debug.log"
       }
     }
-  ],
-  "permissions": [
-    { "action": "*", "resource": ".opencode/**", "effect": "deny" }
   ],
   "mcp": {
     "nina-planner": {
       "type": "local",
       "environment": {
-        "NINA_PLANNER_LOG": "C:/Windows/Temp/nina-planner-debug.log"
+        "NINA_ENDPOINT": "korolev.local:1888",
+        "NINA_PLANNER_LOG": "/tmp/nina-planner-debug.log"
       },
       "command": [
         "uv", "--directory", ".opencode/local/mcps/nina_planner", "run", "-m", "nina_planner"
