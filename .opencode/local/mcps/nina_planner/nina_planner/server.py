@@ -585,8 +585,8 @@ async def list_site_profiles() -> list[ProfileSummary]:
 
 
 @mcp.tool(structured_output=False)
-async def screenshot_dashboard() -> list[Image | str]:
-    """Switches NINA to the Imaging tab, waits briefly for the repaint to settle, captures the dashboard as a PNG, writes it to the system temp screenshot directory, and returns two content blocks: the absolute path of the written file as text (e.g. /var/folders/.../T/nina_screenshots/dashboard_20261005T120000123456.png), followed by the image itself. If your client renders MCP image blocks you see the capture inline; otherwise open the returned path with the read tool to view it. Use it to visually verify UI state — which panel is active, whether a sequence is running, and any on-screen errors. Each call writes a new uniquely named file; nothing is overwritten. Side effects: switching the active tab and creating the PNG — no sequence or equipment state is changed."""
+async def screenshot_dashboard() -> Image:
+    """Switches NINA to the Imaging tab, waits briefly for the repaint to settle, captures the dashboard as a PNG, and returns it as a single image content block of the written file (image/png). Use it to visually verify UI state — which panel is active, whether a sequence is running, and any on-screen errors. Each call writes a new uniquely named file under the system temp screenshot directory, e.g. /var/folders/.../T/nina_screenshots/dashboard_20261005T120000123456.png — nothing is overwritten; to open or read the capture outside the image block, glob that directory for the newest dashboard_*.png. Side effects: switching the active tab and creating the PNG — no sequence or equipment state is changed."""
     await _api_get("/application/switch-tab?tab=imaging")
     if SCREENSHOT_SETTLE_SECONDS:
         await anyio.sleep(SCREENSHOT_SETTLE_SECONDS)
@@ -597,7 +597,7 @@ async def screenshot_dashboard() -> list[Image | str]:
     path = SCREENSHOT_DIR / f"dashboard_{timestamp}.png"
     async with await anyio.open_file(path, "wb") as f:
         await f.write(data)
-    return [str(path), Image(data=data, format="png")]
+    return Image(path=path)
 
 
 @mcp.tool()
