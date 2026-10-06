@@ -8,6 +8,7 @@ from conftest import requires_windows_interop, windows_interop_available
 from mcp.server.fastmcp import Image
 
 from nina_planner.server import (
+    _api_get,
     enter_safety_standby,
     get_events,
     get_imaging_metadata,
@@ -162,6 +163,11 @@ class LiveNinaTest(unittest.TestCase):
         self.assertIsInstance(result, list)
 
     def test_screenshot_dashboard(self):
+        # Force a known-different tab first, so the assertion below cannot pass
+        # vacuously when NINA was already left on the Imaging tab.
+        asyncio.run(_api_get("/application/switch-tab?tab=equipment"))
+        self.assertEqual(asyncio.run(_api_get("/application/get-tab")), "equipment")
+
         img = asyncio.run(screenshot_dashboard())
         self.assertIsInstance(img, Image)
         self.assertIsNotNone(img.data)
@@ -169,6 +175,9 @@ class LiveNinaTest(unittest.TestCase):
         # A real dashboard capture is ~150 KB; guard against a blank stub.
         self.assertGreater(len(img.data), 10_000)
         self.assertEqual(img.to_image_content().mimeType, "image/png")
+
+        # The switch really happened: get-tab now reports the imaging tab.
+        self.assertEqual(asyncio.run(_api_get("/application/get-tab")), "imaging")
 
     def test_stop_sequence(self):
         result = asyncio.run(stop_sequence())
