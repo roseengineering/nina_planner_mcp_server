@@ -38,7 +38,7 @@ from .sequence import (
     build_sequence_darks,
     build_sequence_flats,
     build_sequence_lights,
-    build_sequence_teardown,
+    sequence_root,
 )
 from .system_time import (
     DRIFT_TOLERANCE_SECONDS,
@@ -57,6 +57,9 @@ from .system_time import (
 
 NINA_ENDPOINT = os.environ.get("NINA_ENDPOINT", "127.0.0.1:1888")
 NINA_API_URL = f"http://{NINA_ENDPOINT}/v2/api"
+# skipValidation=true is required here: without it NINA will not start the
+# sequences this server generates. Keep it — every start path uses it.
+SEQUENCE_START_PATH = "/sequence/start?skipValidation=true"
 NINA_PLANNER_LOG = os.environ.get("NINA_PLANNER_LOG")
 PROJECT_DIR = Path(__file__).resolve().parent.parent
 # Screenshots are transient visual checks, so they go to the system temp dir rather
@@ -84,22 +87,82 @@ def _convert_keys(d: Any) -> Any:
     return d
 
 
+_WINDOWS_ABSOLUTE_PATH = re.compile(r"^[A-Za-z]:[\\/]")
+
+
+def _log_file() -> Path | None:
+    """Resolve ``NINA_PLANNER_LOG`` to a file path usable on this host.
+
+    The sample config points at a Windows path (``C:/Windows/Temp/...``)
+    because the observatory host runs Windows. Running the MCP server on
+    macOS or WSL would otherwise create a literal ``C:`` directory tree, so
+    non-Windows hosts log to the system temp dir under the same file name.
+    """
+    if not NINA_PLANNER_LOG:
+        return None
+    if os.name != "nt" and _WINDOWS_ABSOLUTE_PATH.match(NINA_PLANNER_LOG):
+        return Path(tempfile.gettempdir()) / Path(NINA_PLANNER_LOG).name
+    return Path(NINA_PLANNER_LOG)
+
+
 def _log_payload(label: str, payload: str) -> None:
-    if NINA_PLANNER_LOG:
-        path = Path(NINA_PLANNER_LOG)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        timestamp = datetime.now(UTC).isoformat()
-        with path.open("a", encoding="utf-8") as f:
-            f.write(f"{timestamp} {label} {payload}\n")
+    path = _log_file()
+    if path is None:
+        return
+    path.parent.mkdir(parents=True, exist_ok=True)
+    timestamp = datetime.now(UTC).isoformat()
+    with path.open("a", encoding="utf-8") as f:
+        f.write(f"{timestamp} {label} {payload}\n")
+
+
+def _error_detail(resp: httpx.Response) -> str:
+    """N.I.N.A.'s own reason for a failed response, else its raw body.
+
+    ``httpx``'s ``raise_for_status`` reports only the status line — the body,
+    where the API explains a refusal, is never surfaced. Truncated so a large
+    HTML error page does not swamp the agent-facing message.
+    """
+    body = resp.text.strip()
+    if not body:
+        return "an empty response body"
+    try:
+        payload = resp.json()
+    except ValueError:
+        payload = None
+    if isinstance(payload, dict) and payload.get("Error"):
+        return str(payload["Error"])
+    return body[:500]
+
+
+def _unwrap_response(method: str, path: str, resp: httpx.Response) -> dict[str, Any]:
+    """Return the envelope's ``Response``, raising with N.I.N.A.'s own reason.
+
+    Both failure shapes are covered: a non-2xx status (whose body would
+    otherwise be dropped by ``raise_for_status``) and a 200 whose
+    ``Success`` flag is false.
+    """
+    url = f"{NINA_API_URL}{path}"
+    if not resp.is_success:
+        raise RuntimeError(
+            f"{method} {url} failed with HTTP {resp.status_code}: {_error_detail(resp)}"
+        )
+    try:
+        data = resp.json()
+    except ValueError:
+        raise RuntimeError(
+            f"{method} {url} returned a non-JSON body: {_error_detail(resp)}"
+        ) from None
+    if not isinstance(data, dict) or not data.get("Success", False):
+        if isinstance(data, dict) and data.get("Error"):
+            raise RuntimeError(str(data["Error"]))
+        raise RuntimeError("API request failed")
+    return data
 
 
 async def _api_get(path: str) -> Any:
     async with httpx.AsyncClient(base_url=NINA_API_URL, timeout=10.0) as client:
         resp = await client.get(path)
-        resp.raise_for_status()
-        data = resp.json()
-        if not data.get("Success", False):
-            raise RuntimeError(data.get("Error", "API request failed"))
+        data = _unwrap_response("GET", path, resp)
         _log_payload("_api_get:", json.dumps(data, indent=2))
         return data.get("Response", {})
 
@@ -107,10 +170,10 @@ async def _api_get(path: str) -> Any:
 async def _api_post(path: str, body: Any) -> dict[str, Any]:
     async with httpx.AsyncClient(base_url=NINA_API_URL, timeout=10.0) as client:
         resp = await client.post(path, json=body)
-        resp.raise_for_status()
-        data = resp.json()
-        if not data.get("Success", False):
-            raise RuntimeError(data.get("Error", "API request failed"))
+        data = _unwrap_response("POST", path, resp)
+        # Logged like GET's: the caller never sees a POST response (e.g.
+        # /sequence/load), so the debug log is its only home.
+        _log_payload("_api_post:", json.dumps(data, indent=2))
         return cast(dict[str, Any], data.get("Response", {}))
 
 
@@ -133,9 +196,9 @@ async def _stop_running_sequence_and_wait(timeout: float = 15.0) -> bool:
     """Stop the running sequence (if any) and wait until NINA reports it stopped.
 
     ``GET /sequence/stop`` acknowledges before the sequencer has finished
-    unwinding, so a following ``POST /sequence/load`` can race it and be
-    rejected with "Sequence is already running". This blocks until every node
-    reports a non-running status. Returns True when a stop was needed.
+    unwinding, and ``POST /sequence/load`` does not retry — a load made too
+    soon is simply rejected by NINA. This blocks until every node reports a
+    non-running status. Returns True when a stop was needed.
     """
     if not await _sequence_is_running():
         return False
@@ -148,62 +211,34 @@ async def _stop_running_sequence_and_wait(timeout: float = 15.0) -> bool:
     raise RuntimeError(f"NINA sequence did not stop within {timeout:.0f}s")
 
 
-async def _assert_sequence_idle() -> None:
-    """Raise a clear, actionable error if a sequence is currently running.
+async def _load_sequence_payload(seq: Any) -> None:
+    """Load ``seq``, passing NINA's own refusal straight through.
 
-    Loading a new sequence over a running one is refused on purpose: the agent
-    must decide to stop the running sequence itself via ``stop_sequence``.
+    The sequencer rejects a load made over a running sequence, and its error is
+    the one the caller sees — no local pre-check, no retry. A running sequence
+    is never stopped on the caller's behalf: call ``stop_sequence`` first.
     """
-    if await _sequence_is_running():
-        raise RuntimeError(
-            "A sequence is already running. Call stop_sequence() and wait for it "
-            "to stop before loading a new sequence."
-        )
+    await _api_post("/sequence/load", seq)
 
 
-async def _load_sequence_payload(seq: Any, *, timeout: float = 10.0) -> None:
-    """Load ``seq``, refusing if a sequence is already running.
+async def _api_probe() -> tuple[bool, str | None]:
+    """Liveness from ``GET /time``, plus NINA's own reason when it fails.
 
-    A running sequence is never stopped on the caller's behalf — the agent must
-    call ``stop_sequence`` first. Because ``stop_sequence`` waits until the
-    sequencer has stopped, the short retry below only absorbs NINA's internal
-    settle lag; it does not stop anything.
-    """
-    await _assert_sequence_idle()
-    deadline = time.monotonic() + timeout
-    delay = 0.2
-    while True:
-        try:
-            await _api_post("/sequence/load", seq)
-            return
-        except RuntimeError as e:
-            if "already running" not in str(e).lower():
-                raise
-            if await _sequence_is_running():
-                raise RuntimeError(
-                    "A sequence is already running. Call stop_sequence() and wait "
-                    "for it to stop before loading a new sequence."
-                ) from e
-            if time.monotonic() >= deadline:
-                raise RuntimeError(
-                    "NINA still reports a running sequence; call stop_sequence() "
-                    "and retry."
-                ) from e
-            await anyio.sleep(delay)
-            delay = min(delay * 2, 1.0)
-
-
-async def _nina_api_responsive() -> bool:
-    """True when NINA's REST API answers ``GET /time``.
-
-    This is the authoritative liveness signal: it works whether NINA runs on
-    this host or on a remote one reachable through ``NINA_ENDPOINT``.
+    Authoritative and host-agnostic: it works whether NINA runs on this host
+    or on a remote one reachable through ``NINA_ENDPOINT``. Returning the
+    failure text lets callers say *why* the API looks down instead of only
+    that it did.
     """
     try:
         await _api_get("/time")
-        return True
-    except Exception:
-        return False
+        return True, None
+    except Exception as e:
+        return False, str(e)
+
+
+async def _nina_api_responsive() -> bool:
+    """True when NINA's REST API answers ``GET /time`` (see ``_api_probe``)."""
+    return (await _api_probe())[0]
 
 
 async def _spawn_detached(argv: list[str]) -> subprocess.Popen[bytes]:
@@ -603,7 +638,7 @@ async def screenshot_dashboard() -> list[Image | str]:
 @mcp.tool()
 async def switch_site_profile(profile_id: str) -> str:
     """Switches the active NINA observatory profile to the one with the given `profile_id` (a GUID obtained from list_site_profiles). Passes the id straight through to NINA; if the id is unknown or NINA otherwise refuses, the API's error is returned. Switching disconnects and reconnects equipment and changes site, filters, image-save path, and file pattern, so do not call it while a sequence is running. Confirm the result with get_site_profile afterward."""
-    return await _api_get(f"/profile/switch?profileid={profile_id}")
+    return cast(str, await _api_get(f"/profile/switch?profileid={profile_id}"))
 
 
 @mcp.tool()
@@ -791,7 +826,7 @@ async def run_plan(
     min_detected_stars: int | None = None,
     max_guiding_rms_arcsec: float | None = None,
 ) -> str:
-    """Loads an acquisition sequence with safety guardrails from an observation-plan JSON file. Select the frame type: light, dark, bias, dawn_flat, or dusk_flat. `pointing_index` (1-based, default 1) selects which pointing of the plan to load — the lights target name embeds the `({base_plan_id}-{pointing_index})` token so each pointing's frames are attributed independently. Light loads require `$$TARGETNAME$$` in the active profile's FilePattern for attribution. In the default `remaining` mode the sequence only acquires frames still needed (total minus frames already attributed to this plan/pointing in the imaging metadata); if nothing remains it reports the plan as complete and loads nothing. max_hfr and/or min_detected_stars exclude light frames failing quality thresholds from the acquired count. Pass `mode="full"` to acquire the entire plan again. By default the loaded sequence is started immediately; pass `load_only=True` to load without starting (e.g. to start it manually from the NINA GUI). Refuses to load while a sequence is already running — call stop_sequence() first."""
+    """Loads an acquisition sequence with safety guardrails from an observation-plan JSON file. Select the frame type: light, dark, bias, dawn_flat, or dusk_flat. `pointing_index` (1-based, default 1) selects which pointing of the plan to load — the lights target name embeds the `({base_plan_id}-{pointing_index})` token so each pointing's frames are attributed independently. Light loads require `$$TARGETNAME$$` in the active profile's FilePattern for attribution. In the default `remaining` mode the sequence only acquires frames still needed (total minus frames already attributed to this plan/pointing in the imaging metadata); if nothing remains it reports the plan as complete and loads nothing. max_hfr and/or min_detected_stars exclude light frames failing quality thresholds from the acquired count. Pass `mode="full"` to acquire the entire plan again. By default the loaded sequence is started immediately; pass `load_only=True` to load without starting (e.g. to start it manually from the NINA GUI). Fails if a sequence is already running — NINA's own error is reported; call stop_sequence() first."""
     plan = await _load_plan(file_path)
     profile = await get_site_profile()
     await _validate_filters(plan, profile)
@@ -859,17 +894,17 @@ async def run_plan(
     if load_only:
         return f"`{frame_type}` sequence loaded."
     else:
-        await _api_get("/sequence/start?skipValidation=true")
+        await _api_get(SEQUENCE_START_PATH)
         return f"`{frame_type}` sequence started."
 
 
 @mcp.tool()
 async def stow_telescope() -> str:
-    """Loads and starts the non-acquisition teardown sequence, safely stowing the telescope (park or home, per mount capability) while NINA's sequence-level safety guardrails remain active. Use for end-of-observation close-down — when you are done observing and want to shut down the scope — or before leaving the observatory unattended. Allow it to complete without interruption. This is separate from stop_sequence, which halts the current sequence but does not stow the scope. Refuses to load while a sequence is already running — call stop_sequence() first."""
+    """Loads and starts the non-acquisition teardown sequence, safely stowing the telescope (park or home, per mount capability) while NINA's sequence-level safety guardrails remain active. Use for end-of-observation close-down — when you are done observing and want to shut down the scope — or before leaving the observatory unattended. Allow it to complete without interruption. This is separate from stop_sequence, which halts the current sequence but does not stow the scope. Fails if a sequence is already running — NINA's own error is reported; call stop_sequence() first."""
     equipment = await get_site_equipment_status()
-    seq = build_sequence_teardown(equipment)
+    seq = sequence_root(equipment)
     await _load_sequence_payload(seq)
-    await _api_get("/sequence/start?skipValidation=true")
+    await _api_get(SEQUENCE_START_PATH)
     return "Teardown sequence started."
 
 
@@ -883,7 +918,7 @@ async def stop_sequence() -> str:
 @mcp.tool()
 async def start_sequence() -> str:
     """Starts the currently loaded NINA sequence immediately."""
-    await _api_get("/sequence/start?skipValidation=true")
+    await _api_get(SEQUENCE_START_PATH)
     return "Sequence started."
 
 
@@ -973,10 +1008,13 @@ async def stop_nina() -> dict[str, Any]:
     running on a remote host and cannot be terminated from here; the tool raises
     with that explanation rather than attempting a doomed ``taskkill``.
     """
-    if not await _nina_api_responsive():
+    responsive, probe_error = await _api_probe()
+    if not responsive:
         summary = (
             "stop_nina: NINA is not running (REST API unresponsive) — no action taken."
         )
+        if probe_error:
+            summary += f" Probe error: {probe_error}"
         _log_payload("stop_nina:", summary)
         return {"stopped": False, "summary": summary}
 
@@ -1283,13 +1321,18 @@ async def get_nina_status() -> dict[str, Any]:
     - ``nina_time``, ``host_time``, ``delta_seconds``, ``simulated``: same
       fields as ``get_nina_time()``, populated only when ``running`` is
       ``True``; otherwise all ``None``
-    - ``summary`` (str): human-readable one-line status
+    - ``probe_error`` (str | None): N.I.N.A.'s own failure text when the probe
+      failed — why the API looks down, not just that it did. ``None`` when
+      ``running`` is ``True``
+    - ``summary`` (str): human-readable one-line status, carrying
+      ``probe_error`` when there is one
     """
     running = False
     nina_time: str | None = None
     host_time: str | None = None
     delta_seconds: float | None = None
     simulated: bool | None = None
+    probe_error: str | None = None
     try:
         clock = await get_nina_time()
         running = True
@@ -1298,6 +1341,7 @@ async def get_nina_status() -> dict[str, Any]:
         delta_seconds = clock["delta_seconds"]
         simulated = clock["simulated"]
     except Exception as e:
+        probe_error = str(e)
         _log_payload("get_nina_status: api probe failed", repr(e))
 
     lifecycle_control_available = windows_interop_available()
@@ -1308,6 +1352,8 @@ async def get_nina_status() -> dict[str, Any]:
             summary += " (remote; lifecycle control unavailable)"
     else:
         summary = "NINA not running — REST API unresponsive"
+        if probe_error:
+            summary += f" (probe error: {probe_error})"
         if not lifecycle_control_available:
             summary += " (remote; cannot be restarted from here)"
     if simulated is True:
@@ -1320,6 +1366,7 @@ async def get_nina_status() -> dict[str, Any]:
         "host_time": host_time,
         "delta_seconds": delta_seconds,
         "simulated": simulated,
+        "probe_error": probe_error,
         "summary": summary,
     }
 

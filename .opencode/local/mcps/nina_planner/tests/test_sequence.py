@@ -462,10 +462,14 @@ class SequenceBuildersTest(unittest.TestCase):
         return _profile()
 
     def test_build_sequence_teardown(self):
-        from nina_planner.sequence import build_sequence_teardown
+        """stow_telescope loads sequence_root(): the three sequence areas,
+        with stowing and warming carried by the End area."""
+        from nina_planner.sequence import sequence_root
 
-        result = build_sequence_teardown(ObservatoryEquipment())
+        result = sequence_root(ObservatoryEquipment())
         self.assertIsInstance(result, dict)
+        areas = [item.get("Name") for item in result["Items"]["$values"]]
+        self.assertEqual(areas, ["Start Sequence", "Target Sequence", "End Sequence"])
 
     def test_build_sequence_darks(self):
         from nina_planner.sequence import build_sequence_darks
@@ -762,43 +766,63 @@ class SequenceBehaviorTest(unittest.TestCase):
         self.assertEqual(warms, [])
         self.assertEqual(cools, [])
 
-    def test_end_while_safe_loop_is_bounded_by_sunrise_and_parks_afterwards(self):
-        """The End area used to wait on SafetyMonitorCondition alone, so a
-        sequence whose target was long gone kept re-running every 60 s until
-        the enclosure closed. It must also exit at sunrise, and must park on
-        either exit path.
-        """
-        from nina_planner.sequence import container_end_park_when_unsafe
+    def test_end_area_stows_and_warms_immediately(self):
+        """The End area stows the scope as soon as the target area is done:
+        park, then warm camera, with no conditions and no wait loop. That is
+        what makes a teardown sequence complete promptly instead of idling
+        until the enclosure goes unsafe or sunrise (the old "While Safe"
+        loop, which this replaced)."""
+        from nina_planner.sequence import sequence_end
 
         mount = MountDevice(connected=True, name="m", can_park=True)
         camera = CameraDevice(connected=True, name="cam", can_set_temperature=True)
-        end = container_end_park_when_unsafe(
-            ObservatoryEquipment(mount=mount, camera=camera)
+        end = sequence_end(ObservatoryEquipment(mount=mount, camera=camera))
+
+        self.assertEqual(end["Conditions"]["$values"], [], "End must not wait")
+        self.assertEqual(_find_items(end, "SequentialContainer"), [])
+        self.assertEqual(_find_items(end, "SafetyMonitorCondition"), [])
+        self.assertEqual(_find_items(end, "WaitForTimeSpan"), [])
+
+        order = [item.get("$type", "") for item in end["Items"]["$values"]]
+        park_index = next(i for i, t in enumerate(order) if "ParkScope" in t)
+        warm_index = next(i for i, t in enumerate(order) if "WarmCamera" in t)
+        self.assertLess(park_index, warm_index, "stow before warming")
+
+    def test_end_area_stow_is_capability_driven(self):
+        from nina_planner.sequence import sequence_end
+
+        can_park = MountDevice(connected=True, name="m", can_park=True)
+        home_only = MountDevice(
+            connected=True, name="m", can_park=False, can_find_home=True
         )
 
-        loops = [
-            c
-            for c in _find_items(end, "SequentialContainer")
-            if c.get("Name") == "While Safe"
-        ]
-        self.assertEqual(len(loops), 1)
+        parked = sequence_end(ObservatoryEquipment(mount=can_park))
+        self.assertEqual(len(_find_items(parked, "ParkScope")), 1)
+        self.assertEqual(_find_items(parked, "FindHome, NINA.Sequencer"), [])
 
-        conditions = loops[0]["Conditions"]["$values"]
-        self.assertEqual(len(conditions), 2, conditions)
+        homed = sequence_end(ObservatoryEquipment(mount=home_only))
+        self.assertEqual(_find_items(homed, "ParkScope"), [])
+        self.assertEqual(len(_find_items(homed, "FindHome, NINA.Sequencer")), 1)
+
+        stowed = sequence_end(ObservatoryEquipment(mount=None))
+        self.assertEqual(_find_items(stowed, "ParkScope"), [])
+        self.assertEqual(_find_items(stowed, "FindHome, NINA.Sequencer"), [])
+
+    def test_end_area_warms_only_when_camera_has_cooler(self):
+        from nina_planner.sequence import sequence_end
+
+        cooler = CameraDevice(connected=True, name="cam", can_set_temperature=True)
+        no_cooler = CameraDevice(connected=True, name="cam", can_set_temperature=False)
+
         self.assertTrue(
-            any("SafetyMonitorCondition" in c["$type"] for c in conditions),
-            conditions,
+            _find_items(sequence_end(ObservatoryEquipment(camera=cooler)), "WarmCamera")
         )
-        time_conds = [c for c in conditions if "TimeCondition" in c["$type"]]
-        self.assertEqual(len(time_conds), 1, conditions)
-        self.assertIn("SunriseProvider", time_conds[0]["SelectedProvider"]["$type"])
-
-        items = end["Items"]["$values"]
-        loop_index = next(i for i, item in enumerate(items) if item is loops[0])
-        after = items[loop_index + 1 :]
-        self.assertTrue(after, "park/warm must follow the wait loop")
-        self.assertTrue(_find_items(after, "ParkScope"))
-        self.assertTrue(_find_items(after, "WarmCamera"))
+        self.assertEqual(
+            _find_items(
+                sequence_end(ObservatoryEquipment(camera=no_cooler)), "WarmCamera"
+            ),
+            [],
+        )
 
     def test_darks_uses_dark_image_type(self):
         from nina_planner.sequence import build_sequence_darks

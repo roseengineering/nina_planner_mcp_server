@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import os
-from typing import Any
+from typing import Any, cast
 
 from .models.observatory import ObservatoryEquipment
 from .models.plan import ObservationPlan
@@ -398,7 +398,12 @@ def annotation() -> dict[str, Any]:
     }
 
 
-def switch_filter(filter_name: str, filter_position: int) -> dict[str, Any]:
+def switch_filter(
+    # None for frame types with no filter (darks, bias): NINA gets a null
+    # FilterInfo, which is what those sequences have always emitted.
+    filter_name: str | None,
+    filter_position: int | None,
+) -> dict[str, Any]:
     return _child(
         "NINA.Sequencer.SequenceItem.FilterWheel.SwitchFilter, NINA.Sequencer"
     ) | {
@@ -728,9 +733,7 @@ def sequence_safetynet(
             container_sequential(
                 name="On Safe",
                 conditions=[loop_while_safe()],
-                instructions=sequence_unpark_scope(equipment)
-                + instructions
-                + [end_instruction(name)],
+                instructions=instructions + [end_instruction(name)],
             )
         ]
         + sequence_park_scope(equipment)
@@ -740,69 +743,41 @@ def sequence_safetynet(
     )
 
 
-def container_end_park_when_unsafe(equipment: ObservatoryEquipment) -> dict[str, Any]:
+def sequence_end(equipment: ObservatoryEquipment) -> dict[str, Any]:
+    # close observatory for the night:
+    # stow the telescope and warm the camera.
     return container_end(
-        [
-            container_sequential(
-                name="While Safe",
-                # Bounded on both axes: the loop exits as soon as the enclosure
-                # goes unsafe OR at sunrise, so a sequence whose target is long
-                # gone still completes instead of spinning here all morning.
-                # park_scope/warm_camera below run unconditionally on either
-                # exit, so the scope is always stowed before the sequence ends.
-                conditions=[loop_while_safe(), loop_until_sunrise()],
-                instructions=[wait_for_time_span(60)],
-            ),
-        ]
-        + sequence_park_scope(equipment)
-        + sequence_warm_camera(equipment)
+        sequence_park_scope(equipment) + sequence_warm_camera(equipment)
     )
 
 
-def container_start_unpark_when_safe(equipment: ObservatoryEquipment) -> dict[str, Any]:
-    return container_start(
-        [sequence_safetynet(name="While Unsafe", equipment=equipment)]
-    )
-
-
-def container_root_standby(
+def sequence_root(
     equipment: ObservatoryEquipment, instructions: list[Any] | None = None
 ) -> dict[str, Any]:
     return container_root(
         [
-            container_start_unpark_when_safe(equipment),
-            container_target(instructions),
-            container_end_park_when_unsafe(equipment),
-        ]
-    )
-
-
-#########################################
-
-
-def build_sequence_teardown(equipment: ObservatoryEquipment) -> dict[str, Any]:
-    return container_root(
-        [
             container_start(),
-            container_target(),
-            container_end(
-                sequence_park_scope(equipment) + sequence_warm_camera(equipment)
-            ),
+            container_target(instructions),
+            sequence_end(equipment),
         ]
     )
+
+
+####
 
 
 def build_sequence_darks(
     plan: ObservationPlan, equipment: ObservatoryEquipment, bias: bool = False
 ) -> dict[str, Any]:
-    return container_root(
-        [
-            container_start(sequence_park_scope(equipment)),
+    return sequence_root(
+        equipment=equipment,
+        instructions=[
             container_target(
                 [
                     sequence_deepsky(
                         plan=plan,
-                        instructions=sequence_cool_camera(plan, equipment)
+                        instructions=sequence_park_scope(equipment)
+                        + sequence_cool_camera(plan, equipment)
                         + [
                             smart_exposure(
                                 count=d[0],
@@ -814,8 +789,7 @@ def build_sequence_darks(
                     ),
                 ]
             ),
-            container_end_park_when_unsafe(equipment),
-        ]
+        ],
     )
 
 
@@ -835,13 +809,31 @@ def build_sequence_lights(
     pointing = plan.pointings[pointing_index - 1]
     reference_filter_name = plan.autofocus.reference_filter_name
     reference_filter_position = profile.filter_position(reference_filter_name)
-    return container_root_standby(
+
+    # Built fresh on every call: each container must own its condition dicts.
+    # Sharing one list across containers would put the same $id in two places
+    # in the emitted JSON (and trip _fix_provider's provider guard).
+    def imaging_condition() -> list[dict[str, Any]]:
+        return [
+            loop_until_dawn(),
+            loop_while_above_horizon(plan.constraints.horizon_offset_degrees),
+            loop_while_above_altitude(plan.constraints.min_altitude),
+        ]
+
+    def wait_instructions() -> list[dict[str, Any]]:
+        return [
+            wait_until_above_horizon(plan.constraints.horizon_offset_degrees),
+            wait_until_above_altitude(plan.constraints.min_altitude),
+        ]
+
+    return sequence_root(
         equipment=equipment,
         instructions=[
             sequence_deepsky(
                 plan=plan,
                 pointing_index=pointing_index,
                 instructions=[
+                    # wait for dusk before imaging
                     sequence_safetynet(
                         name="Wait For Dusk",
                         equipment=equipment,
@@ -849,6 +841,7 @@ def build_sequence_lights(
                             wait_until_dusk(),
                         ],
                     ),
+                    # wait for object to be high enough
                     sequence_safetynet(
                         name="Wait For Object",
                         equipment=equipment,
@@ -865,28 +858,22 @@ def build_sequence_lights(
                             loop_until_dawn(),
                             loop_until_meridian(),
                         ],
-                        instructions=[
-                            wait_until_above_horizon(
-                                plan.constraints.horizon_offset_degrees
-                            ),
-                            wait_until_above_altitude(plan.constraints.min_altitude),
-                        ],
+                        instructions=wait_instructions(),
                     ),
+                    # cool camera if still in view
+                    sequence_safetynet(
+                        name="Cool Camera",
+                        equipment=equipment,
+                        conditions=imaging_condition(),
+                        instructions=sequence_cool_camera(plan, equipment)
+                        + sequence_unpark_scope(equipment)
+                        + wait_instructions(),
+                    ),
+                    # image object if still in view
                     sequence_safetynet(
                         name="Image Object",
                         equipment=equipment,
-                        conditions=[
-                            loop_until_dawn(),
-                            loop_while_above_horizon(
-                                plan.constraints.horizon_offset_degrees
-                            ),
-                            loop_while_above_altitude(plan.constraints.min_altitude),
-                            # No loop_until_meridian() here: the imaging container
-                            # should keep running while the target is visible.
-                            # The meridian flip is handled by the trigger below,
-                            # which slews to the eastern side when transit happens
-                            # so imaging continues across the meridian.
-                        ],
+                        conditions=imaging_condition(),
                         triggers=[
                             trigger_meridian_flip(),
                             trigger_center_after_drift(
@@ -906,7 +893,7 @@ def build_sequence_lights(
                             ),
                             trigger_restore_guiding(),
                         ],
-                        instructions=sequence_cool_camera(plan, equipment)
+                        instructions=sequence_unpark_scope(equipment)
                         + [
                             set_tracking(0),
                             switch_filter(
@@ -927,7 +914,12 @@ def build_sequence_lights(
                                 count=d[0],
                                 exposure=d[1],
                                 filter_name=d[2],
-                                filter_position=profile.filter_position(d[2]),
+                                # plan.light's filter_name is required by the
+                                # model; _round_robin types it optional because
+                                # it also serves darks/bias, which have none.
+                                filter_position=profile.filter_position(
+                                    cast(str, d[2])
+                                ),
                                 dither=plan.guiding.dither_every_n_exposures,
                                 image_type="LIGHT",
                             )
@@ -948,36 +940,50 @@ def build_sequence_flats(
     dusk: bool = False,
     pointing_index: int = 1,
 ) -> dict[str, Any]:
-    return container_root_standby(
+    def wait_instructions() -> list[dict[str, Any]]:
+        return [
+            (wait_until_sunset() if dusk else wait_until_dawn()),
+            (wait_if_sun_altitude_above(0) if dusk else wait_if_sun_altitude_below(-8)),
+        ]
+
+    # Fresh per container — see build_sequence_lights.
+    def imaging_condition() -> list[dict[str, Any]]:
+        return [
+            (
+                loop_until_sun_altitude_below(-8)
+                if dusk
+                else loop_until_sun_altitude_above(0)
+            )
+        ]
+
+    return sequence_root(
         equipment=equipment,
         instructions=[
             sequence_deepsky(
                 plan=plan,
                 pointing_index=pointing_index,
                 instructions=[
+                    # wait until start time
                     sequence_safetynet(
                         name="Wait For Time",
                         equipment=equipment,
-                        instructions=[
-                            (wait_until_sunset() if dusk else wait_until_dawn()),
-                            (
-                                wait_if_sun_altitude_above(0)
-                                if dusk
-                                else wait_if_sun_altitude_below(-8)
-                            ),
-                        ],
+                        instructions=wait_instructions(),
                     ),
+                    # cool camera if before stop time
+                    sequence_safetynet(
+                        name="Cool Camera",
+                        equipment=equipment,
+                        conditions=imaging_condition(),
+                        instructions=sequence_cool_camera(plan, equipment)
+                        + sequence_unpark_scope(equipment)
+                        + wait_instructions(),
+                    ),
+                    # image flats if before stop time
                     sequence_safetynet(
                         name="Image Flats",
                         equipment=equipment,
-                        conditions=[
-                            (
-                                loop_until_sun_altitude_below(-8)
-                                if dusk
-                                else loop_until_sun_altitude_above(0)
-                            )
-                        ],
-                        instructions=sequence_cool_camera(plan, equipment)
+                        conditions=imaging_condition(),
+                        instructions=sequence_unpark_scope(equipment)
                         + [
                             set_tracking(0),
                             slew_to_azalt(

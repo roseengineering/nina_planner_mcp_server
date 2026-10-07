@@ -116,33 +116,17 @@ An example json plan:
 | `intent` | no | 2-3 words describing the goal |
 | `plan_id` | no | Stable identifier stamped on write. Used for frame attribution; when absent, a deterministic hash of plan content is used. |
 | `description` | no | explanation of the observation plan, including rationale, exposure goals, equipment, or sky constraints |
-| `pointings` | **yes** | One or more target pointings. Each is a `Pointing` object: `label` (optional string shown in the NINA target name when set), `ra_hours` (J2000 RA in hours, `[0, 24)`), `dec_deg` (J2000 dec in degrees, `[-90, +90]`), `position_angle_deg` (optional rotator PA in degrees east of north, `[0, 360)`; omitted forwards 0 to NINA), and optional `row`/`column` ints (mosaic pane grid position; metadata only, not sent to NINA). A pointing is selected at run time via `pointing_index` on `run_plan`/`get_imaging_metadata`; `get_plan_progress` reports every pointing at once. |
-| `batch_size` | no | Exposures per batch (0 = no batching, default 5) |
-| `calibration_window_days` | no | Calibration frames (darks, bias, flats) are attributed only when shot within this many days of the plan's earliest attributed light, on either side of it (default 7, min 1; 0 is reserved). While the current time is inside that window the plan reports the calibration it still needs; once the current time falls outside it, remaining calibration is reported as 0 (`window_open: false`) because no frame shot now could be credited. Raise this value — or write a new plan — to reopen the window. |
-| `cooler` | no | Target setpoint (default -10°C) |
-| `constraints` | no | Minimum altitude and horizon safety buffer |
-| `autofocus` | no | Reference filter, HFR and temperature thresholds, interval |
-| `guiding` | no | Dither and drift-recenter settings |
-| `light` | **yes** | Light exposure groups (filter + time + count) |
-| `flat` | **yes** | Flat exposure groups (filter + time + count) |
-| `dark` | **yes** | Dark exposure groups (time + count) — match light exposure times |
-| `bias` | **yes** | Bias frame count (single exposure, no filter needed) |
-
-### Mosaics
-
-A mosaic is just a plan with several pointings. Build the base plan (target, exposure groups, calibration, cooler, autofocus, guiding, constraints) with a single placeholder pointing, then expand it from a **Telescopius-formatted mosaic CSV**:
-
-```
-write_mosaic_plan(plan_path="veil.json", mosaic_csv="mosaic.csv")
-  → veil-nebula_widefield-supernova-remnant_mosaic_20260928T160000.json
-```
-
-The CSV header is expected to include `Pane`, `RA`, `DEC`, `Position Angle (East)`, `Row`, and `Column`; for example:
-
-```csv
+| `pointings` | **yes** | One or more target pointings. Each is a `Pointing` object: `label` (optional string shown in the NINA target name when set), `ra_hours` (J2000 RA in hours, `[0, 24)`), `dec_deg` (J2000 dec in degrees, `[-90, +90]`), `position_angle_deg` (optional rotator PA in degrees east of north, `[mosaic.csv](./mosaic.csv)
+```csv mosaic.csv
 Pane, RA, DEC, Position Angle (East), Pane width (arcmins), Pane height (arcmins), Overlap, Row, Column
 Pane 1, 0hr 56' 01", 45º 51' 18", 0.00, 309.00, 205.80, 10%, 1, 1
 Pane 2, 0hr 29' 28", 45º 51' 18", 0.00, 309.00, 205.80, 10%, 1, 2
+Pane 3, 0hr 55' 22", 42º 46' 13", 0.00, 309.00, 205.80, 10%, 2, 1
+Pane 4, 0hr 30' 07", 42º 46' 13", 0.00, 309.00, 205.80, 10%, 2, 2
+Pane 5, 0hr 54' 47", 39º 41' 07", 0.00, 309.00, 205.80, 10%, 3, 1
+Pane 6, 0hr 30' 42", 39º 41' 07", 0.00, 309.00, 205.80, 10%, 3, 2
+Pane 7, 0hr 54' 15", 36º 36' 00", 0.00, 309.00, 205.80, 10%, 4, 1
+Pane 8, 0hr 31' 14", 36º 36' 00", 0.00, 309.00, 205.80, 10%, 4, 2
 ```
 
 Each row becomes a `Pointing`: RA/DEC are parsed server-side (sexagesimal like `0hr 56' 01"` / `45º 51' 18"` or decimal), `Pane` becomes the `label`, and `Row`/`Column` are stored as `row`/`column` metadata (N.I.N.A. does not use them — they are kept for ordering, labeling, and later mosaic assembly). The base plan's `plan_id` is cleared so the mosaic gets its own content-derived id; each pane is attributed independently via `({plan_id}-{pointing_index})`.
@@ -347,9 +331,10 @@ networkingMode=mirrored
 
 Then shutdown wsl and restart
 
+[$ wsl --shutdown](./$ wsl --shutdown)
 ```bash
 $ wsl --shutdown
-$ wsl
+<Error: File '$ wsl --shutdown' not found on disk>
 ```
 
 In addition, to get the system tools to work to stop and restart NINA should it stop, make sudo password less with:
@@ -367,9 +352,10 @@ WSL runs Windows tools under your *Windows login token*, so whether the call suc
 
 Check your token from WSL (use the full path — the bare `whoami.exe` is shadowed by the GNU `whoami` in some WSL setups and silently ignores `/priv`):
 
+[/mnt/c/Windows/System32/whoami.exe /priv  | grep -i systemtime](/mnt/c/Windows/System32/whoami.exe /priv  | grep -i systemtime)
 ```bash
 /mnt/c/Windows/System32/whoami.exe /priv  | grep -i systemtime
-/mnt/c/Windows/System32/whoami.exe /groups | grep -i "Integrity"
+<Error: File '/mnt/c/Windows/System32/whoami.exe /priv  | grep -i systemtime' not found on disk>
 ```
 
 If you see `SeSystemtimePrivilege … Enabled` and `High Mandatory Level`, the clock change runs **promptless** — no admin changes needed. The tool calls `Set-Date` directly.

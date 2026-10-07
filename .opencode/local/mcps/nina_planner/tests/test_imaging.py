@@ -184,6 +184,7 @@ class RealNinaSampleTest(unittest.TestCase):
         / "2026-09-20"
         / "LIGHT"
     )
+
     def test_read_imaging_csv_handles_real_nina_shapes(self):
         with (
             tempfile.TemporaryDirectory() as tmp,

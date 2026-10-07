@@ -418,8 +418,8 @@ class StopNinaTest(unittest.TestCase):
         with (
             patch("nina_planner.server.PROJECT_DIR", self.project_dir),
             patch(
-                "nina_planner.server._nina_api_responsive",
-                AsyncMock(return_value=False),
+                "nina_planner.server._api_probe",
+                AsyncMock(return_value=(False, "connection refused")),
             ),
             patch("nina_planner.server._run_blocking") as mock_run,
             patch("nina_planner.server._log_payload"),
@@ -428,6 +428,7 @@ class StopNinaTest(unittest.TestCase):
 
         self.assertFalse(result["stopped"])
         self.assertIn("not running", result["summary"])
+        self.assertIn("Probe error: connection refused", result["summary"])
         # API said NINA is down, so no taskkill was attempted.
         mock_run.assert_not_called()
 
@@ -437,8 +438,8 @@ class StopNinaTest(unittest.TestCase):
         with (
             patch("nina_planner.server.PROJECT_DIR", self.project_dir),
             patch(
-                "nina_planner.server._nina_api_responsive",
-                AsyncMock(return_value=True),
+                "nina_planner.server._api_probe",
+                AsyncMock(return_value=(True, None)),
             ),
             patch(
                 "nina_planner.server.windows_interop_available",
@@ -467,8 +468,8 @@ class StopNinaTest(unittest.TestCase):
         with (
             patch("nina_planner.server.PROJECT_DIR", self.project_dir),
             patch(
-                "nina_planner.server._nina_api_responsive",
-                AsyncMock(return_value=True),
+                "nina_planner.server._api_probe",
+                AsyncMock(return_value=(True, None)),
             ),
             patch(
                 "nina_planner.server.windows_interop_available",
@@ -488,8 +489,8 @@ class StopNinaTest(unittest.TestCase):
         with (
             patch("nina_planner.server.PROJECT_DIR", self.project_dir),
             patch(
-                "nina_planner.server._nina_api_responsive",
-                AsyncMock(return_value=True),
+                "nina_planner.server._api_probe",
+                AsyncMock(return_value=(True, None)),
             ),
             patch(
                 "nina_planner.server.windows_interop_available",

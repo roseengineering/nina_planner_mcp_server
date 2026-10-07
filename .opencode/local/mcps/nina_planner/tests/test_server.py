@@ -149,6 +149,140 @@ class HelperFunctionsTest(unittest.TestCase):
         with patch("nina_planner.server.NINA_PLANNER_LOG", None):
             _log_payload("Test", "payload")  # should not raise
 
+    def test_log_payload_windows_path_relocated_on_posix(self):
+        """The sample config's C:/... log path must not build a literal C: tree
+        on macOS/WSL — it lands in the system temp dir under the same name."""
+        import os
+
+        if os.name == "nt":
+            self.skipTest("Windows uses the configured path as-is")
+        from nina_planner.server import _log_file
+
+        with patch(
+            "nina_planner.server.NINA_PLANNER_LOG",
+            "C:/Windows/Temp/nina-planner-debug.log",
+        ):
+            expected = Path(tempfile.gettempdir()) / "nina-planner-debug.log"
+            self.assertEqual(_log_file(), expected)
+            _log_payload("Test", "payload")
+        self.assertIn("Test", expected.read_text())
+
+    def test_api_probe_reports_liveness_and_reason(self):
+        from nina_planner.server import _api_probe
+
+        with patch(
+            "nina_planner.server._api_get",
+            AsyncMock(return_value="2026-10-07T09:00:00"),
+        ):
+            self.assertEqual(asyncio.run(_api_probe()), (True, None))
+
+        with patch(
+            "nina_planner.server._api_get",
+            AsyncMock(side_effect=RuntimeError("HTTP 500: sequencer wedged")),
+        ):
+            self.assertEqual(
+                asyncio.run(_api_probe()), (False, "HTTP 500: sequencer wedged")
+            )
+
+    def test_api_post_logs_its_response(self):
+        """A POST response is never handed back to the caller, so the debug
+        log is its only home — /sequence/load's reply included."""
+        import httpx
+
+        from nina_planner.server import _api_post
+
+        response = httpx.Response(
+            200,
+            json={"Success": True, "Response": {"loaded": True}},
+            request=httpx.Request("POST", "http://127.0.0.1:1888/v2/api/sequence/load"),
+        )
+
+        class _FakeClient:
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *exc):
+                return False
+
+            async def post(self, path, json=None):
+                return response
+
+        with (
+            patch(
+                "nina_planner.server.httpx.AsyncClient",
+                lambda **kwargs: _FakeClient(),
+            ),
+            patch("nina_planner.server._log_payload") as log,
+        ):
+            result = asyncio.run(_api_post("/sequence/load", {"x": 1}))
+
+        self.assertEqual(result, {"loaded": True})
+        log.assert_called_once()
+        label, payload = log.call_args.args
+        self.assertEqual(label, "_api_post:")
+        self.assertIn('"loaded": true', payload)
+
+    @staticmethod
+    def _api_response(status: int, *, json_body=None, text: str = ""):
+        import httpx
+
+        request = httpx.Request("POST", "http://127.0.0.1:1888/v2/api/sequence/load")
+        if json_body is not None:
+            return httpx.Response(status, json=json_body, request=request)
+        return httpx.Response(status, text=text, request=request)
+
+    def test_api_error_surfaces_nina_body_behind_http_status(self):
+        """A non-2xx refusal must carry NINA's own reason — httpx's
+        raise_for_status would report only the status line."""
+        from nina_planner.server import _unwrap_response
+
+        resp = self._api_response(
+            400, json_body={"Success": False, "Error": "Sequence is already running"}
+        )
+        with self.assertRaises(RuntimeError) as ctx:
+            _unwrap_response("POST", "/sequence/load", resp)
+        message = str(ctx.exception)
+        self.assertIn("Sequence is already running", message)
+        self.assertIn("POST", message)
+        self.assertIn("400", message)
+
+    def test_api_error_surfaces_and_truncates_plain_text_body(self):
+        from nina_planner.server import _unwrap_response
+
+        resp = self._api_response(502, text="upstream " + "x" * 600)
+        with self.assertRaises(RuntimeError) as ctx:
+            _unwrap_response("GET", "/time", resp)
+        message = str(ctx.exception)
+        self.assertIn("upstream ", message)
+        self.assertLess(len(message), 700)
+
+    def test_api_error_on_empty_body_reports_status(self):
+        from nina_planner.server import _unwrap_response
+
+        resp = self._api_response(500)
+        with self.assertRaisesRegex(
+            RuntimeError, "failed with HTTP 500: an empty response body"
+        ):
+            _unwrap_response("GET", "/time", resp)
+
+    def test_api_200_with_success_false_keeps_nina_error_verbatim(self):
+        from nina_planner.server import _unwrap_response
+
+        resp = self._api_response(
+            200, json_body={"Success": False, "Error": "Filter 'L' not found"}
+        )
+        with self.assertRaisesRegex(RuntimeError, "^Filter 'L' not found$"):
+            _unwrap_response("GET", "/profile", resp)
+
+    def test_api_200_with_non_json_body_reports_body(self):
+        from nina_planner.server import _unwrap_response
+
+        resp = self._api_response(200, text="<html>gateway exploded</html>")
+        with self.assertRaises(RuntimeError) as ctx:
+            _unwrap_response("GET", "/time", resp)
+        self.assertIn("non-JSON", str(ctx.exception))
+        self.assertIn("gateway exploded", str(ctx.exception))
+
     def _make_plan(self, **overrides):
         data = {
             "plan_id": "plan-test",
@@ -1471,8 +1605,8 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn("`light` sequence started", result)
         api_post.assert_awaited_once()
         self.assertEqual(api_post.await_args.args[0], "/sequence/load")
-        api_get.assert_any_await("/sequence/json")
-        api_get.assert_any_await("/sequence/start?skipValidation=true")
+        # Load and start are the only API calls: no running-state pre-check.
+        api_get.assert_awaited_once_with("/sequence/start?skipValidation=true")
 
     async def test_run_plan_load_only(self):
         from unittest.mock import MagicMock as _MM
@@ -1529,9 +1663,8 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result, "`light` sequence loaded.")
         api_post.assert_awaited_once()
         self.assertEqual(api_post.await_args.args[0], "/sequence/load")
-        # The load helper checks that nothing is running before loading, but
-        # does not start the sequence in load-only mode.
-        api_get.assert_awaited_once_with("/sequence/json")
+        # No running-state pre-check, and no start in load-only mode.
+        api_get.assert_not_awaited()
 
     async def test_stow_telescope_loads_and_starts(self):
         from nina_planner.server import stow_telescope
@@ -1581,43 +1714,22 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result, "Sequence stopped.")
         self.assertNotIn("/sequence/stop", calls)
 
-    async def test_run_plan_retries_load_when_already_running(self):
+    async def test_load_sequence_surfaces_api_error_without_retry(self):
+        """No local pre-check and no retry: NINA's own refusal is what propagates."""
         from nina_planner.server import _load_sequence_payload
 
-        post_calls = {"n": 0}
-
-        async def fake_post(path: str, body):
-            post_calls["n"] += 1
-            if post_calls["n"] == 1:
-                raise RuntimeError("Sequence is already running")
-            return {}
-
-        async def fake_get(path: str):
-            return [{"Name": "Root", "Status": "CREATED"}]
-
-        with (
-            patch("nina_planner.server._api_post", side_effect=fake_post),
-            patch("nina_planner.server._api_get", side_effect=fake_get),
-            patch("nina_planner.server.anyio.sleep", AsyncMock()),
-        ):
-            await _load_sequence_payload({"x": 1})
-        self.assertEqual(post_calls["n"], 2)
-
-    async def test_load_sequence_refuses_when_running(self):
-        from nina_planner.server import _load_sequence_payload
-
-        api_post = AsyncMock(return_value={})
-
-        async def fake_get(path: str):
-            return [{"Name": "Root", "Status": "RUNNING"}]
+        api_post = AsyncMock(side_effect=RuntimeError("Sequence is already running"))
+        api_get = AsyncMock(return_value=[{"Name": "Root", "Status": "RUNNING"}])
 
         with (
             patch("nina_planner.server._api_post", api_post),
-            patch("nina_planner.server._api_get", side_effect=fake_get),
+            patch("nina_planner.server._api_get", api_get),
         ):
             with self.assertRaisesRegex(RuntimeError, "already running"):
                 await _load_sequence_payload({"x": 1})
-        api_post.assert_not_awaited()
+        api_post.assert_awaited_once()
+        # The running-state probe is gone from the load path.
+        api_get.assert_not_awaited()
 
     async def test_get_sequence_state_returns_json(self):
         from nina_planner.server import get_sequence_state
@@ -1741,6 +1853,7 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["host_time"], "2026-09-22T03:00:01")
         self.assertEqual(result["delta_seconds"], -1.0)
         self.assertFalse(result["simulated"])
+        self.assertIsNone(result["probe_error"])
         self.assertIn("NINA running", result["summary"])
         self.assertIn("responsive", result["summary"])
 
@@ -1767,8 +1880,11 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(result["host_time"])
         self.assertIsNone(result["delta_seconds"])
         self.assertIsNone(result["simulated"])
+        # NINA's own reason is reported, not flattened to "unresponsive".
+        self.assertEqual(result["probe_error"], "connection refused")
         self.assertIn("NINA not running", result["summary"])
         self.assertIn("unresponsive", result["summary"])
+        self.assertIn("connection refused", result["summary"])
 
     async def test_get_nina_status_remote_running(self):
         """API responsive but no Windows interop: running, but lifecycle
@@ -2072,22 +2188,23 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
 
         with (
             patch(
-                "nina_planner.server._nina_api_responsive",
-                AsyncMock(return_value=False),
+                "nina_planner.server._api_probe",
+                AsyncMock(return_value=(False, "connection refused")),
             ),
             patch("nina_planner.server._log_payload"),
         ):
             result = await stop_nina()
         self.assertFalse(result["stopped"])
         self.assertIn("not running", result["summary"])
+        self.assertIn("Probe error: connection refused", result["summary"])
 
     async def test_stop_nina_remote_unavailable_raises(self):
         from nina_planner.server import stop_nina
 
         with (
             patch(
-                "nina_planner.server._nina_api_responsive",
-                AsyncMock(return_value=True),
+                "nina_planner.server._api_probe",
+                AsyncMock(return_value=(True, None)),
             ),
             patch(
                 "nina_planner.server.windows_interop_available",
@@ -2108,8 +2225,8 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
 
         with (
             patch(
-                "nina_planner.server._nina_api_responsive",
-                AsyncMock(return_value=True),
+                "nina_planner.server._api_probe",
+                AsyncMock(return_value=(True, None)),
             ),
             patch(
                 "nina_planner.server.windows_interop_available",
