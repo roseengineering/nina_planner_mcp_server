@@ -99,9 +99,14 @@ class ObservationPlan(BaseModel):
     calibration_window_days: int = Field(
         default=7,
         ge=1,
-        description="Calibration frames (darks, bias, flats) shot before the "
-        "plan's light session start minus this many days are not attributed; "
-        "frames shot at or after the session always count.",
+        description="Calibration frames (darks, bias, flats) are attributed "
+        "only when shot within this many days of the plan's earliest "
+        "attributed light, on either side of it. While the current time is "
+        "inside that window the plan reports the calibration it still "
+        "needs; once the current time falls outside it, no frame shot now "
+        "could be credited, so remaining calibration is reported as 0 "
+        "(window_open=false). Raise this value — or write a new plan — to "
+        "reopen the window.",
     )
 
     # hardware

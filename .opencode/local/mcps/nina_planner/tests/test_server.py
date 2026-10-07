@@ -753,6 +753,14 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(result["pointings"]), 1)
         self.assertEqual(result["pointings"][0]["plan_id"], "plan-test123-1")
         self.assertIn("light", result["pointings"][0]["frame_types"])
+        # Calibration groups carry the window state so a zero remaining can be
+        # told apart from a closed window; lights do not.
+        dark = result["pointings"][0]["frame_types"]["dark"][0]
+        self.assertTrue(dark["window_open"])
+        self.assertIn("window_end", dark)
+        self.assertNotIn(
+            "window_open", result["pointings"][0]["frame_types"]["light"][0]
+        )
 
     def _write_mosaic_source(self, directory: Path, *, pa: float = 0.0, rows: int = 2):
         directory.mkdir(parents=True, exist_ok=True)
@@ -1130,6 +1138,73 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
                     str(plan_path), frame_type="dark", pointing_index=1
                 )
         self.assertIn("`dark` sequence started", result)
+
+    async def test_run_plan_dark_skipped_when_window_closed(self):
+        """A plan whose lights are older than `calibration_window_days` cannot
+        credit any dark shot now, so `mode="remaining"` must report the darks
+        as done rather than re-shoot them forever."""
+        from unittest.mock import MagicMock as _MM
+
+        from nina_planner.server import run_plan
+
+        plan_dict = {
+            "plan_id": "plan-test123",
+            "target": "M31",
+            "pointings": [{"ra_hours": 5.0, "dec_deg": 10.0}],
+            "light": [
+                {"filter_name": "L", "exposure_time_seconds": 60.0, "total_count": 1}
+            ],
+            "flat": [
+                {"filter_name": "L", "exposure_time_seconds": 5.0, "total_count": 1}
+            ],
+            "dark": [{"exposure_time_seconds": 60.0, "total_count": 1}],
+            "bias": [{"total_count": 1}],
+        }
+        old_light = {
+            "image_type": "LIGHT",
+            "filter_name": "L",
+            "duration": "60.0",
+            "exposure_start": "2020-01-01 20:00:00",
+            "file_path": "C:/NINA/LIGHT/M31 (plan-test123-1)__60.00s_0000.fits",
+        }
+
+        with tempfile.TemporaryDirectory() as tmp:
+            plan_path = Path(tmp) / "plan.json"
+            plan_path.write_text(json.dumps(plan_dict))
+
+            darks_builder = _MM(return_value={"$type": "darks"})
+            with (
+                patch(
+                    "nina_planner.server.get_site_profile",
+                    AsyncMock(return_value=self._full_profile()),
+                ),
+                patch(
+                    "nina_planner.server._get_site_equipment_status",
+                    AsyncMock(return_value=ObservatoryEquipment()),
+                ),
+                patch(
+                    "nina_planner.server._read_metadata",
+                    AsyncMock(return_value=[old_light]),
+                ),
+                patch(
+                    "nina_planner.server.get_nina_time",
+                    AsyncMock(return_value={"nina_time": "2026-10-05T12:00:00-05:00"}),
+                ),
+                patch(
+                    "nina_planner.server.build_sequence_darks",
+                    new=darks_builder,
+                ),
+                patch(
+                    "nina_planner.server._api_get",
+                    AsyncMock(return_value={}),
+                ),
+            ):
+                result = await run_plan(
+                    str(plan_path), frame_type="dark", pointing_index=1
+                )
+
+        self.assertIn("nothing to load", result)
+        darks_builder.assert_not_called()
 
     async def test_run_plan_bias_frame(self):
         from nina_planner.server import run_plan

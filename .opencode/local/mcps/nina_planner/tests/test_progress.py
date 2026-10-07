@@ -415,8 +415,27 @@ class CalibrationAgeTest(unittest.TestCase):
         self.assertEqual(prog["flat"][0]["acquired_count"], 1)
 
     def test_calibration_after_lights_counts_without_reacquisition(self):
-        # Session-anchored: darks shot *after* the lights stay counted, so the
-        # plan does not keep re-acquiring them on later runs (no infinite loop).
+        # Session-anchored: darks shot *within the window* after the lights
+        # stay counted, so the plan does not keep re-acquiring them on later
+        # runs (no infinite loop).
+        plan = _plan()
+        session = datetime(2026, 9, 1, 22, 0, 0)
+        light = _row(exposure_start=session.strftime("%Y-%m-%d %H:%M:%S"))
+        dark = _row(
+            image_type="DARK",
+            duration="60.0",
+            target=None,
+            exposure_start=(session + timedelta(days=3)).strftime("%Y-%m-%d %H:%M:%S"),
+        )
+        prog = plan_progress(plan, [light, dark], now=session + timedelta(days=4))
+        self.assertEqual(prog["light"][0]["acquired_count"], 1)
+        self.assertTrue(prog["dark"][0]["window_open"])
+        self.assertEqual(prog["dark"][0]["acquired_count"], 1)
+        self.assertEqual(prog["dark"][0]["remaining_count"], 9)
+
+    def test_calibration_outside_window_not_attributed(self):
+        # Upper bound: a dark shot well after (earliest light + window) is not
+        # attributed to the plan at all.
         plan = _plan()
         session = datetime(2026, 9, 1, 22, 0, 0)
         light = _row(exposure_start=session.strftime("%Y-%m-%d %H:%M:%S"))
@@ -426,10 +445,62 @@ class CalibrationAgeTest(unittest.TestCase):
             target=None,
             exposure_start=(session + timedelta(days=30)).strftime("%Y-%m-%d %H:%M:%S"),
         )
-        prog = plan_progress(plan, [light, dark], now=session + timedelta(days=60))
+        prog = plan_progress(plan, [light, dark], now=session + timedelta(days=31))
         self.assertEqual(prog["light"][0]["acquired_count"], 1)
+        self.assertEqual(prog["dark"][0]["acquired_count"], 0)
+
+    def test_closed_window_reports_zero_remaining(self):
+        # Once `now` is outside the window no frame shot now could ever be
+        # credited, so remaining is reported as 0 instead of an unsatisfiable
+        # deficit — otherwise every later run would re-acquire the darks.
+        plan = _plan()
+        session = datetime(2026, 9, 1, 22, 0, 0)
+        light = _row(exposure_start=session.strftime("%Y-%m-%d %H:%M:%S"))
+        prog = plan_progress(plan, [light], now=session + timedelta(days=60))
+        for key in ("flat", "dark", "bias"):
+            item = prog[key][0]
+            self.assertFalse(item["window_open"])
+            self.assertEqual(item["remaining_count"], 0)
+        # Lights are unaffected by the window.
+        self.assertNotIn("window_open", prog["light"][0])
+        self.assertEqual(prog["light"][0]["remaining_count"], 19)
+
+    def test_closed_window_keeps_truthful_acquired_count(self):
+        # A closed window zeroes the *demand*, not the record: frames shot
+        # inside the window are still reported as acquired.
+        plan = _plan()
+        session = datetime(2026, 9, 1, 22, 0, 0)
+        light = _row(exposure_start=session.strftime("%Y-%m-%d %H:%M:%S"))
+        dark = _row(
+            image_type="DARK",
+            duration="60.0",
+            target=None,
+            exposure_start=(session + timedelta(days=1)).strftime("%Y-%m-%d %H:%M:%S"),
+        )
+        prog = plan_progress(plan, [light, dark], now=session + timedelta(days=60))
+        self.assertFalse(prog["dark"][0]["window_open"])
         self.assertEqual(prog["dark"][0]["acquired_count"], 1)
-        self.assertEqual(prog["dark"][0]["remaining_count"], 9)
+        self.assertEqual(prog["dark"][0]["remaining_count"], 0)
+
+    def test_window_end_is_anchor_plus_window(self):
+        plan = _plan(calibration_window_days=3)
+        session = datetime(2026, 9, 1, 22, 0, 0)
+        light = _row(exposure_start=session.strftime("%Y-%m-%d %H:%M:%S"))
+        prog = plan_progress(plan, [light], now=session)
+        self.assertTrue(prog["dark"][0]["window_open"])
+        self.assertEqual(
+            prog["dark"][0]["window_end"],
+            (session + timedelta(days=3)).isoformat(timespec="seconds"),
+        )
+
+    def test_window_open_when_plan_has_no_lights(self):
+        # With no lights the anchor is `now`, so the window is open and
+        # calibration is still demanded.
+        plan = _plan()
+        now = datetime(2026, 9, 1, 22, 0, 0)
+        prog = plan_progress(plan, [], now=now)
+        self.assertTrue(prog["dark"][0]["window_open"])
+        self.assertEqual(prog["dark"][0]["remaining_count"], 10)
 
     def test_pre_session_calibration_older_than_window_excluded(self):
         plan = _plan(calibration_window_days=7)
@@ -692,8 +763,15 @@ class PrivateHelperDefensivePathsTest(unittest.TestCase):
         self.assertFalse(
             _within_age({"exposure_start": "2026-09-20 11:59:00"}, 2, session)
         )
-        # ...and there is no upper bound: a frame after the session counts.
+        # ...the upper bound is inclusive too...
         self.assertTrue(
+            _within_age({"exposure_start": "2026-09-24 12:00:00"}, 2, session)
+        )
+        # ...and anything beyond it does not count.
+        self.assertFalse(
+            _within_age({"exposure_start": "2026-09-24 12:01:00"}, 2, session)
+        )
+        self.assertFalse(
             _within_age({"exposure_start": "2026-10-05 00:00:00"}, 2, session)
         )
 
