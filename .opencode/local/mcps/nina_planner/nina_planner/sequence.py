@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 import os
 from typing import Any, cast
 
@@ -171,7 +169,7 @@ def container_root(instructions: list[Any] | None = None) -> dict[str, Any]:
     return _fix_provider(
         _add_refs(
             _container_base(
-                "NINA.Sequencer.Container.SequenceRootContainer, NINA.Sequencer",
+                ctype="NINA.Sequencer.Container.SequenceRootContainer, NINA.Sequencer",
                 name="Root Sequence",
                 instructions=instructions,
             )
@@ -183,7 +181,7 @@ def container_start(instructions: list[Any] | None = None) -> dict[str, Any]:
     if instructions is None:
         instructions = []
     return _container_base(
-        "NINA.Sequencer.Container.StartAreaContainer, NINA.Sequencer",
+        ctype="NINA.Sequencer.Container.StartAreaContainer, NINA.Sequencer",
         name="Start Sequence",
         instructions=instructions,
     )
@@ -193,7 +191,7 @@ def container_target(instructions: list[Any] | None = None) -> dict[str, Any]:
     if instructions is None:
         instructions = []
     return _container_base(
-        "NINA.Sequencer.Container.TargetAreaContainer, NINA.Sequencer",
+        ctype="NINA.Sequencer.Container.TargetAreaContainer, NINA.Sequencer",
         name="Target Sequence",
         instructions=instructions,
     )
@@ -203,7 +201,7 @@ def container_end(instructions: list[Any] | None = None) -> dict[str, Any]:
     if instructions is None:
         instructions = []
     return _container_base(
-        "NINA.Sequencer.Container.EndAreaContainer, NINA.Sequencer",
+        ctype="NINA.Sequencer.Container.EndAreaContainer, NINA.Sequencer",
         name="End Sequence",
         instructions=instructions,
     )
@@ -222,7 +220,7 @@ def container_sequential(
     if instructions is None:
         instructions = []
     return _container_base(
-        "NINA.Sequencer.Container.SequentialContainer, NINA.Sequencer",
+        ctype="NINA.Sequencer.Container.SequentialContainer, NINA.Sequencer",
         name=name,
         conditions=conditions,
         triggers=triggers,
@@ -247,7 +245,7 @@ def container_deepsky(
     if instructions is None:
         instructions = []
     return _container_base(
-        "NINA.Sequencer.Container.DeepSkyObjectContainer, NINA.Sequencer",
+        ctype="NINA.Sequencer.Container.DeepSkyObjectContainer, NINA.Sequencer",
         name=name,
         triggers=triggers,
         conditions=conditions,
@@ -414,15 +412,15 @@ def switch_filter(
 
 def sky_flats(count: int, filter_name: str, filter_position: int) -> dict[str, Any]:
     return _container_base(
-        "NINA.Sequencer.SequenceItem.FlatDevice.SkyFlat, NINA.Sequencer",
+        ctype="NINA.Sequencer.SequenceItem.FlatDevice.SkyFlat, NINA.Sequencer",
         name="Twilight Sky Flats",
         instructions=[
             annotation(),
             annotation(),
             switch_filter(filter_name, filter_position),
             annotation(),
-            container_sequential(
-                "NINA.Sequencer.Container.SequentialContainer, NINA.Sequencer",
+            _container_base(
+                ctype="NINA.Sequencer.Container.SequentialContainer, NINA.Sequencer",
                 conditions=[loop_for_iterations(count)],
                 instructions=[take_exposure(0.0, "FLAT")],
             ),
@@ -520,7 +518,7 @@ def wait_for_time_span(seconds: float) -> dict[str, Any]:
     return _child(
         "NINA.Sequencer.SequenceItem.Utility.WaitForTimeSpan, NINA.Sequencer"
     ) | {
-        "Time": seconds,
+        "Time": int(seconds),
     }
 
 
@@ -629,7 +627,7 @@ def smart_exposure(
     dither: int | None = None,
 ) -> dict[str, Any]:
     return _container_base(
-        "NINA.Sequencer.SequenceItem.Imaging.SmartExposure, NINA.Sequencer",
+        ctype="NINA.Sequencer.SequenceItem.Imaging.SmartExposure, NINA.Sequencer",
         name="Smart Exposure",
         conditions=[loop_for_iterations(count)],
         triggers=[dither_after_exposures(dither)] if dither is not None else [],
@@ -763,12 +761,32 @@ def sequence_root(
     )
 
 
-####
+## DARKS
+
+
+# so while safe
+#     take expsoures
+# unsafe part
+# take expsoures
 
 
 def build_sequence_darks(
     plan: ObservationPlan, equipment: ObservatoryEquipment, bias: bool = False
 ) -> dict[str, Any]:
+    def instructions():
+        return (
+            sequence_park_scope(equipment) 
+            + sequence_cool_camera(plan, equipment)
+            + [
+                smart_exposure(
+                    count=d[0],
+                    exposure=d[1],
+                    image_type="BIAS" if bias else "DARK",
+                )
+                for d in _round_robin(plan.bias if bias else plan.dark)
+            ]
+        )
+
     return sequence_root(
         equipment=equipment,
         instructions=[
@@ -776,21 +794,15 @@ def build_sequence_darks(
                 [
                     sequence_deepsky(
                         plan=plan,
-                        instructions=sequence_park_scope(equipment)
-                        + sequence_cool_camera(plan, equipment)
-                        + [
-                            smart_exposure(
-                                count=d[0],
-                                exposure=d[1],
-                                image_type="BIAS" if bias else "DARK",
-                            )
-                            for d in _round_robin(plan.bias if bias else plan.dark)
-                        ],
-                    ),
+                        instructions=instructions()
+                    )
                 ]
-            ),
+            )
         ],
     )
+
+
+## LIGHTS
 
 
 def build_sequence_lights(
@@ -931,6 +943,9 @@ def build_sequence_lights(
             )
         ],
     )
+
+
+## FLATS
 
 
 def build_sequence_flats(
