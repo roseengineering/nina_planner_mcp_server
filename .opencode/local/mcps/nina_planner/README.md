@@ -50,13 +50,14 @@ Or register it with your MCP client, for example in OpenCode:
 **Planning & acquisition**
 - `write_plan_file` — create an observation plan JSON file
 - `write_mosaic_plan` — expand a plan into a multi-pointing mosaic from a Telescopius CSV
-- `run_plan` — load and start the acquisition sequence for a plan (or one mosaic pane)
+- `load_sequence(request={plan?, action, ...})` — load a sequence without starting it; pair it with `start_sequence` to actually run it. `action` is `light`/`dark`/`bias`/`dawn_flat`/`dusk_flat` (built from `plan`, the observation-plan JSON path) or the plan-less teardown `stow` (park/home + warm), `park` (park/home only), `warm` (warm only), `unpark` (release a parked mount). A field the chosen action does not use is rejected, not silently ignored
+- `load_sequence(request=[{...}, {...}])` — a **list** of requests composes one sequence for the night: one Start area, one Target area holding each step's containers in order, one End area that always stows (park + warm). In list form `park`/`warm`/`unpark` become ordered mid-list steps usable anywhere (warm across a gap, park before darks), `stow` is rejected because the End area already does it, and `unpark` is refused as a lone single request. Entries already complete are skipped and reported, one POST carries the whole list, and a validation failure names its 0-based entry (`request[1]: ...`)
 - `get_plan_progress` — per-frame-type acquired/remaining counts per pointing
 - `get_imaging_metadata` — per-exposure frame metrics (HFR, guiding RMS, weather, ...)
 
 **Sequence control**
-- `get_sequence_state` / `start_sequence` / `stop_sequence` / `stow_telescope` —
-  inspect and control the running sequence; stow parks or homes the mount
+- `get_sequence_state` / `start_sequence` / `stop_sequence` —
+  inspect and control the running sequence
 
 **N.I.N.A. lifecycle**
 - `start_nina` / `stop_nina` / `get_nina_status` — launch, terminate, and probe N.I.N.A.,

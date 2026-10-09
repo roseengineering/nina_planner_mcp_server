@@ -281,9 +281,9 @@ def filter_metadata_rows(
         ]
     specs: list[tuple[str | None, float | None]]
     if image_type_upper == "FLAT":
-        specs = [(g.filter_name, g.exposure_time_seconds) for g in plan.flat]
+        specs = [(g.filter_name, g.exposure_time_seconds) for g in plan.flat_frames]
     elif image_type_upper == "DARK":
-        specs = [(None, g.exposure_time_seconds) for g in plan.dark]
+        specs = [(None, g.exposure_time_seconds) for g in plan.dark_frames]
     elif image_type_upper == "BIAS":
         specs = [(None, None)]
     else:
@@ -377,10 +377,10 @@ def plan_progress(
         return out
 
     return {
-        "light": group("LIGHT", plan.light),
-        "flat": group("FLAT", plan.flat),
-        "dark": group("DARK", plan.dark),
-        "bias": group("BIAS", plan.bias),
+        "light": group("LIGHT", plan.light_frames),
+        "flat": group("FLAT", plan.flat_frames),
+        "dark": group("DARK", plan.dark_frames),
+        "bias": group("BIAS", plan.bias_frames),
     }
 
 
@@ -398,9 +398,9 @@ def plan_with_remaining(
 
     return plan.model_copy(
         update={
-            "light": rebuild(plan.light, "light"),
-            "flat": rebuild(plan.flat, "flat"),
-            "dark": rebuild(plan.dark, "dark"),
-            "bias": rebuild(plan.bias, "bias"),
+            "light_frames": rebuild(plan.light_frames, "light"),
+            "flat_frames": rebuild(plan.flat_frames, "flat"),
+            "dark_frames": rebuild(plan.dark_frames, "dark"),
+            "bias_frames": rebuild(plan.bias_frames, "bias"),
         }
     )

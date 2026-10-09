@@ -1,4 +1,4 @@
-# Tonight
+# Tonight - 2026-10-08
 
 - M31          "before the moon comes up"
 - Veil Nebula  plan=veil-nebula_..._20260913.json   prio 1

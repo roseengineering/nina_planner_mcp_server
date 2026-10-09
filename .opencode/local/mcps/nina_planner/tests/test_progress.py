@@ -36,14 +36,14 @@ def _plan(**overrides):
         "plan_id": "plan-abc123",
         "target": "M31",
         "pointings": [{"ra_hours": 0.71, "dec_deg": 41.27}],
-        "light": [
+        "light_frames": [
             {"filter_name": "LP", "exposure_time_seconds": 60.0, "total_count": 20}
         ],
-        "flat": [
+        "flat_frames": [
             {"filter_name": "LP", "exposure_time_seconds": 5.0, "total_count": 10}
         ],
-        "dark": [{"exposure_time_seconds": 60.0, "total_count": 10}],
-        "bias": [{"total_count": 10}],
+        "dark_frames": [{"exposure_time_seconds": 60.0, "total_count": 10}],
+        "bias_frames": [{"total_count": 10}],
     }
     data.update(overrides)
     return ObservationPlan(**data)
@@ -331,11 +331,11 @@ class PlanWithRemainingTest(unittest.TestCase):
         progress = plan_progress(plan, rows)
         reduced = plan_with_remaining(plan, progress)
 
-        self.assertEqual(reduced.light[0].total_count, 16)
+        self.assertEqual(reduced.light_frames[0].total_count, 16)
         # flats/darks/bias untouched (no matching rows)
-        self.assertEqual(reduced.flat[0].total_count, 10)
-        self.assertEqual(reduced.dark[0].total_count, 10)
-        self.assertEqual(reduced.bias[0].total_count, 10)
+        self.assertEqual(reduced.flat_frames[0].total_count, 10)
+        self.assertEqual(reduced.dark_frames[0].total_count, 10)
+        self.assertEqual(reduced.bias_frames[0].total_count, 10)
 
     def test_drops_fully_acquired_group(self):
         plan = _plan()
@@ -343,11 +343,11 @@ class PlanWithRemainingTest(unittest.TestCase):
         progress = plan_progress(plan, rows)
         reduced = plan_with_remaining(plan, progress)
 
-        self.assertEqual(reduced.light, [])
+        self.assertEqual(reduced.light_frames, [])
 
     def test_partial_group_survives(self):
         plan = _plan(
-            light=[
+            light_frames=[
                 {"filter_name": "L", "exposure_time_seconds": 60.0, "total_count": 5},
                 {"filter_name": "SII", "exposure_time_seconds": 60.0, "total_count": 5},
             ]
@@ -356,8 +356,8 @@ class PlanWithRemainingTest(unittest.TestCase):
         progress = plan_progress(plan, rows)
         reduced = plan_with_remaining(plan, progress)
 
-        self.assertEqual(len(reduced.light), 2)
-        counts = {exp.filter_name: exp.total_count for exp in reduced.light}
+        self.assertEqual(len(reduced.light_frames), 2)
+        counts = {exp.filter_name: exp.total_count for exp in reduced.light_frames}
         self.assertEqual(counts["L"], 5)
         self.assertEqual(counts["SII"], 2)
 
@@ -659,14 +659,14 @@ class PrivateHelperDefensivePathsTest(unittest.TestCase):
             "plan_id": "plan-test123",
             "target": "M31",
             "pointings": [{"ra_hours": 0.71, "dec_deg": 41.27}],
-            "light": [
+            "light_frames": [
                 {"filter_name": "L", "exposure_time_seconds": 60.0, "total_count": 1}
             ],
-            "flat": [
+            "flat_frames": [
                 {"filter_name": "L", "exposure_time_seconds": 5.0, "total_count": 1}
             ],
-            "dark": [{"exposure_time_seconds": 60.0, "total_count": 1}],
-            "bias": [{"total_count": 1}],
+            "dark_frames": [{"exposure_time_seconds": 60.0, "total_count": 1}],
+            "bias_frames": [{"total_count": 1}],
         }
         data.update(overrides)
         return ObservationPlan(**data)

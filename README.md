@@ -28,9 +28,11 @@
 
 | Tool | Purpose |
 |---|---|
-| `run_plan(file_path, frame_type, pointing_index=1, mode="remaining", load_only=False, max_hfr?, min_detected_stars?, max_guiding_rms_arcsec?)` | Load a plan file as a sequence (light, dark, bias, dawn_flat, or dusk_flat) and start it. `pointing_index` (1-based, default 1) selects which pointing of the plan to load — lights embed `{base_plan_id}-{pointing_index}` in the NINA target name so each pointing's frames are attributed independently. Default `remaining` mode acquires only frames not yet attributed to that pointing; `mode="full"` acquires the whole plan. Quality thresholds exclude light frames that fail them from the acquired count. Reports "pointing complete" and loads nothing when nothing remains. Pass `load_only=True` to load the sequence without starting it. Refuses to load while a sequence is already running — call `stop_sequence()` first. |
+| `load_sequence(request={plan?, action="light", pointing_index=1, mode="remaining", max_hfr?, min_detected_stars?, max_guiding_rms_arcsec?})` | Load a plan file as a sequence **without starting it** — call `start_sequence()` to begin. The whole request is one object: `plan` is the observation-plan JSON path and `action` (light, dark, bias, dawn_flat, or dusk_flat) says which sequence to build from it. `plan` is optional in the schema, but every action builds its sequence from a plan, so omitting it raises an error naming the action. `pointing_index` (1-based, default 1) selects which pointing of the plan to load — lights embed `{base_plan_id}-{pointing_index}` in the NINA target name so each pointing's frames are attributed independently. Default `remaining` mode acquires only frames not yet attributed to that pointing; `mode="full"` acquires the whole plan. Quality thresholds exclude light frames that fail them from the acquired count. Reports "pointing complete" and loads nothing when nothing remains. Refuses to load while a sequence is already running — call `stop_sequence()` first. `action` also accepts the plan-less teardown values `stow`, `park`, `warm`, and `unpark` (next row), and `request` may be a **list** of these objects to compose a whole night as one sequence (row after next). |
+| `start_sequence()` | Start the currently loaded sequence. |
 | `stop_sequence()` | Stop any running sequence and wait until NINA reports it has actually stopped. |
-| `stow_telescope()` | Start a teardown sequence, parking scope. |
+| `load_sequence(request={"action": "stow"\|"park"\|"warm"\|"unpark"})` | Plan-less teardown sequences, loaded **without starting them** — call `start_sequence()` after. `stow` parks (or homes) the mount and then warms the camera; `park` parks (or homes) the mount only; `warm` warms the camera only; `unpark` releases a parked mount. None needs a `plan`, and each rejects `plan`/`pointing_index`/`mode`/thresholds as unused instead of ignoring them. Each also fails outright when the equipment cannot do it — a mount that can neither park nor home (stow/park), a camera without a cooler (warm), a mount that cannot park (unpark). `unpark` is refused as a lone single request, because it would end with the mount unparked and nothing running; use it inside a request list, where the End area parks behind it. |
+| `load_sequence(request=[{...}, {...}, ...])` | A **list** of request objects composes one N.I.N.A. sequence for the whole night: a single Start area, one Target area holding each step's containers in list order, and one End area that always stows (park, then warm) — so a list implicitly ends with a stow. Each frame action contributes its sequence; in list form `park`, `warm`, and `unpark` become ordered mid-sequence steps usable anywhere (`warm` across a gap between targets — the next plan-driven frame step re-cools before imaging when the plan's cooler is on; `park` across a gap before darks, which park themselves anyway; `unpark` to release a parked mount), while `stow` is rejected because the End area already does it. Steps run in order as the sequence reaches them: a step with its own waits (lights, flats) waits, or is skipped once its window has passed, without blocking the steps behind it. Entries already complete in `remaining` mode are skipped and reported; if every entry is complete nothing is sent to N.I.N.A. Profile, equipment, and metadata are fetched once, a single POST carries the whole sequence, and a validation error names the offending entry by its 0-based position (`request[1]: ...`). Load it, then one `start_sequence()` runs the night. |
 | `get_sequence_state()` | Return the loaded sequence structure and the current status of its containers, instructions, conditions, and triggers (whether loaded, running, completed, failed, or waiting). |
 | `stop_nina()` | Terminate the NINA.exe application immediately via taskkill. Liveness comes from the REST API: it no-ops when NINA is already down, and errors when NINA is up but remote (no local Windows interop) since it cannot be terminated from here. |
 | `start_nina(time=None)` | Launch NINA into the active interactive desktop session (GUI visible). With `time=None`, launches on current real time. With `time="YYYY-MM-DDTHH:MM:SS"`, shifts host clock, launches NINA, and restores real clock so NINA runs on simulated time. Errors if NINA is already running (call `stop_nina()` first), and errors when this host has no Windows interop to launch a remote NINA. |
@@ -80,27 +82,27 @@ An example json plan:
     "check_drift_every_n_exposures": 6,
     "max_drift_arcmin": 1.5
   },
-  "light": [
+  "light_frames": [
     {
       "filter_name": "LP",
       "exposure_time_seconds": 60.0,
       "total_count": 60
     }
   ],
-  "flat": [
+  "flat_frames": [
     {
       "filter_name": "LP",
       "exposure_time_seconds": 5.0,
       "total_count": 30
     }
   ],
-  "dark": [
+  "dark_frames": [
     {
       "exposure_time_seconds": 60.0,
       "total_count": 20
     }
   ],
-  "bias": [
+  "bias_frames": [
     {
       "total_count": 30
     }
@@ -116,7 +118,9 @@ An example json plan:
 | `intent` | no | 2-3 words describing the goal |
 | `plan_id` | no | Stable identifier stamped on write. Used for frame attribution; when absent, a deterministic hash of plan content is used. |
 | `description` | no | explanation of the observation plan, including rationale, exposure goals, equipment, or sky constraints |
-| `pointings` | **yes** | One or more target pointings. Each is a `Pointing` object: `label` (optional string shown in the NINA target name when set), `ra_hours` (J2000 RA in hours, `[0, 24)`), `dec_deg` (J2000 dec in degrees, `[-90, +90]`), `position_angle_deg` (optional rotator PA in degrees east of north, `[mosaic.csv](./mosaic.csv)
+| `pointings` | **yes** | One or more target pointings. Each is a `Pointing` object: `label` (optional string shown in the NINA target name when set), `ra_hours` (J2000 RA in hours, `[0, 24)`), `dec_deg` (J2000 dec in degrees, `[-90, +90]`), `position_angle_deg` (optional rotator PA in degrees east of north, 
+
+`[mosaic.csv](./mosaic.csv)
 ```csv mosaic.csv
 Pane, RA, DEC, Position Angle (East), Pane width (arcmins), Pane height (arcmins), Overlap, Row, Column
 Pane 1, 0hr 56' 01", 45º 51' 18", 0.00, 309.00, 205.80, 10%, 1, 1
@@ -132,7 +136,7 @@ Pane 8, 0hr 31' 14", 36º 36' 00", 0.00, 309.00, 205.80, 10%, 4, 2
 Each row becomes a `Pointing`: RA/DEC are parsed server-side (sexagesimal like `0hr 56' 01"` / `45º 51' 18"` or decimal), `Pane` becomes the `label`, and `Row`/`Column` are stored as `row`/`column` metadata (N.I.N.A. does not use them — they are kept for ordering, labeling, and later mosaic assembly). The base plan's `plan_id` is cleared so the mosaic gets its own content-derived id; each pane is attributed independently via `({plan_id}-{pointing_index})`.
 
 - **No rotator:** every pane's `position_angle_deg` must be `0`. Any nonzero PA fails loudly, since PA can't be enforced without a rotator.
-- **Acquiring panes:** query `get_plan_progress(file_path)` to see which panes still need frames, then run the first incomplete pane with `run_plan(file_path, frame_type="light", pointing_index=N, mode="remaining")`. Repeat pane by pane across the night; when the top-level `complete` is true, the mosaic is done.
+- **Acquiring panes:** query `get_plan_progress(file_path)` to see which panes still need frames, then load the first incomplete pane with `load_sequence(request={"plan": file_path, "action": "light", "pointing_index": N, "mode": "remaining"})` and `start_sequence()`. Repeat pane by pane across the night; when the top-level `complete` is true, the mosaic is done.
 
 ---
 
@@ -144,35 +148,41 @@ Use `write_plan_file` with the plan object. This validates the filter names agai
 
 ### 2. Load and run each calibration type, including lights
 
-Each call to `run_plan` builds the appropriate container (lights, darks, flats, or bias), posts it to N.I.N.A., and starts it. Use `load_only=True` if you only want to load the sequence (e.g. to start it manually from the NINA GUI). N.I.N.A. rejects a load while a sequence is running, so stop any running sequence first with `stop_sequence()` (which blocks until it has actually stopped); `run_plan` returns a clear error telling you to do so otherwise.
+Each call to `load_sequence` builds the appropriate container (lights, darks, flats, bias, or a teardown) and posts it to N.I.N.A. — it only loads the sequence; it never starts it. Every step below is therefore two calls: `load_sequence(...)`, then `start_sequence()` when you are ready to begin (or press start in the NINA GUI yourself). N.I.N.A. rejects a load while a sequence is running, so stop any running sequence first with `stop_sequence()` (which blocks until it has actually stopped); `load_sequence` returns a clear error telling you to do so otherwise.
+
+**Or hand N.I.N.A. the whole night in one call:** pass a **list** of request objects instead of a single one:
+
+`load_sequence(request=[{"plan": "<plan>.json", "action": "light", "pointing_index": 1}, {"plan": "<plan>.json", "action": "light", "pointing_index": 2}, {"action": "warm"}, {"plan": "<plan>.json", "action": "dark"}])` then a single `start_sequence()`
+
+The steps run in list order inside one sequence (one Start area, one Target area, one End area), one POST carries the lot, entries already complete in `remaining` mode are skipped and reported, and the End area stows (park + warm) when the steps are done — so a list implicitly ends with a stow, and `stow` is rejected as a step. Each step keeps its own conditions: a step whose window has passed (dawn flats after sunrise) is skipped instead of blocking the steps behind it, and a `warm` step between targets is undone by the next frame step's own cooler when the plan's cooler is on.
 
 **Example order:**
 
 1. **Run lights** (main imaging overnight):
-   `run_plan(file_path="<plan>.json", frame_type="light")`
+   `load_sequence(request={"plan": "<plan>.json", "action": "light"})` then `start_sequence()`
    _(runs all night; autofocus and guiding triggers are built in)_
 
 2. **Run darks** (done during the day or while flats are not possible):
-   `run_plan(file_path="<plan>.json", frame_type="dark")`
+   `load_sequence(request={"plan": "<plan>.json", "action": "dark"})` then `start_sequence()`
    _(wait for completion)_
 
 3. **Run bias** (also done during the day):
-   `run_plan(file_path="<plan>.json", frame_type="bias")`
+   `load_sequence(request={"plan": "<plan>.json", "action": "bias"})` then `start_sequence()`
    _(wait for completion)_
 
 4. **Run dawn flats** (morning twilight):
-   `run_plan(file_path="<plan>.json", frame_type="dawn_flat")`
+   `load_sequence(request={"plan": "<plan>.json", "action": "dawn_flat"})` then `start_sequence()`
    _(wait for completion)_
 
 5. **Run dusk flats** (as evening twilight begins):
-   `run_plan(file_path="<plan>.json", frame_type="dusk_flat")`
+   `load_sequence(request={"plan": "<plan>.json", "action": "dusk_flat"})` then `start_sequence()`
    _(wait for completion)_
 
 ### 3. Teardown
 
 At session end:
 - The running sequence should teardown automatically at dawn.
-- `stow_telescope` — only needed if want to immediately close for the night or the running sequence fails to park.
+- `load_sequence(request={"action": "stow"})` then `start_sequence()` — only needed if want to immediately close for the night or the running sequence fails to park. Use `"park"` to park (or home) without warming the camera, or `"warm"` to warm the camera without touching the mount. `unpark` releases a parked mount, but only as a step inside a `request` list — on its own it would finish with the mount unparked and nothing running.
 
 ---
 
@@ -180,9 +190,9 @@ At session end:
 
 - **Required N.I.N.A. plugins:** the MCP server requires the following three plugins to be installed in N.I.N.A.: **Advanced API**, **Sequencer+**, and **Session Metadata**.
 - **Image file pattern:** in the N.I.N.A. profile's `ImageFileSettings`, `FilePattern` must put `$$IMAGETYPE$$` in a path segment (e.g. `$$DATEMINUS12$$\$$IMAGETYPE$$\...`) so frames can be read per type, and — for light attribution — must include `$$TARGETNAME$$` (see below). The `$$DATEMINUS12$$` date folder is no longer required: calibration age is measured from each frame's own `ExposureStart` timestamp, not the folder name.
-- **Filter validation:** `write_plan_file` and `run_plan` check that every filter name in the plan (lights, flats, autofocus reference) matches a filter in your active N.I.N.A. profile. Unknown filters will be rejected with an error listing what is available.
+- **Filter validation:** `write_plan_file` and `load_sequence` check that every filter name in the plan (lights, flats, autofocus reference) matches a filter in your active N.I.N.A. profile. Unknown filters will be rejected with an error listing what is available.
 - **Frame attribution:** each light sequence names its target `<target>` (or `<target> - <label>` when the pointing has a label), followed by ` ({base_plan_id}-{pointing_index})`, and N.I.N.A. expands `$$TARGETNAME$$` in `FilePattern` to that string. For the embedded id to be usable for attribution, `$$TARGETNAME$$` **must appear somewhere in the file pattern** — either as a filename token (e.g. `..._$$TARGETNAME$$_...`) or as a folder segment (e.g. `$$DATEMINUS12$$\$$IMAGETYPE$$\$$TARGETNAME$$\...`). Attribution reads the embedded id from the recorded file path (`file_path` in `ImageMetaData.csv`) and accepts it in **any** path segment — the filename, the target directory under `$$IMAGETYPE$$`, or an ancestor directory when `$$TARGETNAME$$` leads the pattern (e.g. `$$TARGETNAME$$\$$DATEMINUS12$$\$$IMAGETYPE$$\...`). The token is unique to a plan pointing, so ancestor matching cannot cross-attribute between plans; if the target name is not embedded in the path at all, attribution cannot determine which plan/pointing a light frame belongs to. Parentheses are used because N.I.N.A. mangles square brackets in target names; only the parenthesised token is recognised, so frames acquired under the earlier `[{base_plan_id}-{pointing_index}]` form are not attributed. The sequence also records the target in `TargetName` in `AcquisitionDetails.csv` and as `OBJECT` in FITS headers, but those are informational — file-path attribution is what drives `get_plan_progress` and `mode="remaining"`.
-- **Resuming a pointing:** call `get_plan_progress(file_path, ...)` and read the entry for pointing `N` in the returned `pointings` list to see what it has already acquired, then `run_plan(..., pointing_index=N, mode="remaining")` to acquire only the deficit. Lights are attributed by the `{base_plan_id}-{pointing_index}` id embedded in the file path (so `$$TARGETNAME$$` must be in the file pattern — see above). Different pointings of the same plan file are attributed independently because their embedded ids differ. Flats, darks, and bias are matched by image type/filter/exposure **and** are anchored to the plan's light session: they count only when shot within `calibration_window_days` (default 7) of the earliest attributed light, on either side of it. Calibration acquired inside that window stays counted, so it is not re-shot on every later run. While the current time is still inside the window the deficit is reported (and `window_open` is `true`); once the current time falls outside it, `remaining_count` reads 0 with `window_open: false` and `run_plan(mode="remaining")` loads nothing — raise `calibration_window_days` or write a new plan to reopen it. Pass `mode="full"` to deliberately re-acquire. For a mosaic, `get_plan_progress(file_path)` summarizes every pane at once — see [Mosaics](#mosaics).
+- **Resuming a pointing:** call `get_plan_progress(file_path, ...)` and read the entry for pointing `N` in the returned `pointings` list to see what it has already acquired, then `load_sequence(request={"plan": <plan_path>, "action": "light", "pointing_index": N, "mode": "remaining"})` to acquire only the deficit. Lights are attributed by the `{base_plan_id}-{pointing_index}` id embedded in the file path (so `$$TARGETNAME$$` must be in the file pattern — see above). Different pointings of the same plan file are attributed independently because their embedded ids differ. Flats, darks, and bias are matched by image type/filter/exposure **and** are anchored to the plan's light session: they count only when shot within `calibration_window_days` (default 7) of the earliest attributed light, on either side of it. Calibration acquired inside that window stays counted, so it is not re-shot on every later run. While the current time is still inside the window the deficit is reported (and `window_open` is `true`); once the current time falls outside it, `remaining_count` reads 0 with `window_open: false` and `load_sequence(request={"plan": <plan_path>, "action": "dark", "mode": "remaining"})` loads nothing — raise `calibration_window_days` or write a new plan to reopen it. Pass `mode="full"` to deliberately re-acquire. For a mosaic, `get_plan_progress(file_path)` summarizes every pane at once — see [Mosaics](#mosaics).
 - **Quality thresholds:** `max_hfr` and `min_detected_stars` (optional) exclude light frames that fail the thresholds from the acquired count. Frames missing the quality fields are excluded whenever a threshold is set (fail-closed). Thresholds are applied only to light frames — calibration frames have no star quality.
 - **Manually failing a frame:** delete (or move) the image file on disk — e.g. a bad `.fits`/`.tif`. The metadata row stays in the CSV (the plugin only appends), but it is omitted when the metadata is read, so progress no longer counts that frame as acquired and the next `mode="remaining"` load re-acquires it.
 - **The plan file is persistent** — written to the current working directory. You can inspect, edit, and reuse it across sessions.
@@ -245,7 +255,7 @@ Rules:
 ### How the night runs
 
 - The worker evaluates each un-imaged candidate, computes its current altitude (or loads its plan sequence and lets N.I.N.A. report it), and picks the best target: highest priority, then highest current altitude, then earliest available. It never interrupts a running observation — re-selection only happens after a sequence finishes.
-- For the chosen target, the worker loads the referenced plan JSON if given, otherwise generates one via `write_plan_file` (using coords/filter/count from `PLAN.md`, or sensible defaults), then `run_plan(frame_type="light")` (which loads and starts the sequence).
+- For the chosen target, the worker loads the referenced plan JSON if given, otherwise generates one via `write_plan_file` (using coords/filter/count from `PLAN.md`, or sensible defaults), then `load_sequence(request={"plan": <plan_path>, "action": "light"})` followed by `start_sequence()`.
 - When no candidate is viable (all below the altitude floor, or the night is over), the worker writes `report.md` (overwriting any previous one) with the night's results, stows the scope, and stops. Editing `PLAN.md` later triggers re-evaluation.
 - You can add/remove/reorder lines at any moment. The worker records completion in `PROGRESS.md` instead and leaves `PLAN.md` untouched, so your editing isn't fought over.
 
@@ -286,7 +296,7 @@ Rules:
 }
 ```
 
-Registers the opencode plugin and the `nina_planner` MCP server so both run together. The MCP server provides the tools (`run_plan`, `get_site_equipment_status`, etc.) that the plugin-prompted agent calls.
+Registers the opencode plugin and the `nina_planner` MCP server so both run together. The MCP server provides the tools (`load_sequence`, `get_site_equipment_status`, etc.) that the plugin-prompted agent calls.
 
 ---
 

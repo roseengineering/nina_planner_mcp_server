@@ -15,12 +15,14 @@ def _plan(**overrides):
         "plan_id": "plan-test123",
         "target": "Test Target",
         "pointings": [{"ra_hours": 5.0, "dec_deg": 10.0}],
-        "light": [
+        "light_frames": [
             {"filter_name": "L", "exposure_time_seconds": 60.0, "total_count": 5}
         ],
-        "flat": [{"filter_name": "L", "exposure_time_seconds": 5.0, "total_count": 5}],
-        "dark": [{"exposure_time_seconds": 60.0, "total_count": 5}],
-        "bias": [{"total_count": 5}],
+        "flat_frames": [
+            {"filter_name": "L", "exposure_time_seconds": 5.0, "total_count": 5}
+        ],
+        "dark_frames": [{"exposure_time_seconds": 60.0, "total_count": 5}],
+        "bias_frames": [{"total_count": 5}],
     }
     data.update(overrides)
     return ObservationPlan(**data)
@@ -52,6 +54,15 @@ def _profile() -> ObservatoryProfile:
             "has_safety_monitor": True,
             "has_switch": True,
         },
+    )
+
+
+def _stow_equipment() -> ObservatoryEquipment:
+    """The best case for the teardown builders: a mount that can park and a
+    camera that can cool."""
+    return ObservatoryEquipment(
+        mount=MountDevice(connected=True, name="m", can_park=True),
+        camera=CameraDevice(connected=True, name="cam", can_set_temperature=True),
     )
 
 
@@ -446,14 +457,14 @@ class SequenceBuildersTest(unittest.TestCase):
             "plan_id": "plan-test123",
             "target": "M31",
             "pointings": [{"ra_hours": 0.71, "dec_deg": 41.27}],
-            "light": [
+            "light_frames": [
                 {"filter_name": "L", "exposure_time_seconds": 60.0, "total_count": 1}
             ],
-            "flat": [
+            "flat_frames": [
                 {"filter_name": "L", "exposure_time_seconds": 5.0, "total_count": 1}
             ],
-            "dark": [{"exposure_time_seconds": 60.0, "total_count": 1}],
-            "bias": [{"total_count": 1}],
+            "dark_frames": [{"exposure_time_seconds": 60.0, "total_count": 1}],
+            "bias_frames": [{"total_count": 1}],
         }
         data.update(overrides)
         return ObservationPlan(**data)
@@ -462,14 +473,63 @@ class SequenceBuildersTest(unittest.TestCase):
         return _profile()
 
     def test_build_sequence_teardown(self):
-        """stow_telescope loads sequence_root(): the three sequence areas,
-        with stowing and warming carried by the End area."""
+        """build_sequence_stow loads sequence_root(): the three sequence
+        areas, with stowing and warming carried by the End area."""
         from nina_planner.sequence import sequence_root
 
         result = sequence_root(ObservatoryEquipment())
         self.assertIsInstance(result, dict)
         areas = [item.get("Name") for item in result["Items"]["$values"]]
         self.assertEqual(areas, ["Start Sequence", "Target Sequence", "End Sequence"])
+
+    def test_build_sequence_stow_parks_then_warms(self):
+        from nina_planner.sequence import build_sequence_stow
+
+        result = build_sequence_stow(_stow_equipment())
+
+        end = _items(result)[-1]
+        self.assertEqual(
+            _find_items(end, "ParkScope"), _find_items(result, "ParkScope")
+        )
+        self.assertEqual(
+            _find_items(end, "WarmCamera"), _find_items(result, "WarmCamera")
+        )
+        self.assertTrue(_find_items(result, "ParkScope"), "stow parks (or homes)")
+        self.assertTrue(_find_items(result, "WarmCamera"), "stow then warms")
+
+    def test_build_sequence_park_does_not_warm(self):
+        from nina_planner.sequence import build_sequence_park
+
+        result = build_sequence_park(_stow_equipment())
+
+        self.assertTrue(_find_items(result, "ParkScope"))
+        self.assertEqual(_find_items(result, "WarmCamera"), [])
+        # Empty target area: the End area parks as soon as the sequence starts.
+        self.assertEqual(_items(result)[1]["Items"]["$values"], [])
+
+    def test_build_sequence_park_falls_back_to_home(self):
+        from nina_planner.sequence import build_sequence_park
+
+        home_only = ObservatoryEquipment(
+            mount=MountDevice(
+                connected=True, name="m", can_park=False, can_find_home=True
+            )
+        )
+        result = build_sequence_park(home_only)
+
+        self.assertEqual(_find_items(result, "ParkScope"), [])
+        self.assertEqual(len(_find_items(result, "FindHome, NINA.Sequencer")), 1)
+
+    def test_build_sequence_warm_does_not_touch_the_mount(self):
+        from nina_planner.sequence import build_sequence_warm
+
+        result = build_sequence_warm(_stow_equipment())
+
+        self.assertTrue(_find_items(result, "WarmCamera"))
+        self.assertEqual(_find_items(result, "ParkScope"), [])
+        self.assertEqual(_find_items(result, "FindHome, NINA.Sequencer"), [])
+        # Empty End area: warming must not park on the way out either.
+        self.assertEqual(_items(result)[-1]["Items"]["$values"], [])
 
     def test_build_sequence_darks(self):
         from nina_planner.sequence import build_sequence_darks
@@ -546,22 +606,22 @@ class SequenceBehaviorTest(unittest.TestCase):
             "plan_id": "plan-test123",
             "target": "M31",
             "pointings": [{"ra_hours": 0.71, "dec_deg": 41.27, "label": "core"}],
-            "light": [
+            "light_frames": [
                 {
                     "filter_name": "L",
                     "exposure_time_seconds": 60.0,
                     "total_count": 3,
                 }
             ],
-            "flat": [
+            "flat_frames": [
                 {
                     "filter_name": "L",
                     "exposure_time_seconds": 5.0,
                     "total_count": 3,
                 }
             ],
-            "dark": [{"exposure_time_seconds": 60.0, "total_count": 3}],
-            "bias": [{"total_count": 3}],
+            "dark_frames": [{"exposure_time_seconds": 60.0, "total_count": 3}],
+            "bias_frames": [{"total_count": 3}],
         }
         data.update(overrides)
         return ObservationPlan(**data)
@@ -766,27 +826,50 @@ class SequenceBehaviorTest(unittest.TestCase):
         self.assertEqual(warms, [])
         self.assertEqual(cools, [])
 
-    def test_end_area_stows_and_warms_immediately(self):
-        """The End area stows the scope as soon as the target area is done:
-        park, then warm camera, with no conditions and no wait loop. That is
-        what makes a teardown sequence complete promptly instead of idling
-        until the enclosure goes unsafe or sunrise (the old "While Safe"
-        loop, which this replaced)."""
+    def test_end_area_waits_three_minutes_then_stows_and_warms(self):
+        """The End area waits out one bounded "On Safe" pass — a single
+        3-minute iteration gated on the safety monitor — then parks and warms.
+        Bounded matters: a teardown sequence completes within that one pass
+        (immediately when the enclosure is already closed) instead of idling
+        until sunrise, so "nothing running" stays an unambiguous state."""
         from nina_planner.sequence import sequence_end
 
         mount = MountDevice(connected=True, name="m", can_park=True)
         camera = CameraDevice(connected=True, name="cam", can_set_temperature=True)
         end = sequence_end(ObservatoryEquipment(mount=mount, camera=camera))
 
+        # The wait lives in a nested container; the End area itself has none.
         self.assertEqual(end["Conditions"]["$values"], [], "End must not wait")
-        self.assertEqual(_find_items(end, "SequentialContainer"), [])
-        self.assertEqual(_find_items(end, "SafetyMonitorCondition"), [])
-        self.assertEqual(_find_items(end, "WaitForTimeSpan"), [])
 
+        containers = _find_items(end, "SequentialContainer")
+        self.assertEqual(len(containers), 1, "exactly one waiting container")
+        wait = containers[0]
+        self.assertEqual(wait["Name"], "On Safe")
+        wait_types = [c["$type"] for c in wait["Conditions"]["$values"]]
+        self.assertEqual(len(wait_types), 2, "safety gate + bounded loop")
+        self.assertTrue(
+            any("SafetyMonitorCondition" in t for t in wait_types), "gated on safe"
+        )
+        self.assertTrue(
+            any("LoopCondition" in t for t in wait_types), "bounded, not forever"
+        )
+        loop = next(
+            c for c in wait["Conditions"]["$values"] if "LoopCondition" in c["$type"]
+        )
+        self.assertEqual(loop["Iterations"], 1, "a single pass")
+        self.assertEqual(loop["CompletedIterations"], 0)
+        waits = _find_items(wait, "WaitForTimeSpan")
+        self.assertEqual([w["Time"] for w in waits], [3 * 60], "one 3-minute pass")
+
+        # The End area itself carries no safety condition of its own — the
+        # single gate lives inside the wait container — and stows before
+        # warming, after the wait.
+        self.assertEqual(len(_find_items(end, "SafetyMonitorCondition")), 1)
         order = [item.get("$type", "") for item in end["Items"]["$values"]]
-        park_index = next(i for i, t in enumerate(order) if "ParkScope" in t)
-        warm_index = next(i for i, t in enumerate(order) if "WarmCamera" in t)
-        self.assertLess(park_index, warm_index, "stow before warming")
+        self.assertEqual(len(order), 3, "wait, then park, then warm")
+        self.assertIn("SequentialContainer", order[0])
+        self.assertIn("ParkScope", order[1])
+        self.assertIn("WarmCamera", order[2])
 
     def test_end_area_stow_is_capability_driven(self):
         from nina_planner.sequence import sequence_end
@@ -896,12 +979,14 @@ class CoordinateHelpersTest(unittest.TestCase):
             plan_id="plan-test123",
             target="Test",
             pointings=[{"ra_hours": 5.0, "dec_deg": -10.0}],
-            light=[
+            light_frames=[
                 {"filter_name": "L", "exposure_time_seconds": 60.0, "total_count": 1}
             ],
-            flat=[{"filter_name": "L", "exposure_time_seconds": 5.0, "total_count": 1}],
-            dark=[{"exposure_time_seconds": 60.0, "total_count": 1}],
-            bias=[{"total_count": 1}],
+            flat_frames=[
+                {"filter_name": "L", "exposure_time_seconds": 5.0, "total_count": 1}
+            ],
+            dark_frames=[{"exposure_time_seconds": 60.0, "total_count": 1}],
+            bias_frames=[{"total_count": 1}],
         )
         result = build_sequence_lights(
             plan, equipment=ObservatoryEquipment(), profile=_profile()
@@ -917,12 +1002,14 @@ class CoordinateHelpersTest(unittest.TestCase):
             plan_id="plan-test123",
             target="Test",
             pointings=[{"ra_hours": 5.575, "dec_deg": 10.0125}],
-            light=[
+            light_frames=[
                 {"filter_name": "L", "exposure_time_seconds": 60.0, "total_count": 1}
             ],
-            flat=[{"filter_name": "L", "exposure_time_seconds": 5.0, "total_count": 1}],
-            dark=[{"exposure_time_seconds": 60.0, "total_count": 1}],
-            bias=[{"total_count": 1}],
+            flat_frames=[
+                {"filter_name": "L", "exposure_time_seconds": 5.0, "total_count": 1}
+            ],
+            dark_frames=[{"exposure_time_seconds": 60.0, "total_count": 1}],
+            bias_frames=[{"total_count": 1}],
         )
         result = build_sequence_lights(
             plan, equipment=ObservatoryEquipment(), profile=_profile()
@@ -979,6 +1066,116 @@ class RoundRobinEdgeCasesTest(unittest.TestCase):
             _round_robin([_NoFilter()], batch_size=0),
             [(4, 30.0, None)],
         )
+
+
+class BuildSequenceManyTest(unittest.TestCase):
+    """A list of requests becomes one sequence: every payload's containers
+    land in a single Target area, in order, under one stow End area."""
+
+    def test_flattens_payloads_into_one_target_area_in_order(self):
+        from nina_planner.sequence import (
+            build_sequence_many,
+            step_warm,
+            target_payload_darks,
+        )
+
+        equipment = _stow_equipment()
+        plan = _plan()
+        payloads = [
+            target_payload_darks(plan, equipment),
+            step_warm(equipment),
+            target_payload_darks(plan, equipment, bias=True),
+        ]
+
+        result = build_sequence_many(equipment, payloads)
+
+        areas = [item["Name"] for item in result["Items"]["$values"]]
+        self.assertEqual(areas, ["Start Sequence", "Target Sequence", "End Sequence"])
+        steps = _items(result)[1]["Items"]["$values"]
+        self.assertEqual(len(steps), 3, "steps in list order, nothing merged")
+        self.assertIn("DeepSkyObjectContainer", steps[0]["$type"])
+        self.assertIn("WarmCamera", steps[1]["$type"])
+        self.assertIn("DeepSkyObjectContainer", steps[2]["$type"])
+
+        end_types = [i["$type"] for i in _items(result)[2]["Items"]["$values"]]
+        self.assertTrue(any("ParkScope" in t for t in end_types), "End parks")
+        self.assertTrue(any("WarmCamera" in t for t in end_types), "End warms")
+
+    def test_still_stows_when_a_payload_is_empty(self):
+        from nina_planner.sequence import build_sequence_many
+
+        equipment = _stow_equipment()
+        result = build_sequence_many(equipment, [[]])
+        self.assertEqual(_items(result)[1]["Items"]["$values"], [])
+        end_types = [i["$type"] for i in _items(result)[2]["Items"]["$values"]]
+        self.assertTrue(any("ParkScope" in t for t in end_types))
+
+    def test_darks_target_area_holds_the_container_directly(self):
+        """darks used to nest a second Target area inside the real one; the
+        payload form is a plain list, so the wrapper is gone."""
+        from nina_planner.sequence import build_sequence_darks
+
+        result = build_sequence_darks(_plan(), _stow_equipment())
+        children = _items(result)[1]["Items"]["$values"]
+        self.assertEqual(len(children), 1)
+        self.assertIn("DeepSkyObjectContainer", children[0]["$type"])
+
+
+class ListStepTest(unittest.TestCase):
+    """step_* turn the teardown actions into Target-area payloads for a
+    composed list, each refusing to build when the equipment cannot do it."""
+
+    @staticmethod
+    def _types(steps: list[dict]) -> list[str]:
+        return [str(d.get("$type", "")) for d in steps]
+
+    def test_step_park_is_capability_driven(self):
+        from nina_planner.sequence import step_park
+
+        self.assertTrue(
+            any("ParkScope" in t for t in self._types(step_park(_stow_equipment())))
+        )
+
+        home_only = ObservatoryEquipment(
+            mount=MountDevice(
+                connected=True, name="m", can_park=False, can_find_home=True
+            )
+        )
+        self.assertTrue(any("FindHome" in t for t in self._types(step_park(home_only))))
+
+        with self.assertRaises(ValueError) as ctx:
+            step_park(ObservatoryEquipment(mount=MountDevice(connected=True, name="m")))
+        self.assertIn("nothing to park", str(ctx.exception))
+
+    def test_step_warm_requires_a_cooler(self):
+        from nina_planner.sequence import step_warm
+
+        self.assertTrue(
+            any("WarmCamera" in t for t in self._types(step_warm(_stow_equipment())))
+        )
+
+        no_cooler = ObservatoryEquipment(
+            camera=CameraDevice(connected=True, name="cam", can_set_temperature=False)
+        )
+        with self.assertRaises(ValueError) as ctx:
+            step_warm(no_cooler)
+        self.assertIn("nothing to warm", str(ctx.exception))
+
+    def test_step_unpark_requires_a_parkable_mount(self):
+        from nina_planner.sequence import step_unpark
+
+        self.assertTrue(
+            any("UnparkScope" in t for t in self._types(step_unpark(_stow_equipment())))
+        )
+
+        home_only = ObservatoryEquipment(
+            mount=MountDevice(
+                connected=True, name="m", can_park=False, can_find_home=True
+            )
+        )
+        with self.assertRaises(ValueError) as ctx:
+            step_unpark(home_only)
+        self.assertIn("nothing to unpark", str(ctx.exception))
 
 
 if __name__ == "__main__":

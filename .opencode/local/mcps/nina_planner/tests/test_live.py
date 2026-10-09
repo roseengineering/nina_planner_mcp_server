@@ -6,6 +6,7 @@ from pathlib import Path
 import pytest
 from conftest import requires_windows_interop, windows_interop_available
 
+from nina_planner.models.request import SequenceRequest
 from nina_planner.server import (
     _api_get,
     get_events,
@@ -17,12 +18,11 @@ from nina_planner.server import (
     get_site_equipment_status,
     get_site_profile,
     list_site_profiles,
-    run_plan,
+    load_sequence,
     screenshot_dashboard,
     start_nina,
     stop_nina,
     stop_sequence,
-    stow_telescope,
 )
 
 _FIXTURES_DIR = Path(__file__).parent / "fixtures"
@@ -195,9 +195,9 @@ class LiveNinaTest(unittest.TestCase):
     def test_run_light_sequence(self):
         plan_path = str(_FIXTURES_DIR / "veil.json")
         result = asyncio.run(
-            run_plan(file_path=plan_path, frame_type="light", mode="full")
+            load_sequence(SequenceRequest(plan=plan_path, action="light", mode="full"))
         )
-        self.assertIn("started", result)
+        self.assertIn("sequence loaded", result)
         state = asyncio.run(get_sequence_state())
         self.assertIsInstance(state, (dict, list))
         asyncio.run(stop_sequence())
@@ -205,9 +205,9 @@ class LiveNinaTest(unittest.TestCase):
     def test_run_dark_sequence(self):
         plan_path = str(_FIXTURES_DIR / "veil.json")
         result = asyncio.run(
-            run_plan(file_path=plan_path, frame_type="dark", mode="full")
+            load_sequence(SequenceRequest(plan=plan_path, action="dark", mode="full"))
         )
-        self.assertIn("started", result)
+        self.assertIn("sequence loaded", result)
         state = asyncio.run(get_sequence_state())
         self.assertIsInstance(state, (dict, list))
         asyncio.run(stop_sequence())
@@ -215,9 +215,9 @@ class LiveNinaTest(unittest.TestCase):
     def test_run_bias_sequence(self):
         plan_path = str(_FIXTURES_DIR / "veil.json")
         result = asyncio.run(
-            run_plan(file_path=plan_path, frame_type="bias", mode="full")
+            load_sequence(SequenceRequest(plan=plan_path, action="bias", mode="full"))
         )
-        self.assertIn("started", result)
+        self.assertIn("sequence loaded", result)
         state = asyncio.run(get_sequence_state())
         self.assertIsInstance(state, (dict, list))
         asyncio.run(stop_sequence())
@@ -225,9 +225,11 @@ class LiveNinaTest(unittest.TestCase):
     def test_run_dawn_flat_sequence(self):
         plan_path = str(_FIXTURES_DIR / "veil.json")
         result = asyncio.run(
-            run_plan(file_path=plan_path, frame_type="dawn_flat", mode="full")
+            load_sequence(
+                SequenceRequest(plan=plan_path, action="dawn_flat", mode="full")
+            )
         )
-        self.assertIn("started", result)
+        self.assertIn("sequence loaded", result)
         state = asyncio.run(get_sequence_state())
         self.assertIsInstance(state, (dict, list))
         asyncio.run(stop_sequence())
@@ -235,9 +237,11 @@ class LiveNinaTest(unittest.TestCase):
     def test_run_dusk_flat_sequence(self):
         plan_path = str(_FIXTURES_DIR / "veil.json")
         result = asyncio.run(
-            run_plan(file_path=plan_path, frame_type="dusk_flat", mode="full")
+            load_sequence(
+                SequenceRequest(plan=plan_path, action="dusk_flat", mode="full")
+            )
         )
-        self.assertIn("started", result)
+        self.assertIn("sequence loaded", result)
         state = asyncio.run(get_sequence_state())
         self.assertIsInstance(state, (dict, list))
         asyncio.run(stop_sequence())
@@ -269,8 +273,8 @@ class LiveNinaTest(unittest.TestCase):
         self.assertEqual(result["pointing_index"], 1)
 
     def test_enter_teardown(self):
-        result = asyncio.run(stow_telescope())
-        self.assertIn("Teardown", result)
+        result = asyncio.run(load_sequence(SequenceRequest(action="stow")))
+        self.assertIn("`stow` sequence loaded", result)
         state = asyncio.run(get_sequence_state())
         self.assertIsInstance(state, list)
         self.assertTrue(len(state) > 0, "teardown sequence should be loaded")

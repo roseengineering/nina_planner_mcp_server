@@ -116,10 +116,25 @@ class ObservationPlan(BaseModel):
     guiding: GuidingConfig = Field(default_factory=GuidingConfig)
 
     # exposures
-    light: list[LightExposurePlan] = Field(min_length=1)
-    flat: list[FlatExposurePlan] = Field(min_length=1)
-    dark: list[DarkExposurePlan] = Field(min_length=1)
-    bias: list[BiasExposurePlan] = Field(min_length=1)
+    light_frames: list[LightExposurePlan] = Field(
+        min_length=1,
+        description="Light exposure specs; loaded with action='light'.",
+    )
+    flat_frames: list[FlatExposurePlan] = Field(
+        min_length=1,
+        description=(
+            "Flat exposure specs; loaded with action='dawn_flat' (morning) "
+            "or action='dusk_flat' (evening)."
+        ),
+    )
+    dark_frames: list[DarkExposurePlan] = Field(
+        min_length=1,
+        description="Dark exposure specs; loaded with action='dark'.",
+    )
+    bias_frames: list[BiasExposurePlan] = Field(
+        min_length=1,
+        description="Bias exposure specs; loaded with action='bias'.",
+    )
 
     def _base_plan_id(self) -> str:
         if self.plan_id:

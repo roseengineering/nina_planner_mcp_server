@@ -9,7 +9,7 @@ from collections.abc import Awaitable, Callable
 from collections.abc import Set as AbstractSet
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Any, Literal, cast
+from typing import Any, cast
 
 import anyio
 import httpx
@@ -26,6 +26,7 @@ from .models.profile import (
     ProfileSummary,
     SiteLocationInfo,
 )
+from .models.request import ACTIONS, SequenceRequest, ignored_fields
 from .mosaic import load_pointings
 from .nina_utils import ascom_float, ascom_int, to_snake
 from .progress import (
@@ -38,7 +39,16 @@ from .sequence import (
     build_sequence_darks,
     build_sequence_flats,
     build_sequence_lights,
-    sequence_root,
+    build_sequence_many,
+    build_sequence_park,
+    build_sequence_stow,
+    build_sequence_warm,
+    step_park,
+    step_unpark,
+    step_warm,
+    target_payload_darks,
+    target_payload_flats,
+    target_payload_lights,
 )
 from .system_time import (
     DRIFT_TOLERANCE_SECONDS,
@@ -69,8 +79,6 @@ SCREENSHOT_DIR = Path(tempfile.gettempdir()) / "nina_screenshots"
 # right after switch-tab can show the previous tab. The repaint settles within a
 # couple of seconds on a remote host.
 SCREENSHOT_SETTLE_SECONDS = 2.0
-
-FrameType = Literal["light", "dark", "bias", "dawn_flat", "dusk_flat"]
 
 _INVALID_FILENAME_CHARS = re.compile(r'[\\/:*?"<>|\x00-\x1f\x7f]')
 
@@ -272,10 +280,10 @@ async def _run_blocking(argv: list[str], *, timeout: float = 30.0) -> Any:
 async def _validate_filters(plan: ObservationPlan, profile: ObservatoryProfile) -> None:
     profile_filter_names = {f.name for f in profile.filters}
     plan_filter_names: set[str] = set()
-    for light in plan.light:
+    for light in plan.light_frames:
         if light.filter_name:
             plan_filter_names.add(light.filter_name)
-    for flat in plan.flat:
+    for flat in plan.flat_frames:
         if flat.filter_name:
             plan_filter_names.add(flat.filter_name)
     if plan.autofocus.reference_filter_name:
@@ -704,7 +712,7 @@ async def get_imaging_metadata(
 
 @mcp.tool()
 async def write_plan_file(plan: ObservationPlan) -> str:
-    """Validates and writes an observation plan to a JSON file for later use by run_plan. The plan defines one or more target pointings (RA/Dec/PA, optional label), acquisition intent, light and calibration frames, batching, cooling, autofocus, guiding, and observing constraints. This tool only creates the plan file; it does not load or start a sequence."""
+    """Validates and writes an observation plan to a JSON file for later use by load_sequence. The plan defines one or more target pointings (RA/Dec/PA, optional label), acquisition intent, light and calibration frames, batching, cooling, autofocus, guiding, and observing constraints. This tool only creates the plan file; it does not load or start a sequence."""
     profile = await get_site_profile()
     await _validate_filters(plan, profile)
     _validate_position_angle(plan, profile)
@@ -725,7 +733,7 @@ async def write_mosaic_plan(
     mosaic_csv: str,
     output_path: str | None = None,
 ) -> str:
-    """Expands a base observation plan into a multi-pointing mosaic plan from a Telescopius-formatted mosaic CSV. The base plan supplies every setting except the pointings (target, intent, exposure groups, calibration, cooler, autofocus, guiding, constraints); its pointings are replaced wholesale by one pointing per CSV row. The Telescopius CSV header is expected to include `Pane`, `RA`, `DEC`, `Position Angle (East)`, `Row`, and `Column` (RA/DEC may be sexagesimal like `0hr 56' 01"` / `45º 51' 18"` or decimal); `row`/`column` are stored on each pointing as metadata (N.I.N.A. does not consume them). The base plan's `plan_id` is cleared so the mosaic gets its own content-derived id, and each pane is attributed independently via `({plan_id}-{pointing_index})` when run with `run_plan(pointing_index=N)`. With no rotator, every pane's `position_angle_deg` must be 0; any nonzero PA fails loudly. Writes `<target>_<intent>_mosaic_<timestamp>.json` in the project directory unless `output_path` is given. This tool only creates the plan file; it does not load or start a sequence."""
+    """Expands a base observation plan into a multi-pointing mosaic plan from a Telescopius-formatted mosaic CSV. The base plan supplies every setting except the pointings (target, intent, exposure groups, calibration, cooler, autofocus, guiding, constraints); its pointings are replaced wholesale by one pointing per CSV row. The Telescopius CSV header is expected to include `Pane`, `RA`, `DEC`, `Position Angle (East)`, `Row`, and `Column` (RA/DEC may be sexagesimal like `0hr 56' 01"` / `45º 51' 18"` or decimal); `row`/`column` are stored on each pointing as metadata (N.I.N.A. does not consume them). The base plan's `plan_id` is cleared so the mosaic gets its own content-derived id, and each pane is attributed independently via `({plan_id}-{pointing_index})` when run with `load_sequence(request={"plan": <plan_path>, "pointing_index": N})`. With no rotator, every pane's `position_angle_deg` must be 0; any nonzero PA fails loudly. Writes `<target>_<intent>_mosaic_<timestamp>.json` in the project directory unless `output_path` is given. This tool only creates the plan file; it does not load or start a sequence."""
     base = await _load_plan(plan_path)
     csv_path = Path(mosaic_csv)
     if not csv_path.is_absolute():
@@ -765,7 +773,7 @@ async def get_plan_progress(
     min_detected_stars: int | None = None,
     max_guiding_rms_arcsec: float | None = None,
 ) -> dict[str, Any]:
-    """Returns per-frame-type acquisition progress for every pointing of an observation-plan JSON file: for each exposure group, the total_count from the plan, the acquired_count attributed to that plan/pointing from the imaging metadata (ImageMetaData.csv + AcquisitionDetails.csv), and the remaining_count. Lights are attributed via the `{base_plan_id}-{pointing_index}` plan id embedded in the recorded file path (no target-name fallback); flats/darks/bias are matched by image type, filter, and exposure and are anchored to the plan's light session: they count only when shot within `calibration_window_days` of the session start (the earliest attributed light), on either side of it. Calibration groups therefore also carry `window_open` (bool) and `window_end` (naive ISO timestamp of the window's upper bound on N.I.N.A.'s local clock): while the current time is inside the window, remaining_count is total minus acquired; once it falls outside, no frame shot now could ever be credited, so remaining_count is reported as 0 rather than an unsatisfiable deficit (acquired_count stays truthful either way, and lights carry neither field) — raise `calibration_window_days` or write a new plan to reopen the window. Pass max_hfr and/or min_detected_stars to exclude light frames that fail quality thresholds (frames missing the quality fields are excluded when a threshold is set). Use this before run_plan to decide what still needs acquiring. Returns `complete` (all panes done) plus a `pointings` list of per-pane progress and per-pane `complete`, so a worker can acquire panes sequentially (finish pane N, then run pane N+1)."""
+    """Returns per-frame-type acquisition progress for every pointing of an observation-plan JSON file: for each exposure group, the total_count from the plan, the acquired_count attributed to that plan/pointing from the imaging metadata (ImageMetaData.csv + AcquisitionDetails.csv), and the remaining_count. Lights are attributed via the `{base_plan_id}-{pointing_index}` plan id embedded in the recorded file path (no target-name fallback); flats/darks/bias are matched by image type, filter, and exposure and are anchored to the plan's light session: they count only when shot within `calibration_window_days` of the session start (the earliest attributed light), on either side of it. Calibration groups therefore also carry `window_open` (bool) and `window_end` (naive ISO timestamp of the window's upper bound on N.I.N.A.'s local clock): while the current time is inside the window, remaining_count is total minus acquired; once it falls outside, no frame shot now could ever be credited, so remaining_count is reported as 0 rather than an unsatisfiable deficit (acquired_count stays truthful either way, and lights carry neither field) — raise `calibration_window_days` or write a new plan to reopen the window. Pass max_hfr and/or min_detected_stars to exclude light frames that fail quality thresholds (frames missing the quality fields are excluded when a threshold is set). Use this before load_sequence to decide what still needs acquiring. Returns `complete` (all panes done) plus a `pointings` list of per-pane progress and per-pane `complete`, so a worker can acquire panes sequentially (finish pane N, then run pane N+1)."""
     plan = await _load_plan(file_path)
     rows = await _read_metadata()
     now = await _reference_now()
@@ -816,31 +824,119 @@ async def get_plan_progress(
 
 
 @mcp.tool()
-async def run_plan(
-    file_path: str,
-    frame_type: FrameType = "light",
-    pointing_index: int = 1,
-    mode: str = "remaining",
-    load_only: bool = False,
-    max_hfr: float | None = None,
-    min_detected_stars: int | None = None,
-    max_guiding_rms_arcsec: float | None = None,
-) -> str:
-    """Loads an acquisition sequence with safety guardrails from an observation-plan JSON file. Select the frame type: light, dark, bias, dawn_flat, or dusk_flat. `pointing_index` (1-based, default 1) selects which pointing of the plan to load — the lights target name embeds the `({base_plan_id}-{pointing_index})` token so each pointing's frames are attributed independently. Light loads require `$$TARGETNAME$$` in the active profile's FilePattern for attribution. In the default `remaining` mode the sequence only acquires frames still needed (total minus frames already attributed to this plan/pointing in the imaging metadata); if nothing remains it reports the plan as complete and loads nothing. max_hfr and/or min_detected_stars exclude light frames failing quality thresholds from the acquired count. Pass `mode="full"` to acquire the entire plan again. By default the loaded sequence is started immediately; pass `load_only=True` to load without starting (e.g. to start it manually from the NINA GUI). Fails if a sequence is already running — NINA's own error is reported; call stop_sequence() first."""
-    plan = await _load_plan(file_path)
+async def load_sequence(request: SequenceRequest | list[SequenceRequest]) -> str:
+    """Loads a sequence with safety guardrails — it never starts it; call start_sequence() to begin acquisition.
+
+    `request` is one SequenceRequest object, or a LIST of them to compose a whole night into a single N.I.N.A. sequence.
+
+    Everything goes in a `request` object: `action`, plus — for the five frame actions — `plan` (path to the observation-plan JSON file), `pointing_index`, `mode`, and the optional quality thresholds.
+
+    `action` decides what gets built:
+    - `light` / `dark` / `bias` / `dawn_flat` / `dusk_flat` build that frame sequence from `request.plan`, which is required for these five. `pointing_index` (1-based, default 1) selects which pointing of the plan to load — the lights target name embeds the `({base_plan_id}-{pointing_index})` token so each pointing's frames are attributed independently. Light loads require `$$TARGETNAME$$` in the active profile's FilePattern for attribution. In the default `remaining` mode the sequence only acquires frames still needed (total minus frames already attributed to this plan/pointing in the imaging metadata); if nothing remains it reports the plan as complete and loads nothing. max_hfr and/or min_detected_stars exclude light frames failing quality thresholds from the acquired count. Pass `mode="full"` to acquire the entire plan again.
+    - `stow` / `park` / `warm` build a teardown sequence from live equipment and need no plan: `stow` parks (or homes) the mount and then warms the camera, `park` parks (or homes) the mount only, `warm` warms the camera only. Each rejects the fields it does not use (`plan`, `pointing_index`, `mode`, thresholds) rather than silently ignoring them, and is rejected outright when the equipment cannot do it — a mount that can neither park nor home for stow/park, a camera without a cooler for warm.
+
+    A LIST composes ONE sequence: a single Start area, one Target area holding each step's containers in list order, and one End area that always stows (park, then warm) — so a list implicitly ends with a stow. In list form the teardown actions become ordered mid-sequence steps rather than whole sequences, and may appear anywhere:
+    - `park` parks (or homes) the mount at that point in the night — e.g. across a gap before darks, which park themselves anyway.
+    - `warm` warms the camera at that point — e.g. across a long gap between targets; the next plan-driven frame step cools it again before imaging when the plan's cooler is on.
+    - `unpark` releases a parked mount at that point. It is list-only: a lone single request with `action="unpark"` is rejected, since it would end with the mount unparked and nothing running, while a list's End area parks behind it.
+    - `stow` is rejected inside a list — the End area already parks and warms.
+    Steps run in order as the sequence reaches them; a step carrying its own wait conditions (lights, flats) waits, or is skipped when its window has passed, without blocking the steps behind it, so list order controls timing. Entries already complete in `remaining` mode are skipped and reported; if every entry is complete, nothing is sent to N.I.N.A. Profile, equipment, and metadata are fetched once per call, one POST carries the whole sequence, and a validation failure names its 0-based position (`request[1]: ...`).
+
+    Fails if a sequence is already running — NINA's own error is reported; call stop_sequence() first."""
+    if isinstance(request, SequenceRequest):
+        return await _load_single(request)
+    if not isinstance(request, list):
+        raise ValueError(
+            "`request` must be a SequenceRequest or a list of them, "
+            f"got {type(request).__name__}."
+        )
+    if not request:
+        raise ValueError(
+            "`request` list is empty — pass at least one SequenceRequest, or "
+            "send a single object."
+        )
+    requests: list[SequenceRequest] = []
+    for i, item in enumerate(request):
+        if isinstance(item, SequenceRequest):
+            requests.append(item)
+            continue
+        try:
+            requests.append(SequenceRequest.model_validate(item))
+        except ValueError as e:
+            raise ValueError(f"request[{i}]: not a valid SequenceRequest: {e}") from e
+    return await _load_many(requests)
+
+
+async def _load_single(request: SequenceRequest) -> str:
+    """One action, one builder — the original single-request semantics."""
+    spec = ACTIONS.get(request.action)
+    if spec is None:
+        raise ValueError(
+            f"Unsupported action: {request.action} (use one of: "
+            f"{', '.join(sorted(ACTIONS))})"
+        )
+    unused = ignored_fields(request, spec)
+    if unused:
+        raise ValueError(
+            f"action={request.action!r} does not use: {', '.join(unused)} — "
+            "remove them from the request."
+        )
+    if request.action == "unpark":
+        raise ValueError(
+            "action='unpark' is a list step only: on its own it would finish "
+            "with the mount unparked and nothing running. Send a list of "
+            "requests instead — the composed sequence's End area parks and "
+            "warms behind it."
+        )
+
+    if not spec.requires_plan:
+        equipment = await get_site_equipment_status()
+        if request.action in ("stow", "park"):
+            mount = equipment.mount
+            can_park = bool(mount and mount.can_park)
+            can_home = bool(mount and mount.can_find_home)
+            if not (can_park or can_home):
+                raise ValueError(
+                    "Mount can neither park nor home "
+                    f"(can_park={can_park}, can_find_home={can_home}) — "
+                    f"nothing to {request.action}."
+                )
+            seq = (
+                build_sequence_stow(equipment)
+                if request.action == "stow"
+                else build_sequence_park(equipment)
+            )
+        elif request.action == "warm":
+            camera = equipment.camera
+            if not (camera and camera.thermal.has_cooler):
+                raise ValueError(
+                    "Camera has no cooler (can_set_temperature=false) — "
+                    "nothing to warm."
+                )
+            seq = build_sequence_warm(equipment)
+        else:
+            raise ValueError(f"Unsupported action: {request.action}")
+        await _load_sequence_payload(seq)
+        return f"`{request.action}` sequence loaded — call start_sequence() to begin."
+
+    action = request.action
+    group = cast(str, spec.group)
+    if request.plan is None:
+        raise ValueError(
+            f"action={action!r} requires a plan: pass `request.plan`, "
+            "the path to the observation-plan JSON file to load."
+        )
+    plan = await _load_plan(request.plan)
+    pointing_index = request.pointing_index
+    mode = request.mode
+    max_hfr = request.max_hfr
+    min_detected_stars = request.min_detected_stars
+    max_guiding_rms_arcsec = request.max_guiding_rms_arcsec
     profile = await get_site_profile()
     await _validate_filters(plan, profile)
     _validate_position_angle(plan, profile)
     _check_pointing_index(plan, pointing_index)
     equipment = await _get_site_equipment_status(profile)
-
-    group_key = {
-        "light": "light",
-        "dark": "dark",
-        "bias": "bias",
-        "dawn_flat": "flat",
-        "dusk_flat": "flat",
-    }[frame_type]
 
     if mode == "remaining":
         try:
@@ -859,65 +955,217 @@ async def run_plan(
             max_guiding_rms_arcsec=max_guiding_rms_arcsec,
             now=await _reference_now(),
         )
-        items = progress[group_key]
+        items = progress[group]
         if all(item["remaining_count"] == 0 for item in items):
             total = sum(item["total_count"] for item in items)
             return (
-                f"`{frame_type}` pointing {pointing_index} is complete — "
+                f"`{action}` pointing {pointing_index} is complete — "
                 f"{total} of {total} frames already acquired; nothing to load."
             )
         plan = plan_with_remaining(plan, progress)
     elif mode != "full":
         raise ValueError(f"Unsupported mode: {mode} (use 'remaining' or 'full')")
 
-    if frame_type == "light" and "$$TARGETNAME$$" not in (profile.file_pattern or ""):
+    if action == "light" and "$$TARGETNAME$$" not in (profile.file_pattern or ""):
         raise ValueError(
             "N.I.N.A. FilePattern must contain $$TARGETNAME$$ "
             "for light-frame plan attribution."
         )
 
-    if frame_type == "light":
+    if action == "light":
         seq = build_sequence_lights(
             plan, equipment, profile, pointing_index=pointing_index
         )
-    elif frame_type == "dark":
+    elif action == "dark":
         seq = build_sequence_darks(plan, equipment)
-    elif frame_type == "bias":
+    elif action == "bias":
         seq = build_sequence_darks(plan, equipment, bias=True)
-    elif frame_type == "dawn_flat":
+    elif action == "dawn_flat":
         seq = build_sequence_flats(plan, equipment, profile)
-    elif frame_type == "dusk_flat":
+    elif action == "dusk_flat":
         seq = build_sequence_flats(plan, equipment, profile, dusk=True)
     else:
-        raise ValueError(f"Unsupported frame type: {frame_type}")
+        raise ValueError(f"Unsupported action: {action}")
     await _load_sequence_payload(seq)
-    if load_only:
-        return f"`{frame_type}` sequence loaded."
+    return f"`{action}` sequence loaded — call start_sequence() to begin."
+
+
+async def _load_many(requests: list[SequenceRequest]) -> str:
+    """Compose ``requests`` into one sequence and load it with one POST.
+
+    Each entry is validated exactly as a single request would be; profile,
+    equipment, metadata, and the reference clock are fetched once for the
+    whole list; and a failure names the 0-based position of the entry that
+    caused it (``request[1]: ...``). Entries already complete in ``remaining``
+    mode contribute no payload, so a fully-complete list never POSTs.
+    """
+    state: dict[str, Any] = {}
+
+    async def profile() -> ObservatoryProfile:
+        if "profile" not in state:
+            state["profile"] = await get_site_profile()
+        return cast(ObservatoryProfile, state["profile"])
+
+    async def equipment() -> ObservatoryEquipment:
+        if "equipment" not in state:
+            state["equipment"] = await _get_site_equipment_status(await profile())
+        return cast(ObservatoryEquipment, state["equipment"])
+
+    async def rows() -> list[dict[str, Any]]:
+        if "rows" not in state:
+            try:
+                state["rows"] = await _read_metadata()
+            except RuntimeError as e:
+                raise ValueError(
+                    f"Cannot compute remaining frames: {e}. Pass mode='full' to "
+                    "load the whole plan regardless."
+                ) from e
+        return cast(list[dict[str, Any]], state["rows"])
+
+    async def now() -> datetime:
+        if "now" not in state:
+            state["now"] = await _reference_now()
+        return cast(datetime, state["now"])
+
+    async def step(request: SequenceRequest) -> tuple[list[dict[str, Any]], str]:
+        spec = ACTIONS.get(request.action)
+        if spec is None:
+            raise ValueError(
+                f"Unsupported action: {request.action} (use one of: "
+                f"{', '.join(sorted(ACTIONS))})"
+            )
+        unused = ignored_fields(request, spec)
+        if unused:
+            raise ValueError(
+                f"action={request.action!r} does not use: {', '.join(unused)} — "
+                "remove them from the request."
+            )
+        if request.action == "stow":
+            raise ValueError(
+                "action='stow' cannot be combined — the composed sequence's End "
+                "area already parks and warms. Use `park` or `warm` as explicit "
+                "steps instead."
+            )
+
+        if not spec.requires_plan:
+            eq = await equipment()
+            if request.action == "park":
+                return step_park(eq), "`park` step — park (or home) the mount"
+            if request.action == "warm":
+                return step_warm(eq), "`warm` step — warm the camera"
+            if request.action == "unpark":
+                return step_unpark(eq), "`unpark` step — unpark the mount"
+            raise ValueError(f"Unsupported action: {request.action}")
+
+        action = request.action
+        group = cast(str, spec.group)
+        if request.plan is None:
+            raise ValueError(
+                f"action={action!r} requires a plan: pass `request.plan`, "
+                "the path to the observation-plan JSON file to load."
+            )
+        plan = await _load_plan(request.plan)
+        pointing_index = request.pointing_index
+        site_profile = await profile()
+        await _validate_filters(plan, site_profile)
+        _validate_position_angle(plan, site_profile)
+        _check_pointing_index(plan, pointing_index)
+        eq = await equipment()
+
+        if request.mode == "remaining":
+            progress = plan_progress(
+                plan,
+                await rows(),
+                pointing_index=pointing_index,
+                max_hfr=request.max_hfr,
+                min_detected_stars=request.min_detected_stars,
+                max_guiding_rms_arcsec=request.max_guiding_rms_arcsec,
+                now=await now(),
+            )
+            items = progress[group]
+            if all(item["remaining_count"] == 0 for item in items):
+                total = sum(item["total_count"] for item in items)
+                return [], (
+                    f"`{action}` pointing {pointing_index} is complete — {total} "
+                    f"of {total} frames already acquired; nothing to load."
+                )
+            note = (
+                f"{sum(item['remaining_count'] for item in items)} frame(s) to acquire"
+            )
+            plan = plan_with_remaining(plan, progress)
+        elif request.mode == "full":
+            frame_groups: dict[str, list[Any]] = {
+                "light": plan.light_frames,
+                "dark": plan.dark_frames,
+                "bias": plan.bias_frames,
+                "flat": plan.flat_frames,
+            }
+            frames = frame_groups[group]
+            note = f"{sum(f.total_count for f in frames)} frame(s), mode=full"
+        else:
+            raise ValueError(
+                f"Unsupported mode: {request.mode} (use 'remaining' or 'full')"
+            )
+
+        if action == "light" and "$$TARGETNAME$$" not in (
+            site_profile.file_pattern or ""
+        ):
+            raise ValueError(
+                "N.I.N.A. FilePattern must contain $$TARGETNAME$$ "
+                "for light-frame plan attribution."
+            )
+
+        if action == "light":
+            payload = target_payload_lights(
+                plan, eq, site_profile, pointing_index=pointing_index
+            )
+        elif action == "dark":
+            payload = target_payload_darks(plan, eq)
+        elif action == "bias":
+            payload = target_payload_darks(plan, eq, bias=True)
+        elif action == "dawn_flat":
+            payload = target_payload_flats(plan, eq, site_profile)
+        elif action == "dusk_flat":
+            payload = target_payload_flats(plan, eq, site_profile, dusk=True)
+        else:
+            raise ValueError(f"Unsupported action: {action}")
+        return payload, f"`{action}` pointing {pointing_index} — {note}"
+
+    lines: list[str] = []
+    payloads: list[list[dict[str, Any]]] = []
+    for i, request in enumerate(requests):
+        try:
+            payload, note = await step(request)
+        except ValueError as e:
+            raise ValueError(f"request[{i}]: {e}") from e
+        payloads.append(payload)
+        lines.append(f"request[{i}]: {note}")
+
+    lines.append("")
+    if any(payloads):
+        await _load_sequence_payload(build_sequence_many(await equipment(), payloads))
+        lines.append(
+            f"Sequence loaded ({sum(1 for p in payloads if p)} of "
+            f"{len(requests)} step(s)) — call start_sequence() to begin."
+        )
     else:
-        await _api_get(SEQUENCE_START_PATH)
-        return f"`{frame_type}` sequence started."
-
-
-@mcp.tool()
-async def stow_telescope() -> str:
-    """Loads and starts the non-acquisition teardown sequence, safely stowing the telescope (park or home, per mount capability) while NINA's sequence-level safety guardrails remain active. Use for end-of-observation close-down — when you are done observing and want to shut down the scope — or before leaving the observatory unattended. Allow it to complete without interruption. This is separate from stop_sequence, which halts the current sequence but does not stow the scope. Fails if a sequence is already running — NINA's own error is reported; call stop_sequence() first."""
-    equipment = await get_site_equipment_status()
-    seq = sequence_root(equipment)
-    await _load_sequence_payload(seq)
-    await _api_get(SEQUENCE_START_PATH)
-    return "Teardown sequence started."
+        lines.append(
+            "Nothing to load — every step is already complete; no sequence was "
+            "sent to N.I.N.A."
+        )
+    return "\n".join(lines)
 
 
 @mcp.tool()
 async def stop_sequence() -> str:
-    """Stops the currently running NINA sequence immediately, leaving the telescope where it currently is — it does not stow the scope. Use for an urgent halt, to interrupt a stuck/looping sequence, or when the running sequence isn't what you wanted. If you then want to park/home the telescope, run stow_telescope separately. The load tools (run_plan, stow_telescope) refuse to load while a sequence is running, so call this first and wait — it returns once NINA reports the sequencer has actually stopped. Avoid stopping an in-progress teardown during the stow maneuver unless safety requires it, since interrupting mid-slew can leave the scope in an unsafe position."""
+    """Stops the currently running NINA sequence immediately, leaving the telescope where it currently is — it does not stow the scope. Use for an urgent halt, to interrupt a stuck/looping sequence, or when the running sequence isn't what you wanted. If you then want to park/home the telescope, load `load_sequence(request={"action": "stow"})` (or "park") and start it. `load_sequence` refuses to load while a sequence is running, so call this first and wait — it returns once NINA reports the sequencer has actually stopped. Avoid stopping an in-progress teardown during the stow maneuver unless safety requires it, since interrupting mid-slew can leave the scope in an unsafe position."""
     await _stop_running_sequence_and_wait()
     return "Sequence stopped."
 
 
 @mcp.tool()
 async def start_sequence() -> str:
-    """Starts the currently loaded NINA sequence immediately."""
+    """Starts the currently loaded NINA sequence immediately. Use this after load_sequence(), which only loads a sequence and never starts it."""
     await _api_get(SEQUENCE_START_PATH)
     return "Sequence started."
 

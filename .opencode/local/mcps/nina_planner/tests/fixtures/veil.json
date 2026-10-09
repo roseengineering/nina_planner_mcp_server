@@ -30,27 +30,27 @@
     "check_drift_every_n_exposures": 6,
     "max_drift_arcmin": 1.5
   },
-  "light": [
+  "light_frames": [
     {
       "filter_name": "Clear",
       "exposure_time_seconds": 60.0,
       "total_count": 60
     }
   ],
-  "flat": [
+  "flat_frames": [
     {
       "filter_name": "Clear",
       "exposure_time_seconds": 5.0,
       "total_count": 30
     }
   ],
-  "dark": [
+  "dark_frames": [
     {
       "exposure_time_seconds": 60.0,
       "total_count": 20
     }
   ],
-  "bias": [
+  "bias_frames": [
     {
       "total_count": 30
     }

@@ -514,7 +514,7 @@ def wait_if_sun_altitude_below(degrees: float) -> dict[str, Any]:
     return wait_if_sun_altitude(degrees, 1)
 
 
-def wait_for_time_span(seconds: float) -> dict[str, Any]:
+def wait_for_timespan(seconds: float) -> dict[str, Any]:
     return _child(
         "NINA.Sequencer.SequenceItem.Utility.WaitForTimeSpan, NINA.Sequencer"
     ) | {
@@ -743,9 +743,21 @@ def sequence_safetynet(
 
 def sequence_end(equipment: ObservatoryEquipment) -> dict[str, Any]:
     # close observatory for the night:
-    # stow the telescope and warm the camera.
+    # wait out one bounded "On Safe" pass, then stow the telescope and warm
+    # the camera. The wait is a single 3-minute iteration gated on the safety
+    # monitor, so it is skipped entirely when the enclosure is already closed
+    # and never idles until sunrise (see test_end_area_waits_three_minutes_*).
+    delay_minutes = 3
     return container_end(
-        sequence_park_scope(equipment) + sequence_warm_camera(equipment)
+        [
+            container_sequential(
+                name="On Safe",
+                conditions=[loop_while_safe(), loop_for_iterations(1)],
+                instructions=[wait_for_timespan(delay_minutes * 60)],
+            )
+        ]
+        + sequence_park_scope(equipment)
+        + sequence_warm_camera(equipment)
     )
 
 
@@ -761,57 +773,171 @@ def sequence_root(
     )
 
 
+## TEARDOWN
+#
+# Three plan-less sequences with deliberately different payloads: an empty
+# target area makes the End area run straight away, so each of them completes
+# within one bounded "On Safe" wait instead of idling on the enclosure until
+# sunrise (see test_end_area_waits_three_minutes_*).
+
+
+def build_sequence_stow(equipment: ObservatoryEquipment) -> dict[str, Any]:
+    """Close down: park (or home) the mount, then warm the camera.
+
+    The target area is empty, so the End area runs immediately: one bounded
+    3-minute "On Safe" pass from ``sequence_end``, then both halves — park,
+    then warm.
+    """
+    return sequence_root(equipment)
+
+
+def build_sequence_park(equipment: ObservatoryEquipment) -> dict[str, Any]:
+    """Park (or home) the mount, leaving the camera cooled."""
+    return container_root(
+        [
+            container_start(),
+            container_target(),
+            container_end(sequence_park_scope(equipment)),
+        ]
+    )
+
+
+def build_sequence_warm(equipment: ObservatoryEquipment) -> dict[str, Any]:
+    """Warm the camera, leaving the mount alone."""
+    return container_root(
+        [
+            container_start(),
+            container_target(sequence_warm_camera(equipment)),
+            container_end(),
+        ]
+    )
+
+
+## LISTS
+#
+# The teardown actions mean something different inside a `request` list: they
+# become ordered Target-area *steps* rather than whole sequences, so their
+# park/warm/unpark run mid-sequence instead of in the End area. The composed
+# End area always stows, whatever the steps did (see build_sequence_many).
+
+
+def step_park(equipment: ObservatoryEquipment) -> list[dict[str, Any]]:
+    """A park (or, when the mount cannot park, find-home) step."""
+    mount = equipment.mount
+    can_park = bool(mount and mount.can_park)
+    can_home = bool(mount and mount.can_find_home)
+    if not (can_park or can_home):
+        raise ValueError(
+            "Mount can neither park nor home "
+            f"(can_park={can_park}, can_find_home={can_home}) — nothing to park."
+        )
+    return sequence_park_scope(equipment)
+
+
+def step_warm(equipment: ObservatoryEquipment) -> list[dict[str, Any]]:
+    """A warm-camera step, e.g. across a long gap between targets.
+
+    Harmless mid-list: the next plan-driven frame step cools the camera
+    again before it images when the plan's cooler is on.
+    """
+    camera = equipment.camera
+    if not (camera and camera.thermal.has_cooler):
+        raise ValueError(
+            "Camera has no cooler (can_set_temperature=false) — nothing to warm."
+        )
+    return sequence_warm_camera(equipment)
+
+
+def step_unpark(equipment: ObservatoryEquipment) -> list[dict[str, Any]]:
+    """An unpark step, releasing a mount parked earlier in the list.
+
+    N.I.N.A.'s unpark pairs with park, so a mount that cannot park has
+    nothing to unpark. Never usable as a whole sequence: as a list step the
+    composed End area still parks behind it.
+    """
+    mount = equipment.mount
+    if not (mount and mount.can_park):
+        raise ValueError("Mount cannot park (can_park=false) — nothing to unpark.")
+    return sequence_unpark_scope(equipment)
+
+
+def build_sequence_many(
+    equipment: ObservatoryEquipment, payloads: list[list[dict[str, Any]]]
+) -> dict[str, Any]:
+    """One sequence built from an ordered list of Target-area payloads.
+
+    A single Start area, a single Target area holding every step's containers
+    in the order given (frame steps from ``target_payload_*``, teardown steps
+    from ``step_*``), and a single End area that always stows — park, then
+    warm — so the night ends parked no matter which steps ran.
+    """
+    steps = [item for payload in payloads for item in payload]
+    return container_root(
+        [
+            container_start(),
+            container_target(steps),
+            sequence_end(equipment),
+        ]
+    )
+
+
 ## DARKS
 
 
-# so while safe
-#     take expsoures
-# unsafe part
-# take expsoures
+def target_payload_darks(
+    plan: ObservationPlan, equipment: ObservatoryEquipment, bias: bool = False
+) -> list[dict[str, Any]]:
+    """The Target-area content of a darks/bias step.
+
+    Parked imaging: the container parks (or homes) the mount and sets the
+    camera temperature before the exposures, and never unparks — the caller's
+    End area decides how the night ends.
+    """
+    def exposures():
+        return [
+            smart_exposure(
+                count=d[0],
+                exposure=d[1],
+                image_type="BIAS" if bias else "DARK",
+            )
+            for d in _round_robin(plan.bias_frames if bias else plan.dark_frames)
+        ]
+
+    def instructions() -> list[dict[str, Any]]:
+        return (
+            sequence_park_scope(equipment)
+            + sequence_cool_camera(plan, equipment)
+            + exposures()
+        )
+
+    return [sequence_deepsky(plan=plan, instructions=instructions())]
 
 
 def build_sequence_darks(
     plan: ObservationPlan, equipment: ObservatoryEquipment, bias: bool = False
 ) -> dict[str, Any]:
-    def instructions():
-        return (
-            sequence_park_scope(equipment) 
-            + sequence_cool_camera(plan, equipment)
-            + [
-                smart_exposure(
-                    count=d[0],
-                    exposure=d[1],
-                    image_type="BIAS" if bias else "DARK",
-                )
-                for d in _round_robin(plan.bias if bias else plan.dark)
-            ]
-        )
-
     return sequence_root(
         equipment=equipment,
-        instructions=[
-            container_target(
-                [
-                    sequence_deepsky(
-                        plan=plan,
-                        instructions=instructions()
-                    )
-                ]
-            )
-        ],
+        instructions=target_payload_darks(plan, equipment, bias),
     )
 
 
 ## LIGHTS
 
 
-def build_sequence_lights(
+def target_payload_lights(
     plan: ObservationPlan,
     equipment: ObservatoryEquipment,
     profile: ObservatoryProfile,
     *,
     pointing_index: int = 1,
-) -> dict[str, Any]:
+) -> list[dict[str, Any]]:
+    """The Target-area content of a lights step.
+
+    One deep-sky container carrying its dusk/object/cool safetynets, imaging
+    conditions, and triggers. Each safetynet unparks as needed, so a lights
+    step follows a parked gap (or parked darks) without extra help.
+    """
     if pointing_index < 1 or pointing_index > len(plan.pointings):
         raise ValueError(
             f"pointing_index={pointing_index} out of range "
@@ -822,130 +948,172 @@ def build_sequence_lights(
     reference_filter_name = plan.autofocus.reference_filter_name
     reference_filter_position = profile.filter_position(reference_filter_name)
 
-    # Built fresh on every call: each container must own its condition dicts.
-    # Sharing one list across containers would put the same $id in two places
-    # in the emitted JSON (and trip _fix_provider's provider guard).
-    def imaging_condition() -> list[dict[str, Any]]:
-        return [
-            loop_until_dawn(),
-            loop_while_above_horizon(plan.constraints.horizon_offset_degrees),
-            loop_while_above_altitude(plan.constraints.min_altitude),
-        ]
+    return [
+        sequence_deepsky(
+            plan=plan,
+            pointing_index=pointing_index,
+            instructions=[
+                # wait for dusk before imaging
+                sequence_safetynet(
+                    name="Wait For Dusk",
+                    equipment=equipment,
+                    instructions=[
+                        wait_until_dusk(),
+                    ],
+                ),
+                # wait for object to be high enough
+                sequence_safetynet(
+                    name="Wait For Object",
+                    equipment=equipment,
+                    conditions=[
+                        loop_until_dawn(),
+                        loop_until_meridian(),
+                    ],
+                    instructions=[
+                        wait_until_above_horizon(plan.constraints.horizon_offset_degrees),
+                        wait_until_above_altitude(plan.constraints.min_altitude),
+                    ]
+                ),
+                # image object if still in view
+                sequence_safetynet(
+                    name="Image Object",
+                    equipment=equipment,
+                    conditions=[
+                        loop_until_dawn(),
+                        loop_while_above_horizon(plan.constraints.horizon_offset_degrees),
+                        loop_while_above_altitude(plan.constraints.min_altitude),
+                    ],
+                    triggers=[
+                        trigger_meridian_flip(),
+                        trigger_center_after_drift(
+                            after_exposures=plan.guiding.check_drift_every_n_exposures,
+                            distance_arcmin=plan.guiding.max_drift_arcmin,
+                        ),
+                        trigger_autofocus_after_filter_change(),
+                        trigger_autofocus_after_exposures(
+                            plan.autofocus.every_n_exposures
+                        ),
+                        trigger_autofocus_after_temperature_change(
+                            plan.autofocus.threshold_celsius
+                        ),
+                        trigger_autofocus_after_hfr_increase(
+                            samples=plan.autofocus.hfr_increase_sample_size,
+                            amount=plan.autofocus.hfr_increase_threshold_percent,
+                        ),
+                        trigger_restore_guiding(),
+                    ],
+                    instructions=(
+                        sequence_cool_camera(plan, equipment) +
+                        sequence_unpark_scope(equipment)
+                    )
+                    + [
+                        set_tracking(0),
+                        switch_filter(reference_filter_name, reference_filter_position),
+                    ]
+                    + [
+                        slew_and_center()
+                        if pointing.position_angle_deg is None
+                        else slew_center_and_rotate()
+                    ]
+                    + [
+                        run_autofocus(),
+                        start_guiding(),
+                    ]
+                    + [
+                        smart_exposure(
+                            count=d[0],
+                            exposure=d[1],
+                            filter_name=d[2],
+                            # plan.light_frames' filter_name is required by
+                            # the model; _round_robin types it optional
+                            # because it also serves darks/bias, which have
+                            # none.
+                            filter_position=profile.filter_position(cast(str, d[2])),
+                            dither=plan.guiding.dither_every_n_exposures,
+                            image_type="LIGHT",
+                        )
+                        for d in _round_robin(plan.light_frames, plan.batch_size)
+                    ]
+                    + [stop_guiding()],
+                ),
+            ],
+        )
+    ]
 
-    def wait_instructions() -> list[dict[str, Any]]:
-        return [
-            wait_until_above_horizon(plan.constraints.horizon_offset_degrees),
-            wait_until_above_altitude(plan.constraints.min_altitude),
-        ]
 
+def build_sequence_lights(
+    plan: ObservationPlan,
+    equipment: ObservatoryEquipment,
+    profile: ObservatoryProfile,
+    *,
+    pointing_index: int = 1,
+) -> dict[str, Any]:
     return sequence_root(
         equipment=equipment,
-        instructions=[
-            sequence_deepsky(
-                plan=plan,
-                pointing_index=pointing_index,
-                instructions=[
-                    # wait for dusk before imaging
-                    sequence_safetynet(
-                        name="Wait For Dusk",
-                        equipment=equipment,
-                        instructions=[
-                            wait_until_dusk(),
-                        ],
-                    ),
-                    # wait for object to be high enough
-                    sequence_safetynet(
-                        name="Wait For Object",
-                        equipment=equipment,
-                        conditions=[
-                            # Stay alive through the night, but exit early if
-                            # the target has already crossed the meridian (don't
-                            # waste the rest of the night on a target that's
-                            # gone past transit). Intentional, not a bug: when
-                            # the target transits, imaging starts on the eastern
-                            # side via the meridian flip trigger below. When the
-                            # target has already transited by the time this
-                            # container starts, the loop_until_meridian condition
-                            # is already false and we exit immediately.
-                            loop_until_dawn(),
-                            loop_until_meridian(),
-                        ],
-                        instructions=wait_instructions(),
-                    ),
-                    # cool camera if still in view
-                    sequence_safetynet(
-                        name="Cool Camera",
-                        equipment=equipment,
-                        conditions=imaging_condition(),
-                        instructions=sequence_cool_camera(plan, equipment)
-                        + sequence_unpark_scope(equipment)
-                        + wait_instructions(),
-                    ),
-                    # image object if still in view
-                    sequence_safetynet(
-                        name="Image Object",
-                        equipment=equipment,
-                        conditions=imaging_condition(),
-                        triggers=[
-                            trigger_meridian_flip(),
-                            trigger_center_after_drift(
-                                after_exposures=plan.guiding.check_drift_every_n_exposures,
-                                distance_arcmin=plan.guiding.max_drift_arcmin,
-                            ),
-                            trigger_autofocus_after_filter_change(),
-                            trigger_autofocus_after_exposures(
-                                plan.autofocus.every_n_exposures
-                            ),
-                            trigger_autofocus_after_temperature_change(
-                                plan.autofocus.threshold_celsius
-                            ),
-                            trigger_autofocus_after_hfr_increase(
-                                samples=plan.autofocus.hfr_increase_sample_size,
-                                amount=plan.autofocus.hfr_increase_threshold_percent,
-                            ),
-                            trigger_restore_guiding(),
-                        ],
-                        instructions=sequence_unpark_scope(equipment)
-                        + [
-                            set_tracking(0),
-                            switch_filter(
-                                reference_filter_name, reference_filter_position
-                            ),
-                        ]
-                        + [
-                            slew_and_center()
-                            if pointing.position_angle_deg is None
-                            else slew_center_and_rotate()
-                        ]
-                        + [
-                            run_autofocus(),
-                            start_guiding(),
-                        ]
-                        + [
-                            smart_exposure(
-                                count=d[0],
-                                exposure=d[1],
-                                filter_name=d[2],
-                                # plan.light's filter_name is required by the
-                                # model; _round_robin types it optional because
-                                # it also serves darks/bias, which have none.
-                                filter_position=profile.filter_position(
-                                    cast(str, d[2])
-                                ),
-                                dither=plan.guiding.dither_every_n_exposures,
-                                image_type="LIGHT",
-                            )
-                            for d in _round_robin(plan.light, plan.batch_size)
-                        ]
-                        + [stop_guiding()],
-                    ),
-                ],
-            )
-        ],
+        instructions=target_payload_lights(
+            plan, equipment, profile, pointing_index=pointing_index
+        ),
     )
 
 
 ## FLATS
+
+
+def target_payload_flats(
+    plan: ObservationPlan,
+    equipment: ObservatoryEquipment,
+    profile: ObservatoryProfile,
+    dusk: bool = False,
+    pointing_index: int = 1,
+) -> list[dict[str, Any]]:
+    """The Target-area content of a dawn/dusk flats step: slew to the flat
+    panel azimuth and take the flats while the sun is on the right side of
+    the horizon, or nothing when the window has passed."""
+
+    return [
+        sequence_deepsky(
+            plan=plan,
+            pointing_index=pointing_index,
+            instructions=[
+                # wait until start time
+                sequence_safetynet(
+                    name="Wait For Time",
+                    equipment=equipment,
+                    instructions=[
+                        (wait_until_sunset() if dusk else wait_until_dawn()),
+                        (wait_if_sun_altitude_above(0) if dusk else wait_if_sun_altitude_below(-8)),
+                    ]
+                ),
+                # image flats if before stop time
+                sequence_safetynet(
+                    name="Image Flats",
+                    equipment=equipment,
+                    conditions=[
+                        loop_until_sun_altitude_below(-8)
+                        if dusk
+                        else loop_until_sun_altitude_above(0)
+                    ],
+                    instructions=sequence_cool_camera(plan, equipment) + sequence_unpark_scope(equipment) + [
+                        slew_to_azalt(
+                            az=NINA_FLATS_AZIMUTH_DUSK
+                            if dusk
+                            else NINA_FLATS_AZIMUTH_DAWN,
+                            alt=NINA_FLATS_ALTITUDE,
+                        ),
+                    ]
+                    + [
+                        sky_flats(
+                            count=d[0],
+                            filter_name=d[2],
+                            filter_position=profile.filter_position(d[2]),
+                        )
+                        for d in _round_robin(plan.flat_frames, reverse=dusk)
+                        if d[2] is not None
+                    ],
+                ),
+            ],
+        )
+    ]
 
 
 def build_sequence_flats(
@@ -955,70 +1123,9 @@ def build_sequence_flats(
     dusk: bool = False,
     pointing_index: int = 1,
 ) -> dict[str, Any]:
-    def wait_instructions() -> list[dict[str, Any]]:
-        return [
-            (wait_until_sunset() if dusk else wait_until_dawn()),
-            (wait_if_sun_altitude_above(0) if dusk else wait_if_sun_altitude_below(-8)),
-        ]
-
-    # Fresh per container — see build_sequence_lights.
-    def imaging_condition() -> list[dict[str, Any]]:
-        return [
-            (
-                loop_until_sun_altitude_below(-8)
-                if dusk
-                else loop_until_sun_altitude_above(0)
-            )
-        ]
-
     return sequence_root(
         equipment=equipment,
-        instructions=[
-            sequence_deepsky(
-                plan=plan,
-                pointing_index=pointing_index,
-                instructions=[
-                    # wait until start time
-                    sequence_safetynet(
-                        name="Wait For Time",
-                        equipment=equipment,
-                        instructions=wait_instructions(),
-                    ),
-                    # cool camera if before stop time
-                    sequence_safetynet(
-                        name="Cool Camera",
-                        equipment=equipment,
-                        conditions=imaging_condition(),
-                        instructions=sequence_cool_camera(plan, equipment)
-                        + sequence_unpark_scope(equipment)
-                        + wait_instructions(),
-                    ),
-                    # image flats if before stop time
-                    sequence_safetynet(
-                        name="Image Flats",
-                        equipment=equipment,
-                        conditions=imaging_condition(),
-                        instructions=sequence_unpark_scope(equipment)
-                        + [
-                            set_tracking(0),
-                            slew_to_azalt(
-                                az=NINA_FLATS_AZIMUTH_DUSK
-                                if dusk
-                                else NINA_FLATS_AZIMUTH_DAWN,
-                                alt=NINA_FLATS_ALTITUDE,
-                            ),
-                        ]
-                        + [
-                            sky_flats(
-                                count=d[0],
-                                filter_name=d[2],
-                                filter_position=profile.filter_position(d[2]),
-                            )
-                            for d in _round_robin(plan.flat, reverse=dusk)
-                            if d[2] is not None
-                        ],
-                    ),
-                ],
-            )
-        ],
+        instructions=target_payload_flats(
+            plan, equipment, profile, dusk=dusk, pointing_index=pointing_index
+        ),
     )
