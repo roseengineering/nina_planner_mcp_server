@@ -37,20 +37,6 @@ _STUB_LAUNCHER_PATHS = (
 )
 
 
-def _find_types(obj: Any, needle: str) -> list[dict]:
-    """Every dict in a sequence payload whose $type mentions ``needle``."""
-    found: list[dict] = []
-    if isinstance(obj, dict):
-        if needle in str(obj.get("$type", "")):
-            found.append(obj)
-        for value in obj.values():
-            found.extend(_find_types(value, needle))
-    elif isinstance(obj, list):
-        for value in obj:
-            found.extend(_find_types(value, needle))
-    return found
-
-
 def _target_items(payload: dict) -> list[dict]:
     """The direct children of a root sequence's Target area."""
     root = payload["Items"]["$values"]
@@ -1182,9 +1168,11 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
                 ),
             ):
                 result = await load_sequence(
-                    SequenceRequest(
-                        plan=str(plan_path), action="light", pointing_index=1
-                    )
+                    [
+                        SequenceRequest(
+                            plan=str(plan_path), action="light", pointing_index=1
+                        )
+                    ]
                 )
         self.assertIn("is complete", result)
         self.assertIn("nothing to load", result)
@@ -1226,11 +1214,13 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
             ):
                 with self.assertRaises(ValueError) as ctx:
                     await load_sequence(
-                        SequenceRequest(
-                            plan=str(plan_path),
-                            action="light",
-                            pointing_index=1,
-                        )
+                        [
+                            SequenceRequest(
+                                plan=str(plan_path),
+                                action="light",
+                                pointing_index=1,
+                            )
+                        ]
                     )
         self.assertIn("Cannot compute remaining frames", str(ctx.exception))
         self.assertIn("Pass mode='full'", str(ctx.exception))
@@ -1272,12 +1262,14 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
             ):
                 with self.assertRaises(ValueError) as ctx:
                     await load_sequence(
-                        SequenceRequest(
-                            plan=str(plan_path),
-                            action="light",
-                            pointing_index=1,
-                            mode="invalid",
-                        )
+                        [
+                            SequenceRequest(
+                                plan=str(plan_path),
+                                action="light",
+                                pointing_index=1,
+                                mode="invalid",
+                            )
+                        ]
                     )
         self.assertIn("Unsupported mode", str(ctx.exception))
 
@@ -1286,7 +1278,7 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
         from nina_planner.server import load_sequence
 
         with self.assertRaises(ValueError) as ctx:
-            await load_sequence(SequenceRequest(action="light"))
+            await load_sequence([SequenceRequest(action="light")])
         self.assertIn("action='light' requires a plan", str(ctx.exception))
         self.assertIn("request.plan", str(ctx.exception))
 
@@ -1313,6 +1305,7 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
             plan_path = Path(tmp) / "plan.json"
             plan_path.write_text(json.dumps(plan_dict))
 
+            darks_step = _MM(return_value=[{"$type": "darks"}])
             with (
                 patch(
                     "nina_planner.server.get_site_profile",
@@ -1322,25 +1315,24 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
                     "nina_planner.server._get_site_equipment_status",
                     AsyncMock(return_value=ObservatoryEquipment()),
                 ),
-                patch(
-                    "nina_planner.server.build_sequence_darks",
-                    new=_MM(return_value={"$type": "darks"}),
-                ),
+                patch("nina_planner.server.target_payload_darks", new=darks_step),
                 patch(
                     "nina_planner.server._api_post",
                     AsyncMock(return_value={}),
-                ),
-                patch(
-                    "nina_planner.server._api_get",
-                    AsyncMock(return_value={}),
-                ),
+                ) as api_post,
             ):
                 result = await load_sequence(
-                    SequenceRequest(
-                        plan=str(plan_path), action="dark", pointing_index=1
-                    )
+                    [
+                        SequenceRequest(
+                            plan=str(plan_path), action="dark", pointing_index=1
+                        )
+                    ]
                 )
-        self.assertIn("`dark` sequence loaded", result)
+        darks_step.assert_called_once()
+        self.assertEqual(api_post.await_args.args[0], "/sequence/load")
+        self.assertIn("`dark` pointing 1", result)
+        self.assertIn("Sequence loaded (1 of 1 step(s))", result)
+        self.assertIn("start_sequence()", result)
 
     async def test_load_sequence_dark_skipped_when_window_closed(self):
         """A plan whose lights are older than `calibration_window_days` cannot
@@ -1375,7 +1367,7 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
             plan_path = Path(tmp) / "plan.json"
             plan_path.write_text(json.dumps(plan_dict))
 
-            darks_builder = _MM(return_value={"$type": "darks"})
+            darks_step = _MM(return_value=[{"$type": "darks"}])
             with (
                 patch(
                     "nina_planner.server.get_site_profile",
@@ -1393,23 +1385,18 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
                     "nina_planner.server.get_nina_time",
                     AsyncMock(return_value={"nina_time": "2026-10-05T12:00:00-05:00"}),
                 ),
-                patch(
-                    "nina_planner.server.build_sequence_darks",
-                    new=darks_builder,
-                ),
-                patch(
-                    "nina_planner.server._api_get",
-                    AsyncMock(return_value={}),
-                ),
+                patch("nina_planner.server.target_payload_darks", new=darks_step),
             ):
                 result = await load_sequence(
-                    SequenceRequest(
-                        plan=str(plan_path), action="dark", pointing_index=1
-                    )
+                    [
+                        SequenceRequest(
+                            plan=str(plan_path), action="dark", pointing_index=1
+                        )
+                    ]
                 )
 
         self.assertIn("nothing to load", result)
-        darks_builder.assert_not_called()
+        darks_step.assert_not_called()
 
     async def test_load_sequence_bias_frame(self):
         from nina_planner.server import load_sequence
@@ -1436,7 +1423,7 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
 
             def fake_darks(plan, equipment, bias=False):
                 captured_kwargs["bias"] = bias
-                return {"$type": "darks"}
+                return [{"$type": "darks"}]
 
             with (
                 patch(
@@ -1448,25 +1435,24 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
                     AsyncMock(return_value=ObservatoryEquipment()),
                 ),
                 patch(
-                    "nina_planner.server.build_sequence_darks",
+                    "nina_planner.server.target_payload_darks",
                     side_effect=fake_darks,
                 ),
                 patch(
                     "nina_planner.server._api_post",
                     AsyncMock(return_value={}),
                 ),
-                patch(
-                    "nina_planner.server._api_get",
-                    AsyncMock(return_value={}),
-                ),
             ):
                 result = await load_sequence(
-                    SequenceRequest(
-                        plan=str(plan_path), action="bias", pointing_index=1
-                    )
+                    [
+                        SequenceRequest(
+                            plan=str(plan_path), action="bias", pointing_index=1
+                        )
+                    ]
                 )
         self.assertTrue(captured_kwargs["bias"])
-        self.assertIn("`bias` sequence loaded", result)
+        self.assertIn("`bias` pointing 1", result)
+        self.assertIn("Sequence loaded (1 of 1 step(s))", result)
 
     async def test_load_sequence_dawn_flat(self):
         from nina_planner.server import load_sequence
@@ -1493,7 +1479,7 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
 
             def fake_flats(plan, equipment, profile, dusk=False):
                 captured_kwargs["dusk"] = dusk
-                return {"$type": "flats"}
+                return [{"$type": "flats"}]
 
             with (
                 patch(
@@ -1505,25 +1491,24 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
                     AsyncMock(return_value=ObservatoryEquipment()),
                 ),
                 patch(
-                    "nina_planner.server.build_sequence_flats",
+                    "nina_planner.server.target_payload_flats",
                     side_effect=fake_flats,
                 ),
                 patch(
                     "nina_planner.server._api_post",
                     AsyncMock(return_value={}),
                 ),
-                patch(
-                    "nina_planner.server._api_get",
-                    AsyncMock(return_value={}),
-                ),
             ):
                 result = await load_sequence(
-                    SequenceRequest(
-                        plan=str(plan_path), action="dawn_flat", pointing_index=1
-                    )
+                    [
+                        SequenceRequest(
+                            plan=str(plan_path), action="dawn_flat", pointing_index=1
+                        )
+                    ]
                 )
         self.assertFalse(captured_kwargs["dusk"])
-        self.assertIn("`dawn_flat` sequence loaded", result)
+        self.assertIn("`dawn_flat` pointing 1", result)
+        self.assertIn("Sequence loaded (1 of 1 step(s))", result)
 
     async def test_load_sequence_dusk_flat(self):
         from nina_planner.server import load_sequence
@@ -1550,7 +1535,7 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
 
             def fake_flats(plan, equipment, profile, dusk=False):
                 captured_kwargs["dusk"] = dusk
-                return {"$type": "flats"}
+                return [{"$type": "flats"}]
 
             with (
                 patch(
@@ -1562,25 +1547,24 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
                     AsyncMock(return_value=ObservatoryEquipment()),
                 ),
                 patch(
-                    "nina_planner.server.build_sequence_flats",
+                    "nina_planner.server.target_payload_flats",
                     side_effect=fake_flats,
                 ),
                 patch(
                     "nina_planner.server._api_post",
                     AsyncMock(return_value={}),
                 ),
-                patch(
-                    "nina_planner.server._api_get",
-                    AsyncMock(return_value={}),
-                ),
             ):
                 result = await load_sequence(
-                    SequenceRequest(
-                        plan=str(plan_path), action="dusk_flat", pointing_index=1
-                    )
+                    [
+                        SequenceRequest(
+                            plan=str(plan_path), action="dusk_flat", pointing_index=1
+                        )
+                    ]
                 )
         self.assertTrue(captured_kwargs["dusk"])
-        self.assertIn("`dusk_flat` sequence loaded", result)
+        self.assertIn("`dusk_flat` pointing 1", result)
+        self.assertIn("Sequence loaded (1 of 1 step(s))", result)
 
     async def test_load_light_sequence_requires_targetname_file_pattern(self):
         from nina_planner.server import load_sequence
@@ -1624,9 +1608,11 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
                     r"N\.I\.N\.A\. FilePattern must contain \$\$TARGETNAME\$\$",
                 ):
                     await load_sequence(
-                        SequenceRequest(
-                            plan=str(plan_path), action="light", mode="full"
-                        )
+                        [
+                            SequenceRequest(
+                                plan=str(plan_path), action="light", mode="full"
+                            )
+                        ]
                     )
 
             api_post.assert_not_awaited()
@@ -1678,14 +1664,17 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
                 ) as api_get,
             ):
                 result = await load_sequence(
-                    SequenceRequest(
-                        plan=str(plan_path),
-                        action="light",
-                        pointing_index=1,
-                        mode="full",
-                    )
+                    [
+                        SequenceRequest(
+                            plan=str(plan_path),
+                            action="light",
+                            pointing_index=1,
+                            mode="full",
+                        )
+                    ]
                 )
-        self.assertIn("`light` sequence loaded", result)
+        self.assertIn("`light` pointing 1", result)
+        self.assertIn("Sequence loaded (1 of 1 step(s))", result)
         api_post.assert_awaited_once()
         self.assertEqual(api_post.await_args.args[0], "/sequence/load")
         # Loading is the only API call: no running-state pre-check, no start.
@@ -1702,132 +1691,33 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result, "Sequence started.")
         api_get.assert_awaited_once_with("/sequence/start?skipValidation=true")
 
-    async def test_load_sequence_stow_loads_without_starting(self):
-        from nina_planner.server import load_sequence
-
-        # The schema's own defaults (pointing_index, mode, thresholds) are
-        # echoed back by clients and must not count as unused fields.
-        with (
-            patch(
-                "nina_planner.server.get_site_equipment_status",
-                AsyncMock(return_value=self._equipment()),
-            ),
-            patch(
-                "nina_planner.server._api_post", AsyncMock(return_value={})
-            ) as api_post,
-            patch(
-                "nina_planner.server._api_get",
-                AsyncMock(side_effect=AssertionError("no NINA reads expected")),
-            ),
+    async def test_load_sequence_empty_list_stows_without_starting(self):
+        """The default (and only) stow: no arguments loads the closing
+        sequence — empty Target area, End area parks then warms — but never
+        starts it."""
+        with patch(
+            "nina_planner.server._api_get",
+            AsyncMock(side_effect=AssertionError("no NINA reads expected")),
         ):
-            result = await load_sequence(SequenceRequest(action="stow"))
+            result, api_post = await self._load_list([])
 
         self.assertIn("`stow` sequence loaded", result)
         self.assertIn("start_sequence()", result)
         path, payload = api_post.await_args.args
         self.assertEqual(path, "/sequence/load")
-        sent = json.dumps(payload)
-        self.assertIn("ParkScope", sent)  # stow parks (or homes) ...
-        self.assertIn("WarmCamera", sent)  # ... and then warms
-
-    async def test_load_sequence_park_does_not_warm(self):
-        from nina_planner.server import load_sequence
-
-        with (
-            patch(
-                "nina_planner.server.get_site_equipment_status",
-                AsyncMock(return_value=self._equipment()),
-            ),
-            patch(
-                "nina_planner.server._api_post", AsyncMock(return_value={})
-            ) as api_post,
-        ):
-            result = await load_sequence(SequenceRequest(action="park"))
-
-        self.assertIn("`park` sequence loaded", result)
-        sent = json.dumps(api_post.await_args.args[1])
-        self.assertIn("ParkScope", sent)
-        self.assertNotIn("WarmCamera", sent)
-
-    async def test_load_sequence_park_falls_back_to_home(self):
-        from nina_planner.server import load_sequence
-
-        equipment = self._equipment(can_park=False, can_find_home=True)
-        with (
-            patch(
-                "nina_planner.server.get_site_equipment_status",
-                AsyncMock(return_value=equipment),
-            ),
-            patch(
-                "nina_planner.server._api_post", AsyncMock(return_value={})
-            ) as api_post,
-        ):
-            await load_sequence(SequenceRequest(action="park"))
-
-        sent = json.dumps(api_post.await_args.args[1])
-        self.assertIn("FindHome", sent)
-        self.assertNotIn("ParkScope", sent)
-        self.assertNotIn("WarmCamera", sent)
-
-    async def test_load_sequence_warm_does_not_touch_the_mount(self):
-        from nina_planner.server import load_sequence
-
-        with (
-            patch(
-                "nina_planner.server.get_site_equipment_status",
-                AsyncMock(return_value=self._equipment()),
-            ),
-            patch(
-                "nina_planner.server._api_post", AsyncMock(return_value={})
-            ) as api_post,
-        ):
-            result = await load_sequence(SequenceRequest(action="warm"))
-
-        self.assertIn("`warm` sequence loaded", result)
-        sent = json.dumps(api_post.await_args.args[1])
-        self.assertIn("WarmCamera", sent)
-        self.assertNotIn("ParkScope", sent)
-        self.assertNotIn("FindHome", sent)
-
-    async def test_planless_actions_reject_plan_only_fields(self):
-        """A field the action cannot use is an error, not silently dropped."""
-        from nina_planner.server import load_sequence
-
-        for action in ("stow", "park", "warm"):
-            with self.subTest(action=action):
-                with self.assertRaises(ValueError) as ctx:
-                    await load_sequence(
-                        SequenceRequest(action=action, plan="plan.json", mode="full")
-                    )
-                message = str(ctx.exception)
-                self.assertIn("does not use", message)
-                self.assertIn("plan", message)
-                self.assertIn("mode", message)
+        areas = payload["Items"]["$values"]
+        self.assertEqual(areas[1]["Items"]["$values"], [], "empty target area")
+        end_types = [i["$type"] for i in areas[2]["Items"]["$values"]]
+        self.assertTrue(any("ParkScope" in t for t in end_types), "End parks")
+        self.assertTrue(any("WarmCamera" in t for t in end_types), "End warms")
 
     async def test_stow_requires_a_stowable_mount(self):
-        from nina_planner.server import load_sequence
-
-        equipment = self._equipment(can_park=False, can_find_home=False)
-        with patch(
-            "nina_planner.server.get_site_equipment_status",
-            AsyncMock(return_value=equipment),
-        ):
-            with self.assertRaises(ValueError) as ctx:
-                await load_sequence(SequenceRequest(action="stow"))
+        with self.assertRaises(ValueError) as ctx:
+            await self._load_list(
+                [], equipment=self._equipment(can_park=False, can_find_home=False)
+            )
         self.assertIn("neither park nor home", str(ctx.exception))
         self.assertIn("nothing to stow", str(ctx.exception))
-
-    async def test_warm_requires_a_camera_with_a_cooler(self):
-        from nina_planner.server import load_sequence
-
-        equipment = self._equipment(has_cooler=False)
-        with patch(
-            "nina_planner.server.get_site_equipment_status",
-            AsyncMock(return_value=equipment),
-        ):
-            with self.assertRaises(ValueError) as ctx:
-                await load_sequence(SequenceRequest(action="warm"))
-        self.assertIn("nothing to warm", str(ctx.exception))
 
     # load_sequence with a LIST of requests
 
@@ -1956,26 +1846,6 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn("Sequence loaded (2 of 2 step(s))", result)
         self.assertIn("start_sequence()", result)
 
-    async def test_load_sequence_one_element_list_matches_single(self):
-        """request=[x] must build byte-identical JSON to request=x."""
-        with tempfile.TemporaryDirectory() as tmp:
-            plan_path = Path(tmp) / "plan.json"
-            plan_path.write_text(json.dumps(self._list_plan_dict()))
-            request = SequenceRequest(plan=str(plan_path), action="light")
-
-            single, single_post = await self._load_list(request)
-            listed, listed_post = await self._load_list([request])
-
-        self.assertEqual(single_post.await_count, 1)
-        self.assertEqual(listed_post.await_count, 1)
-        self.assertEqual(
-            json.dumps(single_post.await_args.args[1]),
-            json.dumps(listed_post.await_args.args[1]),
-        )
-        # Only the summary format differs.
-        self.assertIn("`light` sequence loaded", single)
-        self.assertIn("Sequence loaded (1 of 1 step(s))", listed)
-
     async def test_load_sequence_list_skips_completed_entry(self):
         """An entry with nothing left contributes no container and is reported;
         the rest of the night still loads."""
@@ -2018,85 +1888,15 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn("Nothing to load", result)
         self.assertNotIn("start_sequence()", result)
 
-    async def test_load_sequence_list_warm_step_between_targets(self):
-        """A warm step sits between two frame steps, and the next plan-driven
-        step still cools the camera before it images."""
-        with tempfile.TemporaryDirectory() as tmp:
-            plan_path = Path(tmp) / "plan.json"
-            plan_path.write_text(
-                json.dumps(
-                    self._list_plan_dict(cooler={"on": True, "setpoint_celsius": -15.0})
-                )
-            )
-            requests = [
-                SequenceRequest(plan=str(plan_path), action="light"),
-                SequenceRequest(action="warm"),
-                SequenceRequest(plan=str(plan_path), action="dark"),
-            ]
-            result, api_post = await self._load_list(requests)
-
-        self.assertEqual(api_post.await_count, 1)
-        payload = api_post.await_args.args[1]
-        steps = _target_items(payload)
-        self.assertEqual(len(steps), 3)
-        self.assertIn("DeepSkyObjectContainer", steps[0]["$type"])
-        self.assertIn("WarmCamera", steps[1]["$type"], "warm runs mid-list")
-        self.assertIn("DeepSkyObjectContainer", steps[2]["$type"])
-
-        # The warm step warms once here and once in the stow End area, while
-        # both frame steps still re-chill to the plan's setpoint.
-        warms = _find_types(payload, "WarmCamera")
-        self.assertEqual(len(warms), 2, "mid-list step + the stow End area")
-        cools = _find_types(payload, "CoolCamera")
-        self.assertGreaterEqual(len(cools), 2, "lights and darks both cool")
-        self.assertTrue(all(c["Temperature"] == -15.0 for c in cools))
-        self.assertIn("start_sequence()", result)
-
-    async def test_load_sequence_list_unpark_step(self):
-        """unpark is allowed as a list step (the End area parks behind it) but
-        only for a mount that can park."""
-        requests = [
-            SequenceRequest(action="park"),
-            SequenceRequest(action="unpark"),
-        ]
-        result, api_post = await self._load_list(requests)
-
-        self.assertEqual(api_post.await_count, 1)
-        types = [s["$type"] for s in _target_items(api_post.await_args.args[1])]
-        self.assertTrue(any("ParkScope" in t for t in types), "park step first")
-        self.assertTrue(any("UnparkScope" in t for t in types), "unpark step second")
-        self.assertIn("request[1]: `unpark` step", result)
-
-        with self.assertRaises(ValueError) as ctx:
-            await self._load_list(
-                requests, equipment=self._equipment(can_park=False, can_find_home=True)
-            )
-        self.assertIn("request[1]:", str(ctx.exception))
-        self.assertIn("nothing to unpark", str(ctx.exception))
-
-    async def test_load_sequence_single_unpark_is_rejected(self):
-        """As a lone request unpark would finish with the mount unparked and
-        nothing running — a list's End area is what makes it safe."""
+    async def test_load_sequence_stow_action_is_rejected(self):
+        """There is no stow action — an empty request list is the stow."""
         from nina_planner.server import load_sequence
 
         with self.assertRaises(ValueError) as ctx:
-            await load_sequence(SequenceRequest(action="unpark"))
-        self.assertIn("list step only", str(ctx.exception))
-        self.assertIn("unparked and nothing running", str(ctx.exception))
-
-    async def test_load_sequence_list_rejects_stow(self):
-        """The composed End area already parks and warms, so stow-in-a-list is
-        a caller mistake rather than a redundant step."""
-        with self.assertRaises(ValueError) as ctx:
-            await self._load_list([SequenceRequest(action="stow")])
+            await load_sequence([{"action": "stow"}])
         message = str(ctx.exception)
-        self.assertIn("cannot be combined", message)
-        self.assertIn("End area", message)
-
-    async def test_load_sequence_list_rejects_empty(self):
-        with self.assertRaises(ValueError) as ctx:
-            await self._load_list([])
-        self.assertIn("empty", str(ctx.exception))
+        self.assertIn("request[0]", message)
+        self.assertIn("action", message)
 
     async def test_load_sequence_list_error_names_the_entry(self):
         """A failure in entry i says `request[i]:`, so the agent knows which

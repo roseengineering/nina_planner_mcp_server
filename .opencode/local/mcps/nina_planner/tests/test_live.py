@@ -195,9 +195,11 @@ class LiveNinaTest(unittest.TestCase):
     def test_run_light_sequence(self):
         plan_path = str(_FIXTURES_DIR / "veil.json")
         result = asyncio.run(
-            load_sequence(SequenceRequest(plan=plan_path, action="light", mode="full"))
+            load_sequence(
+                [SequenceRequest(plan=plan_path, action="light", mode="full")]
+            )
         )
-        self.assertIn("sequence loaded", result)
+        self.assertIn("Sequence loaded", result)
         state = asyncio.run(get_sequence_state())
         self.assertIsInstance(state, (dict, list))
         asyncio.run(stop_sequence())
@@ -205,9 +207,9 @@ class LiveNinaTest(unittest.TestCase):
     def test_run_dark_sequence(self):
         plan_path = str(_FIXTURES_DIR / "veil.json")
         result = asyncio.run(
-            load_sequence(SequenceRequest(plan=plan_path, action="dark", mode="full"))
+            load_sequence([SequenceRequest(plan=plan_path, action="dark", mode="full")])
         )
-        self.assertIn("sequence loaded", result)
+        self.assertIn("Sequence loaded", result)
         state = asyncio.run(get_sequence_state())
         self.assertIsInstance(state, (dict, list))
         asyncio.run(stop_sequence())
@@ -215,9 +217,9 @@ class LiveNinaTest(unittest.TestCase):
     def test_run_bias_sequence(self):
         plan_path = str(_FIXTURES_DIR / "veil.json")
         result = asyncio.run(
-            load_sequence(SequenceRequest(plan=plan_path, action="bias", mode="full"))
+            load_sequence([SequenceRequest(plan=plan_path, action="bias", mode="full")])
         )
-        self.assertIn("sequence loaded", result)
+        self.assertIn("Sequence loaded", result)
         state = asyncio.run(get_sequence_state())
         self.assertIsInstance(state, (dict, list))
         asyncio.run(stop_sequence())
@@ -226,10 +228,10 @@ class LiveNinaTest(unittest.TestCase):
         plan_path = str(_FIXTURES_DIR / "veil.json")
         result = asyncio.run(
             load_sequence(
-                SequenceRequest(plan=plan_path, action="dawn_flat", mode="full")
+                [SequenceRequest(plan=plan_path, action="dawn_flat", mode="full")]
             )
         )
-        self.assertIn("sequence loaded", result)
+        self.assertIn("Sequence loaded", result)
         state = asyncio.run(get_sequence_state())
         self.assertIsInstance(state, (dict, list))
         asyncio.run(stop_sequence())
@@ -238,10 +240,10 @@ class LiveNinaTest(unittest.TestCase):
         plan_path = str(_FIXTURES_DIR / "veil.json")
         result = asyncio.run(
             load_sequence(
-                SequenceRequest(plan=plan_path, action="dusk_flat", mode="full")
+                [SequenceRequest(plan=plan_path, action="dusk_flat", mode="full")]
             )
         )
-        self.assertIn("sequence loaded", result)
+        self.assertIn("Sequence loaded", result)
         state = asyncio.run(get_sequence_state())
         self.assertIsInstance(state, (dict, list))
         asyncio.run(stop_sequence())
@@ -273,7 +275,7 @@ class LiveNinaTest(unittest.TestCase):
         self.assertEqual(result["pointing_index"], 1)
 
     def test_enter_teardown(self):
-        result = asyncio.run(load_sequence(SequenceRequest(action="stow")))
+        result = asyncio.run(load_sequence())
         self.assertIn("`stow` sequence loaded", result)
         state = asyncio.run(get_sequence_state())
         self.assertIsInstance(state, list)

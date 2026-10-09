@@ -1,3 +1,4 @@
+import json
 import unittest
 from dataclasses import dataclass
 from typing import Any
@@ -496,40 +497,6 @@ class SequenceBuildersTest(unittest.TestCase):
         )
         self.assertTrue(_find_items(result, "ParkScope"), "stow parks (or homes)")
         self.assertTrue(_find_items(result, "WarmCamera"), "stow then warms")
-
-    def test_build_sequence_park_does_not_warm(self):
-        from nina_planner.sequence import build_sequence_park
-
-        result = build_sequence_park(_stow_equipment())
-
-        self.assertTrue(_find_items(result, "ParkScope"))
-        self.assertEqual(_find_items(result, "WarmCamera"), [])
-        # Empty target area: the End area parks as soon as the sequence starts.
-        self.assertEqual(_items(result)[1]["Items"]["$values"], [])
-
-    def test_build_sequence_park_falls_back_to_home(self):
-        from nina_planner.sequence import build_sequence_park
-
-        home_only = ObservatoryEquipment(
-            mount=MountDevice(
-                connected=True, name="m", can_park=False, can_find_home=True
-            )
-        )
-        result = build_sequence_park(home_only)
-
-        self.assertEqual(_find_items(result, "ParkScope"), [])
-        self.assertEqual(len(_find_items(result, "FindHome, NINA.Sequencer")), 1)
-
-    def test_build_sequence_warm_does_not_touch_the_mount(self):
-        from nina_planner.sequence import build_sequence_warm
-
-        result = build_sequence_warm(_stow_equipment())
-
-        self.assertTrue(_find_items(result, "WarmCamera"))
-        self.assertEqual(_find_items(result, "ParkScope"), [])
-        self.assertEqual(_find_items(result, "FindHome, NINA.Sequencer"), [])
-        # Empty End area: warming must not park on the way out either.
-        self.assertEqual(_items(result)[-1]["Items"]["$values"], [])
 
     def test_build_sequence_darks(self):
         from nina_planner.sequence import build_sequence_darks
@@ -1070,20 +1037,25 @@ class RoundRobinEdgeCasesTest(unittest.TestCase):
 
 class BuildSequenceManyTest(unittest.TestCase):
     """A list of requests becomes one sequence: every payload's containers
-    land in a single Target area, in order, under one stow End area."""
+    land in a single Target area, in order, under an End area that always
+    stows — and an empty payload list is exactly the stow."""
+
+    @staticmethod
+    def _end_types(result: dict) -> list[str]:
+        return [i["$type"] for i in _items(result)[2]["Items"]["$values"]]
 
     def test_flattens_payloads_into_one_target_area_in_order(self):
         from nina_planner.sequence import (
             build_sequence_many,
-            step_warm,
             target_payload_darks,
+            target_payload_lights,
         )
 
         equipment = _stow_equipment()
         plan = _plan()
         payloads = [
+            target_payload_lights(plan, equipment, _profile()),
             target_payload_darks(plan, equipment),
-            step_warm(equipment),
             target_payload_darks(plan, equipment, bias=True),
         ]
 
@@ -1094,10 +1066,13 @@ class BuildSequenceManyTest(unittest.TestCase):
         steps = _items(result)[1]["Items"]["$values"]
         self.assertEqual(len(steps), 3, "steps in list order, nothing merged")
         self.assertIn("DeepSkyObjectContainer", steps[0]["$type"])
-        self.assertIn("WarmCamera", steps[1]["$type"])
+        self.assertIn(
+            "(plan-test123-1)", steps[0]["Target"]["TargetName"], "lights step first"
+        )
+        self.assertIn("DeepSkyObjectContainer", steps[1]["$type"])
         self.assertIn("DeepSkyObjectContainer", steps[2]["$type"])
 
-        end_types = [i["$type"] for i in _items(result)[2]["Items"]["$values"]]
+        end_types = self._end_types(result)
         self.assertTrue(any("ParkScope" in t for t in end_types), "End parks")
         self.assertTrue(any("WarmCamera" in t for t in end_types), "End warms")
 
@@ -1107,8 +1082,18 @@ class BuildSequenceManyTest(unittest.TestCase):
         equipment = _stow_equipment()
         result = build_sequence_many(equipment, [[]])
         self.assertEqual(_items(result)[1]["Items"]["$values"], [])
-        end_types = [i["$type"] for i in _items(result)[2]["Items"]["$values"]]
+        end_types = self._end_types(result)
         self.assertTrue(any("ParkScope" in t for t in end_types))
+
+    def test_empty_payload_list_is_the_stow(self):
+        """An empty request list loads exactly the stow sequence."""
+        from nina_planner.sequence import build_sequence_many, build_sequence_stow
+
+        equipment = _stow_equipment()
+        self.assertEqual(
+            json.dumps(build_sequence_many(equipment, [])),
+            json.dumps(build_sequence_stow(equipment)),
+        )
 
     def test_darks_target_area_holds_the_container_directly(self):
         """darks used to nest a second Target area inside the real one; the
@@ -1119,63 +1104,6 @@ class BuildSequenceManyTest(unittest.TestCase):
         children = _items(result)[1]["Items"]["$values"]
         self.assertEqual(len(children), 1)
         self.assertIn("DeepSkyObjectContainer", children[0]["$type"])
-
-
-class ListStepTest(unittest.TestCase):
-    """step_* turn the teardown actions into Target-area payloads for a
-    composed list, each refusing to build when the equipment cannot do it."""
-
-    @staticmethod
-    def _types(steps: list[dict]) -> list[str]:
-        return [str(d.get("$type", "")) for d in steps]
-
-    def test_step_park_is_capability_driven(self):
-        from nina_planner.sequence import step_park
-
-        self.assertTrue(
-            any("ParkScope" in t for t in self._types(step_park(_stow_equipment())))
-        )
-
-        home_only = ObservatoryEquipment(
-            mount=MountDevice(
-                connected=True, name="m", can_park=False, can_find_home=True
-            )
-        )
-        self.assertTrue(any("FindHome" in t for t in self._types(step_park(home_only))))
-
-        with self.assertRaises(ValueError) as ctx:
-            step_park(ObservatoryEquipment(mount=MountDevice(connected=True, name="m")))
-        self.assertIn("nothing to park", str(ctx.exception))
-
-    def test_step_warm_requires_a_cooler(self):
-        from nina_planner.sequence import step_warm
-
-        self.assertTrue(
-            any("WarmCamera" in t for t in self._types(step_warm(_stow_equipment())))
-        )
-
-        no_cooler = ObservatoryEquipment(
-            camera=CameraDevice(connected=True, name="cam", can_set_temperature=False)
-        )
-        with self.assertRaises(ValueError) as ctx:
-            step_warm(no_cooler)
-        self.assertIn("nothing to warm", str(ctx.exception))
-
-    def test_step_unpark_requires_a_parkable_mount(self):
-        from nina_planner.sequence import step_unpark
-
-        self.assertTrue(
-            any("UnparkScope" in t for t in self._types(step_unpark(_stow_equipment())))
-        )
-
-        home_only = ObservatoryEquipment(
-            mount=MountDevice(
-                connected=True, name="m", can_park=False, can_find_home=True
-            )
-        )
-        with self.assertRaises(ValueError) as ctx:
-            step_unpark(home_only)
-        self.assertIn("nothing to unpark", str(ctx.exception))
 
 
 if __name__ == "__main__":

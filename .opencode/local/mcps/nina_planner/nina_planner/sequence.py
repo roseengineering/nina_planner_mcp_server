@@ -775,10 +775,9 @@ def sequence_root(
 
 ## TEARDOWN
 #
-# Three plan-less sequences with deliberately different payloads: an empty
-# target area makes the End area run straight away, so each of them completes
-# within one bounded "On Safe" wait instead of idling on the enclosure until
-# sunrise (see test_end_area_waits_three_minutes_*).
+# The plan-less whole sequence: an empty target area makes the End area run
+# straight away, so it completes within one bounded "On Safe" wait instead of
+# idling on the enclosure until sunrise (see test_end_area_waits_three_minutes_*).
 
 
 def build_sequence_stow(equipment: ObservatoryEquipment) -> dict[str, Any]:
@@ -786,79 +785,17 @@ def build_sequence_stow(equipment: ObservatoryEquipment) -> dict[str, Any]:
 
     The target area is empty, so the End area runs immediately: one bounded
     3-minute "On Safe" pass from ``sequence_end``, then both halves — park,
-    then warm.
+    then warm. This is what an empty ``request`` list loads.
     """
     return sequence_root(equipment)
 
 
-def build_sequence_park(equipment: ObservatoryEquipment) -> dict[str, Any]:
-    """Park (or home) the mount, leaving the camera cooled."""
-    return container_root(
-        [
-            container_start(),
-            container_target(),
-            container_end(sequence_park_scope(equipment)),
-        ]
-    )
-
-
-def build_sequence_warm(equipment: ObservatoryEquipment) -> dict[str, Any]:
-    """Warm the camera, leaving the mount alone."""
-    return container_root(
-        [
-            container_start(),
-            container_target(sequence_warm_camera(equipment)),
-            container_end(),
-        ]
-    )
-
-
 ## LISTS
 #
-# The teardown actions mean something different inside a `request` list: they
-# become ordered Target-area *steps* rather than whole sequences, so their
-# park/warm/unpark run mid-sequence instead of in the End area. The composed
-# End area always stows, whatever the steps did (see build_sequence_many).
-
-
-def step_park(equipment: ObservatoryEquipment) -> list[dict[str, Any]]:
-    """A park (or, when the mount cannot park, find-home) step."""
-    mount = equipment.mount
-    can_park = bool(mount and mount.can_park)
-    can_home = bool(mount and mount.can_find_home)
-    if not (can_park or can_home):
-        raise ValueError(
-            "Mount can neither park nor home "
-            f"(can_park={can_park}, can_find_home={can_home}) — nothing to park."
-        )
-    return sequence_park_scope(equipment)
-
-
-def step_warm(equipment: ObservatoryEquipment) -> list[dict[str, Any]]:
-    """A warm-camera step, e.g. across a long gap between targets.
-
-    Harmless mid-list: the next plan-driven frame step cools the camera
-    again before it images when the plan's cooler is on.
-    """
-    camera = equipment.camera
-    if not (camera and camera.thermal.has_cooler):
-        raise ValueError(
-            "Camera has no cooler (can_set_temperature=false) — nothing to warm."
-        )
-    return sequence_warm_camera(equipment)
-
-
-def step_unpark(equipment: ObservatoryEquipment) -> list[dict[str, Any]]:
-    """An unpark step, releasing a mount parked earlier in the list.
-
-    N.I.N.A.'s unpark pairs with park, so a mount that cannot park has
-    nothing to unpark. Never usable as a whole sequence: as a list step the
-    composed End area still parks behind it.
-    """
-    mount = equipment.mount
-    if not (mount and mount.can_park):
-        raise ValueError("Mount cannot park (can_park=false) — nothing to unpark.")
-    return sequence_unpark_scope(equipment)
+# A `request` list composes its steps into one Target area under a single
+# End area that always stows (park, then warm) — or, for an empty list, is
+# the whole sequence, making the empty list the stow (see
+# build_sequence_many).
 
 
 def build_sequence_many(
@@ -867,9 +804,9 @@ def build_sequence_many(
     """One sequence built from an ordered list of Target-area payloads.
 
     A single Start area, a single Target area holding every step's containers
-    in the order given (frame steps from ``target_payload_*``, teardown steps
-    from ``step_*``), and a single End area that always stows — park, then
-    warm — so the night ends parked no matter which steps ran.
+    in the order given (from ``target_payload_*``), and a single End area
+    that always stows — park, then warm — so the night ends parked no matter
+    what ran, and an empty payload list is the stow itself.
     """
     steps = [item for payload in payloads for item in payload]
     return container_root(
@@ -893,6 +830,7 @@ def target_payload_darks(
     camera temperature before the exposures, and never unparks — the caller's
     End area decides how the night ends.
     """
+
     def exposures():
         return [
             smart_exposure(
@@ -970,9 +908,11 @@ def target_payload_lights(
                         loop_until_meridian(),
                     ],
                     instructions=[
-                        wait_until_above_horizon(plan.constraints.horizon_offset_degrees),
+                        wait_until_above_horizon(
+                            plan.constraints.horizon_offset_degrees
+                        ),
                         wait_until_above_altitude(plan.constraints.min_altitude),
-                    ]
+                    ],
                 ),
                 # image object if still in view
                 sequence_safetynet(
@@ -980,7 +920,9 @@ def target_payload_lights(
                     equipment=equipment,
                     conditions=[
                         loop_until_dawn(),
-                        loop_while_above_horizon(plan.constraints.horizon_offset_degrees),
+                        loop_while_above_horizon(
+                            plan.constraints.horizon_offset_degrees
+                        ),
                         loop_while_above_altitude(plan.constraints.min_altitude),
                     ],
                     triggers=[
@@ -1003,8 +945,8 @@ def target_payload_lights(
                         trigger_restore_guiding(),
                     ],
                     instructions=(
-                        sequence_cool_camera(plan, equipment) +
-                        sequence_unpark_scope(equipment)
+                        sequence_cool_camera(plan, equipment)
+                        + sequence_unpark_scope(equipment)
                     )
                     + [
                         set_tracking(0),
@@ -1081,8 +1023,12 @@ def target_payload_flats(
                     equipment=equipment,
                     instructions=[
                         (wait_until_sunset() if dusk else wait_until_dawn()),
-                        (wait_if_sun_altitude_above(0) if dusk else wait_if_sun_altitude_below(-8)),
-                    ]
+                        (
+                            wait_if_sun_altitude_above(0)
+                            if dusk
+                            else wait_if_sun_altitude_below(-8)
+                        ),
+                    ],
                 ),
                 # image flats if before stop time
                 sequence_safetynet(
@@ -1093,7 +1039,9 @@ def target_payload_flats(
                         if dusk
                         else loop_until_sun_altitude_above(0)
                     ],
-                    instructions=sequence_cool_camera(plan, equipment) + sequence_unpark_scope(equipment) + [
+                    instructions=sequence_cool_camera(plan, equipment)
+                    + sequence_unpark_scope(equipment)
+                    + [
                         slew_to_azalt(
                             az=NINA_FLATS_AZIMUTH_DUSK
                             if dusk
