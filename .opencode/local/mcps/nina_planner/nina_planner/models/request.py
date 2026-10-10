@@ -1,8 +1,8 @@
 from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
-# Everything load_sequence understands: the five plan-backed frame sequences.
+# Everything load_sequence understands: the four plan-backed frame sequences.
 # Every action builds from a plan — there are no plan-less actions, and an
 # empty request list is the stow (the composed sequence's End area parks and
 # warms behind whatever steps ran, or on its own for an empty list).
@@ -10,18 +10,19 @@ Action = Literal[
     "light",
     "dark",
     "bias",
-    "dawn_flat",
-    "dusk_flat",
+    "flat",
 ]
 
-# Exposure group each action reads from the plan and reports progress under
-# ("light" | "flat" | "dark" | "bias").
-ACTION_GROUPS: dict[str, str] = {
-    "light": "light",
-    "dark": "dark",
-    "bias": "bias",
-    "dawn_flat": "flat",
-    "dusk_flat": "flat",
+# HOW an action runs, kept out of the action enum so the two axes don't
+# multiply into values (dawn_flat, dusk_flat, cover_dark, ...): an action
+# says which of the plan's frames to shoot, its variant says the recipe —
+# when for flats, how the light is cut off for darks/bias. The vocabulary is
+# action-scoped: an empty set means the action has no variants at all.
+VARIANTS: dict[str, frozenset[str]] = {
+    "light": frozenset(),
+    "dark": frozenset({"wheel", "cover"}),
+    "bias": frozenset({"wheel", "cover"}),
+    "flat": frozenset({"dawn", "dusk"}),
 }
 
 
@@ -38,8 +39,17 @@ class SequenceRequest(BaseModel):
     )
     action: Action = Field(
         default="light",
+        description=("What to load from the plan: light, dark, bias, or flat."),
+    )
+    variant: str | None = Field(
+        default=None,
         description=(
-            "What to load from the plan: light, dark, bias, dawn_flat, or dusk_flat."
+            "How to run `action` — action-scoped, validated against it: "
+            "`flat` requires `dawn` (morning twilight) or `dusk` (evening "
+            "twilight); `dark` and `bias` take `wheel` (default — park the "
+            "wheel on the profile's `Dark` filter slot) or `cover` (close "
+            "the motorized cover, e.g. a flip-flat, around the exposures "
+            "and reopen it after); `light` takes none."
         ),
     )
     pointing_index: int = Field(
@@ -68,14 +78,40 @@ class SequenceRequest(BaseModel):
     min_detected_stars: int | None = Field(
         default=None,
         description=(
-            "Exclude light frames detected with fewer stars than this from the "
-            "acquired count in 'remaining' mode."
+            "Exclude light frames detected with fewer stars than this from "
+            "the acquired count in 'remaining' mode."
         ),
     )
     max_guiding_rms_arcsec: float | None = Field(
         default=None,
         description=(
-            "Exclude light frames guided above this RMS (arcsec) from the "
-            "acquired count in 'remaining' mode."
+            "Exclude light frames guided above this RMS from the acquired "
+            "count in 'remaining' mode."
         ),
     )
+
+    @model_validator(mode="after")
+    def _check_variant(self) -> "SequenceRequest":
+        """Enforce the action-scoped variant vocabulary.
+
+        `flat` has no sensible default (dawn or dusk is a real choice), so
+        its variant is required; `dark`/`bias` fall back to the wheel method
+        when omitted; and a variant that belongs to another action is an
+        error rather than something silently ignored. load_sequence prefixes
+        any failure with the entry's 0-based position.
+        """
+        allowed = VARIANTS[self.action]
+        if self.variant is None:
+            if self.action == "flat":
+                raise ValueError(
+                    "action='flat' requires a variant: 'dawn' (morning "
+                    "twilight) or 'dusk' (evening twilight)."
+                )
+            return self
+        if self.variant not in allowed:
+            raise ValueError(
+                f"variant={self.variant!r} does not apply to "
+                f"action={self.action!r}; allowed: "
+                f"{', '.join(sorted(allowed)) or 'none'}"
+            )
+        return self

@@ -397,8 +397,8 @@ def annotation() -> dict[str, Any]:
 
 
 def switch_filter(
-    # None for frame types with no filter (darks, bias): NINA gets a null
-    # FilterInfo, which is what those sequences have always emitted.
+    # Callers with no slot to select don't call this at all — see
+    # smart_exposure, which omits the switch instead of passing None.
     filter_name: str | None,
     filter_position: int | None,
 ) -> dict[str, Any]:
@@ -408,6 +408,15 @@ def switch_filter(
         "Filter": _child("NINA.Core.Model.Equipment.FilterInfo, NINA.Core")
         | {"_name": filter_name, "_position": filter_position}
     }
+
+
+def close_cover() -> dict[str, Any]:
+    # NINA validates the flat device is connected and can open/close.
+    return _child("NINA.Sequencer.SequenceItem.FlatDevice.CloseCover, NINA.Sequencer")
+
+
+def open_cover() -> dict[str, Any]:
+    return _child("NINA.Sequencer.SequenceItem.FlatDevice.OpenCover, NINA.Sequencer")
 
 
 def sky_flats(count: int, filter_name: str, filter_position: int) -> dict[str, Any]:
@@ -631,10 +640,14 @@ def smart_exposure(
         name="Smart Exposure",
         conditions=[loop_for_iterations(count)],
         triggers=[dither_after_exposures(dither)] if dither is not None else [],
-        instructions=[
-            switch_filter(filter_name, filter_position),
-            take_exposure(exposure, image_type),
-        ],
+        # No filter_name means leave the wheel untouched: covered darks cut
+        # the light with the cover, so there is no SwitchFilter at all.
+        instructions=(
+            [switch_filter(filter_name, filter_position)]
+            if filter_name is not None
+            else []
+        )
+        + [take_exposure(exposure, image_type)],
     )
 
 
@@ -822,41 +835,67 @@ def build_sequence_many(
 
 
 def target_payload_darks(
-    plan: ObservationPlan, equipment: ObservatoryEquipment, bias: bool = False
+    plan: ObservationPlan,
+    equipment: ObservatoryEquipment,
+    profile: ObservatoryProfile,
+    bias: bool = False,
+    variant: str = "wheel",
 ) -> list[dict[str, Any]]:
     """The Target-area content of a darks/bias step.
 
     Parked imaging: the container parks (or homes) the mount and sets the
     camera temperature before the exposures, and never unparks — the caller's
     End area decides how the night ends.
-    """
 
-    def exposures():
-        return [
+    ``variant`` is how the light is cut off: ``wheel`` parks the wheel on the
+    profile's ``Dark`` filter slot (the default), ``cover`` closes a
+    motorized cover (flip-flat), exposes with the wheel untouched, then
+    reopens the cover so a later step cannot silently shoot through it.
+    """
+    if variant not in ("wheel", "cover"):
+        raise ValueError(
+            f"Unsupported dark variant: {variant!r} (use 'wheel' or 'cover')"
+        )
+
+    def instructions() -> list[dict[str, Any]]:
+        image_type = "BIAS" if bias else "DARK"
+        frames = _round_robin(plan.bias_frames if bias else plan.dark_frames)
+        base = sequence_park_scope(equipment) + sequence_cool_camera(plan, equipment)
+        if variant == "cover":
+            return (
+                base
+                + [close_cover()]
+                + [
+                    smart_exposure(count=d[0], exposure=d[1], image_type=image_type)
+                    for d in frames
+                ]
+                + [open_cover()]
+            )
+        dark_filter = "Dark"
+        return base + [
             smart_exposure(
                 count=d[0],
                 exposure=d[1],
-                image_type="BIAS" if bias else "DARK",
+                filter_name=dark_filter,
+                filter_position=profile.filter_position(dark_filter),
+                image_type=image_type,
             )
-            for d in _round_robin(plan.bias_frames if bias else plan.dark_frames)
+            for d in frames
         ]
-
-    def instructions() -> list[dict[str, Any]]:
-        return (
-            sequence_park_scope(equipment)
-            + sequence_cool_camera(plan, equipment)
-            + exposures()
-        )
 
     return [sequence_deepsky(plan=plan, instructions=instructions())]
 
 
 def build_sequence_darks(
-    plan: ObservationPlan, equipment: ObservatoryEquipment, bias: bool = False
+    plan: ObservationPlan,
+    equipment: ObservatoryEquipment,
+    profile: ObservatoryProfile,
+    bias: bool = False,
+    variant: str = "wheel",
 ) -> dict[str, Any]:
     return sequence_root(
         equipment=equipment,
-        instructions=target_payload_darks(plan, equipment, bias),
+        instructions=target_payload_darks(plan, equipment, profile, bias, variant),
     )
 
 

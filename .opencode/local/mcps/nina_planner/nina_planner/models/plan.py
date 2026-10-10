@@ -123,17 +123,24 @@ class ObservationPlan(BaseModel):
     flat_frames: list[FlatExposurePlan] = Field(
         min_length=1,
         description=(
-            "Flat exposure specs; loaded with action='dawn_flat' (morning) "
-            "or action='dusk_flat' (evening)."
+            "Flat exposure specs; loaded with action='flat' and "
+            "variant='dawn' (morning) or variant='dusk' (evening)."
         ),
     )
     dark_frames: list[DarkExposurePlan] = Field(
         min_length=1,
-        description="Dark exposure specs; loaded with action='dark'.",
+        description=(
+            "Dark exposure specs; loaded with action='dark' "
+            "(variant='wheel' by default, or variant='cover' around a "
+            "motorized cover)."
+        ),
     )
     bias_frames: list[BiasExposurePlan] = Field(
         min_length=1,
-        description="Bias exposure specs; loaded with action='bias'.",
+        description=(
+            "Bias exposure specs; loaded with action='bias' (same variants "
+            "as action='dark')."
+        ),
     )
 
     def _base_plan_id(self) -> str:

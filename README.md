@@ -28,7 +28,7 @@
 
 | Tool | Purpose |
 |---|---|
-| `load_sequence(request=[{plan?, action="light", pointing_index=1, mode="remaining", max_hfr?, min_detected_stars?, max_guiding_rms_arcsec?}, ...])` | Load a plan file as a sequence **without starting it** — call `start_sequence()` to begin. `request` is a **list** of request objects (the only form; it defaults to an empty list = the stow, last row) composing one N.I.N.A. sequence. In each entry, `plan` is the observation-plan JSON path and `action` (light, dark, bias, dawn_flat, or dusk_flat) says which sequence to build from it. `plan` is optional in the schema, but every action builds its sequence from a plan, so omitting it raises an error naming the entry (`request[0]: action='light' requires a plan`). `pointing_index` (1-based, default 1) selects which pointing of the plan to load — lights embed `{base_plan_id}-{pointing_index}` in the NINA target name so each pointing's frames are attributed independently. Default `remaining` mode acquires only frames not yet attributed to that pointing; `mode="full"` acquires the whole plan. Quality thresholds exclude light frames that fail them from the acquired count. Reports "pointing complete" and loads nothing when nothing remains. Refuses to load while a sequence is already running — call `stop_sequence()` first. |
+| `load_sequence(request=[{plan?, action="light", variant?, pointing_index=1, mode="remaining", max_hfr?, min_detected_stars?, max_guiding_rms_arcsec?}, ...])` | Load a plan file as a sequence **without starting it** — call `start_sequence()` to begin. `request` is a **list** of request objects (the only form; it defaults to an empty list = the stow, last row) composing one N.I.N.A. sequence. In each entry, `plan` is the observation-plan JSON path and `action` (light, dark, bias, or flat) says which sequence to build from it, while `variant` says how that action runs — action-scoped: `flat` requires `dawn` (morning twilight) or `dusk` (evening twilight), `dark`/`bias` take `wheel` (default: park on the profile's `Dark` filter slot) or `cover` (close the motorized cover, e.g. a flip-flat, around the exposures), and `light` takes none. `plan` is optional in the schema, but every action builds its sequence from a plan, so omitting it raises an error naming the entry (`request[0]: action='light' requires a plan`). `pointing_index` (1-based, default 1) selects which pointing of the plan to load — lights embed `{base_plan_id}-{pointing_index}` in the NINA target name so each pointing's frames are attributed independently. Default `remaining` mode acquires only frames not yet attributed to that pointing; `mode="full"` acquires the whole plan. Quality thresholds exclude light frames that fail them from the acquired count. Reports "pointing complete" and loads nothing when nothing remains. Refuses to load while a sequence is already running — call `stop_sequence()` first. |
 | `start_sequence()` | Start the currently loaded sequence. |
 | `stop_sequence()` | Stop any running sequence and wait until NINA reports it has actually stopped. |
 | `load_sequence(request=[{...}, {...}, ...])` | A **list** of request objects (the only form) composes one N.I.N.A. sequence for the whole night: a single Start area, one Target area holding each step's containers in list order, and a single End area that always stows (park, then warm), so the night ends parked and warm no matter what ran. **An empty list is therefore the stow**: an empty Target area plus that closing End area — one bounded 3-minute "On Safe" wait, then park (or home) the mount and warm the camera. Every action is plan-backed; there is no `stow`/`park`/`warm`/`unpark` action, and `load_sequence()` with no arguments is the teardown. Steps run in order as the sequence reaches them: a step with its own waits (lights, flats) waits, or is skipped once its window has passed, without blocking the steps behind it. Entries already complete in `remaining` mode are skipped and reported; if every entry is complete nothing is sent to N.I.N.A. Profile, equipment, and metadata are fetched once, a single POST carries the whole sequence, and a validation error names the offending entry by its 0-based position (`request[1]: ...`). Load it, then one `start_sequence()` runs the night. |
@@ -42,7 +42,7 @@
 
 ## The Observation Plan
 
-A plan is a JSON document that describes one complete imaging session. It encodes the **target**, **exposure settings** for all five frame types, and **equipment configuration** (cooler, autofocus, guiding, constraints).
+A plan is a JSON document that describes one complete imaging session. It encodes the **target**, **exposure settings** for all four frame types (light, flat, dark, bias), and **equipment configuration** (cooler, autofocus, guiding, constraints).
 
 ### Plan structure
 
@@ -163,18 +163,18 @@ The steps run in list order inside one sequence (one Start area, one Target area
 
 2. **Run darks** (done during the day or while flats are not possible):
    `load_sequence(request=[{"plan": "<plan>.json", "action": "dark"}])` then `start_sequence()`
-   _(wait for completion)_
+   _(wait for completion; add `"variant": "cover"` to cut the light with a motorized cover instead of the wheel's `Dark` slot)_
 
 3. **Run bias** (also done during the day):
    `load_sequence(request=[{"plan": "<plan>.json", "action": "bias"}])` then `start_sequence()`
    _(wait for completion)_
 
 4. **Run dawn flats** (morning twilight):
-   `load_sequence(request=[{"plan": "<plan>.json", "action": "dawn_flat"}])` then `start_sequence()`
+   `load_sequence(request=[{"plan": "<plan>.json", "action": "flat", "variant": "dawn"}])` then `start_sequence()`
    _(wait for completion)_
 
 5. **Run dusk flats** (as evening twilight begins):
-   `load_sequence(request=[{"plan": "<plan>.json", "action": "dusk_flat"}])` then `start_sequence()`
+   `load_sequence(request=[{"plan": "<plan>.json", "action": "flat", "variant": "dusk"}])` then `start_sequence()`
    _(wait for completion)_
 
 ### 3. Teardown

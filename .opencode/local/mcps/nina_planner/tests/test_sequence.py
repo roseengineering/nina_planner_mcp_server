@@ -34,14 +34,15 @@ def _profile() -> ObservatoryProfile:
 
     ``build_sequence_lights``/``build_sequence_flats`` resolve filter
     positions through this, so every filter referenced by a plan must be
-    present here.
+    present here — as must ``Dark``, which the default (``wheel``) darks/
+    bias step parks on (the ``cover`` variant never looks for it).
     """
     return ObservatoryProfile(
         profile_name="test",
         profile_id="profile-test123",
         site={},
         optics={},
-        filters=[FilterInfo(name="L", position=3)],
+        filters=[FilterInfo(name="L", position=3), FilterInfo(name="Dark", position=4)],
         image_save_path="C:\\images",
         equipment={
             "has_mount": True,
@@ -502,14 +503,18 @@ class SequenceBuildersTest(unittest.TestCase):
         from nina_planner.sequence import build_sequence_darks
 
         plan = self._plan()
-        result = build_sequence_darks(plan, equipment=ObservatoryEquipment())
+        result = build_sequence_darks(
+            plan, equipment=ObservatoryEquipment(), profile=self._profile()
+        )
         self.assertIsInstance(result, dict)
 
     def test_build_sequence_darks_with_bias(self):
         from nina_planner.sequence import build_sequence_darks
 
         plan = self._plan()
-        result = build_sequence_darks(plan, equipment=ObservatoryEquipment(), bias=True)
+        result = build_sequence_darks(
+            plan, equipment=ObservatoryEquipment(), profile=self._profile(), bias=True
+        )
         self.assertIsInstance(result, dict)
 
     def test_build_sequence_flats_dawn(self):
@@ -878,7 +883,9 @@ class SequenceBehaviorTest(unittest.TestCase):
         from nina_planner.sequence import build_sequence_darks
 
         plan = self._plan()
-        result = build_sequence_darks(plan, equipment=ObservatoryEquipment())
+        result = build_sequence_darks(
+            plan, equipment=ObservatoryEquipment(), profile=_profile()
+        )
         smart = _find_items(result, "Imaging.SmartExposure, NINA.Sequencer")
         self.assertEqual(len(smart), 1)
         # SmartExposure stores ImageType inside its instructions
@@ -889,11 +896,76 @@ class SequenceBehaviorTest(unittest.TestCase):
         from nina_planner.sequence import build_sequence_darks
 
         plan = self._plan()
-        result = build_sequence_darks(plan, equipment=ObservatoryEquipment(), bias=True)
+        result = build_sequence_darks(
+            plan, equipment=ObservatoryEquipment(), profile=_profile(), bias=True
+        )
         smart = _find_items(result, "Imaging.SmartExposure, NINA.Sequencer")
         self.assertEqual(len(smart), 1)
         takes = _find_items(smart[0], "Imaging.TakeExposure, NINA.Sequencer")
         self.assertTrue(all(t["ImageType"] == "BIAS" for t in takes))
+
+    def test_darks_switch_to_the_profiles_dark_filter(self):
+        """The Dark filter's position comes from the profile, not a hardcode."""
+        from nina_planner.sequence import build_sequence_darks
+
+        plan = self._plan()
+        for bias in (False, True):
+            result = build_sequence_darks(
+                plan, equipment=ObservatoryEquipment(), profile=_profile(), bias=bias
+            )
+            switches = _find_items(result, "FilterWheel.SwitchFilter, NINA.Sequencer")
+            self.assertTrue(switches, "darks switch the wheel to the Dark filter")
+            self.assertEqual(
+                [s["Filter"]["_name"] for s in switches], ["Dark"] * len(switches)
+            )
+            self.assertEqual(
+                [s["Filter"]["_position"] for s in switches], [4] * len(switches)
+            )
+
+    def test_darks_cover_variant_wraps_exposures_in_the_cover(self):
+        """The cover method closes the motorized cover, exposes with the
+        wheel untouched, then reopens — and needs no `Dark` filter slot."""
+        from nina_planner.sequence import build_sequence_darks
+
+        plan = self._plan()
+        no_dark_slot = _profile().model_copy(
+            update={"filters": [FilterInfo(name="L", position=3)]}
+        )
+        for bias in (False, True):
+            result = build_sequence_darks(
+                plan,
+                equipment=ObservatoryEquipment(),
+                profile=no_dark_slot,
+                bias=bias,
+                variant="cover",
+            )
+            covers = _find_items(result, "FlatDevice.")
+            self.assertEqual(
+                [c["$type"].split(",")[0].split(".")[-1] for c in covers],
+                ["CloseCover", "OpenCover"],
+                "close, then expose, then reopen — in document order",
+            )
+            # The wheel stays where it was: no Dark-filter switch at all.
+            self.assertEqual(
+                _find_items(result, "FilterWheel.SwitchFilter, NINA.Sequencer"), []
+            )
+            smart = _find_items(result, "Imaging.SmartExposure, NINA.Sequencer")
+            self.assertTrue(smart)
+            takes = _find_items(smart[0], "Imaging.TakeExposure, NINA.Sequencer")
+            expected = "BIAS" if bias else "DARK"
+            self.assertTrue(all(t["ImageType"] == expected for t in takes))
+
+    def test_darks_reject_an_unknown_variant(self):
+        from nina_planner.sequence import build_sequence_darks
+
+        with self.assertRaises(ValueError) as ctx:
+            build_sequence_darks(
+                self._plan(),
+                equipment=ObservatoryEquipment(),
+                profile=_profile(),
+                variant="lens",
+            )
+        self.assertIn("lens", str(ctx.exception))
 
     def test_darks_start_area_parks_scope_when_mount_can_park(self):
         from nina_planner.sequence import build_sequence_darks
@@ -901,7 +973,7 @@ class SequenceBehaviorTest(unittest.TestCase):
         plan = self._plan()
         mount = MountDevice(connected=True, name="m", can_park=True)
         eq = ObservatoryEquipment(mount=mount)
-        result = build_sequence_darks(plan, equipment=eq)
+        result = build_sequence_darks(plan, equipment=eq, profile=_profile())
         parks = _find_items(result, "ParkScope")
         self.assertGreaterEqual(len(parks), 1)
 
@@ -1055,8 +1127,8 @@ class BuildSequenceManyTest(unittest.TestCase):
         plan = _plan()
         payloads = [
             target_payload_lights(plan, equipment, _profile()),
-            target_payload_darks(plan, equipment),
-            target_payload_darks(plan, equipment, bias=True),
+            target_payload_darks(plan, equipment, _profile()),
+            target_payload_darks(plan, equipment, _profile(), bias=True),
         ]
 
         result = build_sequence_many(equipment, payloads)
@@ -1100,7 +1172,7 @@ class BuildSequenceManyTest(unittest.TestCase):
         payload form is a plain list, so the wrapper is gone."""
         from nina_planner.sequence import build_sequence_darks
 
-        result = build_sequence_darks(_plan(), _stow_equipment())
+        result = build_sequence_darks(_plan(), _stow_equipment(), _profile())
         children = _items(result)[1]["Items"]["$values"]
         self.assertEqual(len(children), 1)
         self.assertIn("DeepSkyObjectContainer", children[0]["$type"])

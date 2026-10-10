@@ -26,7 +26,7 @@ from .models.profile import (
     ProfileSummary,
     SiteLocationInfo,
 )
-from .models.request import ACTION_GROUPS, SequenceRequest
+from .models.request import SequenceRequest
 from .mosaic import load_pointings
 from .nina_utils import ascom_float, ascom_int, to_snake
 from .progress import (
@@ -825,10 +825,15 @@ async def load_sequence(
 
     The list composes ONE sequence: a single Start area, one Target area holding each step's containers in list order, and one End area that always stows — one bounded 3-minute "On Safe" wait, then park (or home) the mount and warm the camera. An EMPTY list (the default) is therefore the STOW: an empty Target area plus that closing End area. There is no `stow`, `park`, `warm`, or `unpark` action — every action is plan-backed, and `load_sequence()` with no arguments is the teardown.
 
-    Every entry is one `request` object: `action`, plus `plan` (path to the observation-plan JSON file), `pointing_index`, `mode`, and the optional quality thresholds.
+    Every entry is one `request` object: `action`, plus `variant` (how the action runs), `plan` (path to the observation-plan JSON file), `pointing_index`, `mode`, and the optional quality thresholds.
 
-    `action` decides what gets built:
-    - `light` / `dark` / `bias` / `dawn_flat` / `dusk_flat` build that frame sequence from `request.plan`, which is required for all five. `pointing_index` (1-based, default 1) selects which pointing of the plan to load — the lights target name embeds the `({base_plan_id}-{pointing_index})` token so each pointing's frames are attributed independently. Light loads require `$$TARGETNAME$$` in the active profile's FilePattern for attribution. In the default `remaining` mode the sequence only acquires frames still needed (total minus frames already attributed to this plan/pointing in the imaging metadata); if nothing remains it reports the plan as complete and loads nothing. max_hfr and/or min_detected_stars exclude light frames failing quality thresholds from the acquired count. Pass `mode="full"` to acquire the entire plan again.
+    `action` decides WHAT gets built from `request.plan`, which every action requires:
+    - `light` / `dark` / `bias` / `flat` build that frame sequence. `pointing_index` (1-based, default 1) selects which pointing of the plan to load — the lights target name embeds the `({base_plan_id}-{pointing_index})` token so each pointing's frames are attributed independently. Light loads require `$$TARGETNAME$$` in the active profile's FilePattern for attribution. In the default `remaining` mode the sequence only acquires frames still needed (total minus frames already attributed to this plan/pointing in the imaging metadata); if nothing remains it reports the plan as complete and loads nothing. max_hfr and/or min_detected_stars exclude light frames failing quality thresholds from the acquired count. Pass `mode="full"` to acquire the entire plan again.
+
+    `variant` decides HOW an action runs and is scoped to it — it is validated against the action, and a bad pairing fails naming the entry:
+    - `flat` REQUIRES `dawn` (morning twilight — waits for dawn) or `dusk` (evening twilight — waits for sunset).
+    - `dark` and `bias` take `wheel` (default — park the wheel on the profile's `Dark` filter slot) or `cover` (close the motorized cover — e.g. a flip-flat — around the exposures, then reopen it so a later step never shoots through a closed cover).
+    - `light` takes no variant.
 
     Steps run in order as the sequence reaches them; a step carrying its own wait conditions (lights, flats) waits, or is skipped when its window has passed, without blocking the steps behind it, so list order controls timing. Entries already complete in `remaining` mode are skipped and reported; if every entry is complete, nothing is sent to N.I.N.A. Profile, equipment, and metadata are fetched once per call, one POST carries the whole sequence, and a validation failure names its 0-based position (`request[1]: ...`).
 
@@ -891,7 +896,14 @@ async def _load_many(requests: list[SequenceRequest]) -> str:
 
     async def step(request: SequenceRequest) -> tuple[list[dict[str, Any]], str]:
         action = request.action
-        group = ACTION_GROUPS[action]
+        # Every action reads the plan's same-named exposure group.
+        group = action
+        # Reported per step so the caller sees which recipe (variant) ran.
+        label = (
+            f"`{action}` ({request.variant})"
+            if request.variant is not None
+            else f"`{action}`"
+        )
         if request.plan is None:
             raise ValueError(
                 f"action={action!r} requires a plan: pass `request.plan`, "
@@ -919,7 +931,7 @@ async def _load_many(requests: list[SequenceRequest]) -> str:
             if all(item["remaining_count"] == 0 for item in items):
                 total = sum(item["total_count"] for item in items)
                 return [], (
-                    f"`{action}` pointing {pointing_index} is complete — {total} "
+                    f"{label} pointing {pointing_index} is complete — {total} "
                     f"of {total} frames already acquired; nothing to load."
                 )
             note = (
@@ -952,15 +964,23 @@ async def _load_many(requests: list[SequenceRequest]) -> str:
             payload = target_payload_lights(
                 plan, eq, site_profile, pointing_index=pointing_index
             )
-        elif action == "dark":
-            payload = target_payload_darks(plan, eq)
         elif action == "bias":
-            payload = target_payload_darks(plan, eq, bias=True)
-        elif action == "dawn_flat":
-            payload = target_payload_flats(plan, eq, site_profile)
-        else:  # dusk_flat
-            payload = target_payload_flats(plan, eq, site_profile, dusk=True)
-        return payload, f"`{action}` pointing {pointing_index} — {note}"
+            payload = target_payload_darks(
+                plan,
+                eq,
+                site_profile,
+                bias=True,
+                variant=request.variant or "wheel",
+            )
+        elif action == "dark":
+            payload = target_payload_darks(
+                plan, eq, site_profile, variant=request.variant or "wheel"
+            )
+        else:  # flat — validated to carry a dawn/dusk variant
+            payload = target_payload_flats(
+                plan, eq, site_profile, dusk=request.variant == "dusk"
+            )
+        return payload, f"{label} pointing {pointing_index} — {note}"
 
     if not requests:
         # The empty request list is the stow; it keeps the stow's guardrail —

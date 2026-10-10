@@ -228,7 +228,11 @@ class LiveNinaTest(unittest.TestCase):
         plan_path = str(_FIXTURES_DIR / "veil.json")
         result = asyncio.run(
             load_sequence(
-                [SequenceRequest(plan=plan_path, action="dawn_flat", mode="full")]
+                [
+                    SequenceRequest(
+                        plan=plan_path, action="flat", variant="dawn", mode="full"
+                    )
+                ]
             )
         )
         self.assertIn("Sequence loaded", result)
@@ -240,7 +244,11 @@ class LiveNinaTest(unittest.TestCase):
         plan_path = str(_FIXTURES_DIR / "veil.json")
         result = asyncio.run(
             load_sequence(
-                [SequenceRequest(plan=plan_path, action="dusk_flat", mode="full")]
+                [
+                    SequenceRequest(
+                        plan=plan_path, action="flat", variant="dusk", mode="full"
+                    )
+                ]
             )
         )
         self.assertIn("Sequence loaded", result)
