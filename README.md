@@ -272,7 +272,6 @@ Rules:
 ```json .opencode/opencode.json
 {
   "$schema": "https://opencode.ai/config.json",
-  "model": "opencode-go/mimo-v2.6-flash",
   "plugins": [
     {
       "package": "./local/plugins/nina_notify",
