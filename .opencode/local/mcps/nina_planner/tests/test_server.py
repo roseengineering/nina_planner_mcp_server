@@ -1993,6 +1993,67 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn("`dark` (cover) pointing 1", result)
         self.assertIn("Sequence loaded (1 of 1 step(s))", result)
 
+    async def test_load_sequence_dark_shutter_variant_reaches_the_builder(self):
+        from nina_planner.server import load_sequence
+
+        plan_dict = {
+            "plan_id": "plan-test123",
+            "target": "M31",
+            "pointings": [{"ra_hours": 5.0, "dec_deg": 10.0}],
+            "light_frames": [
+                {"filter_name": "L", "exposure_time_seconds": 60.0, "total_count": 1}
+            ],
+            "flat_frames": [
+                {"filter_name": "L", "exposure_time_seconds": 5.0, "total_count": 1}
+            ],
+            "dark_frames": [{"exposure_time_seconds": 60.0, "total_count": 1}],
+            "bias_frames": [{"total_count": 1}],
+        }
+
+        with tempfile.TemporaryDirectory() as tmp:
+            plan_path = Path(tmp) / "plan.json"
+            plan_path.write_text(json.dumps(plan_dict))
+
+            captured_kwargs = {}
+
+            def fake_darks(plan, equipment, profile, bias=False, variant="wheel"):
+                captured_kwargs["bias"] = bias
+                captured_kwargs["variant"] = variant
+                return [{"$type": "darks"}]
+
+            with (
+                patch(
+                    "nina_planner.server.get_site_profile",
+                    AsyncMock(return_value=self._full_profile()),
+                ),
+                patch(
+                    "nina_planner.server._get_site_equipment_status",
+                    AsyncMock(return_value=ObservatoryEquipment()),
+                ),
+                patch(
+                    "nina_planner.server.target_payload_darks",
+                    side_effect=fake_darks,
+                ),
+                patch(
+                    "nina_planner.server._api_post",
+                    AsyncMock(return_value={}),
+                ),
+            ):
+                result = await load_sequence(
+                    [
+                        SequenceRequest(
+                            plan=str(plan_path),
+                            action="dark",
+                            variant="shutter",
+                            pointing_index=1,
+                        )
+                    ]
+                )
+        self.assertFalse(captured_kwargs["bias"])
+        self.assertEqual(captured_kwargs["variant"], "shutter")
+        self.assertIn("`dark` (shutter) pointing 1", result)
+        self.assertIn("Sequence loaded (1 of 1 step(s))", result)
+
     async def test_load_sequence_list_error_names_the_entry(self):
         """A failure in entry i says `request[i]:`, so the agent knows which
         one to fix."""

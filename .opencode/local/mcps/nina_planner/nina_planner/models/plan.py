@@ -131,8 +131,8 @@ class ObservationPlan(BaseModel):
         min_length=1,
         description=(
             "Dark exposure specs; loaded with action='dark' "
-            "(variant='wheel' by default, or variant='cover' around a "
-            "motorized cover)."
+            "(variant='wheel' by default, variant='cover' around a "
+            "motorized cover, or variant='shutter' via camera shutter)."
         ),
     )
     bias_frames: list[BiasExposurePlan] = Field(

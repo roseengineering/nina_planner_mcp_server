@@ -850,11 +850,13 @@ def target_payload_darks(
     ``variant`` is how the light is cut off: ``wheel`` parks the wheel on the
     profile's ``Dark`` filter slot (the default), ``cover`` closes a
     motorized cover (flip-flat), exposes with the wheel untouched, then
-    reopens the cover so a later step cannot silently shoot through it.
+    reopens the cover so a later step cannot silently shoot through it, and
+    ``shutter`` exposes with the wheel untouched, relying on the camera's
+    shutter.
     """
-    if variant not in ("wheel", "cover"):
+    if variant not in ("wheel", "cover", "shutter"):
         raise ValueError(
-            f"Unsupported dark variant: {variant!r} (use 'wheel' or 'cover')"
+            f"Unsupported dark variant: {variant!r} (use 'wheel', 'cover', or 'shutter')"
         )
 
     def instructions() -> list[dict[str, Any]]:
@@ -871,6 +873,11 @@ def target_payload_darks(
                 ]
                 + [open_cover()]
             )
+        if variant == "shutter":
+            return base + [
+                smart_exposure(count=d[0], exposure=d[1], image_type=image_type)
+                for d in frames
+            ]
         dark_filter = "Dark"
         return base + [
             smart_exposure(

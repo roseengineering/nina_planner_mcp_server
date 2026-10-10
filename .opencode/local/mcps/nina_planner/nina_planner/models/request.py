@@ -20,8 +20,8 @@ Action = Literal[
 # action-scoped: an empty set means the action has no variants at all.
 VARIANTS: dict[str, frozenset[str]] = {
     "light": frozenset(),
-    "dark": frozenset({"wheel", "cover"}),
-    "bias": frozenset({"wheel", "cover"}),
+    "dark": frozenset({"wheel", "cover", "shutter"}),
+    "bias": frozenset({"wheel", "cover", "shutter"}),
     "flat": frozenset({"dawn", "dusk"}),
 }
 
@@ -47,9 +47,10 @@ class SequenceRequest(BaseModel):
             "How to run `action` — action-scoped, validated against it: "
             "`flat` requires `dawn` (morning twilight) or `dusk` (evening "
             "twilight); `dark` and `bias` take `wheel` (default — park the "
-            "wheel on the profile's `Dark` filter slot) or `cover` (close "
+            "wheel on the profile's `Dark` filter slot), `cover` (close "
             "the motorized cover, e.g. a flip-flat, around the exposures "
-            "and reopen it after); `light` takes none."
+            "and reopen it after), or `shutter` (expose without moving the "
+            "filter wheel, relying on the camera's shutter); `light` takes none."
         ),
     )
     pointing_index: int = Field(

@@ -102,7 +102,7 @@ class LiveNinaTest(unittest.TestCase):
         self.assertIn("lifecycle_control_available", result)
         self.assertIn("simulated", result)
 
-    @pytest.mark.skip
+    # @pytest.mark.skip
     @requires_windows_interop
     def test_zz_stop_and_restart_nina(self):
         initial_status = asyncio.run(get_nina_status())

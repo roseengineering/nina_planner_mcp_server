@@ -955,6 +955,35 @@ class SequenceBehaviorTest(unittest.TestCase):
             expected = "BIAS" if bias else "DARK"
             self.assertTrue(all(t["ImageType"] == expected for t in takes))
 
+    def test_darks_shutter_variant_exposes_without_filter_wheel_or_cover(self):
+        """The shutter method exposes with the wheel untouched and no cover,
+        relying on the camera's shutter — and needs no `Dark` filter slot."""
+        from nina_planner.sequence import build_sequence_darks
+
+        plan = self._plan()
+        no_dark_slot = _profile().model_copy(
+            update={"filters": [FilterInfo(name="L", position=3)]}
+        )
+        for bias in (False, True):
+            result = build_sequence_darks(
+                plan,
+                equipment=ObservatoryEquipment(),
+                profile=no_dark_slot,
+                bias=bias,
+                variant="shutter",
+            )
+            # No cover operations
+            self.assertEqual(_find_items(result, "FlatDevice."), [])
+            # The wheel stays where it was: no Dark-filter switch at all.
+            self.assertEqual(
+                _find_items(result, "FilterWheel.SwitchFilter, NINA.Sequencer"), []
+            )
+            smart = _find_items(result, "Imaging.SmartExposure, NINA.Sequencer")
+            self.assertTrue(smart)
+            takes = _find_items(smart[0], "Imaging.TakeExposure, NINA.Sequencer")
+            expected = "BIAS" if bias else "DARK"
+            self.assertTrue(all(t["ImageType"] == expected for t in takes))
+
     def test_darks_reject_an_unknown_variant(self):
         from nina_planner.sequence import build_sequence_darks
 

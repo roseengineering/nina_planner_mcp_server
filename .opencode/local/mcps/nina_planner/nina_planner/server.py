@@ -832,7 +832,7 @@ async def load_sequence(
 
     `variant` decides HOW an action runs and is scoped to it — it is validated against the action, and a bad pairing fails naming the entry:
     - `flat` REQUIRES `dawn` (morning twilight — waits for dawn) or `dusk` (evening twilight — waits for sunset).
-    - `dark` and `bias` take `wheel` (default — park the wheel on the profile's `Dark` filter slot) or `cover` (close the motorized cover — e.g. a flip-flat — around the exposures, then reopen it so a later step never shoots through a closed cover).
+    - `dark` and `bias` take `wheel` (default — park the wheel on the profile's `Dark` filter slot), `cover` (close the motorized cover — e.g. a flip-flat — around the exposures, then reopen it so a later step never shoots through a closed cover), or `shutter` (expose without moving the filter wheel, relying on the camera's shutter).
     - `light` takes no variant.
 
     Steps run in order as the sequence reaches them; a step carrying its own wait conditions (lights, flats) waits, or is skipped when its window has passed, without blocking the steps behind it, so list order controls timing. Entries already complete in `remaining` mode are skipped and reported; if every entry is complete, nothing is sent to N.I.N.A. Profile, equipment, and metadata are fetched once per call, one POST carries the whole sequence, and a validation failure names its 0-based position (`request[1]: ...`).
