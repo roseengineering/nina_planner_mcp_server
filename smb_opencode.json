@@ -10,16 +10,18 @@
     }
   ],
   "mcp": {
-    "nina-planner": {
-      "type": "local",
-      "environment": {
-        "NINA_ENDPOINT": "10.0.0.35:1888",
-        "NINA_DRIVE_MOUNT": "/System/Volumes/Data/Network",
-        "NINA_PLANNER_LOG": "/tmp/nina-planner-debug.log"
-      },
-      "command": [
-        "uv", "--directory", ".opencode/local/mcps/nina_planner", "run", "-m", "nina_planner"
-      ]
+    "servers": {
+      "nina-planner": {
+        "type": "local",
+        "environment": {
+          "NINA_ENDPOINT": "10.0.0.35:1888",
+          "NINA_DRIVE_MOUNT": "/System/Volumes/Data/Network",
+          "NINA_PLANNER_LOG": "/tmp/nina-planner-debug.log"
+        },
+        "command": [
+          "uv", "--directory", ".opencode/local/mcps/nina_planner", "run", "-m", "nina_planner"
+        ]
+      }
     }
   }
 }
