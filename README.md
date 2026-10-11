@@ -281,14 +281,16 @@ Rules:
     }
   ],
   "mcp": {
-    "nina-planner": {
-      "type": "local",
-      "environment": {
-        "NINA_PLANNER_LOG": "C:/Windows/Temp/nina-planner-debug.log"
-      },
-      "command": [
-        "uv", "--directory", ".opencode/local/mcps/nina_planner", "run", "-m", "nina_planner"
-      ]
+    "servers": {
+      "nina-planner": {
+        "type": "local",
+        "environment": {
+          "NINA_PLANNER_LOG": "C:/Windows/Temp/nina-planner-debug.log"
+        },
+        "command": [
+          "uv", "--directory", ".opencode/local/mcps/nina_planner", "run", "-m", "nina_planner"
+        ]
+      }
     }
   }
 }

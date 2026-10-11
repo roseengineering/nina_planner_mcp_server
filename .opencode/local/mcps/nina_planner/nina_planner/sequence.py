@@ -314,6 +314,10 @@ def trigger_restore_guiding() -> dict[str, Any]:
 ### instructions
 
 
+def connect_all_equipment() -> dict[str, Any]:
+    return _child("NINA.Sequencer.SequenceItem.Connect.ConnectAllEquipment, NINA.Sequencer")
+
+
 def unpark_scope() -> dict[str, Any]:
     return _child("NINA.Sequencer.SequenceItem.Telescope.UnparkScope, NINA.Sequencer")
 
@@ -687,7 +691,10 @@ def sequence_deepsky(
         ra=pointing.ra_hours,
         dec=pointing.dec_deg,
         posang=posang,
-        instructions=[send_event(starting)] + instructions + [send_event(finished)],
+        instructions=[
+            send_event(starting),
+            connect_all_equipment()
+        ] + instructions + [send_event(finished)],
     )
 
 
@@ -767,7 +774,8 @@ def sequence_end(equipment: ObservatoryEquipment) -> dict[str, Any]:
                 name="On Safe",
                 conditions=[loop_while_safe(), loop_for_iterations(1)],
                 instructions=[wait_for_timespan(delay_minutes * 60)],
-            )
+            ),
+            connect_all_equipment()
         ]
         + sequence_park_scope(equipment)
         + sequence_warm_camera(equipment)

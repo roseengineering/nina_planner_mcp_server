@@ -321,6 +321,11 @@ class JsonTemplateBuildersTest(unittest.TestCase):
 
     # ---- mount ----
 
+    def test_connect_all_equipment(self):
+        from nina_planner.sequence import connect_all_equipment
+
+        self._assert_clr_type(connect_all_equipment(), "ConnectAllEquipment")
+
     def test_unpark_scope(self):
         from nina_planner.sequence import unpark_scope
 
@@ -657,6 +662,16 @@ class SequenceBehaviorTest(unittest.TestCase):
             f"missing ACQUISITION-FINISHED in {messages!r}",
         )
 
+    def test_lights_connects_all_equipment(self):
+        plan = self._plan()
+        result = build_sequence_lights(
+            plan, equipment=ObservatoryEquipment(), profile=_profile()
+        )
+        dsos = _deepsky_targets(result)
+        self.assertEqual(len(dsos), 1)
+        items = dsos[0]["Items"]["$values"]
+        self.assertIn("ConnectAllEquipment", items[1]["$type"])
+
     def test_lights_image_object_uses_meridian_flip_trigger(self):
         plan = self._plan()
         result = build_sequence_lights(
@@ -838,10 +853,11 @@ class SequenceBehaviorTest(unittest.TestCase):
         # warming, after the wait.
         self.assertEqual(len(_find_items(end, "SafetyMonitorCondition")), 1)
         order = [item.get("$type", "") for item in end["Items"]["$values"]]
-        self.assertEqual(len(order), 3, "wait, then park, then warm")
+        self.assertEqual(len(order), 4, "wait, then connect, then park, then warm")
         self.assertIn("SequentialContainer", order[0])
-        self.assertIn("ParkScope", order[1])
-        self.assertIn("WarmCamera", order[2])
+        self.assertIn("ConnectAllEquipment", order[1])
+        self.assertIn("ParkScope", order[2])
+        self.assertIn("WarmCamera", order[3])
 
     def test_end_area_stow_is_capability_driven(self):
         from nina_planner.sequence import sequence_end
