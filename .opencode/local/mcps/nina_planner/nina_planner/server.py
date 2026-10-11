@@ -453,7 +453,8 @@ async def _get_site_equipment_status(
         "Camera": profile.equipment.has_camera,
         "Focuser": profile.equipment.has_focuser,
         "FilterWheel": profile.equipment.has_filter_wheel,
-        "Guider": profile.equipment.has_guider,
+        "Guider": profile.equipment.has_guider
+        and profile.guider_name != "Direct_Guider",
         "Rotator": profile.equipment.has_rotator,
         "Dome": profile.equipment.has_dome,
         "WeatherData": profile.equipment.has_weather,
@@ -571,7 +572,7 @@ async def get_site_profile() -> ObservatoryProfile:
 
     equipment = EquipmentConfig(
         has_mount=_exists(telescope, "MountName") or _exists(telescope, "Name"),
-        has_guider=_exists(guider, "GuiderName", {"Direct_Guider", "No_Guider"}),
+        has_guider=_exists(guider, "GuiderName", {"No_Guider", "No_Device"}),
         has_camera=_exists(camera, "Id"),
         has_focuser=_exists(focuser, "Id"),
         has_filter_wheel=_exists(filter_wheel, "Id"),
@@ -591,6 +592,7 @@ async def get_site_profile() -> ObservatoryProfile:
         filters=filters,
         plate_solver=plate_solve.get("PlateSolverType"),
         blind_plate_solver=plate_solve.get("BlindSolverType"),
+        guider_name=guider.get("GuiderName"),
         image_save_path=image_file.get("FilePath", ""),
         file_pattern=image_file.get("FilePattern"),
         equipment=equipment,

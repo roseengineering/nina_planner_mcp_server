@@ -617,7 +617,7 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
             "ImageFileSettings": {"FilePath": "C:\\NINA", "FilePattern": None},
             "PlateSolveSettings": {"PlateSolverType": None, "BlindSolverType": None},
             "FramingAssistantSettings": {"CameraWidth": 3000, "CameraHeight": 2000},
-            # GuiderSettings has GuiderName matching the skip set, so has_guider=False.
+            # GuiderSettings has Direct_Guider (Mount Dither), so has_guider=True.
             "GuiderSettings": {"GuiderName": "Direct_Guider"},
             "RotatorSettings": {"Id": "Rot1"},
             "DomeSettings": {},
@@ -632,6 +632,33 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result.optics.focal_length_mm, 600)
         self.assertTrue(result.equipment.has_mount)
         self.assertTrue(result.equipment.has_camera)
+        self.assertTrue(result.equipment.has_guider)
+        self.assertEqual(result.guider_name, "Direct_Guider")
+
+    async def test_get_site_profile_no_guider(self):
+        from nina_planner.server import get_site_profile
+
+        raw = {
+            "Name": "Test",
+            "Id": "abc",
+            "Description": "test profile",
+            "AstrometrySettings": {},
+            "TelescopeSettings": {},
+            "CameraSettings": {},
+            "FilterWheelSettings": {"FilterWheelFilters": []},
+            "ImageFileSettings": {"FilePath": "C:\\NINA", "FilePattern": None},
+            "PlateSolveSettings": {},
+            "FramingAssistantSettings": {},
+            "GuiderSettings": {"GuiderName": "No_Guider"},
+            "RotatorSettings": {},
+            "DomeSettings": {},
+            "WeatherDataSettings": {},
+            "SafetyMonitorSettings": {},
+            "FocuserSettings": {},
+            "SwitchSettings": {},
+        }
+        with patch("nina_planner.server._api_get", AsyncMock(return_value=raw)):
+            result = await get_site_profile()
         self.assertFalse(result.equipment.has_guider)
 
     async def test_get_site_profile_with_filters(self):
@@ -780,6 +807,42 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
         self.assertIsNotNone(equipment.mount)
         self.assertEqual(equipment.mount.name, "TestMount")
         self.assertTrue(equipment.mount.connected)
+
+    async def test_get_site_equipment_status_skips_direct_guider_connect(self):
+        from nina_planner.server import _get_site_equipment_status
+
+        profile = self._minimal_profile().model_copy(
+            update={
+                "guider_name": "Direct_Guider",
+                "equipment": EquipmentConfig(
+                    has_mount=False,
+                    has_camera=False,
+                    has_focuser=False,
+                    has_filter_wheel=False,
+                    has_guider=True,
+                    has_rotator=False,
+                    has_dome=False,
+                    has_weather=False,
+                    has_safety_monitor=False,
+                    has_switch=False,
+                ),
+            }
+        )
+        raw = {"Guider": {"Connected": False}}
+
+        connect_called = False
+
+        async def fake(path, **kwargs):
+            nonlocal connect_called
+            if "connect" in path:
+                connect_called = True
+                return {}
+            return raw
+
+        with patch("nina_planner.server._api_get", side_effect=fake):
+            equipment = await _get_site_equipment_status(profile)
+        self.assertFalse(connect_called)
+        self.assertIsNone(equipment.guider)
 
     async def test_get_events_returns_filtered(self):
         from nina_planner.server import get_events
