@@ -453,8 +453,7 @@ async def _get_site_equipment_status(
         "Camera": profile.equipment.has_camera,
         "Focuser": profile.equipment.has_focuser,
         "FilterWheel": profile.equipment.has_filter_wheel,
-        "Guider": profile.equipment.has_guider
-        and profile.guider_name != "Direct_Guider",
+        "Guider": profile.equipment.has_guider,
         "Rotator": profile.equipment.has_rotator,
         "Dome": profile.equipment.has_dome,
         "WeatherData": profile.equipment.has_weather,

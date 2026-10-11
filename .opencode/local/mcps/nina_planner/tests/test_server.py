@@ -808,7 +808,7 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(equipment.mount.name, "TestMount")
         self.assertTrue(equipment.mount.connected)
 
-    async def test_get_site_equipment_status_skips_direct_guider_connect(self):
+    async def test_get_site_equipment_status_connects_direct_guider(self):
         from nina_planner.server import _get_site_equipment_status
 
         profile = self._minimal_profile().model_copy(
@@ -840,9 +840,10 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
             return raw
 
         with patch("nina_planner.server._api_get", side_effect=fake):
-            equipment = await _get_site_equipment_status(profile)
-        self.assertFalse(connect_called)
-        self.assertIsNone(equipment.guider)
+            with self.assertRaises(RuntimeError) as ctx:
+                await _get_site_equipment_status(profile)
+        self.assertTrue(connect_called)
+        self.assertIn("Guider", str(ctx.exception))
 
     async def test_get_events_returns_filtered(self):
         from nina_planner.server import get_events
