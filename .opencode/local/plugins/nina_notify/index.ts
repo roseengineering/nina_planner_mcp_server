@@ -10,13 +10,40 @@ function log(message: string) {
   try {
     fs.appendFileSync(pluginLogs, `${message}\n`);
   } catch {
-    /* logging must never break the plugin */
+    // If configured path failed (e.g. Windows path on POSIX), try /tmp fallback
+    if (process.platform !== "win32") {
+      try {
+        fs.appendFileSync("/tmp/nina-notify-debug.log", `${message}\n`);
+      } catch {
+        /* logging must never break the plugin */
+      }
+    }
   }
 }
+
+// Module-level handle to ensure only one instance is active per process
+let activeCleanup: (() => Promise<void>) | null = null;
+
+// Module-level deduplication cache
+let lastInjectedText: string | null = null;
+let lastInjectedTime = 0;
 
 export default Plugin.define({
   id: "nina_notify",
   async setup(ctx) {
+    const instanceId = Math.random().toString(36).slice(2, 6);
+
+    // If a previous instance is still running in this process, cleanly dispose it first
+    if (activeCleanup) {
+      log(`[${instanceId}] disposing previous active instance before starting`);
+      try {
+        await activeCleanup();
+      } catch (err) {
+        log(`[${instanceId}] error disposing previous instance: ${err}`);
+      }
+      activeCleanup = null;
+    }
+
     const options = ctx.options ?? {};
     const ninaEndpoint =
       typeof options.ninaEndpoint === "string"
@@ -27,23 +54,29 @@ export default Plugin.define({
     const intervalCheckMinutes =
       typeof options.intervalCheckMinutes === "number"
         ? options.intervalCheckMinutes
-        : -1;
+        : typeof options.intervalCheck === "number"
+          ? options.intervalCheck
+          : -1;
+
+    log(
+      `[${instanceId}] initializing (endpoint=${ninaEndpoint}, interval=${intervalCheckMinutes})`,
+    );
 
     const savedSessionID = await ctx.storage.get("targetSessionID");
     let targetSessionID =
       typeof savedSessionID === "string" ? savedSessionID : undefined;
     if (targetSessionID) {
-      log(`nina-plugin: restored target session: ${targetSessionID}`);
+      log(`[${instanceId}] restored target session: ${targetSessionID}`);
     }
 
     const promptHook = await ctx.session.hook("prompt", async (event) => {
       targetSessionID = event.sessionID;
-      log(`nina-plugin: target session set from prompt: ${targetSessionID}`);
+      log(`[${instanceId}] target session set from prompt: ${targetSessionID}`);
       try {
         await ctx.storage.set("targetSessionID", event.sessionID);
-        log(`nina-plugin: persisted target session: ${event.sessionID}`);
+        log(`[${instanceId}] persisted target session: ${event.sessionID}`);
       } catch (err) {
-        log(`nina-plugin: failed to persist session ID: ${err}`);
+        log(`[${instanceId}] failed to persist session ID: ${err}`);
       }
     });
 
@@ -52,22 +85,85 @@ export default Plugin.define({
         events == null
           ? "Trigger: Routine interval check. No new N.I.N.A. events."
           : `Trigger: New N.I.N.A. events follow:\n\n\`\`\`json\n${JSON.stringify(events, null, 2)}\n\`\`\``;
-      log(`nina-plugin: intervention: ${text}`);
+
       if (!targetSessionID) {
-        log("nina-plugin: no target session yet; skipping injection");
+        log(`[${instanceId}] no target session yet; skipping injection`);
         return;
       }
-      await ctx.session.prompt({ sessionID: targetSessionID as any, text });
+
+      const now = Date.now();
+
+      // 1. In-memory deduplication (catches same-process duplicate triggers)
+      if (lastInjectedText === text && now - lastInjectedTime < 30_000) {
+        log(
+          `[${instanceId}] duplicate prompt suppressed (in-memory, ${now - lastInjectedTime}ms ago)`,
+        );
+        return;
+      }
+
+      // 2. Storage-backed deduplication (catches cross-process / cross-server races)
+      try {
+        const last = (await ctx.storage.get("lastInjectedPrompt")) as
+          { text?: string; time?: number } | undefined;
+        if (
+          last &&
+          last.text === text &&
+          typeof last.time === "number" &&
+          now - last.time < 30_000
+        ) {
+          log(
+            `[${instanceId}] duplicate prompt suppressed (storage, ${now - last.time}ms ago)`,
+          );
+          return;
+        }
+        await ctx.storage.set("lastInjectedPrompt", { text, time: now });
+      } catch (err) {
+        log(`[${instanceId}] storage dedupe error: ${err}`);
+      }
+
+      lastInjectedText = text;
+      lastInjectedTime = now;
+
+      log(`[${instanceId}] intervention: ${text}`);
+      try {
+        await ctx.session.prompt({ sessionID: targetSessionID as any, text });
+      } catch (err) {
+        log(`[${instanceId}] prompt failed: ${err}`);
+      }
     }
 
     let eventBatch: unknown[] = [];
     let debounceTimer: ReturnType<typeof setTimeout> | null = null;
+    let maxWaitTimer: ReturnType<typeof setTimeout> | null = null;
+    let isFlushing = false;
 
     async function flushBatch() {
-      if (eventBatch.length === 0) return;
-      const batch = eventBatch;
-      eventBatch = [];
-      await triggerIntervention(batch);
+      if (debounceTimer) {
+        clearTimeout(debounceTimer);
+        debounceTimer = null;
+      }
+      if (maxWaitTimer) {
+        clearTimeout(maxWaitTimer);
+        maxWaitTimer = null;
+      }
+      if (eventBatch.length === 0 || isFlushing) return;
+
+      isFlushing = true;
+      try {
+        const batch = eventBatch;
+        eventBatch = [];
+        await triggerIntervention(batch);
+      } finally {
+        isFlushing = false;
+        // If more events arrived while flushing, schedule another debounce pass
+        if (eventBatch.length > 0 && !debounceTimer) {
+          debounceTimer = setTimeout(() => {
+            flushBatch().catch((err) =>
+              log(`[${instanceId}] flushBatch retry failed: ${err}`),
+            );
+          }, 5_000);
+        }
+      }
     }
 
     function pushEvent(response: unknown) {
@@ -75,25 +171,59 @@ export default Plugin.define({
       if (debounceTimer) clearTimeout(debounceTimer);
       debounceTimer = setTimeout(() => {
         flushBatch().catch((err) =>
-          log(`nina-plugin: flushBatch failed: ${err}`),
+          log(`[${instanceId}] flushBatch failed: ${err}`),
         );
       }, 5_000);
+
+      if (!maxWaitTimer) {
+        maxWaitTimer = setTimeout(() => {
+          flushBatch().catch((err) =>
+            log(`[${instanceId}] maxWait flushBatch failed: ${err}`),
+          );
+        }, 30_000);
+      }
     }
 
     let ws: WebSocket | null = null;
     let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
     let closed = false;
 
+    function cleanupSocket() {
+      if (reconnectTimer) {
+        clearTimeout(reconnectTimer);
+        reconnectTimer = null;
+      }
+      if (ws) {
+        try {
+          ws.onopen = null;
+          ws.onmessage = null;
+          ws.onclose = null;
+          ws.onerror = null;
+          ws.close();
+        } catch {
+          /* ignore */
+        }
+        ws = null;
+      }
+    }
+
     function connect() {
       if (closed) return;
+      cleanupSocket();
+
       const url = `ws://${ninaEndpoint}/v2/socket`;
-      log(`nina-plugin: connecting to: ${url}`);
-      ws = new WebSocket(url);
-      ws.onopen = () => {
-        log("nina-plugin: ws onopen");
-        ws?.send("SUB /socket");
+      log(`[${instanceId}] connecting to: ${url}`);
+      const socket = new WebSocket(url);
+      ws = socket;
+
+      socket.onopen = () => {
+        if (closed || ws !== socket) return;
+        log(`[${instanceId}] ws onopen`);
+        socket.send("SUB /socket");
       };
-      ws.onmessage = (event) => {
+
+      socket.onmessage = (event) => {
+        if (closed || ws !== socket) return;
         let msg: any;
         try {
           msg = JSON.parse(String(event.data));
@@ -106,19 +236,22 @@ export default Plugin.define({
               ? { Event: msg.Response }
               : msg.Response;
           log(
-            `nina-plugin: ws onmessage ${JSON.stringify(response, null, 2)}`,
+            `[${instanceId}] ws onmessage ${JSON.stringify(response, null, 2)}`,
           );
           pushEvent(response);
         }
       };
-      ws.onclose = () => {
-        if (closed) return;
-        log("nina-plugin: ws onclose");
+
+      socket.onclose = () => {
+        if (closed || ws !== socket) return;
+        log(`[${instanceId}] ws onclose`);
         reconnectTimer = setTimeout(connect, 5_000);
       };
-      ws.onerror = () => {
-        log("nina-plugin: ws error");
-        ws?.close();
+
+      socket.onerror = () => {
+        if (closed || ws !== socket) return;
+        log(`[${instanceId}] ws error`);
+        socket.close();
       };
     }
 
@@ -129,18 +262,34 @@ export default Plugin.define({
       intervalId = setInterval(() => {
         if (!(ws && ws.readyState === WebSocket.OPEN)) return;
         triggerIntervention().catch((err) =>
-          log(`nina-plugin: interval trigger failed: ${err}`),
+          log(`[${instanceId}] interval trigger failed: ${err}`),
         );
       }, intervalCheckMinutes * 60_000);
     }
 
-    return async () => {
+    const cleanup = async () => {
+      if (activeCleanup === cleanup) {
+        activeCleanup = null;
+      }
       closed = true;
       await promptHook.dispose();
-      if (intervalId !== null) clearInterval(intervalId);
-      if (debounceTimer) clearTimeout(debounceTimer);
-      if (reconnectTimer) clearTimeout(reconnectTimer);
-      ws?.close();
+      if (intervalId !== null) {
+        clearInterval(intervalId);
+        intervalId = null;
+      }
+      if (debounceTimer) {
+        clearTimeout(debounceTimer);
+        debounceTimer = null;
+      }
+      if (maxWaitTimer) {
+        clearTimeout(maxWaitTimer);
+        maxWaitTimer = null;
+      }
+      cleanupSocket();
+      log(`[${instanceId}] disposed`);
     };
+
+    activeCleanup = cleanup;
+    return cleanup;
   },
 });
