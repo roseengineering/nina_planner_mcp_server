@@ -315,7 +315,9 @@ def trigger_restore_guiding() -> dict[str, Any]:
 
 
 def connect_all_equipment() -> dict[str, Any]:
-    return _child("NINA.Sequencer.SequenceItem.Connect.ConnectAllEquipment, NINA.Sequencer")
+    return _child(
+        "NINA.Sequencer.SequenceItem.Connect.ConnectAllEquipment, NINA.Sequencer"
+    )
 
 
 def unpark_scope() -> dict[str, Any]:
@@ -691,10 +693,9 @@ def sequence_deepsky(
         ra=pointing.ra_hours,
         dec=pointing.dec_deg,
         posang=posang,
-        instructions=[
-            send_event(starting),
-            connect_all_equipment()
-        ] + instructions + [send_event(finished)],
+        instructions=[send_event(starting), connect_all_equipment()]
+        + instructions
+        + [send_event(finished)],
     )
 
 
@@ -775,7 +776,7 @@ def sequence_end(equipment: ObservatoryEquipment) -> dict[str, Any]:
                 conditions=[loop_while_safe(), loop_for_iterations(1)],
                 instructions=[wait_for_timespan(delay_minutes * 60)],
             ),
-            connect_all_equipment()
+            connect_all_equipment(),
         ]
         + sequence_park_scope(equipment)
         + sequence_warm_camera(equipment)
@@ -939,12 +940,34 @@ def target_payload_lights(
     pointing = plan.pointings[pointing_index - 1]
     reference_filter_name = plan.autofocus.reference_filter_name
     reference_filter_position = profile.filter_position(reference_filter_name)
+    name_park = "Park Unless in View"
 
     return [
         sequence_deepsky(
             plan=plan,
             pointing_index=pointing_index,
             instructions=[
+                # park if object not in view
+                container_sequential(
+                    name=name_park,
+                    instructions=[
+                        # in view: bail out of this container without parking
+                        container_sequential(
+                            name='Break If in View',
+                            conditions=[
+                                loop_while_above_horizon(
+                                    plan.constraints.horizon_offset_degrees
+                                ),
+                                loop_while_above_altitude(
+                                    plan.constraints.min_altitude
+                                ),
+                            ],
+                            instructions=[end_instruction(name_park)],
+                        ),
+                    ]
+                    # out of view: park (or home) until the safetynets unpark
+                    + sequence_park_scope(equipment),
+                ),
                 # wait for dusk before imaging
                 sequence_safetynet(
                     name="Wait For Dusk",

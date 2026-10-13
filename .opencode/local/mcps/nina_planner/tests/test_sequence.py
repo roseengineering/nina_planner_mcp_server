@@ -562,6 +562,20 @@ def _find_items(d: Any, type_substring: str) -> list[dict]:
     return out
 
 
+def _find_named(d: Any, name: str) -> list[dict]:
+    """Recursively find all dicts whose ``Name`` equals the given name."""
+    out = []
+    if isinstance(d, dict):
+        if d.get("Name") == name:
+            out.append(d)
+        for v in d.values():
+            out.extend(_find_named(v, name))
+    elif isinstance(d, list):
+        for item in d:
+            out.extend(_find_named(item, name))
+    return out
+
+
 def _deepsky_targets(seq: dict) -> list[dict]:
     return _find_items(seq, "DeepSkyObjectContainer")
 
@@ -812,6 +826,63 @@ class SequenceBehaviorTest(unittest.TestCase):
         cools = _find_items(result, "CoolCamera")
         self.assertEqual(warms, [])
         self.assertEqual(cools, [])
+
+    def test_lights_parks_when_object_is_not_in_view(self):
+        """The leading "Park Unless in View" container parks (or homes) the
+        mount when the target is below the plan's constraints, and skips the
+        park — via an End set naming that container — when it is in view."""
+        plan = self._plan(
+            constraints={"min_altitude": 45.0, "horizon_offset_degrees": 5.0}
+        )
+        mount = MountDevice(connected=True, name="m", can_park=True)
+        eq = ObservatoryEquipment(mount=mount)
+        result = build_sequence_lights(plan, equipment=eq, profile=_profile())
+
+        found = _find_named(result, "Park Unless in View")
+        self.assertEqual(len(found), 1, "exactly one park-unless-in-view container")
+        park = found[0]
+        self.assertEqual(park["Conditions"]["$values"], [], "no loop: one pass only")
+
+        items = park["Items"]["$values"]
+        self.assertEqual(len(items), 2, "guard then park")
+        guard = items[0]
+        conditions = guard["Conditions"]["$values"]
+        kinds = [c["$type"].split(",")[0].split(".")[-1] for c in conditions]
+        self.assertEqual(kinds, ["AboveHorizonCondition", "AltitudeCondition"])
+        self.assertEqual(conditions[0]["Data"]["Offset"], 5.0)
+        self.assertEqual(conditions[1]["Data"]["Offset"], 45.0)
+
+        # in view -> end the container before the park instruction runs
+        ends = _find_items(guard, "EndInstructionSet")
+        self.assertEqual(
+            [e["InstructionSetName"] for e in ends], ["Park Unless in View"]
+        )
+        # out of view -> fall through to the capability-driven park
+        self.assertTrue(_find_items(items[1], "ParkScope"))
+        self.assertEqual(_find_items(items[1], "FindHome, NINA.Sequencer"), [])
+
+        # and it runs before anything waits for dusk
+        dsos = _deepsky_targets(result)
+        self.assertEqual(len(dsos), 1)
+        dso_items = dsos[0]["Items"]["$values"]
+        names = [i.get("Name") for i in dso_items]
+        self.assertLess(
+            names.index("Park Unless in View"),
+            names.index("Wait For Dusk"),
+            "park first, then the safetynets",
+        )
+
+    def test_lights_parks_with_find_home_when_mount_cannot_park(self):
+        plan = self._plan()
+        mount = MountDevice(
+            connected=True, name="m", can_park=False, can_find_home=True
+        )
+        eq = ObservatoryEquipment(mount=mount)
+        result = build_sequence_lights(plan, equipment=eq, profile=_profile())
+
+        park = _find_named(result, "Park Unless in View")[0]
+        self.assertEqual(_find_items(park, "ParkScope"), [])
+        self.assertEqual(len(_find_items(park, "FindHome, NINA.Sequencer")), 1)
 
     def test_end_area_waits_three_minutes_then_stows_and_warms(self):
         """The End area waits out one bounded "On Safe" pass — a single
