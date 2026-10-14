@@ -56,7 +56,24 @@ def _resolve_existing_file(
     return None
 
 
+def _require_root(root: Path) -> None:
+    """Raise when ``root`` is missing, rather than rglob silently matching nothing.
+
+    A missing root (unmounted drive, wrong NINA_DRIVE_MOUNT, stale profile
+    path) must not masquerade as "no frames yet": callers would report an
+    empty plan and re-acquire everything.
+    """
+    if root.is_dir():
+        return
+    raise FileNotFoundError(
+        f"imaging root does not exist or is not a directory: {root} "
+        "(check the site profile's image save path and, on non-Windows "
+        "hosts, NINA_DRIVE_MOUNT)"
+    )
+
+
 def read_imaging_csv(root: Path, image_type: str) -> list[dict[str, Any]]:
+    _require_root(root)
     rows: list[dict[str, Any]] = []
     image_type_upper = image_type.upper()
     for meta_path in root.rglob("ImageMetaData.csv"):
@@ -86,6 +103,7 @@ def read_weather_csv(root: Path) -> list[dict[str, Any]]:
     timestamps used by ``ImageMetaData.csv`` so they can be joined to frames.
     """
     rows: list[dict[str, Any]] = []
+    _require_root(root)
     for meta_path in root.rglob("WeatherData.csv"):
         for row in _read_csv(meta_path):
             enriched = dict(row)
@@ -227,6 +245,8 @@ def _clean_metric(column: str, value: Any) -> Any:
     # — it's a placeholder for "not measured", not a real reading. So we
     # filter it. For non-quality columns (e.g. temperature) 0 IS a real
     # value (legitimately cold) and is preserved.
+    # progress._quality_accepted mirrors this contract for its filters; keep
+    # the two in sync.
     if column in _QUALITY_METRICS and value in (0, 0.0, "0"):
         return None
     if isinstance(value, str):

@@ -337,15 +337,30 @@ async def _convert_to_met(
         now = now.replace(tzinfo=datetime.now().astimezone().tzinfo)
     tzinfo = now.tzinfo
     res = []
+    dropped = 0
     for d in data:
-        value = d[name]
+        # A record without a usable timestamp cannot be sorted or placed in
+        # the `since` window; drop it rather than crash the whole listing.
+        value = d.get(name)
+        if not isinstance(value, str) or not value:
+            dropped += 1
+            continue
+        try:
+            ts = datetime.fromisoformat(value)
+        except ValueError:
+            dropped += 1
+            continue
         d = {k: v for k, v in d.items() if k != name}
-        ts = datetime.fromisoformat(value)
         if ts.tzinfo is None:
             ts = ts.replace(tzinfo=tzinfo)
         d = _convert_keys(d)
         d[timestamp] = ts
         res.append(d)
+    if dropped:
+        _log_payload(
+            "_convert_to_met:",
+            f"dropped {dropped} record(s) without a usable {name!r} timestamp",
+        )
     data = sorted(res, key=lambda d: d[timestamp])
     res = []
     for d in data:
@@ -553,15 +568,34 @@ async def get_site_profile() -> ObservatoryProfile:
         camera_ysize_px=camera_ysize,
     )
 
-    filters = [
-        FilterInfo(
-            name=f["Name"],
-            position=int(f["Position"]),
-            focus_offset=int(f["FocusOffset"]),
+    filters: list[FilterInfo] = []
+    for f in filter_wheel.get("FilterWheelFilters", []):
+        if not isinstance(f, dict) or not f.get("Name"):
+            continue
+        name = f["Name"]
+        try:
+            position = ascom_int(f.get("Position"))
+        except (TypeError, ValueError):
+            position = None
+        if position is None:
+            # Position selects the physical wheel slot and has no safe
+            # default: drop the filter from the profile (a plan referencing
+            # it then fails _validate_filters loudly, by name) rather than
+            # ever drive the wheel to a bogus slot mid-sequence.
+            _log_payload(
+                "get_site_profile: skipping filter",
+                f"{name!r}: Position missing or not a number: {f.get('Position')!r}",
+            )
+            continue
+        try:
+            focus_offset = ascom_int(f.get("FocusOffset"))
+        except (TypeError, ValueError):
+            # Metadata, not an instruction — FilterInfo's own default of
+            # None ("no offset") is the safe reading; keep the filter.
+            focus_offset = None
+        filters.append(
+            FilterInfo(name=name, position=position, focus_offset=focus_offset)
         )
-        for f in filter_wheel.get("FilterWheelFilters", [])
-        if f.get("Name")
-    ]
 
     def _exists(
         section: dict, field: str, skip: AbstractSet[str] = frozenset({"No_Device"})
@@ -725,7 +759,7 @@ async def write_mosaic_plan(
     mosaic_csv: str,
     output_path: str | None = None,
 ) -> str:
-    """Expands a base observation plan into a multi-pointing mosaic plan from a Telescopius-formatted mosaic CSV. The base plan supplies every setting except the pointings (target, intent, exposure groups, calibration, cooler, autofocus, guiding, constraints); its pointings are replaced wholesale by one pointing per CSV row. The Telescopius CSV header is expected to include `Pane`, `RA`, `DEC`, `Position Angle (East)`, `Row`, and `Column` (RA/DEC may be sexagesimal like `0hr 56' 01"` / `45º 51' 18"` or decimal); `row`/`column` are stored on each pointing as metadata (N.I.N.A. does not consume them). The base plan's `plan_id` is cleared so the mosaic gets its own content-derived id, and each pane is attributed independently via `({plan_id}-{pointing_index})` when run with `load_sequence(request=[{"plan": <plan_path>, "pointing_index": N}])`. With no rotator, every pane's `position_angle_deg` must be 0; any nonzero PA fails loudly. Writes `<target>_<intent>_mosaic_<timestamp>.json` in the project directory unless `output_path` is given. This tool only creates the plan file; it does not load or start a sequence."""
+    """Expands a base observation plan into a multi-pointing mosaic plan from a Telescopius-formatted mosaic CSV. The base plan supplies every setting except the pointings (target, intent, exposure groups, calibration, cooler, autofocus, guiding, constraints); its pointings are replaced wholesale by one pointing per CSV row. The CSV must follow the Telescopius export layout — nine columns in the fixed order `Pane`, `RA`, `DEC`, `Position Angle (East)`, `Pane width (arcmins)`, `Pane height (arcmins)`, `Overlap`, `Row`, `Column` — and RA must be hours in the range [0, 24) (sexagesimal like `0hr 56' 01"` or decimal hours); a non-matching header or an out-of-range RA rejects the whole file rather than wrapping it. `row`/`column` are stored on each pointing as metadata (N.I.N.A. does not consume them). The base plan's `plan_id` is cleared so the mosaic gets its own content-derived id, and each pane is attributed independently via `({plan_id}-{pointing_index})` when run with `load_sequence(request=[{"plan": <plan_path>, "pointing_index": N}])`. With no rotator, every pane's `position_angle_deg` must be 0; any nonzero PA fails loudly. Writes `<target>_<intent>_mosaic_<timestamp>.json` in the project directory unless `output_path` is given. This tool only creates the plan file; it does not load or start a sequence."""
     base = await _load_plan(plan_path)
     csv_path = Path(mosaic_csv)
     if not csv_path.is_absolute():
@@ -883,7 +917,7 @@ async def _load_many(requests: list[SequenceRequest]) -> str:
         if "rows" not in state:
             try:
                 state["rows"] = await _read_metadata()
-            except RuntimeError as e:
+            except (RuntimeError, FileNotFoundError) as e:
                 raise ValueError(
                     f"Cannot compute remaining frames: {e}. Pass mode='full' to "
                     "load the whole plan regardless."
@@ -1154,15 +1188,39 @@ async def stop_nina() -> dict[str, Any]:
 
     log_extra: list[str] = []
     try:
-        await _run_blocking(kill_nina_command(), timeout=15.0)
-        await anyio.sleep(1.0)
-        summary = "stop_nina: NINA.exe terminated successfully."
-        log_extra.append("killed running NINA")
+        proc = await _run_blocking(kill_nina_command(), timeout=15.0)
     except Exception as e:
         summary = f"stop_nina failed: taskkill error: {e!r}"
         log_extra.append(summary)
         _log_payload("stop_nina error:", summary)
         raise RuntimeError(summary) from e
+
+    taskkill_detail = f"taskkill exited {proc.returncode}"
+    stderr = (proc.stderr or "").strip()
+    if stderr:
+        taskkill_detail += f": {stderr}"
+
+    # taskkill's exit code is not the end state: a denied kill, or a process
+    # that exited on its own between the probe and the kill, both exit
+    # nonzero. Whether NINA's REST API still answers is authoritative.
+    async def _nina_down() -> bool:
+        return not await _nina_api_responsive()
+
+    down = await _poll_until_async(_nina_down, timeout=10.0, interval=0.5)
+    if not down:
+        summary = (
+            "stop_nina failed: NINA's REST API still answers after taskkill "
+            f"({taskkill_detail}); NINA may not have terminated"
+        )
+        log_extra.append(summary)
+        _log_payload("stop_nina error:", summary)
+        raise RuntimeError(summary)
+
+    summary = "stop_nina: NINA.exe terminated successfully."
+    if proc.returncode != 0:
+        # e.g. "not found" because NINA exited on its own — end state holds.
+        summary += f" (note: {taskkill_detail})"
+    log_extra.append("killed running NINA")
 
     _log_payload("stop_nina:", summary)
     try:
@@ -1241,7 +1299,11 @@ async def start_nina(time: str | None = None) -> dict[str, Any]:
         raise RuntimeError(
             f"start_nina failed: could not read host clock before shift: {e!r}"
         ) from e
-    shift_at = datetime.now(UTC)
+    # Monotonic anchor for the restore target below: anyio's clock does not
+    # follow the Set-Date shift made in this flow (and `time` is shadowed by
+    # this tool's parameter here), so the measured window stays real even
+    # while the wall clock is simulated.
+    shift_mono = anyio.current_time()
 
     # 2. Shift Windows host clock to simulated target (direct, no UAC).
     shift_cmd = shift_clock_powershell(time)
@@ -1267,19 +1329,44 @@ async def start_nina(time: str | None = None) -> dict[str, Any]:
 
     shift_ok = await _poll_until_async(_shift_check, timeout=10.0, interval=0.5)
     if not shift_ok:
-        # Best-effort restore to real0 before raising.
+        # Best-effort restore before raising. The target is real time advanced
+        # by the monotonic elapsed (matching the main restore path below), and
+        # the "restored" verdict is verified against the host clock: a denied
+        # Set-Date exits nonzero without raising, so an unchecked command must
+        # never be reported as restored.
+        restore_target = real0 + timedelta(seconds=anyio.current_time() - shift_mono)
+        # real0 is Windows-host-local and aware, and Set-Date wants that same
+        # wall time, so drop the tag without converting zones.
+        restore_cmd = restore_set_date_powershell(
+            restore_target.replace(tzinfo=None).isoformat()
+        )
+        restore_argv = ["powershell.exe", "-NoProfile", "-Command", restore_cmd]
+        _log_payload("start_nina: shift-failure restore", restore_cmd)
+        restore_note = ""
         try:
-            restore_cmd = restore_set_date_powershell(
-                real0.astimezone(local_tz).replace(tzinfo=None).isoformat()
-            )
-            await _run_blocking(
-                ["powershell.exe", "-NoProfile", "-Command", restore_cmd], timeout=10.0
-            )
-        except Exception:
-            pass
+            proc = await _run_blocking(restore_argv, timeout=10.0)
+            _raise_for_command_failure(proc, restore_argv, "start_nina: restore")
+        except Exception as e:
+            restore_note = f" Restore command failed: {e!r}."
+
+        async def _shift_restore_check() -> bool:
+            try:
+                host_now = await _read_windows_clock()
+                return abs((host_now - restore_target).total_seconds()) <= 2.0
+            except Exception:
+                return False
+
+        restored = await _poll_until_async(
+            _shift_restore_check, timeout=10.0, interval=0.5
+        )
+        verdict = (
+            "Host clock restored (verified)."
+            if restored
+            else "Host clock NOT restored — manual intervention may be required."
+        )
         raise RuntimeError(
-            f"start_nina failed: host clock did not converge to {time!r} within 10s of shift. "
-            "Host clock restored."
+            f"start_nina failed: host clock did not converge to {time!r} "
+            f"within 10s of shift.{restore_note} {verdict}"
         )
     log_extra.append(f"shifted OS clock to {time}")
 
@@ -1317,20 +1404,22 @@ async def start_nina(time: str | None = None) -> dict[str, Any]:
         launch_error = e
     finally:
         # 6. Always restore the host clock after a successful shift, including
-        # when launcher setup or NINA startup raises.
-        restore_at = datetime.now(UTC)
-        elapsed = (restore_at - shift_at).total_seconds()
+        # when launcher setup or NINA raises. Elapsed time comes from the
+        # monotonic anchor: the wall clock was shifted during this window, so
+        # datetime.now() here could fold the simulated delta into the restore
+        # target and silently leave the host on simulated time.
+        elapsed = anyio.current_time() - shift_mono
         restore_target_dt = real0 + timedelta(seconds=elapsed)
-        restore_target_naive = restore_target_dt.astimezone(local_tz).replace(
-            tzinfo=None
-        )
+        # real0 is Windows-host-local and aware, so the target's wall time is
+        # exactly what Set-Date wants; drop the tag without converting through
+        # the MCP host's zone.
+        restore_target_naive = restore_target_dt.replace(tzinfo=None)
         restore_cmd = restore_set_date_powershell(restore_target_naive.isoformat())
         _log_payload("start_nina: restore", restore_cmd)
+        restore_argv = ["powershell.exe", "-NoProfile", "-Command", restore_cmd]
         try:
-            await _run_blocking(
-                ["powershell.exe", "-NoProfile", "-Command", restore_cmd],
-                timeout=10.0,
-            )
+            proc = await _run_blocking(restore_argv, timeout=10.0)
+            _raise_for_command_failure(proc, restore_argv, "start_nina: restore")
         except Exception as e:
             restore_error = repr(e)
 

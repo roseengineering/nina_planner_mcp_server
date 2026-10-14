@@ -106,12 +106,60 @@ class LoadPointingsTextTest(unittest.TestCase):
             load_pointings_text(text)
 
     def test_label_fallback_from_row_and_column(self):
+        # Empty Pane cell with Row/Column present falls back to rN_cN.
         text = (
-            "RA, DEC, Position Angle (East), Row, Column"
-            "\n0hr 56' 01\", 45º 51' 18\", 0.00, 2, 3\n"
+            TELESCOPIUS_HEADER
+            + "\n, 0hr 56' 01\", 45º 51' 18\", 0.00, 309.00, 205.80, 10%, 2, 3\n"
         )
         pointings = load_pointings_text(text)
         self.assertEqual(pointings[0].label, "r2_c3")
+
+    def test_header_wrong_order_raises(self):
+        # Columns are positional per the Telescopius spec: the same names in
+        # a different order are rejected, not silently misread.
+        text = (
+            "DEC, RA, Pane, Position Angle (East), Pane width (arcmins), "
+            "Pane height (arcmins), Overlap, Row, Column\n"
+            "45º 51' 18\", 0hr 56' 01\", Pane 1, 0.00, 309.00, 205.80, 10%, 1, 1\n"
+        )
+        with self.assertRaisesRegex(ValueError, "Telescopius"):
+            load_pointings_text(text)
+
+    def test_header_unexpected_names_raises(self):
+        text = "center_ra, center_dec\n134.5, 45.855\n"
+        with self.assertRaisesRegex(ValueError, "Telescopius"):
+            load_pointings_text(text)
+
+    def test_out_of_range_ra_rejects_whole_file(self):
+        # RA is hours by spec; 134.5 can only be degrees. The whole file is
+        # rejected even though the other row is valid — nothing is wrapped.
+        text = (
+            TELESCOPIUS_HEADER
+            + "\nPane 1, 0hr 56' 01\", 45º 51' 18\", 0.00, 309.00, 205.80, 10%, 1, 1"
+            + "\nPane 2, 134.5, 45º 51' 18\", 0.00, 309.00, 205.80, 10%, 1, 2\n"
+        )
+        with self.assertRaisesRegex(ValueError, r"RA 134\.5 out of range"):
+            load_pointings_text(text)
+
+    def test_boundary_ra_values_rejected(self):
+        # 24.0 (e.g. from a hand-edited 23h 59' 60") and negatives are
+        # rejected outright.
+        for ra in ("24.0", "-0hr 30' 00\""):
+            text = (
+                TELESCOPIUS_HEADER
+                + f"\nPane 1, {ra}, 45º 51' 18\", 0.00, 309.00, 205.80, 10%, 1, 1\n"
+            )
+            with self.assertRaisesRegex(ValueError, "out of range"):
+                load_pointings_text(text)
+
+    def test_short_row_skipped(self):
+        text = (
+            TELESCOPIUS_HEADER
+            + "\nPane 1, 0hr 56' 01\", 45º 51' 18\""
+            + "\nPane 2, 0hr 29' 28\", 45º 51' 18\", 0.00, 309.00, 205.80, 10%, 1, 2\n"
+        )
+        pointings = load_pointings_text(text)
+        self.assertEqual([p.label for p in pointings], ["Pane 2"])
 
     def test_missing_ra_dec_columns_raises(self):
         text = "Pane, Position Angle (East)\nPane 1, 0.00\n"

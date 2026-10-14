@@ -40,6 +40,15 @@ class ReadImagingCsvTest(unittest.TestCase):
             header = ["ImageType", "Duration", "FilterName"]
         _write_csv(self.light_dir / "ImageMetaData.csv", header, rows)
 
+    def test_missing_root_raises_instead_of_returning_empty(self):
+        # A nonexistent root (unmounted drive, wrong NINA_DRIVE_MOUNT, stale
+        # profile path) must raise, not masquerade as "no frames yet" — which
+        # would make callers re-acquire the whole plan.
+        missing = self.root / "does-not-exist"
+        with self.assertRaises(FileNotFoundError) as ctx:
+            read_imaging_csv(root=missing, image_type="light")
+        self.assertIn("imaging root does not exist", str(ctx.exception))
+
     def test_returns_rows_with_frametype(self):
         self._write_images([["LIGHT", "60.0", "LP"]])
 
@@ -439,6 +448,12 @@ class ReadWeatherCsvTest(unittest.TestCase):
 
     def test_no_weather_data_returns_empty(self):
         self.assertEqual(read_weather_csv(root=self.root), [])
+
+    def test_missing_root_raises_instead_of_returning_empty(self):
+        missing = self.root / "does-not-exist"
+        with self.assertRaises(FileNotFoundError) as ctx:
+            read_weather_csv(root=missing)
+        self.assertIn("imaging root does not exist", str(ctx.exception))
 
 
 class MeltWeatherTest(unittest.TestCase):

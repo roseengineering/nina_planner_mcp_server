@@ -118,6 +118,40 @@ class ConvertToMetTest(unittest.IsolatedAsyncioTestCase):
             res = await _convert_to_met(data, since=3600, name="Time")
         self.assertEqual(res, [])
 
+    async def test_missing_timestamp_record_dropped(self):
+        # A record without the timestamp field cannot be sorted or windowed;
+        # it is dropped instead of crashing the whole listing.
+        now = self._now()
+        data = [
+            {"Time": "2026-09-22T02:16:25Z", "Message": "good"},
+            {"Message": "no timestamp field"},
+        ]
+        with self._patch_api_get(now, data):
+            res = await _convert_to_met(data, since=3600, name="Time")
+        self.assertEqual(len(res), 1)
+        self.assertEqual(res[0]["message"], "good")
+
+    async def test_unusable_timestamp_record_dropped(self):
+        now = self._now()
+        data = [
+            {"Time": "not-a-date", "Message": "bad"},
+            {"Time": None, "Message": "null"},
+            {"Time": "", "Message": "empty"},
+            {"Time": 1758519385, "Message": "not-a-string"},
+            {"Time": "2026-09-22T02:16:25Z", "Message": "good"},
+        ]
+        with self._patch_api_get(now, data):
+            res = await _convert_to_met(data, since=3600, name="Time")
+        self.assertEqual(len(res), 1)
+        self.assertEqual(res[0]["message"], "good")
+
+    async def test_all_records_dropped_returns_empty(self):
+        now = self._now()
+        data = [{"Message": "orphan"}]
+        with self._patch_api_get(now, data):
+            res = await _convert_to_met(data, since=3600, name="Time")
+        self.assertEqual(res, [])
+
 
 class HelperFunctionsTest(unittest.TestCase):
     """Pure-logic helpers in server.py."""
@@ -693,6 +727,52 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result.filters[0].name, "L")
         self.assertEqual(result.filters[0].position, 1)
         self.assertEqual(result.filters[1].name, "R")
+
+    async def test_get_site_profile_bad_filter_fields_do_not_crash(self):
+        from nina_planner.server import get_site_profile
+
+        filters = [
+            {"Name": "L", "Position": 1, "FocusOffset": 0},
+            # Position missing → row dropped, not thrown.
+            {"Name": "R", "FocusOffset": 1},
+            # Position unparseable → dropped too.
+            {"Name": "G", "Position": "slot-two", "FocusOffset": 2},
+            # Position as a numeric string is tolerated.
+            {"Name": "OIII", "Position": "3", "FocusOffset": "0"},
+            # Only FocusOffset bad → kept, with focus_offset=None.
+            {"Name": "B", "Position": 4, "FocusOffset": "n/a"},
+            # Null entry → ignored.
+            None,
+            # No name → ignored (pre-existing rule).
+            {"Position": 5, "FocusOffset": 0},
+        ]
+        raw = {
+            "Name": "Test",
+            "Id": "abc",
+            "Description": "",
+            "AstrometrySettings": {},
+            "TelescopeSettings": {},
+            "CameraSettings": {},
+            "FilterWheelSettings": {"FilterWheelFilters": filters},
+            "ImageFileSettings": {"FilePath": "", "FilePattern": None},
+            "PlateSolveSettings": {"PlateSolverType": None, "BlindSolverType": None},
+            "FramingAssistantSettings": {},
+            "GuiderSettings": {},
+            "RotatorSettings": {},
+            "DomeSettings": {},
+            "WeatherDataSettings": {},
+            "SafetyMonitorSettings": {},
+            "FocuserSettings": {},
+            "SwitchSettings": {},
+        }
+        with patch("nina_planner.server._api_get", AsyncMock(return_value=raw)):
+            result = await get_site_profile()
+        kept = {f.name: f for f in result.filters}
+        self.assertEqual(list(kept), ["L", "OIII", "B"])
+        self.assertEqual(kept["OIII"].position, 3)
+        self.assertEqual(kept["B"].position, 4)
+        self.assertIsNone(kept["B"].focus_offset)
+        self.assertEqual(kept["L"].focus_offset, 0)
 
     async def test_list_site_profiles_marks_active(self):
         from nina_planner.server import list_site_profiles
@@ -1379,6 +1459,10 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
                     "nina_planner.server._get_site_equipment_status",
                     AsyncMock(return_value=ObservatoryEquipment()),
                 ),
+                patch(
+                    "nina_planner.server._read_metadata",
+                    AsyncMock(return_value=[]),
+                ),
                 patch("nina_planner.server.target_payload_darks", new=darks_step),
                 patch(
                     "nina_planner.server._api_post",
@@ -1493,6 +1577,10 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
 
             with (
                 patch(
+                    "nina_planner.server._read_metadata",
+                    AsyncMock(return_value=[]),
+                ),
+                patch(
                     "nina_planner.server.get_site_profile",
                     AsyncMock(return_value=self._full_profile()),
                 ),
@@ -1552,6 +1640,10 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
 
             with (
                 patch(
+                    "nina_planner.server._read_metadata",
+                    AsyncMock(return_value=[]),
+                ),
+                patch(
                     "nina_planner.server.get_site_profile",
                     AsyncMock(return_value=self._full_profile()),
                 ),
@@ -1610,6 +1702,10 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
                 return [{"$type": "flats"}]
 
             with (
+                patch(
+                    "nina_planner.server._read_metadata",
+                    AsyncMock(return_value=[]),
+                ),
                 patch(
                     "nina_planner.server.get_site_profile",
                     AsyncMock(return_value=self._full_profile()),
@@ -2026,6 +2122,10 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
 
             with (
                 patch(
+                    "nina_planner.server._read_metadata",
+                    AsyncMock(return_value=[]),
+                ),
+                patch(
                     "nina_planner.server.get_site_profile",
                     AsyncMock(return_value=self._full_profile()),
                 ),
@@ -2086,6 +2186,10 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
                 return [{"$type": "darks"}]
 
             with (
+                patch(
+                    "nina_planner.server._read_metadata",
+                    AsyncMock(return_value=[]),
+                ),
                 patch(
                     "nina_planner.server.get_site_profile",
                     AsyncMock(return_value=self._full_profile()),
@@ -2676,11 +2780,19 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
         class FakeProcess:
             returncode = 0
             stdout = ""
+            stderr = ""
 
         with (
             patch(
+                # First probe: NINA is up (stop proceeds to taskkill). Second
+                # probe: the kill verification poll sees the API gone.
                 "nina_planner.server._api_probe",
-                AsyncMock(return_value=(True, None)),
+                AsyncMock(
+                    side_effect=[
+                        (True, None),
+                        (False, "connection refused"),
+                    ]
+                ),
             ),
             patch(
                 "nina_planner.server.windows_interop_available",

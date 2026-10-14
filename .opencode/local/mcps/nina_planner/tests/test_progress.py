@@ -696,6 +696,25 @@ class PrivateHelperDefensivePathsTest(unittest.TestCase):
         self.assertFalse(_light_target_matches(plan, {"file_path": ""}))
         self.assertFalse(_light_target_matches(plan, {"file_path": "   "}))
 
+    def test_light_target_matches_paren_blocks_cross_pointing_match(self):
+        from nina_planner.progress import _light_target_matches
+
+        # The closing paren in the attribution token is what keeps pointing 1
+        # from absorbing pointing 10-19's frames in a >=10-pane mosaic:
+        # "(plan-test123-1)" is not a substring of "(plan-test123-10)".
+        # Matching the bare effective_plan_id would lose this guarantee.
+        plan = self._plan()
+        row_p1 = {"file_path": r"C:\lights\(plan-test123-1)\img001.fits"}
+        row_p10 = {"file_path": r"C:\lights\(plan-test123-10)\img001.fits"}
+        self.assertTrue(_light_target_matches(plan, row_p1, pointing_index=1))
+        self.assertFalse(_light_target_matches(plan, row_p10, pointing_index=1))
+        self.assertTrue(_light_target_matches(plan, row_p10, pointing_index=10))
+        self.assertFalse(_light_target_matches(plan, row_p1, pointing_index=10))
+        # Same for the 1-vs-11 pair and a token nested in an ancestor dir.
+        row_p11 = {"file_path": "(plan-test123-11)/2026-09-22/img.fits"}
+        self.assertFalse(_light_target_matches(plan, row_p11, pointing_index=1))
+        self.assertTrue(_light_target_matches(plan, row_p11, pointing_index=11))
+
     # ---- _quality_accepted (lines 88-89, 95, 98-99, 108-109) ----
 
     def test_quality_hfr_invalid_string_returns_false(self):
@@ -724,6 +743,44 @@ class PrivateHelperDefensivePathsTest(unittest.TestCase):
         self.assertFalse(
             _quality_accepted({"guiding_rms_arc_sec": "abc"}, None, None, 2.0)
         )
+
+    def test_quality_hfr_zero_sentinel_rejected(self):
+        from nina_planner.progress import _quality_accepted
+
+        # NINA writes 0 for unmeasured ASCOM values (see imaging._clean_metric);
+        # under an active filter a 0 HFR means "not measured" and must not pass.
+        self.assertFalse(_quality_accepted({"hfr": 0}, 5.0, None))
+        self.assertFalse(_quality_accepted({"hfr": 0.0}, 5.0, None))
+        self.assertFalse(_quality_accepted({"hfr": "0"}, 5.0, None))
+        self.assertFalse(_quality_accepted({"hfr": "0.0"}, 5.0, None))
+        # A real measurement still passes.
+        self.assertTrue(_quality_accepted({"hfr": 0.42}, 5.0, None))
+
+    def test_quality_rms_zero_sentinel_rejected(self):
+        from nina_planner.progress import _quality_accepted
+
+        self.assertFalse(_quality_accepted({"guiding_rms_arc_sec": 0}, None, None, 2.0))
+        self.assertFalse(
+            _quality_accepted({"guiding_rms_arc_sec": "0.0"}, None, None, 2.0)
+        )
+        self.assertTrue(
+            _quality_accepted({"guiding_rms_arc_sec": 0.7}, None, None, 2.0)
+        )
+
+    def test_quality_stars_zero_sentinel_rejected(self):
+        from nina_planner.progress import _quality_accepted
+
+        # detected_stars is in imaging._QUALITY_METRICS too: 0 stars is the
+        # unmeasured sentinel, so it fails a star floor even of 0.
+        self.assertFalse(_quality_accepted({"detected_stars": 0}, None, 0))
+        self.assertTrue(_quality_accepted({"detected_stars": 1}, None, 0))
+
+    def test_quality_zero_without_active_filter_still_accepted(self):
+        from nina_planner.progress import _quality_accepted
+
+        # No filter active: the sentinel question does not arise; the frame
+        # counts, matching the pre-sentinel count-all behavior.
+        self.assertTrue(_quality_accepted({"hfr": 0, "detected_stars": 0}, None, None))
 
     # ---- _within_age ----
 

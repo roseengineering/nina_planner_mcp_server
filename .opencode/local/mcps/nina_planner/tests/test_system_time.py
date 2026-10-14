@@ -438,8 +438,15 @@ class StopNinaTest(unittest.TestCase):
         with (
             patch("nina_planner.server.PROJECT_DIR", self.project_dir),
             patch(
+                # First probe: NINA is up (stop proceeds to taskkill). Second
+                # probe: the kill verification poll sees the API gone.
                 "nina_planner.server._api_probe",
-                AsyncMock(return_value=(True, None)),
+                AsyncMock(
+                    side_effect=[
+                        (True, None),
+                        (False, "connection refused"),
+                    ]
+                ),
             ),
             patch(
                 "nina_planner.server.windows_interop_available",
@@ -911,9 +918,69 @@ class StartNinaTest(unittest.TestCase):
             with self.assertRaises(RuntimeError) as ctx:
                 asyncio.run(start_nina("2026-10-15T23:15:00"))
         self.assertIn("did not converge to '2026-10-15T23:15:00'", str(ctx.exception))
+        # The clock reads back at real time, so the restored claim is verified.
+        self.assertIn("Host clock restored (verified)", str(ctx.exception))
         # A best-effort restore Set-Date must have been issued.
         restore_cmds = [c for c in ps_commands if c.startswith("Set-Date -Date '")]
         self.assertGreaterEqual(len(restore_cmds), 1)
+
+    def test_start_simulated_shift_timeout_restore_failure_reports_not_restored(
+        self,
+    ):
+        from datetime import datetime as _dt
+
+        from nina_planner.server import start_nina
+
+        # Clock: real0 on the first read, then stuck mid-shift — never at the
+        # simulated target and never back at real time.
+        reads = {"n": 0}
+
+        async def fake_read_windows_clock():
+            reads["n"] += 1
+            if reads["n"] == 1:
+                return _dt.fromisoformat("2026-09-26T16:55:00-05:00")
+            return _dt.fromisoformat("2026-10-15T12:00:00-05:00")
+
+        def fake_run_blocking(argv, timeout=30.0):
+            command = argv[-1] if isinstance(argv, list) and argv else ""
+            # The shift command is issued (and exits 0) but the clock never
+            # converges; the restore command is denied — a nonzero exit with
+            # no exception, exactly how a real denied Set-Date fails.
+            if command == "Set-Date -Date '2026-10-15T23:15:00'":
+                return MagicMock(returncode=0, stdout="", stderr="")
+            return MagicMock(returncode=1, stdout="", stderr="Access is denied.")
+
+        with (
+            patch("nina_planner.server.PROJECT_DIR", self.project_dir),
+            patch(
+                "nina_planner.server._read_windows_clock",
+                side_effect=fake_read_windows_clock,
+            ),
+            patch(
+                "nina_planner.server._nina_api_responsive",
+                AsyncMock(return_value=False),
+            ),
+            patch(
+                "nina_planner.server.windows_interop_available",
+                return_value=True,
+            ),
+            patch("nina_planner.server._run_blocking", side_effect=fake_run_blocking),
+            patch(
+                "nina_planner.server._now_local",
+                return_value=_dt.fromisoformat("2026-09-26T16:55:00-05:00"),
+            ),
+            patch("nina_planner.server._poll_until_async", new=FastPollUntilAsync()),
+            patch("nina_planner.server.anyio.sleep", new=AsyncMockSleep()),
+            patch("nina_planner.server._log_payload"),
+        ):
+            with self.assertRaises(RuntimeError) as ctx:
+                asyncio.run(start_nina("2026-10-15T23:15:00"))
+        message = str(ctx.exception)
+        self.assertIn("did not converge to '2026-10-15T23:15:00'", message)
+        self.assertIn("Restore command failed", message)
+        self.assertIn("Access is denied", message)
+        self.assertIn("Host clock NOT restored", message)
+        self.assertNotIn("restored (verified)", message)
 
     def test_start_simulated_nina_capture_timeout_restores_and_raises(self):
         from datetime import datetime as _dt

@@ -75,6 +75,13 @@ def _light_target_matches(
     components = _path_components(path)
     expected_token = plan.attribution_token(pointing_index)
 
+    # Substring match on purpose — any single path segment may carry the
+    # token. It is safe across pointing indices only because the token is
+    # parenthesised: the closing ")" after the index keeps "(plan-x-1)" from
+    # matching inside "(plan-x-10)". Do not drop the parens or match the bare
+    # effective_plan_id here — mosaics with >=10 pointings would silently
+    # absorb each other's frames (see test_light_target_matches_*_paren
+    # regression tests).
     return any(expected_token in component for component in components)
 
 
@@ -84,6 +91,12 @@ def _quality_accepted(
     min_detected_stars: int | None,
     max_guiding_rms_arcsec: float | None = None,
 ) -> bool:
+    # Sentinel contract, mirroring imaging._clean_metric: NINA serializes
+    # unmeasured ASCOM values as 0 in ImageMetaData.csv, so under an *active*
+    # filter a 0 means "not measured" and cannot pass it (a frame whose HFR
+    # or guiding RMS was never taken must not count toward acquisition, or a
+    # plan would be marked complete on unmeasured frames). With no filter
+    # active the question does not arise and the frame counts as before.
     if max_hfr is not None:
         raw_hfr = row.get("hfr")
         if raw_hfr is None or raw_hfr == "":
@@ -92,7 +105,7 @@ def _quality_accepted(
             hfr = float(raw_hfr)
         except (TypeError, ValueError):
             return False
-        if not math.isfinite(hfr) or hfr > max_hfr:
+        if not math.isfinite(hfr) or hfr == 0 or hfr > max_hfr:
             return False
     if min_detected_stars is not None:
         raw_stars = row.get("detected_stars")
@@ -102,7 +115,7 @@ def _quality_accepted(
             stars = int(raw_stars)
         except (TypeError, ValueError):
             return False
-        if stars < min_detected_stars:
+        if stars == 0 or stars < min_detected_stars:
             return False
     if max_guiding_rms_arcsec is not None:
         raw_rms = row.get("guiding_rms_arc_sec")
@@ -112,7 +125,7 @@ def _quality_accepted(
             rms = float(raw_rms)
         except (TypeError, ValueError):
             return False
-        if not math.isfinite(rms) or rms > max_guiding_rms_arcsec:
+        if not math.isfinite(rms) or rms == 0 or rms > max_guiding_rms_arcsec:
             return False
     return True
 
