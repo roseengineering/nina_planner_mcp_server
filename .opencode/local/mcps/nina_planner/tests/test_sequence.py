@@ -455,8 +455,8 @@ class JsonTemplateBuildersTest(unittest.TestCase):
 
 class SequenceBuildersTest(unittest.TestCase):
     """Coverage of build_sequence_* entry points: teardown, darks,
-    flats. The flats builder was missing the pointing_index parameter;
-    fixed in the same commit.
+    flats. Calibration builders are plan-level: they carry no
+    pointing_index (calibration is not per-pane).
     """
 
     def _plan(self, **overrides):
@@ -546,6 +546,71 @@ class SequenceBuildersTest(unittest.TestCase):
         )
         self.assertIsInstance(result, dict)
 
+    def test_flats_container_is_plan_level_with_kind_name(self):
+        from nina_planner.sequence import build_sequence_flats
+
+        plan = self._plan()
+        for dusk, kind in ((False, "Dawn Flats"), (True, "Dusk Flats")):
+            result = build_sequence_flats(
+                plan,
+                equipment=ObservatoryEquipment(),
+                profile=self._profile(),
+                dusk=dusk,
+            )
+            dsos = _deepsky_targets(result)
+            self.assertEqual(len(dsos), 1)
+            # Plan-level token — no pointing suffix. The kind lives in the
+            # container name, not the target name: $$TARGETNAME$$ would put
+            # the target name in the file path and split the folder.
+            self.assertEqual(dsos[0]["Target"]["TargetName"], "M31 (plan-test123)")
+            self.assertEqual(dsos[0]["Name"], kind)
+
+    def test_calibration_events_carry_kind_tag_but_target_does_not(self):
+        from nina_planner.sequence import build_sequence_flats, target_payload_darks
+
+        plan = self._plan()
+        equipment = ObservatoryEquipment()
+
+        def messages(payload) -> list[str]:
+            found: list[str] = []
+
+            def walk(node):
+                if isinstance(node, dict):
+                    if "Message" in node:
+                        found.append(node["Message"])
+                    for value in node.values():
+                        walk(value)
+                elif isinstance(node, list):
+                    for value in node:
+                        walk(value)
+
+            walk(payload)
+            return found
+
+        cases = [
+            (target_payload_darks(plan, equipment, self._profile()), "dark"),
+            (
+                target_payload_darks(plan, equipment, self._profile(), bias=True),
+                "bias",
+            ),
+        ]
+        for dusk, tag in ((False, "dawn flats"), (True, "dusk flats")):
+            cases.append(
+                (
+                    build_sequence_flats(plan, equipment, self._profile(), dusk=dusk),
+                    tag,
+                )
+            )
+        for payload, tag in cases:
+            msgs = messages(payload)
+            # The event text is self-describing: kind-tagged, plan-level.
+            self.assertIn(f"ACQUISITION-STARTING: [{tag}] M31 (plan-test123)", msgs)
+            self.assertIn(f"ACQUISITION-FINISHED: [{tag}] M31 (plan-test123)", msgs)
+            # The tag stays out of the target name — $$TARGETNAME$$ would put
+            # it in the file path and split the folder.
+            dsos = _deepsky_targets(payload)
+            self.assertEqual(dsos[0]["Target"]["TargetName"], "M31 (plan-test123)")
+
 
 def _find_items(d: Any, type_substring: str) -> list[dict]:
     """Recursively find all dicts whose $type contains the given substring."""
@@ -626,7 +691,26 @@ class SequenceBehaviorTest(unittest.TestCase):
         self.assertEqual(len(dsos), 1)
         target = dsos[0]["Target"]["TargetName"]
         self.assertIn("M31 - core", target)
-        self.assertIn("(plan-test123-1)", target)
+        # Single-pointing plan: bare plan-level token, shared with calibration.
+        self.assertIn("(plan-test123)", target)
+
+    def test_lights_mosaic_target_name_appends_pane_index(self):
+        plan = self._plan(
+            pointings=[
+                {"label": "core", "ra_hours": 0.71, "dec_deg": 41.27},
+                {"ra_hours": 0.72, "dec_deg": 41.28},
+            ]
+        )
+        result = build_sequence_lights(
+            plan,
+            equipment=ObservatoryEquipment(),
+            profile=_profile(),
+            pointing_index=2,
+        )
+        dsos = _deepsky_targets(result)
+        target = dsos[0]["Target"]["TargetName"]
+        # Mosaic pane: per-pane token.
+        self.assertTrue(target.startswith("M31 (plan-test123-2)"), target)
 
     def test_lights_without_pointing_label_omits_label_segment(self):
         plan = self._plan(pointings=[{"ra_hours": 0.71, "dec_deg": 41.27}])
@@ -636,7 +720,7 @@ class SequenceBehaviorTest(unittest.TestCase):
         dsos = _deepsky_targets(result)
         self.assertEqual(len(dsos), 1)
         target = dsos[0]["Target"]["TargetName"]
-        self.assertTrue(target.startswith("M31 (plan-test123-1)"))
+        self.assertTrue(target.startswith("M31 (plan-test123)"))
 
     def test_lights_slew_and_center_when_position_angle_none(self):
         plan = self._plan(pointings=[{"ra_hours": 0.71, "dec_deg": 41.27}])
@@ -1255,10 +1339,13 @@ class BuildSequenceManyTest(unittest.TestCase):
         self.assertEqual(len(steps), 3, "steps in list order, nothing merged")
         self.assertIn("DeepSkyObjectContainer", steps[0]["$type"])
         self.assertIn(
-            "(plan-test123-1)", steps[0]["Target"]["TargetName"], "lights step first"
+            "(plan-test123)", steps[0]["Target"]["TargetName"], "lights step first"
         )
         self.assertIn("DeepSkyObjectContainer", steps[1]["$type"])
         self.assertIn("DeepSkyObjectContainer", steps[2]["$type"])
+        # Calibration containers are plan-level and named by kind.
+        self.assertEqual(steps[1]["Name"], "Dark Sequence")
+        self.assertEqual(steps[2]["Name"], "Bias Sequence")
 
         end_types = self._end_types(result)
         self.assertTrue(any("ParkScope" in t for t in end_types), "End parks")

@@ -53,13 +53,17 @@ class SequenceRequest(BaseModel):
             "filter wheel, relying on the camera's shutter); `light` takes none."
         ),
     )
-    pointing_index: int = Field(
-        default=1,
+    pointing_index: int | None = Field(
+        default=None,
         ge=1,
         description=(
-            "1-based pointing of the plan to load (default 1). Lights embed "
-            "`({base_plan_id}-{pointing_index})` in the target name so each "
-            "pointing's frames are attributed independently."
+            "1-based pointing of the plan to load; lights only (default 1 when "
+            "omitted). Lights embed `({base_plan_id}-{pointing_index})` in the "
+            "target name so each pointing's frames are attributed independently "
+            "(the bare `({base_plan_id})` for a single-pointing plan). Must be "
+            "omitted for `dark`/`bias`/`flat`: calibration is plan-level — its "
+            "remaining is computed for the whole plan, not per pointing — and "
+            "passing an index there is rejected."
         ),
     )
     mode: str = Field(

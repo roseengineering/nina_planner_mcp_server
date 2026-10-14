@@ -74,9 +74,16 @@ class PlanProgressTest(unittest.TestCase):
         self.assertEqual(lights["remaining_count"], 19)
 
     def test_attribution_token_is_parenthesised(self):
-        plan = _plan(plan_id="plan-abc123")
-        self.assertEqual(plan.attribution_token(1), "(plan-abc123-1)")
-        self.assertEqual(plan.attribution_token(2), "(plan-abc123-2)")
+        # Single-pointing plan: bare plan-level token (shared with calibration).
+        single = _plan(plan_id="plan-abc123")
+        self.assertEqual(single.attribution_token(1), "(plan-abc123)")
+        # Mosaic: per-pane tokens.
+        multi = _plan(
+            plan_id="plan-abc123",
+            pointings=[{"ra_hours": 0.71, "dec_deg": 41.27}] * 2,
+        )
+        self.assertEqual(multi.attribution_token(1), "(plan-abc123-1)")
+        self.assertEqual(multi.attribution_token(2), "(plan-abc123-2)")
 
     def test_token_matches_in_any_path_segment(self):
         plan = _plan(plan_id="plan-abc123")
@@ -605,10 +612,17 @@ class FilterMetadataRowsTest(unittest.TestCase):
 
 
 class PointingIndexTest(unittest.TestCase):
-    def test_effective_plan_id_appends_index(self):
-        plan = _plan(plan_id="plan-abc123")
-        self.assertEqual(plan.effective_plan_id(1), "plan-abc123-1")
-        self.assertEqual(plan.effective_plan_id(2), "plan-abc123-2")
+    def test_effective_plan_id_shape_depends_on_pointing_count(self):
+        # A lone pointing is not a pane: the id stays plan-level.
+        single = _plan(plan_id="plan-abc123")
+        self.assertEqual(single.effective_plan_id(1), "plan-abc123")
+        # A mosaic appends the 1-based pane index.
+        multi = _plan(
+            plan_id="plan-abc123",
+            pointings=[{"ra_hours": 0.71, "dec_deg": 41.27}] * 2,
+        )
+        self.assertEqual(multi.effective_plan_id(1), "plan-abc123-1")
+        self.assertEqual(multi.effective_plan_id(2), "plan-abc123-2")
 
     def test_pointing_index_isolates_progress(self):
         plan = _plan(
@@ -647,7 +661,8 @@ class PointingIndexTest(unittest.TestCase):
             pointings=[{"label": "Pane 1", "ra_hours": 0.71, "dec_deg": 41.27}],
         )
         self.assertEqual(plan.pointings[0].label, "Pane 1")
-        self.assertEqual(plan.effective_plan_id(1), "plan-abc123-1")
+        # A lone pointing is not a pane: its id/token stay plan-level.
+        self.assertEqual(plan.effective_plan_id(1), "plan-abc123")
 
 
 class PrivateHelperDefensivePathsTest(unittest.TestCase):
@@ -699,21 +714,33 @@ class PrivateHelperDefensivePathsTest(unittest.TestCase):
     def test_light_target_matches_paren_blocks_cross_pointing_match(self):
         from nina_planner.progress import _light_target_matches
 
-        # The closing paren in the attribution token is what keeps pointing 1
-        # from absorbing pointing 10-19's frames in a >=10-pane mosaic:
-        # "(plan-test123-1)" is not a substring of "(plan-test123-10)".
-        # Matching the bare effective_plan_id would lose this guarantee.
-        plan = self._plan()
+        # 10-pane mosaic: the closing paren keeps "(plan-test123-1)" from
+        # matching inside "(plan-test123-10)", and "(plan-test123-11)" from
+        # matching "(plan-test123-1)".
+        plan = self._plan(pointings=[{"ra_hours": 0.71, "dec_deg": 41.27}] * 10)
         row_p1 = {"file_path": r"C:\lights\(plan-test123-1)\img001.fits"}
         row_p10 = {"file_path": r"C:\lights\(plan-test123-10)\img001.fits"}
+        row_p11 = {"file_path": r"C:\lights\(plan-test123-11)\img001.fits"}
         self.assertTrue(_light_target_matches(plan, row_p1, pointing_index=1))
         self.assertFalse(_light_target_matches(plan, row_p10, pointing_index=1))
         self.assertTrue(_light_target_matches(plan, row_p10, pointing_index=10))
         self.assertFalse(_light_target_matches(plan, row_p1, pointing_index=10))
-        # Same for the 1-vs-11 pair and a token nested in an ancestor dir.
-        row_p11 = {"file_path": "(plan-test123-11)/2026-09-22/img.fits"}
         self.assertFalse(_light_target_matches(plan, row_p11, pointing_index=1))
         self.assertTrue(_light_target_matches(plan, row_p11, pointing_index=11))
+
+    def test_light_target_matches_single_pointing_token_and_legacy(self):
+        from nina_planner.progress import _light_target_matches
+
+        # Single-pointing plan: the bare plan token is primary, the legacy
+        # "({base}-1)" form still counts as acquired, and "(plan-test123)"
+        # never appears inside "(plan-test123-2)".
+        plan = self._plan()
+        bare = {"file_path": r"C:\lights\(plan-test123)\img001.fits"}
+        legacy = {"file_path": r"C:\lights\(plan-test123-1)\img001.fits"}
+        other = {"file_path": r"C:\lights\(plan-test123-2)\img001.fits"}
+        self.assertTrue(_light_target_matches(plan, bare, pointing_index=1))
+        self.assertTrue(_light_target_matches(plan, legacy, pointing_index=1))
+        self.assertFalse(_light_target_matches(plan, other, pointing_index=1))
 
     # ---- _quality_accepted (lines 88-89, 95, 98-99, 108-109) ----
 

@@ -699,6 +699,52 @@ def sequence_deepsky(
     )
 
 
+def sequence_calibration(
+    plan: ObservationPlan, instructions: list, kind: str, tag: str
+) -> dict[str, Any]:
+    """Wrap calibration instructions (darks/bias/flats) in a container.
+
+    Calibration is plan-level, not per-pointing: this never indexes
+    ``plan.pointings``, so an empty pointings list is fine and no pane
+    attribution is claimed. The target name carries the bare plan token —
+    for a single-pointing plan that is also the lights token, so both share
+    one ``$$TARGETNAME$$`` folder; a mosaic's panes keep their own ``-N``
+    folders. ``kind`` names the step in the NINA UI ("Dark Sequence", ...)
+    and deliberately stays out of the target name, where ``$$TARGETNAME$$``
+    would put it in the file path and split the folder again.
+
+    ``tag`` goes into the ACQUISITION events only, as a ``[{tag}]`` prefix —
+    the event text is never written to disk, so unlike ``kind`` it cannot
+    split folders. It keeps calibration events self-describing: a tagged
+    event is plan-level calibration of that kind; an untagged one is a light
+    event, with ``-N`` in the token marking a mosaic pane.
+
+    The coordinates are decorative (the container schema requires them):
+    darks park and never slew, and flats slew explicitly to the flat-panel
+    azimuth. The plan's primary pointing is shown when it exists, else 0/0.
+    """
+    target = f"{plan.target} {plan.plan_token()}"
+    starting = f"ACQUISITION-STARTING: [{tag}] {target}"
+    finished = f"ACQUISITION-FINISHED: [{tag}] {target}"
+    if plan.pointings:
+        primary = plan.pointings[0]
+        ra = primary.ra_hours
+        dec = primary.dec_deg
+        posang = 0 if primary.position_angle_deg is None else primary.position_angle_deg
+    else:
+        ra, dec, posang = 0.0, 0.0, 0
+    return container_deepsky(
+        name=kind,
+        target=target,
+        ra=ra,
+        dec=dec,
+        posang=posang,
+        instructions=[send_event(starting), connect_all_equipment()]
+        + instructions
+        + [send_event(finished)],
+    )
+
+
 def sequence_warm_camera(equipment: ObservatoryEquipment) -> list[dict[str, Any]]:
     return (
         [warm_camera()]
@@ -899,7 +945,14 @@ def target_payload_darks(
             for d in frames
         ]
 
-    return [sequence_deepsky(plan=plan, instructions=instructions())]
+    return [
+        sequence_calibration(
+            plan=plan,
+            instructions=instructions(),
+            kind="Bias Sequence" if bias else "Dark Sequence",
+            tag="bias" if bias else "dark",
+        )
+    ]
 
 
 def build_sequence_darks(
@@ -953,7 +1006,7 @@ def target_payload_lights(
                     instructions=[
                         # in view: bail out of this container without parking
                         container_sequential(
-                            name='Break If in View',
+                            name="Break If in View",
                             conditions=[
                                 loop_while_above_horizon(
                                     plan.constraints.horizon_offset_degrees
@@ -1083,16 +1136,16 @@ def target_payload_flats(
     equipment: ObservatoryEquipment,
     profile: ObservatoryProfile,
     dusk: bool = False,
-    pointing_index: int = 1,
 ) -> list[dict[str, Any]]:
     """The Target-area content of a dawn/dusk flats step: slew to the flat
     panel azimuth and take the flats while the sun is on the right side of
     the horizon, or nothing when the window has passed."""
 
     return [
-        sequence_deepsky(
+        sequence_calibration(
             plan=plan,
-            pointing_index=pointing_index,
+            kind="Dusk Flats" if dusk else "Dawn Flats",
+            tag="dusk flats" if dusk else "dawn flats",
             instructions=[
                 # wait until start time
                 sequence_safetynet(
@@ -1146,11 +1199,8 @@ def build_sequence_flats(
     equipment: ObservatoryEquipment,
     profile: ObservatoryProfile,
     dusk: bool = False,
-    pointing_index: int = 1,
 ) -> dict[str, Any]:
     return sequence_root(
         equipment=equipment,
-        instructions=target_payload_flats(
-            plan, equipment, profile, dusk=dusk, pointing_index=pointing_index
-        ),
+        instructions=target_payload_flats(plan, equipment, profile, dusk=dusk),
     )

@@ -706,7 +706,7 @@ async def get_imaging_metadata(
     pointing_index: int = 1,
     image_type: str = "light",
 ) -> dict[str, Any]:
-    """Returns imaging metadata for a plan and one of its pointings, parsed from the ImageMetaData.csv files in the frame folders (LIGHT, DARK, BIAS, FLAT, etc.) of the mounted N.I.N.A imaging directory. The plan file scopes the result: light frames are attributed to the plan via the `{base_plan_id}-{pointing_index}` plan id embedded in the recorded file path (no target-name fallback); dark/bias/flat frames are matched by image type/filter/exposure and are anchored to the plan's light session: they count only when shot within `calibration_window_days` of the session start (the earliest attributed light), on either side of it. This reports the frames that are attributable, not what the plan still demands — use get_plan_progress for that (a window that has closed around the current time reports zero remaining calibration). Returns a wide table with one row per exposure, each carrying the frame identity fields (file_path, exposure_number, exposure_start, duration, filter_name) plus its metrics as columns, namespaced by group (quality.hfr, guiding.rms, background.adu_mean, pointing.airmass, ...). Timestamps are normalized to milliseconds-precision UTC ISO-8601 with a `Z` suffix (e.g. 2026-09-22T02:16:25.123Z). Per-exposure weather samples from `WeatherData.csv` are joined onto the same row (weather.temperature, humidity, cloud_cover, ...) by exposure number and normalized UTC exposure start. Dead columns are dropped dynamically: columns constant across the returned frames are listed once under summary.constants, and columns with no real values (ASCOM NaN/-1, empty, 'n/a', and the 0 sentinel NINA writes for unmeasured quality/guiding/CCD metrics) are listed under summary.unpopulated. Defaults to lights frames for star-quality checks; pass another image type (light, dark, bias, flat — case-insensitive)."""
+    """Returns imaging metadata for a plan and one of its pointings, parsed from the ImageMetaData.csv files in the frame folders (LIGHT, DARK, BIAS, FLAT, etc.) of the mounted N.I.N.A imaging directory. The plan file scopes the result: light frames are attributed to the plan via the plan id embedded in the recorded file path (`{base_plan_id}` for a single-pointing plan, `{base_plan_id}-{pointing_index}` per pane for a mosaic; no target-name fallback); dark/bias/flat frames are matched by image type/filter/exposure and are anchored to the plan's light session: they count only when shot within `calibration_window_days` of the session start (the earliest attributed light), on either side of it. For calibration types, `pointing_index` (default 1) does *not* select which frames are returned — dark/bias/flat frames are matched plan-wide by exposure/filter within the window. It chooses which pointing's light session anchors that window and labels the response (`plan_id`, `pointing_index`), and it is range-checked (1..pointing count) for every image type, calibration included. This reports the frames that are attributable, not what the plan still demands — use get_plan_progress for that (a window that has closed around the current time reports zero remaining calibration). Returns a wide table with one row per exposure, each carrying the frame identity fields (file_path, exposure_number, exposure_start, duration, filter_name) plus its metrics as columns, namespaced by group (quality.hfr, guiding.rms, background.adu_mean, pointing.airmass, ...). Timestamps are normalized to milliseconds-precision UTC ISO-8601 with a `Z` suffix (e.g. 2026-09-22T02:16:25.123Z). Per-exposure weather samples from `WeatherData.csv` are joined onto the same row (weather.temperature, humidity, cloud_cover, ...) by exposure number and normalized UTC exposure start. Dead columns are dropped dynamically: columns constant across the returned frames are listed once under summary.constants, and columns with no real values (ASCOM NaN/-1, empty, 'n/a', and the 0 sentinel NINA writes for unmeasured quality/guiding/CCD metrics) are listed under summary.unpopulated. Defaults to lights frames for star-quality checks; pass another image type (light, dark, bias, flat — case-insensitive)."""
     root = await _resolve_imaging_root()
     plan = await _load_plan(file_path)
     _check_pointing_index(plan, pointing_index)
@@ -799,7 +799,7 @@ async def get_plan_progress(
     min_detected_stars: int | None = None,
     max_guiding_rms_arcsec: float | None = None,
 ) -> dict[str, Any]:
-    """Returns per-frame-type acquisition progress for every pointing of an observation-plan JSON file: for each exposure group, the total_count from the plan, the acquired_count attributed to that plan/pointing from the imaging metadata (ImageMetaData.csv + AcquisitionDetails.csv), and the remaining_count. Lights are attributed via the `{base_plan_id}-{pointing_index}` plan id embedded in the recorded file path (no target-name fallback); flats/darks/bias are matched by image type, filter, and exposure and are anchored to the plan's light session: they count only when shot within `calibration_window_days` of the session start (the earliest attributed light), on either side of it. Calibration groups therefore also carry `window_open` (bool) and `window_end` (naive ISO timestamp of the window's upper bound on N.I.N.A.'s local clock): while the current time is inside the window, remaining_count is total minus acquired; once it falls outside, no frame shot now could ever be credited, so remaining_count is reported as 0 rather than an unsatisfiable deficit (acquired_count stays truthful either way, and lights carry neither field) — raise `calibration_window_days` or write a new plan to reopen the window. Pass max_hfr and/or min_detected_stars to exclude light frames that fail quality thresholds (frames missing the quality fields are excluded when a threshold is set). Use this before load_sequence to decide what still needs acquiring. Returns `complete` (all panes done) plus a `pointings` list of per-pane progress and per-pane `complete`, so a worker can acquire panes sequentially (finish pane N, then run pane N+1)."""
+    """Returns per-frame-type acquisition progress for every pointing of an observation-plan JSON file: for each exposure group, the total_count from the plan, the acquired_count attributed to that plan/pointing from the imaging metadata (ImageMetaData.csv + AcquisitionDetails.csv), and the remaining_count. Lights are attributed via the plan id embedded in the recorded file path (`{base_plan_id}` for a single-pointing plan, `{base_plan_id}-{pointing_index}` per pane for a mosaic; no target-name fallback); flats/darks/bias are matched by image type, filter, and exposure and are anchored to the plan's light session: they count only when shot within `calibration_window_days` of the session start (the earliest attributed light), on either side of it. Calibration groups therefore also carry `window_open` (bool) and `window_end` (naive ISO timestamp of the window's upper bound on N.I.N.A.'s local clock): while the current time is inside the window, remaining_count is total minus acquired; once it falls outside, no frame shot now could ever be credited, so remaining_count is reported as 0 rather than an unsatisfiable deficit (acquired_count stays truthful either way, and lights carry neither field) — raise `calibration_window_days` or write a new plan to reopen the window. Pass max_hfr and/or min_detected_stars to exclude light frames that fail quality thresholds (frames missing the quality fields are excluded when a threshold is set). Use this before load_sequence to decide what still needs acquiring. Returns `complete` (all panes done) plus a `pointings` list of per-pane progress and per-pane `complete`, so a worker can acquire panes sequentially (finish pane N, then run pane N+1)."""
     plan = await _load_plan(file_path)
     rows = await _read_metadata()
     now = await _reference_now()
@@ -863,7 +863,7 @@ async def load_sequence(
     Every entry is one `request` object: `action`, plus `variant` (how the action runs), `plan` (path to the observation-plan JSON file), `pointing_index`, `mode`, and the optional quality thresholds.
 
     `action` decides WHAT gets built from `request.plan`, which every action requires:
-    - `light` / `dark` / `bias` / `flat` build that frame sequence. `pointing_index` (1-based, default 1) selects which pointing of the plan to load — the lights target name embeds the `({base_plan_id}-{pointing_index})` token so each pointing's frames are attributed independently. Light loads require `$$TARGETNAME$$` in the active profile's FilePattern for attribution. In the default `remaining` mode the sequence only acquires frames still needed (total minus frames already attributed to this plan/pointing in the imaging metadata); if nothing remains it reports the plan as complete and loads nothing. max_hfr and/or min_detected_stars exclude light frames failing quality thresholds from the acquired count. Pass `mode="full"` to acquire the entire plan again.
+    - `light` / `dark` / `bias` / `flat` build that frame sequence. `pointing_index` (1-based, optional, default 1 when omitted) selects which pointing of the plan to load; it applies to lights only. Calibration (dark/bias/flat) is plan-level: its remaining is computed for the whole plan, not per pointing, so a calibration request must omit `pointing_index` — passing one is rejected. Lights embed the attribution token in the target name so each pointing's frames are attributed independently: `({base_plan_id})` for a single-pointing plan (shared with the plan's calibration), `({base_plan_id}-{pointing_index})` per pane for a mosaic. Light loads require `$$TARGETNAME$$` in the active profile's FilePattern for attribution. In the default `remaining` mode the sequence only acquires frames still needed (total minus frames already attributed to this plan/pointing in the imaging metadata); if nothing remains it reports the plan as complete and loads nothing. max_hfr and/or min_detected_stars exclude light frames failing quality thresholds from the acquired count. Pass `mode="full"` to acquire the entire plan again.
 
     `variant` decides HOW an action runs and is scoped to it — it is validated against the action, and a bad pairing fails naming the entry:
     - `flat` REQUIRES `dawn` (morning twilight — waits for dawn) or `dusk` (evening twilight — waits for sunset).
@@ -945,11 +945,26 @@ async def _load_many(requests: list[SequenceRequest]) -> str:
                 "the path to the observation-plan JSON file to load."
             )
         plan = await _load_plan(request.plan)
-        pointing_index = request.pointing_index
+        # pointing_index selects a pane of the plan; only lights are per-
+        # pane. Calibration (dark/bias/flat) is plan-level: an index there
+        # is rejected, not silently ignored, so a "remaining is per pointing"
+        # mental model gets corrected at the request instead of at 2 a.m.
+        if action != "light" and request.pointing_index is not None:
+            raise ValueError(
+                f"action={action!r} is plan-level: pointing_index="
+                f"{request.pointing_index} is not used — remaining "
+                "calibration is computed for the whole plan, not per "
+                "pointing. Remove pointing_index from this request."
+            )
+        pointing_index = (
+            request.pointing_index if request.pointing_index is not None else 1
+        )
+        where = f" pointing {pointing_index}" if action == "light" else ""
         site_profile = await profile()
         await _validate_filters(plan, site_profile)
         _validate_position_angle(plan, site_profile)
-        _check_pointing_index(plan, pointing_index)
+        if action == "light":
+            _check_pointing_index(plan, pointing_index)
         eq = await equipment()
 
         if request.mode == "remaining":
@@ -966,7 +981,7 @@ async def _load_many(requests: list[SequenceRequest]) -> str:
             if all(item["remaining_count"] == 0 for item in items):
                 total = sum(item["total_count"] for item in items)
                 return [], (
-                    f"{label} pointing {pointing_index} is complete — {total} "
+                    f"{label}{where} is complete — {total} "
                     f"of {total} frames already acquired; nothing to load."
                 )
             note = (
@@ -1015,7 +1030,7 @@ async def _load_many(requests: list[SequenceRequest]) -> str:
             payload = target_payload_flats(
                 plan, eq, site_profile, dusk=request.variant == "dusk"
             )
-        return payload, f"{label} pointing {pointing_index} — {note}"
+        return payload, f"{label}{where} — {note}"
 
     if not requests:
         # The empty request list is the stow; it keeps the stow's guardrail —

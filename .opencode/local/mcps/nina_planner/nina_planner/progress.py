@@ -73,16 +73,22 @@ def _light_target_matches(
         return False
 
     components = _path_components(path)
-    expected_token = plan.attribution_token(pointing_index)
+    expected_tokens = [plan.attribution_token(pointing_index)]
+    if len(plan.pointings) == 1 and pointing_index == 1:
+        # Legacy: single-pointing plans historically stamped the per-pointing
+        # token ("({base}-1)"); frames acquired under it still count.
+        expected_tokens.append(f"({plan.per_pointing_plan_id(1)})")
 
     # Substring match on purpose — any single path segment may carry the
-    # token. It is safe across pointing indices only because the token is
-    # parenthesised: the closing ")" after the index keeps "(plan-x-1)" from
-    # matching inside "(plan-x-10)". Do not drop the parens or match the bare
-    # effective_plan_id here — mosaics with >=10 pointings would silently
-    # absorb each other's frames (see test_light_target_matches_*_paren
-    # regression tests).
-    return any(expected_token in component for component in components)
+    # token. The token set is safe across pointings only because tokens are
+    # parenthesised: the closing ")" keeps "(plan-x)" out of "(plan-x-1)",
+    # and "(plan-x-1)" out of "(plan-x-10)". Do not drop the parens or match
+    # a bare unparenthesised id here — mosaics with >=10 pointings would
+    # silently absorb each other's frames (see the
+    # test_light_target_matches_*_paren regression tests).
+    return any(
+        token in component for token in expected_tokens for component in components
+    )
 
 
 def _quality_accepted(

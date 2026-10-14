@@ -1063,7 +1063,8 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["pointing_count"], 1)
         self.assertFalse(result["complete"])
         self.assertEqual(len(result["pointings"]), 1)
-        self.assertEqual(result["pointings"][0]["plan_id"], "plan-test123-1")
+        # Single-pointing plan: the per-pointing id is the bare plan-level id.
+        self.assertEqual(result["pointings"][0]["plan_id"], "plan-test123")
         self.assertIn("light", result["pointings"][0]["frame_types"])
         # Calibration groups carry the window state so a zero remaining can be
         # told apart from a closed window; lights do not.
@@ -1470,15 +1471,12 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
                 ) as api_post,
             ):
                 result = await load_sequence(
-                    [
-                        SequenceRequest(
-                            plan=str(plan_path), action="dark", pointing_index=1
-                        )
-                    ]
+                    [SequenceRequest(plan=str(plan_path), action="dark")]
                 )
         darks_step.assert_called_once()
         self.assertEqual(api_post.await_args.args[0], "/sequence/load")
-        self.assertIn("`dark` pointing 1", result)
+        self.assertIn("`dark` — ", result)
+        self.assertNotIn("pointing", result, "calibration is plan-level")
         self.assertIn("Sequence loaded (1 of 1 step(s))", result)
         self.assertIn("start_sequence()", result)
 
@@ -1536,11 +1534,7 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
                 patch("nina_planner.server.target_payload_darks", new=darks_step),
             ):
                 result = await load_sequence(
-                    [
-                        SequenceRequest(
-                            plan=str(plan_path), action="dark", pointing_index=1
-                        )
-                    ]
+                    [SequenceRequest(plan=str(plan_path), action="dark")]
                 )
 
         self.assertIn("nothing to load", result)
@@ -1598,18 +1592,95 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
                 ),
             ):
                 result = await load_sequence(
-                    [
-                        SequenceRequest(
-                            plan=str(plan_path), action="bias", pointing_index=1
-                        )
-                    ]
+                    [SequenceRequest(plan=str(plan_path), action="bias")]
                 )
         self.assertTrue(captured_kwargs["bias"])
         # No variant asked for: darks/bias fall back to the wheel method.
         self.assertEqual(captured_kwargs["variant"], "wheel")
         self.assertEqual(captured_kwargs["profile"].profile_id, "abc")
-        self.assertIn("`bias` pointing 1", result)
+        self.assertIn("`bias` — ", result)
+        self.assertNotIn("pointing", result, "calibration is plan-level")
         self.assertIn("Sequence loaded (1 of 1 step(s))", result)
+
+    async def test_load_sequence_pointing_index_rejected_for_calibration(self):
+        from unittest.mock import MagicMock as _MM
+
+        from nina_planner.server import load_sequence
+
+        plan_dict = {
+            "plan_id": "plan-test123",
+            "target": "M31",
+            "pointings": [{"ra_hours": 5.0, "dec_deg": 10.0}],
+            "light_frames": [
+                {"filter_name": "L", "exposure_time_seconds": 60.0, "total_count": 1}
+            ],
+            "flat_frames": [
+                {"filter_name": "L", "exposure_time_seconds": 5.0, "total_count": 1}
+            ],
+            "dark_frames": [{"exposure_time_seconds": 60.0, "total_count": 1}],
+            "bias_frames": [{"total_count": 1}],
+        }
+
+        with tempfile.TemporaryDirectory() as tmp:
+            plan_path = Path(tmp) / "plan.json"
+            plan_path.write_text(json.dumps(plan_dict))
+
+            darks_step = _MM(return_value=[{"$type": "darks"}])
+            lights_step = _MM(return_value=[{"$type": "lights"}])
+            with (
+                patch(
+                    "nina_planner.server.get_site_profile",
+                    AsyncMock(return_value=self._full_profile()),
+                ),
+                patch(
+                    "nina_planner.server._get_site_equipment_status",
+                    AsyncMock(return_value=ObservatoryEquipment()),
+                ),
+                patch(
+                    "nina_planner.server._read_metadata",
+                    AsyncMock(return_value=[]),
+                ),
+                patch("nina_planner.server.target_payload_darks", new=darks_step),
+                patch("nina_planner.server.target_payload_lights", new=lights_step),
+                patch("nina_planner.server._api_post", AsyncMock(return_value={})),
+            ):
+                # Calibration is plan-level: any pointing_index — including
+                # the habit-shaped pointing_index=1 — is rejected with a
+                # teaching error, not silently ignored.
+                for bad_index in (1, 99):
+                    with self.assertRaisesRegex(
+                        ValueError, "Remove pointing_index from this request"
+                    ):
+                        await load_sequence(
+                            [
+                                SequenceRequest(
+                                    plan=str(plan_path),
+                                    action="dark",
+                                    pointing_index=bad_index,
+                                )
+                            ]
+                        )
+                # Lights are per-pane: an out-of-range index is range-checked.
+                with self.assertRaisesRegex(
+                    ValueError, "pointing_index=99 out of range"
+                ):
+                    await load_sequence(
+                        [
+                            SequenceRequest(
+                                plan=str(plan_path),
+                                action="light",
+                                pointing_index=99,
+                            )
+                        ]
+                    )
+                # Omitting the index on calibration loads plan-level.
+                result = await load_sequence(
+                    [SequenceRequest(plan=str(plan_path), action="dark")]
+                )
+        darks_step.assert_called_once()
+        lights_step.assert_not_called()
+        self.assertIn("`dark` — ", result)
+        self.assertNotIn("pointing", result)
 
     async def test_load_sequence_dawn_flat(self):
         from nina_planner.server import load_sequence
@@ -1666,12 +1737,12 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
                             plan=str(plan_path),
                             action="flat",
                             variant="dawn",
-                            pointing_index=1,
                         )
                     ]
                 )
         self.assertFalse(captured_kwargs["dusk"])
-        self.assertIn("`flat` (dawn) pointing 1", result)
+        self.assertIn("`flat` (dawn) — ", result)
+        self.assertNotIn("pointing", result, "calibration is plan-level")
         self.assertIn("Sequence loaded (1 of 1 step(s))", result)
 
     async def test_load_sequence_dusk_flat(self):
@@ -1729,12 +1800,12 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
                             plan=str(plan_path),
                             action="flat",
                             variant="dusk",
-                            pointing_index=1,
                         )
                     ]
                 )
         self.assertTrue(captured_kwargs["dusk"])
-        self.assertIn("`flat` (dusk) pointing 1", result)
+        self.assertIn("`flat` (dusk) — ", result)
+        self.assertNotIn("pointing", result, "calibration is plan-level")
         self.assertIn("Sequence loaded (1 of 1 step(s))", result)
 
     async def test_load_light_sequence_requires_targetname_file_pattern(self):
@@ -2148,13 +2219,13 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
                             plan=str(plan_path),
                             action="dark",
                             variant="cover",
-                            pointing_index=1,
                         )
                     ]
                 )
         self.assertFalse(captured_kwargs["bias"])
         self.assertEqual(captured_kwargs["variant"], "cover")
-        self.assertIn("`dark` (cover) pointing 1", result)
+        self.assertIn("`dark` (cover) — ", result)
+        self.assertNotIn("pointing", result, "calibration is plan-level")
         self.assertIn("Sequence loaded (1 of 1 step(s))", result)
 
     async def test_load_sequence_dark_shutter_variant_reaches_the_builder(self):
@@ -2213,13 +2284,13 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
                             plan=str(plan_path),
                             action="dark",
                             variant="shutter",
-                            pointing_index=1,
                         )
                     ]
                 )
         self.assertFalse(captured_kwargs["bias"])
         self.assertEqual(captured_kwargs["variant"], "shutter")
-        self.assertIn("`dark` (shutter) pointing 1", result)
+        self.assertIn("`dark` (shutter) — ", result)
+        self.assertNotIn("pointing", result, "calibration is plan-level")
         self.assertIn("Sequence loaded (1 of 1 step(s))", result)
 
     async def test_load_sequence_list_error_names_the_entry(self):
@@ -2332,7 +2403,8 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
                 result = await get_imaging_metadata(
                     str(plan_path), pointing_index=1, image_type="light"
                 )
-        self.assertEqual(result["plan_id"], "plan-test123-1")
+        # Single-pointing plan: the reported plan id is the bare plan-level id.
+        self.assertEqual(result["plan_id"], "plan-test123")
         self.assertEqual(result["target"], "M31")
 
     async def test_get_nina_time_returns_dict(self):

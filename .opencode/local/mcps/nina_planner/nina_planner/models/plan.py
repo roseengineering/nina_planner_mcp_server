@@ -150,12 +150,35 @@ class ObservationPlan(BaseModel):
         canonical = json.dumps(data, sort_keys=True, separators=(",", ":"))
         return "plan-" + hashlib.sha1(canonical.encode()).hexdigest()[:12]
 
-    def effective_plan_id(self, pointing_index: int) -> str:
+    def per_pointing_plan_id(self, pointing_index: int) -> str:
+        """The per-pointing id form ``{base}-{index}``, historically used for
+        every pointing, including single-pointing plans."""
         return f"{self._base_plan_id()}-{pointing_index}"
+
+    def effective_plan_id(self, pointing_index: int) -> str:
+        """Plan id as stamped on this pointing's frames.
+
+        A single-pointing plan carries the bare base id — it has no panes, so
+        there is nothing to disambiguate, and its lights share a
+        ``$$TARGETNAME$$`` folder with the plan-level calibration. A
+        multi-pointing (mosaic) plan appends the 1-based pointing index so
+        each pane's frames attribute independently.
+        """
+        if len(self.pointings) == 1:
+            return self._base_plan_id()
+        return self.per_pointing_plan_id(pointing_index)
 
     def attribution_token(self, pointing_index: int) -> str:
         """Target-name token stamped on frames so they attribute to a pointing.
 
         Parenthesised because WebDAV mangles square brackets in target names.
+        The closing paren also keeps tokens from substring-matching each
+        other: ``(plan-x)`` never appears inside ``(plan-x-1)``, nor
+        ``(plan-x-1)`` inside ``(plan-x-10)``.
         """
         return f"({self.effective_plan_id(pointing_index)})"
+
+    def plan_token(self) -> str:
+        """Plan-level target-name token, used for calibration (darks/bias/
+        flats): calibration belongs to the whole plan, not to any pane."""
+        return f"({self._base_plan_id()})"
