@@ -666,6 +666,36 @@ def send_event(text: str) -> dict[str, Any]:
     }
 
 
+def _step_word(count: int) -> str:
+    return f"{count} step" if count == 1 else f"{count} steps"
+
+
+def run_starting_event(step_count: int) -> dict[str, Any]:
+    """Announce the composed run, before its first step runs.
+
+    Lives in the Start area, so the Target area keeps holding the steps and
+    nothing else. Not emitted for an empty run (the stow).
+    """
+    return send_event(f"RUN-STARTING: {_step_word(step_count)}")
+
+
+def run_finished_event(step_count: int) -> dict[str, Any]:
+    """Announce that the run is exhausted and the End area is about to run.
+
+    Emitted from the head of the End area — the one place N.I.N.A. reaches
+    only when the Target area has nothing left, including steps skipped as
+    already complete and steps whose window has passed. So unlike a segment's
+    ``ACQUISITION-FINISHED``, this one really does mean "no step behind it":
+    the scope is idling before park/warm, which is the night loop's
+    re-selection point. It fires before the bounded "On Safe" wait and before
+    parking, while there is still night left to plan with.
+
+    An empty request (the stow) has no steps and never emits it, so a stow
+    can never be mistaken for a finished run.
+    """
+    return send_event(f"RUN-FINISHED: {_step_word(step_count)} complete")
+
+
 ### plugin
 
 
@@ -678,24 +708,71 @@ def end_instruction(name: str) -> dict[str, Any]:
 ####################################
 
 
+def acquisition_container(
+    *,
+    name: str,
+    target: str,
+    ra: float,
+    dec: float,
+    posang: float,
+    tag: str,
+    instructions: list[Any],
+) -> dict[str, Any]:
+    """A deep-sky container bracketed by self-describing acquisition events.
+
+    ``ACQUISITION-STARTING`` / ``ACQUISITION-FINISHED`` bracket one plan
+    segment — one ``load_sequence`` entry. Every message carries its kind tag
+    as the first token after the colon — ``[light]``, ``[dark]``, ``[bias]``,
+    ``[dawn flats]``, ``[dusk flats]`` — so the log says what N.I.N.A. is
+    working on right now. ``-N`` in the token after the target marks a mosaic
+    pane; a bare token is a single-pointing plan or plan-level calibration.
+
+    These are telemetry: a segment finishing says nothing about whether the
+    run has anything left behind it, so they are never a reason to stop a
+    sequence. Re-selection belongs to ``run_finished_event``, which fires
+    from the End area instead.
+
+    The tag lives only in the event text, never in ``target``: the target
+    name is what ``$$TARGETNAME$$`` writes into the file path, and square
+    brackets are mangled there (which is why ``attribution_token`` uses
+    parentheses), so a tagged name would split the frame folder.
+    """
+    return container_deepsky(
+        name=name,
+        target=target,
+        ra=ra,
+        dec=dec,
+        posang=posang,
+        instructions=[
+            send_event(f"ACQUISITION-STARTING: [{tag}] {target}"),
+            connect_all_equipment(),
+            *instructions,
+            send_event(f"ACQUISITION-FINISHED: [{tag}] {target}"),
+        ],
+    )
+
+
 def sequence_deepsky(
     plan: ObservationPlan, instructions: list, pointing_index: int = 1
 ) -> dict[str, Any]:
+    """Wrap one pointing's light instructions in an acquisition container.
+
+    Tagged ``[light]`` so the event text tells lights from calibration
+    without touching the target name — informational only, like every
+    ``ACQUISITION-*`` segment event (see ``acquisition_container``).
+    """
     pointing = plan.pointings[pointing_index - 1]
     prefix = f"{plan.target} - {pointing.label}" if pointing.label else plan.target
     target = f"{prefix} {plan.attribution_token(pointing_index)}"
     posang = 0 if pointing.position_angle_deg is None else pointing.position_angle_deg
-    starting = f"ACQUISITION-STARTING: {target}"
-    finished = f"ACQUISITION-FINISHED: {target}"
-    return container_deepsky(
+    return acquisition_container(
         name="Deep Sky Target Sequence",
         target=target,
         ra=pointing.ra_hours,
         dec=pointing.dec_deg,
         posang=posang,
-        instructions=[send_event(starting), connect_all_equipment()]
-        + instructions
-        + [send_event(finished)],
+        tag="light",
+        instructions=instructions,
     )
 
 
@@ -713,19 +790,16 @@ def sequence_calibration(
     and deliberately stays out of the target name, where ``$$TARGETNAME$$``
     would put it in the file path and split the folder again.
 
-    ``tag`` goes into the ACQUISITION events only, as a ``[{tag}]`` prefix —
-    the event text is never written to disk, so unlike ``kind`` it cannot
-    split folders. It keeps calibration events self-describing: a tagged
-    event is plan-level calibration of that kind; an untagged one is a light
-    event, with ``-N`` in the token marking a mosaic pane.
+    ``tag`` ("dark", "bias", "dawn flats", "dusk flats") is ``kind``'s
+    event-only counterpart: it reaches the ACQUISITION messages through
+    ``acquisition_container`` and marks the step as plan-level calibration,
+    which is what tells the night loop not to re-select on it.
 
     The coordinates are decorative (the container schema requires them):
     darks park and never slew, and flats slew explicitly to the flat-panel
     azimuth. The plan's primary pointing is shown when it exists, else 0/0.
     """
     target = f"{plan.target} {plan.plan_token()}"
-    starting = f"ACQUISITION-STARTING: [{tag}] {target}"
-    finished = f"ACQUISITION-FINISHED: [{tag}] {target}"
     if plan.pointings:
         primary = plan.pointings[0]
         ra = primary.ra_hours
@@ -733,15 +807,14 @@ def sequence_calibration(
         posang = 0 if primary.position_angle_deg is None else primary.position_angle_deg
     else:
         ra, dec, posang = 0.0, 0.0, 0
-    return container_deepsky(
+    return acquisition_container(
         name=kind,
         target=target,
         ra=ra,
         dec=dec,
         posang=posang,
-        instructions=[send_event(starting), connect_all_equipment()]
-        + instructions
-        + [send_event(finished)],
+        tag=tag,
+        instructions=instructions,
     )
 
 
@@ -808,15 +881,25 @@ def sequence_safetynet(
     )
 
 
-def sequence_end(equipment: ObservatoryEquipment) -> dict[str, Any]:
+def sequence_end(
+    equipment: ObservatoryEquipment, *, step_count: int = 0
+) -> dict[str, Any]:
     # close observatory for the night:
     # wait out one bounded "On Safe" pass, then stow the telescope and warm
     # the camera. The wait is a single 3-minute iteration gated on the safety
     # monitor, so it is skipped entirely when the enclosure is already closed
     # and never idles until sunrise (see test_end_area_waits_three_minutes_*).
+    #
+    # With steps behind it, the very first instruction announces the finished
+    # run: the End area is reached only when the Target area has nothing
+    # left, so this fires before the wait and before park — while the night
+    # can still be re-planned. An empty request passes step_count=0 and stays
+    # silent, so a stow never reads as a finished run.
     delay_minutes = 3
+    head = [run_finished_event(step_count)] if step_count else []
     return container_end(
-        [
+        head
+        + [
             container_sequential(
                 name="On Safe",
                 conditions=[loop_while_safe(), loop_for_iterations(1)],
@@ -829,16 +912,33 @@ def sequence_end(equipment: ObservatoryEquipment) -> dict[str, Any]:
     )
 
 
+def _sequence_with_steps(
+    equipment: ObservatoryEquipment, steps: list[Any], step_count: int
+) -> dict[str, Any]:
+    """Assemble Start / Target / End around an ordered run of steps.
+
+    ``step_count`` (> 0) brackets the run: ``RUN-STARTING`` in the Start
+    area and ``RUN-FINISHED`` at the head of the End area. Zero — the stow,
+    or a request list whose entries all produced no steps — emits neither.
+    The Target area holds the steps and nothing else, so its contents stay
+    exactly the run's steps.
+    """
+    return container_root(
+        [
+            container_start([run_starting_event(step_count)] if step_count else []),
+            container_target(steps),
+            sequence_end(equipment, step_count=step_count),
+        ]
+    )
+
+
 def sequence_root(
     equipment: ObservatoryEquipment, instructions: list[Any] | None = None
 ) -> dict[str, Any]:
-    return container_root(
-        [
-            container_start(),
-            container_target(instructions),
-            sequence_end(equipment),
-        ]
-    )
+    steps = [] if instructions is None else instructions
+    # These callers build exactly one step (one request entry) — or none, for
+    # the stow.
+    return _sequence_with_steps(equipment, steps, 1 if steps else 0)
 
 
 ## TEARDOWN
@@ -853,7 +953,9 @@ def build_sequence_stow(equipment: ObservatoryEquipment) -> dict[str, Any]:
 
     The target area is empty, so the End area runs immediately: one bounded
     3-minute "On Safe" pass from ``sequence_end``, then both halves — park,
-    then warm. This is what an empty ``request`` list loads.
+    then warm. This is what an empty ``request`` list loads. With no steps
+    there is no run to bracket, so it emits neither ``RUN-STARTING`` nor
+    ``RUN-FINISHED`` — a stow must never read as a finished run.
     """
     return sequence_root(equipment)
 
@@ -863,7 +965,9 @@ def build_sequence_stow(equipment: ObservatoryEquipment) -> dict[str, Any]:
 # A `request` list composes its steps into one Target area under a single
 # End area that always stows (park, then warm) — or, for an empty list, is
 # the whole sequence, making the empty list the stow (see
-# build_sequence_many).
+# build_sequence_many). A non-empty run is bracketed by RUN-STARTING in
+# the Start area and RUN-FINISHED at the head of the End area, the one
+# event that proves every step has run (see _sequence_with_steps).
 
 
 def build_sequence_many(
@@ -875,15 +979,15 @@ def build_sequence_many(
     in the order given (from ``target_payload_*``), and a single End area
     that always stows — park, then warm — so the night ends parked no matter
     what ran, and an empty payload list is the stow itself.
+
+    The run is bracketed by ``RUN-STARTING: N steps`` in the Start area and
+    ``RUN-FINISHED: N steps complete`` at the head of the End area; ``N``
+    counts the entries that produced containers, since an entry that is
+    already complete contributes nothing to run.
     """
     steps = [item for payload in payloads for item in payload]
-    return container_root(
-        [
-            container_start(),
-            container_target(steps),
-            sequence_end(equipment),
-        ]
-    )
+    step_count = sum(1 for payload in payloads if payload)
+    return _sequence_with_steps(equipment, steps, step_count)
 
 
 ## DARKS

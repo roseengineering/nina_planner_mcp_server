@@ -649,6 +649,11 @@ def _items(seq: dict) -> list[dict]:
     return seq["Items"]["$values"]
 
 
+def _event_messages(seq: dict) -> list[str]:
+    """Every SendEvent message anywhere in the sequence, in tree order."""
+    return [e["Message"] for e in _find_items(seq, "SendEventInstruction")]
+
+
 class SequenceBehaviorTest(unittest.TestCase):
     """Behavioral assertions on generated sequence contents.
 
@@ -751,14 +756,51 @@ class SequenceBehaviorTest(unittest.TestCase):
         )
         events = _find_items(result, "SendEventInstruction")
         messages = [e["Message"] for e in events]
-        self.assertTrue(
-            any("ACQUISITION-STARTING" in m for m in messages),
-            f"missing ACQUISITION-STARTING in {messages!r}",
+        # Light events carry the same kind tag as calibration events, so the
+        # night loop matches the positive form rather than a missing bracket.
+        self.assertIn(
+            "ACQUISITION-STARTING: [light] M31 - core (plan-test123)", messages
         )
-        self.assertTrue(
-            any("ACQUISITION-FINISHED" in m for m in messages),
-            f"missing ACQUISITION-FINISHED in {messages!r}",
+        self.assertIn(
+            "ACQUISITION-FINISHED: [light] M31 - core (plan-test123)", messages
         )
+        # The tag stays out of the target name — $$TARGETNAME$$ would put it
+        # in the file path and split the folder.
+        self.assertEqual(
+            _deepsky_targets(result)[0]["Target"]["TargetName"],
+            "M31 - core (plan-test123)",
+        )
+
+    def test_lights_mosaic_pane_event_carries_pointing_token(self):
+        plan = self._plan(
+            pointings=[
+                {"label": "core", "ra_hours": 0.71, "dec_deg": 41.27},
+                {"ra_hours": 0.72, "dec_deg": 41.28},
+            ]
+        )
+        result = build_sequence_lights(
+            plan,
+            equipment=ObservatoryEquipment(),
+            profile=_profile(),
+            pointing_index=2,
+        )
+        messages = [e["Message"] for e in _find_items(result, "SendEventInstruction")]
+        self.assertIn("ACQUISITION-FINISHED: [light] M31 (plan-test123-2)", messages)
+
+    def test_single_step_sequence_brackets_its_one_step(self):
+        """The Start/End run bracket wraps a one-entry load too, and stays
+        out of the Target area, which holds exactly the step."""
+        from nina_planner.sequence import build_sequence_lights
+
+        result = build_sequence_lights(
+            self._plan(), equipment=ObservatoryEquipment(), profile=_profile()
+        )
+        start, target, _end = _items(result)
+        self.assertEqual(
+            start["Items"]["$values"][0]["Message"], "RUN-STARTING: 1 step"
+        )
+        self.assertEqual(len(target["Items"]["$values"]), 1)
+        self.assertIn("RUN-FINISHED: 1 step complete", _event_messages(result))
 
     def test_lights_connects_all_equipment(self):
         plan = self._plan()
@@ -1359,6 +1401,77 @@ class BuildSequenceManyTest(unittest.TestCase):
         self.assertEqual(_items(result)[1]["Items"]["$values"], [])
         end_types = self._end_types(result)
         self.assertTrue(any("ParkScope" in t for t in end_types))
+
+    def test_run_is_bracketed_by_starting_and_finished_events(self):
+        """`RUN-STARTING` opens the Start area and `RUN-FINISHED` heads the
+        End area — the only place N.I.N.A. reaches when nothing in the run
+        is left, so it is the trustworthy end-of-run signal."""
+        from nina_planner.sequence import (
+            build_sequence_many,
+            target_payload_darks,
+            target_payload_lights,
+        )
+
+        equipment = _stow_equipment()
+        plan = _plan()
+        payloads = [
+            target_payload_lights(plan, equipment, _profile()),
+            target_payload_darks(plan, equipment, _profile()),
+            target_payload_darks(plan, equipment, _profile(), bias=True),
+        ]
+
+        result = build_sequence_many(equipment, payloads)
+
+        start, target, end = _items(result)
+        self.assertEqual(
+            start["Items"]["$values"][0]["Message"], "RUN-STARTING: 3 steps"
+        )
+        self.assertEqual(
+            end["Items"]["$values"][0]["Message"],
+            "RUN-FINISHED: 3 steps complete",
+        )
+        # The bracket wraps the run rather than joining it: the Target area
+        # still holds exactly the steps, with no event to parse out of them.
+        self.assertEqual(len(target["Items"]["$values"]), 3)
+        self.assertEqual(
+            [m for m in _event_messages(target) if m.startswith("RUN-")], []
+        )
+        # RUN-FINISHED precedes the bounded wait and the park.
+        self.assertIn("SendEventInstruction", end["Items"]["$values"][0]["$type"])
+
+    def test_step_count_counts_only_entries_that_produced_steps(self):
+        from nina_planner.sequence import (
+            build_sequence_many,
+            target_payload_lights,
+        )
+
+        equipment = _stow_equipment()
+        payloads = [
+            [],  # e.g. an entry already complete in `remaining` mode
+            target_payload_lights(_plan(), equipment, _profile()),
+        ]
+
+        messages = _event_messages(build_sequence_many(equipment, payloads))
+
+        self.assertIn("RUN-STARTING: 1 step", messages)
+        self.assertIn("RUN-FINISHED: 1 step complete", messages)
+
+    def test_stow_and_empty_entries_emit_no_run_events(self):
+        """A stow must never read as a finished run — the agent would
+        re-plan immediately after being told to close down."""
+        from nina_planner.sequence import build_sequence_many, build_sequence_stow
+
+        equipment = _stow_equipment()
+        for result in (
+            build_sequence_stow(equipment),
+            build_sequence_many(equipment, []),
+            build_sequence_many(equipment, [[]]),
+        ):
+            self.assertEqual(
+                [m for m in _event_messages(result) if m.startswith("RUN-")],
+                [],
+                "stow-equivalent sequences must not bracket a run",
+            )
 
     def test_empty_payload_list_is_the_stow(self):
         """An empty request list loads exactly the stow sequence."""
