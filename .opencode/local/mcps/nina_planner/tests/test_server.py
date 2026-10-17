@@ -4,7 +4,7 @@ import binascii
 import json
 import tempfile
 import unittest
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 from unittest.mock import AsyncMock, patch
@@ -44,95 +44,97 @@ def _target_items(payload: dict) -> list[dict]:
     return target["Items"]["$values"]
 
 
-class ConvertToMetTest(unittest.IsolatedAsyncioTestCase):
+class ConvertToMetTest(unittest.TestCase):
     def _now(self) -> datetime:
         return datetime(2026, 9, 22, 3, 0, 0, tzinfo=UTC)
 
-    def _patch_api_get(self, now: datetime, data):
-        async def fake(path):
-            if path == "/time":
-                return now.isoformat()
-            return data
+    def _assert_local_instant(self, rendered: str, utc: str):
+        """``rendered`` is the local-zone display of the UTC instant ``utc``.
 
-        return patch("nina_planner.server._api_get", side_effect=fake)
+        The window filter runs on instants, so assert instants rather than
+        literal strings — the latter would bake in the timezone of whatever
+        machine runs the suite.
+        """
+        self.assertIsNotNone(
+            datetime.fromisoformat(rendered).tzinfo,
+            f"rendered timestamp must carry an offset: {rendered!r}",
+        )
+        self.assertEqual(
+            datetime.fromisoformat(rendered),
+            datetime.fromisoformat(utc.replace("Z", "+00:00")),
+        )
 
-    async def test_utc_z_seconds(self):
-        now = self._now()
+    def test_utc_z_seconds(self):
         data = [{"Time": "2026-09-22T02:16:25Z"}]
-        with self._patch_api_get(now, data):
-            res = await _convert_to_met(data, since=3600, name="Time")
-        self.assertEqual(res[0]["timestamp"], "2026-09-22T02:16:25Z")
+        res = _convert_to_met(data, since=3600, name="Time", now=self._now())
+        self._assert_local_instant(res[0]["timestamp"], "2026-09-22T02:16:25Z")
 
-    async def test_offset_shifted_to_utc_z(self):
-        now = self._now()
+    def test_offset_shifted_to_utc_z(self):
         data = [{"Time": "2026-09-21T21:16:25-05:00"}]
-        with self._patch_api_get(now, data):
-            res = await _convert_to_met(data, since=3600, name="Time")
-        self.assertEqual(res[0]["timestamp"], "2026-09-22T02:16:25Z")
+        res = _convert_to_met(data, since=3600, name="Time", now=self._now())
+        self._assert_local_instant(res[0]["timestamp"], "2026-09-22T02:16:25Z")
 
-    async def test_microseconds_stripped(self):
-        now = self._now()
+    def test_microseconds_stripped(self):
         data = [{"Time": "2026-09-22T02:16:25.123456Z"}]
-        with self._patch_api_get(now, data):
-            res = await _convert_to_met(data, since=3600, name="Time")
-        self.assertEqual(res[0]["timestamp"], "2026-09-22T02:16:25Z")
+        res = _convert_to_met(data, since=3600, name="Time", now=self._now())
+        self._assert_local_instant(res[0]["timestamp"], "2026-09-22T02:16:25Z")
+        # Sub-second precision is gone, not carried into the display.
+        self.assertNotIn(".", res[0]["timestamp"].split("T")[1].rsplit("-", 1)[0])
 
-    async def test_naive_uses_now_tzinfo(self):
-        now = self._now()
+    def test_naive_uses_now_tzinfo(self):
         data = [{"Time": "2026-09-22 02:16:25"}]
-        with self._patch_api_get(now, data):
-            res = await _convert_to_met(data, since=3600, name="Time")
-        self.assertEqual(res[0]["timestamp"], "2026-09-22T02:16:25Z")
+        res = _convert_to_met(data, since=3600, name="Time", now=self._now())
+        self._assert_local_instant(res[0]["timestamp"], "2026-09-22T02:16:25Z")
 
-    async def test_naive_uses_now_tzinfo_with_z_events(self):
+    def test_naive_now_tagged_local_with_z_events(self):
+        """A naive `now` is tagged host-local so it can be compared against
+        offset-aware event timestamps without raising."""
         data = [{"Time": "2026-09-22T03:00:00Z"}]
-
-        async def fake(path):
-            if path == "/time":
-                return "2026-09-22 03:00:00"
-            return data
-
-        with patch("nina_planner.server._api_get", side_effect=fake):
-            res = await _convert_to_met(data, since=86400, name="Time")
+        res = _convert_to_met(
+            data, since=86400, name="Time", now=datetime(2026, 9, 22, 3, 0, 0)
+        )
         self.assertEqual(len(res), 1)
-        self.assertEqual(res[0]["timestamp"], "2026-09-22T03:00:00Z")
+        self.assertEqual(
+            datetime.fromisoformat(res[0]["timestamp"]),
+            datetime.fromisoformat("2026-09-22T03:00:00Z"),
+        )
 
-    async def test_aware_uses_now_tzinfo_with_naive_events(self):
-        now = self._now()
+    def test_aware_now_tags_naive_events(self):
         data = [{"Time": "2026-09-22 03:00:00"}]
-
-        async def fake(path):
-            if path == "/time":
-                return now.isoformat()
-            return data
-
-        with patch("nina_planner.server._api_get", side_effect=fake):
-            res = await _convert_to_met(data, since=3600, name="Time")
+        res = _convert_to_met(data, since=3600, name="Time", now=self._now())
         self.assertEqual(len(res), 1)
-        self.assertEqual(res[0]["timestamp"], "2026-09-22T03:00:00Z")
+        self._assert_local_instant(res[0]["timestamp"], "2026-09-22T03:00:00Z")
 
-    async def test_old_entries_filtered(self):
-        now = self._now()
-        data = [{"Time": "2026-09-20T00:00:00Z"}]
-        with self._patch_api_get(now, data):
-            res = await _convert_to_met(data, since=3600, name="Time")
+    def test_now_defaults_to_host_clock(self):
+        """Omitting `now` anchors the window on the host clock, so a recent
+        event survives and an old one does not."""
+        now = datetime.now(UTC).replace(microsecond=0)
+        recent = [{"Time": (now - timedelta(seconds=300)).isoformat()}]
+        stale = [{"Time": (now - timedelta(seconds=7200)).isoformat()}]
+
+        res = _convert_to_met(recent, since=3600, name="Time")
+        self.assertEqual(len(res), 1)
+
+        res = _convert_to_met(stale, since=3600, name="Time")
         self.assertEqual(res, [])
 
-    async def test_missing_timestamp_record_dropped(self):
+    def test_old_entries_filtered(self):
+        data = [{"Time": "2026-09-20T00:00:00Z"}]
+        res = _convert_to_met(data, since=3600, name="Time", now=self._now())
+        self.assertEqual(res, [])
+
+    def test_missing_timestamp_record_dropped(self):
         # A record without the timestamp field cannot be sorted or windowed;
         # it is dropped instead of crashing the whole listing.
-        now = self._now()
         data = [
             {"Time": "2026-09-22T02:16:25Z", "Message": "good"},
             {"Message": "no timestamp field"},
         ]
-        with self._patch_api_get(now, data):
-            res = await _convert_to_met(data, since=3600, name="Time")
+        res = _convert_to_met(data, since=3600, name="Time", now=self._now())
         self.assertEqual(len(res), 1)
         self.assertEqual(res[0]["message"], "good")
 
-    async def test_unusable_timestamp_record_dropped(self):
-        now = self._now()
+    def test_unusable_timestamp_record_dropped(self):
         data = [
             {"Time": "not-a-date", "Message": "bad"},
             {"Time": None, "Message": "null"},
@@ -140,16 +142,13 @@ class ConvertToMetTest(unittest.IsolatedAsyncioTestCase):
             {"Time": 1758519385, "Message": "not-a-string"},
             {"Time": "2026-09-22T02:16:25Z", "Message": "good"},
         ]
-        with self._patch_api_get(now, data):
-            res = await _convert_to_met(data, since=3600, name="Time")
+        res = _convert_to_met(data, since=3600, name="Time", now=self._now())
         self.assertEqual(len(res), 1)
         self.assertEqual(res[0]["message"], "good")
 
-    async def test_all_records_dropped_returns_empty(self):
-        now = self._now()
+    def test_all_records_dropped_returns_empty(self):
         data = [{"Message": "orphan"}]
-        with self._patch_api_get(now, data):
-            res = await _convert_to_met(data, since=3600, name="Time")
+        res = _convert_to_met(data, since=3600, name="Time", now=self._now())
         self.assertEqual(res, [])
 
 
@@ -928,39 +927,38 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
     async def test_get_events_returns_filtered(self):
         from nina_planner.server import get_events
 
-        events = [{"Time": "2026-09-22T02:55:00Z", "Type": "Info"}]
-        time_str = "2026-09-22T03:00:00Z"
+        # The window is anchored on the host clock, so fixtures must be
+        # relative: a recent event survives `since`, an old one is dropped.
+        now = datetime.now(UTC).replace(microsecond=0)
+        events = [
+            {"Time": (now - timedelta(seconds=300)).isoformat(), "Type": "Info"},
+            {"Time": (now - timedelta(seconds=7200)).isoformat(), "Type": "Info"},
+        ]
 
-        async def fake(path):
-            if path == "/time":
-                return time_str
-            return events
-
-        with patch("nina_planner.server._api_get", side_effect=fake):
+        with patch("nina_planner.server._api_get", AsyncMock(return_value=events)):
             result = await get_events(since=3600)
         self.assertEqual(len(result), 1)
-        self.assertEqual(result[0]["timestamp"], "2026-09-22T02:55:00Z")
+        # Rendered in the host's local zone; compare the instant.
+        self.assertEqual(
+            datetime.fromisoformat(result[0]["timestamp"]),
+            (now - timedelta(seconds=300)).astimezone(),
+        )
 
     async def test_get_logs_strips_internal_fields(self):
         from nina_planner.server import get_logs
 
+        now = datetime.now(UTC).replace(microsecond=0)
         logs = [
             {
-                "Timestamp": "2026-09-22T02:55:00Z",
+                "Timestamp": (now - timedelta(seconds=300)).isoformat(),
                 "Message": "hello",
                 "line": 42,
                 "member": "M",
                 "source": "test",
             }
         ]
-        time_str = "2026-09-22T03:00:00Z"
 
-        async def fake(path):
-            if path == "/time":
-                return time_str
-            return logs
-
-        with patch("nina_planner.server._api_get", side_effect=fake):
+        with patch("nina_planner.server._api_get", AsyncMock(return_value=logs)):
             result = await get_logs(since=3600)
         self.assertEqual(len(result), 1)
         self.assertIn("timestamp", result[0])
@@ -1505,7 +1503,7 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
             "image_type": "LIGHT",
             "filter_name": "L",
             "duration": "60.0",
-            "exposure_start": "2020-01-01 20:00:00",
+            "exposure_start_utc": "2020-01-01T20:00:00Z",
             "file_path": "C:/NINA/LIGHT/M31 [plan-test123-1]__60.00s_0000.fits",
         }
 
@@ -1526,10 +1524,6 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
                 patch(
                     "nina_planner.server._read_metadata",
                     AsyncMock(return_value=[old_light]),
-                ),
-                patch(
-                    "nina_planner.server.get_nina_time",
-                    AsyncMock(return_value={"nina_time": "2026-10-05T12:00:00-05:00"}),
                 ),
                 patch("nina_planner.server.target_payload_darks", new=darks_step),
             ):
@@ -2407,69 +2401,15 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["plan_id"], "plan-test123")
         self.assertEqual(result["target"], "M31")
 
-    async def test_get_nina_time_returns_dict(self):
-        from nina_planner.server import get_nina_time
-
-        with patch(
-            "nina_planner.server._api_get",
-            AsyncMock(return_value="2026-09-22T03:00:00"),
-        ):
-            result = await get_nina_time()
-        self.assertIn("nina_time", result)
-        self.assertIn("host_time", result)
-        self.assertIn("delta_seconds", result)
-        self.assertIn("simulated", result)
-        # A naive /time is normalized to an offset-aware value.
-        self.assertIsNotNone(datetime.fromisoformat(result["nina_time"]).tzinfo)
-        self.assertIsNotNone(datetime.fromisoformat(result["host_time"]).tzinfo)
-
-    async def test_get_nina_time_with_offset(self):
-        from nina_planner.server import get_nina_time
-
-        with patch(
-            "nina_planner.server._api_get",
-            AsyncMock(return_value="2026-09-22T03:00:00-05:00"),
-        ):
-            result = await get_nina_time()
-        self.assertIn("delta_seconds", result)
-        # N.I.N.A.'s own offset is preserved.
-        self.assertEqual(result["nina_time"], "2026-09-22T03:00:00-05:00")
-
-    async def test_reference_now_drops_offset_keeping_wall_clock(self):
-        """N.I.N.A.'s offset is dropped, not converted through the host tz."""
-        from nina_planner.server import _reference_now
-
-        clock = {"nina_time": "2026-09-22T03:00:00-05:00"}
-        with patch("nina_planner.server.get_nina_time", AsyncMock(return_value=clock)):
-            ref = await _reference_now()
-        self.assertEqual(ref, datetime(2026, 9, 22, 3, 0, 0))
-        self.assertIsNone(ref.tzinfo)
-
-    async def test_reference_now_falls_back_to_host_clock(self):
-        from nina_planner.server import _reference_now
-
-        with patch(
-            "nina_planner.server.get_nina_time",
-            AsyncMock(side_effect=RuntimeError("NINA down")),
-        ):
-            ref = await _reference_now()
-        self.assertIsNone(ref.tzinfo)
-        self.assertLess(abs((datetime.now() - ref).total_seconds()), 5)
-
     async def test_get_nina_status_running_with_api(self):
-        """API responsive => running, with the clock populated."""
+        """API responsive => running."""
         from nina_planner.server import get_nina_status
 
-        async def fake_time():
-            return {
-                "nina_time": "2026-09-22T03:00:00",
-                "host_time": "2026-09-22T03:00:01",
-                "delta_seconds": -1.0,
-                "simulated": False,
-            }
-
         with (
-            patch("nina_planner.server.get_nina_time", side_effect=fake_time),
+            patch(
+                "nina_planner.server._api_probe",
+                AsyncMock(return_value=(True, None)),
+            ),
             patch(
                 "nina_planner.server.windows_interop_available",
                 return_value=True,
@@ -2479,10 +2419,6 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
 
         self.assertTrue(result["running"])
         self.assertTrue(result["lifecycle_control_available"])
-        self.assertEqual(result["nina_time"], "2026-09-22T03:00:00")
-        self.assertEqual(result["host_time"], "2026-09-22T03:00:01")
-        self.assertEqual(result["delta_seconds"], -1.0)
-        self.assertFalse(result["simulated"])
         self.assertIsNone(result["probe_error"])
         self.assertIn("NINA running", result["summary"])
         self.assertIn("responsive", result["summary"])
@@ -2494,8 +2430,8 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
 
         with (
             patch(
-                "nina_planner.server.get_nina_time",
-                AsyncMock(side_effect=RuntimeError("connection refused")),
+                "nina_planner.server._api_probe",
+                AsyncMock(return_value=(False, "connection refused")),
             ),
             patch(
                 "nina_planner.server.windows_interop_available",
@@ -2506,10 +2442,6 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
 
         self.assertFalse(result["running"])
         self.assertTrue(result["lifecycle_control_available"])
-        self.assertIsNone(result["nina_time"])
-        self.assertIsNone(result["host_time"])
-        self.assertIsNone(result["delta_seconds"])
-        self.assertIsNone(result["simulated"])
         # NINA's own reason is reported, not flattened to "unresponsive".
         self.assertEqual(result["probe_error"], "connection refused")
         self.assertIn("NINA not running", result["summary"])
@@ -2521,16 +2453,11 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
         control is unavailable because NINA is remote."""
         from nina_planner.server import get_nina_status
 
-        async def fake_time():
-            return {
-                "nina_time": "2026-09-22T03:00:00",
-                "host_time": "2026-09-22T03:00:00",
-                "delta_seconds": 0.0,
-                "simulated": False,
-            }
-
         with (
-            patch("nina_planner.server.get_nina_time", side_effect=fake_time),
+            patch(
+                "nina_planner.server._api_probe",
+                AsyncMock(return_value=(True, None)),
+            ),
             patch(
                 "nina_planner.server.windows_interop_available",
                 return_value=False,
@@ -2551,8 +2478,8 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
 
         with (
             patch(
-                "nina_planner.server.get_nina_time",
-                AsyncMock(side_effect=RuntimeError("connection refused")),
+                "nina_planner.server._api_probe",
+                AsyncMock(return_value=(False, "connection refused")),
             ),
             patch(
                 "nina_planner.server.windows_interop_available",
@@ -2565,83 +2492,6 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(result["lifecycle_control_available"])
         self.assertIn("NINA not running", result["summary"])
         self.assertIn("cannot be restarted", result["summary"])
-
-    async def test_start_nina_simulated_get_nina_time_fails(self):
-        """When get_nina_time() never returns the simulated date during
-        capture-check, start_nina restores the host clock and raises.
-        """
-        from datetime import datetime as _dt
-
-        from nina_planner.server import start_nina
-
-        class FakeProcess:
-            returncode = 0
-            stdout = ""
-
-        host_calls = {"n": 0, "restored": None}
-        local_tz = _dt.fromisoformat("2026-09-26T16:55:00-05:00").tzinfo
-
-        async def fake_read_windows_clock():
-            host_calls["n"] += 1
-            if host_calls["n"] == 1:
-                return _dt.fromisoformat("2026-09-26T16:55:00-05:00")
-            if host_calls["restored"] is not None:
-                return host_calls["restored"]
-            # Until restore is issued, report the shifted target.
-            return _dt.fromisoformat("2026-10-15T23:15:00-05:00")
-
-        def fake_run_blocking(argv, timeout=30.0):
-            if argv[0] == "powershell.exe":
-                command = argv[-1]
-                if command != "Set-Date -Date '2026-10-15T23:15:00'":
-                    restored_naive = _dt.fromisoformat(command.split("'")[1])
-                    host_calls["restored"] = restored_naive.replace(tzinfo=local_tz)
-            return FakeProcess()
-
-        async def fake_poll_until_async(check, timeout, interval):
-            return await check()
-
-        with (
-            patch(
-                "nina_planner.server._read_windows_clock",
-                side_effect=fake_read_windows_clock,
-            ),
-            patch(
-                "nina_planner.server._run_blocking",
-                side_effect=fake_run_blocking,
-            ),
-            patch(
-                "nina_planner.server.write_nina_launcher",
-                return_value=_STUB_LAUNCHER_PATHS,
-            ),
-            patch(
-                "nina_planner.server.get_nina_time",
-                AsyncMock(side_effect=RuntimeError("shift query failed")),
-            ),
-            patch(
-                "nina_planner.server._nina_api_responsive",
-                AsyncMock(return_value=False),
-            ),
-            patch(
-                "nina_planner.server.windows_interop_available",
-                return_value=True,
-            ),
-            patch(
-                "nina_planner.server._now_local",
-                return_value=_dt(2026, 9, 26, 16, 55, tzinfo=local_tz),
-            ),
-            patch(
-                "nina_planner.server._poll_until_async",
-                side_effect=fake_poll_until_async,
-            ),
-            patch("nina_planner.server.anyio.sleep", new=AsyncMockSleep()),
-            patch("nina_planner.server._log_payload"),
-        ):
-            with self.assertRaises(RuntimeError) as ctx:
-                await start_nina("2026-10-15T23:15:00")
-        # Capture-check fails (NINA never reports simulated date); restore succeeds.
-        self.assertIn("NINA never captured simulated date", str(ctx.exception))
-        self.assertIsNotNone(host_calls["restored"])
 
     async def test_get_site_equipment_status_calls_log_payload(self):
         """When get_site_equipment_status runs, it calls _log_payload with
@@ -2664,77 +2514,6 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
                 await get_site_equipment_status()
             content = log_path.read_text()
             self.assertIn("Equipment:", content)
-
-    async def test_start_nina_simulated_progress_entry_fails(self):
-        """When append_progress_entry raises in start_nina simulated path, the tool
-        still returns successfully — the except branch swallows the error.
-        """
-        from datetime import datetime as _dt
-
-        from nina_planner.server import start_nina
-
-        class FakeProcess:
-            returncode = 0
-            stdout = ""
-
-        host_calls = {"n": 0}
-
-        async def fake_read_windows_clock():
-            host_calls["n"] += 1
-            # 1) real0, 2) shifted target (shift-check), 3+) restored target.
-            if host_calls["n"] == 1:
-                return _dt.fromisoformat("2026-09-26T16:55:00-05:00")
-            if host_calls["n"] == 2:
-                return _dt.fromisoformat("2026-10-15T23:15:00-05:00")
-            return _dt.fromisoformat("2026-09-26T16:55:01-05:00")
-
-        async def fake_get_nina_time():
-            return {
-                "nina_time": "2026-10-15T23:15:00",
-                "host_time": "2026-09-26T16:55:00",
-                "delta_seconds": 17_328_000.0,
-                "simulated": True,
-            }
-
-        with (
-            patch(
-                "nina_planner.server._read_windows_clock",
-                side_effect=fake_read_windows_clock,
-            ),
-            patch(
-                "nina_planner.server._run_blocking",
-                return_value=FakeProcess(),
-            ),
-            patch(
-                "nina_planner.server.write_nina_launcher",
-                return_value=_STUB_LAUNCHER_PATHS,
-            ),
-            patch(
-                "nina_planner.server.get_nina_time",
-                AsyncMock(side_effect=fake_get_nina_time),
-            ),
-            patch(
-                "nina_planner.server._nina_api_responsive",
-                AsyncMock(return_value=False),
-            ),
-            patch(
-                "nina_planner.server.windows_interop_available",
-                return_value=True,
-            ),
-            patch(
-                "nina_planner.server.append_progress_entry",
-                AsyncMock(side_effect=OSError("disk full")),
-            ),
-            patch(
-                "nina_planner.server._now_local",
-                return_value=_dt.fromisoformat("2026-09-26T16:55:00-05:00"),
-            ),
-            patch("nina_planner.server.anyio.sleep", new=AsyncMockSleep()),
-            patch("nina_planner.server._log_payload"),
-        ):
-            # Should not raise — the progress-entry failure is swallowed.
-            result = await start_nina("2026-10-15T23:15:00")
-        self.assertEqual(result["simulated"], True)
 
     async def test_start_nina_real_time_progress_entry_fails(self):
         """When append_progress_entry raises in start_nina real-time, the tool
@@ -2775,8 +2554,8 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
             patch("nina_planner.server._log_payload"),
         ):
             # Should not raise — the progress-entry failure is swallowed.
-            result = await start_nina(None)
-        self.assertEqual(result["simulated"], False)
+            result = await start_nina()
+        self.assertIn("launched NINA", result["summary"])
 
     async def test_start_nina_already_running_raises(self):
         from nina_planner.server import start_nina
@@ -2792,7 +2571,7 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
             ),
         ):
             with self.assertRaises(RuntimeError) as ctx:
-                await start_nina(None)
+                await start_nina()
         self.assertIn("already running", str(ctx.exception))
 
     async def test_start_nina_remote_unavailable_raises(self):
@@ -2810,7 +2589,7 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
             ),
         ):
             with self.assertRaises(RuntimeError) as ctx:
-                await start_nina(None)
+                await start_nina()
         self.assertIn("cannot be launched", str(ctx.exception))
 
     async def test_stop_nina_api_down_is_noop(self):

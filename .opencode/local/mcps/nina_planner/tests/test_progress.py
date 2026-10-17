@@ -1,5 +1,5 @@
 import unittest
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 
 from pydantic import ValidationError
 
@@ -19,12 +19,15 @@ def _row(
     exposure_start: str | None = None,
 ):
     if exposure_start is None:
-        exposure_start = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        exposure_start = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
     row = {
         "image_type": image_type,
         "filter_name": filter_name,
         "duration": duration,
-        "exposure_start": exposure_start,
+        # The window logic reads ExposureStartUTC only; the naive local
+        # ExposureStart column is deliberately absent so a regression that
+        # reads it sees "no timestamp" rather than silently passing.
+        "exposure_start_utc": exposure_start,
     }
     if target is not None:
         row["file_path"] = f"C:/NINA/LIGHT/{target}__60.00s_0000.fits"
@@ -382,7 +385,7 @@ class CalibrationAgeTest(unittest.TestCase):
 
     def test_stale_calibration_excluded_from_progress(self):
         plan = _plan()
-        now = datetime.now()
+        now = datetime.now(UTC)
         fresh = now.strftime("%Y-%m-%d %H:%M:%S")
         stale = (now - timedelta(days=30)).strftime("%Y-%m-%d %H:%M:%S")
         rows = [
@@ -396,13 +399,13 @@ class CalibrationAgeTest(unittest.TestCase):
     def test_calibration_missing_time_excluded(self):
         plan = _plan()
         row = _row(image_type="BIAS", target=None)
-        del row["exposure_start"]
+        del row["exposure_start_utc"]
         prog = plan_progress(plan, [row])
         self.assertEqual(prog["bias"][0]["acquired_count"], 0)
 
     def test_one_day_window_counts_recent_only(self):
         plan = _plan(calibration_window_days=1)
-        now = datetime.now()
+        now = datetime.now(UTC)
         recent = now.strftime("%Y-%m-%d %H:%M:%S")
         old = (now - timedelta(days=3)).strftime("%Y-%m-%d %H:%M:%S")
         rows = [
@@ -498,9 +501,13 @@ class CalibrationAgeTest(unittest.TestCase):
         light = _row(exposure_start=session.strftime("%Y-%m-%d %H:%M:%S"))
         prog = plan_progress(plan, [light], now=session)
         self.assertTrue(prog["dark"][0]["window_open"])
+        # Rendered in the host's local zone, so assert the instant rather
+        # than a literal string (which would bake in one machine's offset).
+        rendered = prog["dark"][0]["window_end"]
+        self.assertIsNotNone(datetime.fromisoformat(rendered).tzinfo)
         self.assertEqual(
-            prog["dark"][0]["window_end"],
-            (session + timedelta(days=3)).isoformat(timespec="seconds"),
+            datetime.fromisoformat(rendered),
+            (session + timedelta(days=3)).replace(tzinfo=UTC),
         )
 
     def test_window_open_when_plan_has_no_lights(self):
@@ -534,7 +541,7 @@ class CalibrationAgeTest(unittest.TestCase):
 
     def test_no_lights_falls_back_to_now(self):
         plan = _plan()
-        now = datetime.now()
+        now = datetime.now(UTC)
         rows = [
             _row(
                 image_type="DARK",
@@ -549,7 +556,7 @@ class CalibrationAgeTest(unittest.TestCase):
 
 class FilterMetadataRowsTest(unittest.TestCase):
     def _ref(self):
-        return datetime.now()
+        return datetime.now(UTC)
 
     def test_lights_match_plan_id(self):
         plan = _plan()
@@ -604,7 +611,7 @@ class FilterMetadataRowsTest(unittest.TestCase):
     def test_missing_time_excluded_when_window_set(self):
         plan = _plan()
         row = _row(image_type="BIAS", target=None)
-        del row["exposure_start"]
+        del row["exposure_start_utc"]
         out = filter_metadata_rows(plan, [row], "bias", max_age_days=7, now=self._ref())
         self.assertEqual(out, [])
 
@@ -828,7 +835,7 @@ class PrivateHelperDefensivePathsTest(unittest.TestCase):
 
         self.assertTrue(
             _within_age(
-                {"exposure_start": "2026-09-22 10:00:00"},
+                {"exposure_start_utc": "2026-09-22 10:00:00"},
                 None,
                 datetime(2026, 9, 22, 12, 0),
             )
@@ -837,15 +844,17 @@ class PrivateHelperDefensivePathsTest(unittest.TestCase):
     def test_within_age_returns_true_when_session_start_none(self):
         from nina_planner.progress import _within_age
 
-        self.assertTrue(_within_age({"exposure_start": "2026-09-22 10:00:00"}, 7, None))
+        self.assertTrue(
+            _within_age({"exposure_start_utc": "2026-09-22 10:00:00"}, 7, None)
+        )
 
     def test_within_age_returns_false_when_time_string_invalid(self):
         from nina_planner.progress import _within_age
 
         ref = datetime(2026, 9, 22, 12, 0)
-        self.assertFalse(_within_age({"exposure_start": "garbage"}, 7, ref))
-        self.assertFalse(_within_age({"exposure_start": ""}, 7, ref))
-        self.assertFalse(_within_age({"exposure_start": None}, 7, ref))
+        self.assertFalse(_within_age({"exposure_start_utc": "garbage"}, 7, ref))
+        self.assertFalse(_within_age({"exposure_start_utc": ""}, 7, ref))
+        self.assertFalse(_within_age({"exposure_start_utc": None}, 7, ref))
 
     def test_within_age_counts_from_session_minus_window(self):
         from nina_planner.progress import _within_age
@@ -853,39 +862,69 @@ class PrivateHelperDefensivePathsTest(unittest.TestCase):
         session = datetime(2026, 9, 22, 12, 0)
         # At or after session - window counts (inclusive)...
         self.assertTrue(
-            _within_age({"exposure_start": "2026-09-20 12:00:00"}, 2, session)
+            _within_age({"exposure_start_utc": "2026-09-20 12:00:00"}, 2, session)
         )
         # ...earlier does not...
         self.assertFalse(
-            _within_age({"exposure_start": "2026-09-20 11:59:00"}, 2, session)
+            _within_age({"exposure_start_utc": "2026-09-20 11:59:00"}, 2, session)
         )
         # ...the upper bound is inclusive too...
         self.assertTrue(
-            _within_age({"exposure_start": "2026-09-24 12:00:00"}, 2, session)
+            _within_age({"exposure_start_utc": "2026-09-24 12:00:00"}, 2, session)
         )
         # ...and anything beyond it does not count.
         self.assertFalse(
-            _within_age({"exposure_start": "2026-09-24 12:01:00"}, 2, session)
+            _within_age({"exposure_start_utc": "2026-09-24 12:01:00"}, 2, session)
         )
         self.assertFalse(
-            _within_age({"exposure_start": "2026-10-05 00:00:00"}, 2, session)
+            _within_age({"exposure_start_utc": "2026-10-05 00:00:00"}, 2, session)
         )
 
-    def test_within_age_ignores_offset_not_converts(self):
+    def test_within_age_ignores_local_column(self):
+        """The naive local ExposureStart column is not a fallback: a row
+        carrying only it cannot be placed in the window, because mixing it
+        with UTC stamps would shift the frame by the offset."""
         from nina_planner.progress import _within_age
 
-        # Session start carries N.I.N.A.'s UTC offset; the wall clock is what
-        # counts, so this must not be shifted through the host's timezone.
-        session = datetime.fromisoformat("2026-09-22T12:00:00-05:00")
-        self.assertTrue(
-            _within_age({"exposure_start": "2026-09-20 12:00:00"}, 2, session)
-        )
+        session = datetime(2026, 9, 22, 12, 0)
         self.assertFalse(
-            _within_age({"exposure_start": "2026-09-20 11:59:00"}, 2, session)
+            _within_age({"exposure_start": "2026-09-22 12:00:00"}, 7, session)
         )
-        # A shot value that carries an offset keeps its wall clock too.
+
+    def test_within_age_converts_offset_to_utc(self):
+        """An offset-bearing value is converted to UTC, not stripped. The
+        discriminator is a stamp whose wall clock sits inside the window but
+        whose true UTC instant does not: keeping the wall clock would count
+        it, converting does not."""
+        from nina_planner.progress import _within_age
+
+        # Session 2026-09-22T12:00:00Z, 2-day window ->
+        # [2026-09-20T12:00:00Z, 2026-09-24T12:00:00Z].
+        session = datetime(2026, 9, 22, 12, 0)
+        # Wall clock 13:00 is inside the window, but +08:00 makes the true
+        # instant 05:00Z, before the lower bound.
+        self.assertFalse(
+            _within_age({"exposure_start_utc": "2026-09-20T13:00:00+08:00"}, 2, session)
+        )
+        # The same instant written in UTC lands on the lower bound exactly.
         self.assertTrue(
-            _within_age({"exposure_start": "2026-09-20T12:00:00-05:00"}, 2, session)
+            _within_age({"exposure_start_utc": "2026-09-20T12:00:00Z"}, 2, session)
+        )
+
+    def test_within_age_converts_session_offset(self):
+        """The session anchor's offset is converted too, so both sides of the
+        comparison are the same UTC instant."""
+        from nina_planner.progress import _within_age
+
+        # 12:00:00-05:00 is 17:00:00Z, so the lower bound is
+        # 2026-09-20T17:00:00Z — a 12:00:00Z shot falls short of it.
+        session = datetime.fromisoformat("2026-09-22T12:00:00-05:00")
+        self.assertFalse(
+            _within_age({"exposure_start_utc": "2026-09-20T12:00:00Z"}, 2, session)
+        )
+        # 17:00:00Z is exactly on the bound, so it counts.
+        self.assertTrue(
+            _within_age({"exposure_start_utc": "2026-09-20T17:00:00Z"}, 2, session)
         )
 
     # ---- filter_metadata_rows (line 230) ----

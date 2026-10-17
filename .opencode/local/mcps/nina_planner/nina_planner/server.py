@@ -7,7 +7,7 @@ import tempfile
 import time
 from collections.abc import Awaitable, Callable
 from collections.abc import Set as AbstractSet
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, cast
 
@@ -28,7 +28,7 @@ from .models.profile import (
 )
 from .models.request import SequenceRequest
 from .mosaic import load_pointings
-from .nina_utils import ascom_float, ascom_int, to_snake
+from .nina_utils import ascom_float, ascom_int, to_local_display, to_snake
 from .progress import (
     append_progress_entry,
     filter_metadata_rows,
@@ -42,16 +42,11 @@ from .sequence import (
     target_payload_lights,
 )
 from .system_time import (
-    DRIFT_TOLERANCE_SECONDS,
     kill_nina_command,
     nina_exe_path,
-    read_windows_clock_powershell,
-    restore_set_date_powershell,
     schtasks_create_command,
     schtasks_delete_command,
     schtasks_run_command,
-    shift_clock_powershell,
-    validate_iso_local,
     windows_interop_available,
     write_nina_launcher,
 )
@@ -240,25 +235,6 @@ async def _nina_api_responsive() -> bool:
     return (await _api_probe())[0]
 
 
-async def _spawn_detached(argv: list[str]) -> subprocess.Popen[bytes]:
-    """Spawn a subprocess in a thread; return immediately without waiting.
-
-    Used by the simulation tools to launch elevated PowerShell (with a UAC
-    prompt on screen) and to launch NINA.exe — both fire-and-forget.
-    """
-
-    def _popen() -> subprocess.Popen[bytes]:
-        return subprocess.Popen(
-            argv,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            stdin=subprocess.DEVNULL,
-            start_new_session=True,
-        )
-
-    return await anyio.to_thread.run_sync(_popen)
-
-
 async def _run_blocking(argv: list[str], *, timeout: float = 30.0) -> Any:
     """Run a subprocess to completion in a thread; return CompletedProcess."""
 
@@ -324,15 +300,17 @@ def _validate_position_angle(
         )
 
 
-async def _convert_to_met(
-    data: list[dict[str, Any]], since: int, name: str
+def _convert_to_met(
+    data: list[dict[str, Any]],
+    since: int,
+    name: str,
+    now: datetime | None = None,
 ) -> list[dict[str, Any]]:
     timestamp = "timestamp"
-    now = datetime.fromisoformat(await _api_get("/time"))
-    # If /time came back naive, fall back to the host's local timezone so
-    # the subsequent `ts - now` arithmetic can't raise on mixed
-    # offset-aware / offset-naive pairs (e.g., naive /time paired with
-    # Z-suffix event timestamps).
+    now = now or datetime.now().astimezone()
+    # A naive `now` cannot take part in `ts - now` arithmetic against
+    # offset-aware event timestamps (e.g. Z-suffix events), so tag it
+    # host-local.
     if now.tzinfo is None:
         now = now.replace(tzinfo=datetime.now().astimezone().tzinfo)
     tzinfo = now.tzinfo
@@ -365,11 +343,11 @@ async def _convert_to_met(
     res = []
     for d in data:
         ts = d[timestamp]
+        # `now` is the host clock, so `since` is measured against local time;
+        # the stamp is only re-rendered for display, never re-based.
         elapsed = (ts - now).total_seconds()
         if since + elapsed > 0:
-            d[timestamp] = (
-                ts.astimezone(UTC).replace(microsecond=0).strftime("%Y-%m-%dT%H:%M:%SZ")
-            )
+            d[timestamp] = to_local_display(ts)
             res.append(d)
     return res
 
@@ -406,30 +384,12 @@ async def _read_metadata(image_type: str | None = None) -> list[dict[str, Any]]:
     return rows
 
 
-async def _reference_now() -> datetime:
-    """N.I.N.A.'s current time as a naive local datetime.
-
-    Used as the calibration anchor only when a plan has no attributed lights
-    yet (once lights exist, their earliest exposure anchors the window). Falls
-    back to the host's local clock when N.I.N.A. is unreachable, keeping
-    metadata-only queries working.
-    """
-    try:
-        clock = await get_nina_time()
-        # Drop the UTC offset but keep the wall-clock fields: N.I.N.A.'s
-        # reported local time is what the CSV ExposureStart column records, so
-        # this matches without converting through the host's timezone.
-        return datetime.fromisoformat(clock["nina_time"]).replace(tzinfo=None)
-    except Exception:
-        return datetime.now().replace(microsecond=0)
-
-
 ### mcp tools
 
 
 mcp = FastMCP(
     name="nina-planner",
-    instructions="""Provides tools for controlling NINA (Nighttime Imaging 'N' Astronomy) software run observatories. Lets you inspect equipment, get observatory setup, write observation plans, and run NINA sequences generated from the plans. Focuses on orchestrating observation plans at a high level through NINA sequences rather than managing the individual commands that make up those sequences. Safety semantics: the safety monitor's is_safe field reflects whether the observatory enclosure (roof/dome) is open and it is safe to unpark and expose. is_safe=true means the enclosure is open and the scope may be unparked and acquisition may proceed; is_safe=false means the enclosure is closed, so the scope must remain stowed and acquisition is gated until it becomes safe. This is distinct from weather conditions, which are reported separately by the weather device. Stow behavior is capability-driven: sequences emit Park Scope only when the mount reports can_park=true, otherwise they use Find home when the mount reports can_find_home=true. Lifecycle: start_nina(time=None) launches NINA into the active interactive desktop session (pass time='YYYY-MM-DDTHH:MM:SS' to start on simulated time); stop_nina() terminates NINA immediately. If NINA is already running, start_nina will error and require calling stop_nina first. get_nina_status() reports authoritative REST-API liveness (running), whether this host can control NINA's lifecycle (lifecycle_control_available), and the clock in one call (cheaper than get_site_equipment_status and never raises on a down NINA). When lifecycle_control_available is false — e.g. the MCP server is remote from NINA — start_nina/stop_nina cannot operate on NINA: a down NINA must be restarted on its own host, and an already-running NINA cannot be stopped from here. Progress tracking: maintain an observatory progress file (PROGRESS.md in the project directory). On session start, read it to restore context before acting. After significant actions — status checks, plan writes, sequence loads/starts/stops, errors, and interventions — append a short timestamped entry (ISO-8601 timestamp) recording what was done, the observed equipment and safety state, and any decisions. Both the active session and automated worker sessions append to this file so history is shared across sessions.""",
+    instructions="""Provides tools for controlling NINA (Nighttime Imaging 'N' Astronomy) software run observatories. Lets you inspect equipment, get observatory setup, write observation plans, and run NINA sequences generated from the plans. Focuses on orchestrating observation plans at a high level through NINA sequences rather than managing the individual commands that make up those sequences. Safety semantics: the safety monitor's is_safe field reflects whether the observatory enclosure (roof/dome) is open and it is safe to unpark and expose. is_safe=true means the enclosure is open and the scope may be unparked and acquisition may proceed; is_safe=false means the enclosure is closed, so the scope must remain stowed and acquisition is gated until it becomes safe. This is distinct from weather conditions, which are reported separately by the weather device. Stow behavior is capability-driven: sequences emit Park Scope only when the mount reports can_park=true, otherwise they use Find home when the mount reports can_find_home=true. Lifecycle: start_nina() launches NINA into the active interactive desktop session; stop_nina() terminates NINA immediately. If NINA is already running, start_nina will error and require calling stop_nina first. get_nina_status() reports authoritative REST-API liveness (running), whether this host can control NINA's lifecycle (lifecycle_control_available), and a one-line summary (cheaper than get_site_equipment_status and never raises on a down NINA). When lifecycle_control_available is false — e.g. the MCP server is remote from NINA — start_nina/stop_nina cannot operate on NINA: a down NINA must be restarted on its own host, and an already-running NINA cannot be stopped from here. Progress tracking: maintain an observatory progress file (PROGRESS.md in the project directory). On session start, read it to restore context before acting. After significant actions — status checks, plan writes, sequence loads/starts/stops, errors, and interventions — append a short timestamped entry (ISO-8601 timestamp) recording what was done, the observed equipment and safety state, and any decisions. Both the active session and automated worker sessions append to this file so history is shared across sessions.""",
 )
 
 
@@ -684,7 +644,7 @@ async def switch_site_profile(profile_id: str) -> str:
 async def get_events(since: int = 300) -> Any:
     """Returns recent timestamped NINA observatory events and their event-specific details from the last `since` seconds. Use it to reconstruct sequence, equipment, safety, imaging, and error activity. This tool is read-only; use get_site_equipment_status and get_sequence_state for current status."""
     res = await _api_get("/event-history")
-    res = await _convert_to_met(res, since=since, name="Time")
+    res = _convert_to_met(res, since=since, name="Time")
     _log_payload("Events:", json.dumps(res, indent=2))
     return res
 
@@ -693,7 +653,7 @@ async def get_events(since: int = 300) -> Any:
 async def get_logs(since: int = 300) -> Any:
     """Returns recent NINA application log entries, including informational messages, warnings, and errors with source and timestamp details from the last `since` seconds. Use it to diagnose sequence failures, equipment communication problems, and unexpected behavior. This tool is read-only and takes no action."""
     res = await _api_get("/application/logs?lineCount=200")
-    res = await _convert_to_met(res, since=since, name="Timestamp")
+    res = _convert_to_met(res, since=since, name="Timestamp")
     for d in res:
         if "line" in d:
             del d["line"]
@@ -711,7 +671,7 @@ async def get_imaging_metadata(
     pointing_index: int = 1,
     image_type: str = "light",
 ) -> dict[str, Any]:
-    """Returns imaging metadata for a plan and one of its pointings, parsed from the ImageMetaData.csv files in the frame folders (LIGHT, DARK, BIAS, FLAT, etc.) of the mounted N.I.N.A imaging directory. The plan file scopes the result: light frames are attributed to the plan via the plan id embedded in the recorded file path (`{base_plan_id}` for a single-pointing plan, `{base_plan_id}-{pointing_index}` per pane for a mosaic; no target-name fallback); dark/bias/flat frames are matched by image type/filter/exposure and are anchored to the plan's light session: they count only when shot within `calibration_window_days` of the session start (the earliest attributed light), on either side of it. For calibration types, `pointing_index` (default 1) does *not* select which frames are returned — dark/bias/flat frames are matched plan-wide by exposure/filter within the window. It chooses which pointing's light session anchors that window and labels the response (`plan_id`, `pointing_index`), and it is range-checked (1..pointing count) for every image type, calibration included. This reports the frames that are attributable, not what the plan still demands — use get_plan_progress for that (a window that has closed around the current time reports zero remaining calibration). Returns a wide table with one row per exposure, each carrying the frame identity fields (file_path, exposure_number, exposure_start, duration, filter_name) plus its metrics as columns, namespaced by group (quality.hfr, guiding.rms, background.adu_mean, pointing.airmass, ...). Timestamps are normalized to milliseconds-precision UTC ISO-8601 with a `Z` suffix (e.g. 2026-09-22T02:16:25.123Z). Per-exposure weather samples from `WeatherData.csv` are joined onto the same row (weather.temperature, humidity, cloud_cover, ...) by exposure number and normalized UTC exposure start. Dead columns are dropped dynamically: columns constant across the returned frames are listed once under summary.constants, and columns with no real values (ASCOM NaN/-1, empty, 'n/a', and the 0 sentinel NINA writes for unmeasured quality/guiding/CCD metrics) are listed under summary.unpopulated. Defaults to lights frames for star-quality checks; pass another image type (light, dark, bias, flat — case-insensitive)."""
+    """Returns imaging metadata for a plan and one of its pointings, parsed from the ImageMetaData.csv files in the frame folders (LIGHT, DARK, BIAS, FLAT, etc.) of the mounted N.I.N.A imaging directory. The plan file scopes the result: light frames are attributed to the plan via the plan id embedded in the recorded file path (`{base_plan_id}` for a single-pointing plan, `{base_plan_id}-{pointing_index}` per pane for a mosaic; no target-name fallback); dark/bias/flat frames are matched by image type/filter/exposure and are anchored to the plan's light session: they count only when shot within `calibration_window_days` of the session start (the earliest attributed light), on either side of it. For calibration types, `pointing_index` (default 1) does *not* select which frames are returned — dark/bias/flat frames are matched plan-wide by exposure/filter within the window. It chooses which pointing's light session anchors that window and labels the response (`plan_id`, `pointing_index`), and it is range-checked (1..pointing count) for every image type, calibration included. This reports the frames that are attributable, not what the plan still demands — use get_plan_progress for that (a window that has closed around the current time reports zero remaining calibration). Returns a wide table with one row per exposure, each carrying the frame identity fields (file_path, exposure_number, exposure_start, duration, filter_name) plus its metrics as columns, namespaced by group (quality.hfr, guiding.rms, background.adu_mean, pointing.airmass, ...). Timestamps are rendered in the host's local time with their UTC offset (e.g. 2026-09-21T21:16:25.123-05:00), while the calibration window arithmetic runs on the underlying UTC instants. Per-exposure weather samples from `WeatherData.csv` are joined onto the same row (weather.temperature, humidity, cloud_cover, ...) by exposure number and canonical UTC exposure start. Dead columns are dropped dynamically: columns constant across the returned frames are listed once under summary.constants, and columns with no real values (ASCOM NaN/-1, empty, 'n/a', and the 0 sentinel NINA writes for unmeasured quality/guiding/CCD metrics) are listed under summary.unpopulated. Defaults to lights frames for star-quality checks; pass another image type (light, dark, bias, flat — case-insensitive)."""
     root = await _resolve_imaging_root()
     plan = await _load_plan(file_path)
     _check_pointing_index(plan, pointing_index)
@@ -727,7 +687,7 @@ async def get_imaging_metadata(
         image_type,
         pointing_index=pointing_index,
         max_age_days=plan.calibration_window_days,
-        now=await _reference_now(),
+        now=datetime.now(UTC).replace(microsecond=0),
     )
     weather = read_weather_csv(root=root)
     res = widen_imaging_metadata(rows, weather_rows=weather)
@@ -804,10 +764,10 @@ async def get_plan_progress(
     min_detected_stars: int | None = None,
     max_guiding_rms_arcsec: float | None = None,
 ) -> dict[str, Any]:
-    """Returns per-frame-type acquisition progress for every pointing of an observation-plan JSON file: for each exposure group, the total_count from the plan, the acquired_count attributed to that plan/pointing from the imaging metadata (ImageMetaData.csv + AcquisitionDetails.csv), and the remaining_count. Lights are attributed via the plan id embedded in the recorded file path (`{base_plan_id}` for a single-pointing plan, `{base_plan_id}-{pointing_index}` per pane for a mosaic; no target-name fallback); flats/darks/bias are matched by image type, filter, and exposure and are anchored to the plan's light session: they count only when shot within `calibration_window_days` of the session start (the earliest attributed light), on either side of it. Calibration groups therefore also carry `window_open` (bool) and `window_end` (naive ISO timestamp of the window's upper bound on N.I.N.A.'s local clock): while the current time is inside the window, remaining_count is total minus acquired; once it falls outside, no frame shot now could ever be credited, so remaining_count is reported as 0 rather than an unsatisfiable deficit (acquired_count stays truthful either way, and lights carry neither field) — raise `calibration_window_days` or write a new plan to reopen the window. Pass max_hfr and/or min_detected_stars to exclude light frames that fail quality thresholds (frames missing the quality fields are excluded when a threshold is set). Use this before load_sequence to decide what still needs acquiring. Returns `complete` (all panes done) plus a `pointings` list of per-pane progress and per-pane `complete`, so a worker can acquire panes sequentially (finish pane N, then run pane N+1)."""
+    """Returns per-frame-type acquisition progress for every pointing of an observation-plan JSON file: for each exposure group, the total_count from the plan, the acquired_count attributed to that plan/pointing from the imaging metadata (ImageMetaData.csv + AcquisitionDetails.csv), and the remaining_count. Lights are attributed via the plan id embedded in the recorded file path (`{base_plan_id}` for a single-pointing plan, `{base_plan_id}-{pointing_index}` per pane for a mosaic; no target-name fallback); flats/darks/bias are matched by image type, filter, and exposure and are anchored to the plan's light session: they count only when shot within `calibration_window_days` of the session start (the earliest attributed light), on either side of it. Calibration groups therefore also carry `window_open` (bool) and `window_end` (the window's upper bound, rendered in the host's local time with its UTC offset): while the current time is inside the window, remaining_count is total minus acquired; once it falls outside, no frame shot now could ever be credited, so remaining_count is reported as 0 rather than an unsatisfiable deficit (acquired_count stays truthful either way, and lights carry neither field) — raise `calibration_window_days` or write a new plan to reopen the window. Pass max_hfr and/or min_detected_stars to exclude light frames that fail quality thresholds (frames missing the quality fields are excluded when a threshold is set). Use this before load_sequence to decide what still needs acquiring. Returns `complete` (all panes done) plus a `pointings` list of per-pane progress and per-pane `complete`, so a worker can acquire panes sequentially (finish pane N, then run pane N+1)."""
     plan = await _load_plan(file_path)
     rows = await _read_metadata()
-    now = await _reference_now()
+    now = datetime.now(UTC).replace(microsecond=0)
 
     def progress_for(index: int) -> dict[str, list[dict[str, Any]]]:
         return plan_progress(
@@ -931,7 +891,8 @@ async def _load_many(requests: list[SequenceRequest]) -> str:
 
     async def now() -> datetime:
         if "now" not in state:
-            state["now"] = await _reference_now()
+            # Computed once so every step in the sequence shares one anchor.
+            state["now"] = datetime.now(UTC).replace(microsecond=0)
         return cast(datetime, state["now"])
 
     async def step(request: SequenceRequest) -> tuple[list[dict[str, Any]], str]:
@@ -1148,18 +1109,6 @@ def _raise_for_command_failure(result: Any, argv: list[str], action: str) -> Non
     )
 
 
-async def _read_windows_clock() -> datetime:
-    """Read the current Windows host clock via Get-Date. Returns aware local datetime."""
-    proc = await _run_blocking(
-        ["powershell.exe", "-NoProfile", "-Command", read_windows_clock_powershell()],
-        timeout=10.0,
-    )
-    raw = (proc.stdout or "").strip()
-    if not raw:
-        raise RuntimeError("Get-Date returned no output")
-    return datetime.fromisoformat(raw)
-
-
 async def _poll_until_async(
     check: Callable[[], Awaitable[bool]], timeout: float, interval: float
 ) -> bool:
@@ -1170,11 +1119,6 @@ async def _poll_until_async(
             return True
         await anyio.sleep(interval)
     return False
-
-
-def _now_local() -> datetime:
-    """Current local time as a timezone-aware datetime."""
-    return datetime.now().astimezone()
 
 
 @mcp.tool()
@@ -1252,25 +1196,11 @@ async def stop_nina() -> dict[str, Any]:
 
 
 @mcp.tool()
-async def start_nina(time: str | None = None) -> dict[str, Any]:
+async def start_nina() -> dict[str, Any]:
     """Launches NINA into the interactive desktop session.
 
     If NINA is already running, raises an error instructing the caller to stop it first.
-
-    Args:
-        time: Optional naive ISO 8601 local datetime (e.g. '2026-10-15T23:15:00').
-            If omitted or None, NINA launches on current real time.
-            If provided, briefly shifts the Windows OS clock to that datetime,
-            launches NINA so it captures the simulated time during initialization,
-            then restores the OS clock back to real time.
     """
-    if time is not None and not time.strip():
-        raise ValueError(
-            "`time` cannot be empty. Pass None for current time, or an ISO 8601 string."
-        )
-    if time is not None:
-        validate_iso_local(time)
-
     # Liveness comes from the REST API so this works against a remote NINA too.
     if await _nina_api_responsive():
         if windows_interop_available():
@@ -1289,250 +1219,24 @@ async def start_nina(time: str | None = None) -> dict[str, Any]:
         )
 
     nina_exe = nina_exe_path()
-    log_extra: list[str] = []
-
-    if time is None:
-        log_extra.append("launching NINA on real time")
-        await _launch_nina_interactive(nina_exe)
-        log_extra.append(f"launched NINA from {nina_exe}")
-        summary = (
-            "start_nina: launched NINA on real time into interactive desktop session. "
-            "Poll get_site_equipment_status() to confirm readiness."
-        )
-        _log_payload("start_nina:", summary)
-        try:
-            await append_progress_entry("start_nina: " + "; ".join(log_extra))
-        except Exception as e:
-            _log_payload("start_nina: progress entry failed", repr(e))
-        return {"summary": summary, "simulated": False}
-
-    # Simulated time path
-    log_extra.append(f"simulating observation time {time}")
-    parsed_target = validate_iso_local(time)
-    local_tz = _now_local().tzinfo
-    target_aware = parsed_target.replace(tzinfo=local_tz)
-
-    # 1. Capture real0 from Windows host clock.
-    try:
-        real0 = await _read_windows_clock()
-    except Exception as e:
-        raise RuntimeError(
-            f"start_nina failed: could not read host clock before shift: {e!r}"
-        ) from e
-    # Monotonic anchor for the restore target below: anyio's clock does not
-    # follow the Set-Date shift made in this flow (and `time` is shadowed by
-    # this tool's parameter here), so the measured window stays real even
-    # while the wall clock is simulated.
-    shift_mono = anyio.current_time()
-
-    # 2. Shift Windows host clock to simulated target (direct, no UAC).
-    shift_cmd = shift_clock_powershell(time)
-    _log_payload("start_nina: shift", shift_cmd)
-    try:
-        await _run_blocking(
-            ["powershell.exe", "-NoProfile", "-Command", shift_cmd], timeout=10.0
-        )
-    except Exception as e:
-        raise RuntimeError(
-            f"start_nina failed: shift to {time!r} failed "
-            "(host may lack 'Change the system time' privilege): "
-            f"{e!r}"
-        ) from e
-
-    # 3. Verify shift by polling the Windows host clock.
-    async def _shift_check() -> bool:
-        try:
-            host_now = await _read_windows_clock()
-            return abs((host_now - target_aware).total_seconds()) <= 2.0
-        except Exception:
-            return False
-
-    shift_ok = await _poll_until_async(_shift_check, timeout=10.0, interval=0.5)
-    if not shift_ok:
-        # Best-effort restore before raising. The target is real time advanced
-        # by the monotonic elapsed (matching the main restore path below), and
-        # the "restored" verdict is verified against the host clock: a denied
-        # Set-Date exits nonzero without raising, so an unchecked command must
-        # never be reported as restored.
-        restore_target = real0 + timedelta(seconds=anyio.current_time() - shift_mono)
-        # real0 is Windows-host-local and aware, and Set-Date wants that same
-        # wall time, so drop the tag without converting zones.
-        restore_cmd = restore_set_date_powershell(
-            restore_target.replace(tzinfo=None).isoformat()
-        )
-        restore_argv = ["powershell.exe", "-NoProfile", "-Command", restore_cmd]
-        _log_payload("start_nina: shift-failure restore", restore_cmd)
-        restore_note = ""
-        try:
-            proc = await _run_blocking(restore_argv, timeout=10.0)
-            _raise_for_command_failure(proc, restore_argv, "start_nina: restore")
-        except Exception as e:
-            restore_note = f" Restore command failed: {e!r}."
-
-        async def _shift_restore_check() -> bool:
-            try:
-                host_now = await _read_windows_clock()
-                return abs((host_now - restore_target).total_seconds()) <= 2.0
-            except Exception:
-                return False
-
-        restored = await _poll_until_async(
-            _shift_restore_check, timeout=10.0, interval=0.5
-        )
-        verdict = (
-            "Host clock restored (verified)."
-            if restored
-            else "Host clock NOT restored — manual intervention may be required."
-        )
-        raise RuntimeError(
-            f"start_nina failed: host clock did not converge to {time!r} "
-            f"within 10s of shift.{restore_note} {verdict}"
-        )
-    log_extra.append(f"shifted OS clock to {time}")
-
-    captured = False
-    launch_error: Exception | None = None
-    restored = False
-    restore_error: str | None = None
-
-    try:
-        # 4. Launch NINA in interactive session.
-        await _launch_nina_interactive(nina_exe)
-        log_extra.append(f"launched NINA from {nina_exe}")
-
-        # 5. Capture-check: poll NINA /time until it reports the simulated date.
-        async def _capture_check() -> bool:
-            try:
-                info = await get_nina_time()
-                nina_naive = datetime.fromisoformat(info["nina_time"])
-                nina_aware = (
-                    nina_naive.replace(tzinfo=local_tz)
-                    if nina_naive.tzinfo is None
-                    else nina_naive.astimezone(local_tz)
-                )
-                # Tolerate up to 30s of drift: NINA captures the host clock at
-                # init and then advances on its own, so readings drift forward
-                # over time.
-                return abs((nina_aware - target_aware).total_seconds()) <= 30.0
-            except Exception:
-                return False
-
-        captured = await _poll_until_async(_capture_check, timeout=45.0, interval=1.0)
-    except Exception as e:
-        # Preserve the launch/capture failure until after the host clock has
-        # been restored and checked below.
-        launch_error = e
-    finally:
-        # 6. Always restore the host clock after a successful shift, including
-        # when launcher setup or NINA raises. Elapsed time comes from the
-        # monotonic anchor: the wall clock was shifted during this window, so
-        # datetime.now() here could fold the simulated delta into the restore
-        # target and silently leave the host on simulated time.
-        elapsed = anyio.current_time() - shift_mono
-        restore_target_dt = real0 + timedelta(seconds=elapsed)
-        # real0 is Windows-host-local and aware, so the target's wall time is
-        # exactly what Set-Date wants; drop the tag without converting through
-        # the MCP host's zone.
-        restore_target_naive = restore_target_dt.replace(tzinfo=None)
-        restore_cmd = restore_set_date_powershell(restore_target_naive.isoformat())
-        _log_payload("start_nina: restore", restore_cmd)
-        restore_argv = ["powershell.exe", "-NoProfile", "-Command", restore_cmd]
-        try:
-            proc = await _run_blocking(restore_argv, timeout=10.0)
-            _raise_for_command_failure(proc, restore_argv, "start_nina: restore")
-        except Exception as e:
-            restore_error = repr(e)
-
-        # 7. Verify restore even if issuing Set-Date raised.
-        async def _restore_check() -> bool:
-            try:
-                host_now = await _read_windows_clock()
-                return abs((host_now - restore_target_dt).total_seconds()) <= 2.0
-            except Exception:
-                return False
-
-        restored = await _poll_until_async(_restore_check, timeout=10.0, interval=0.5)
-        log_extra.append(
-            f"restored host clock to {restore_target_dt.isoformat()} "
-            f"(verified={restored})"
-        )
-
-    if not restored:
-        launch_detail = (
-            f"; launch/capture error={launch_error!r}" if launch_error else ""
-        )
-        raise RuntimeError(
-            f"start_nina failed: host clock did not restore to "
-            f"{restore_target_dt.isoformat()} (restore_error={restore_error!r})"
-            f"{launch_detail}. Manual intervention may be required."
-        ) from launch_error
-    if launch_error is not None:
-        raise RuntimeError(
-            f"start_nina failed during launch/capture: {launch_error!r}. "
-            "Host clock was restored."
-        ) from launch_error
-    if not captured:
-        raise RuntimeError(
-            f"start_nina failed: NINA never captured simulated date {time!r} within 45s. "
-            "Host clock has been restored. Verify NINA launched with get_site_equipment_status()."
-        )
-
-    # 8. Return correct simulated/delta now that host is real.
-    nina_time_info = await get_nina_time()
-
-    summary = "start_nina: " + "; ".join(log_extra)
+    log_extra = ["launching NINA"]
+    await _launch_nina_interactive(nina_exe)
+    log_extra.append(f"launched NINA from {nina_exe}")
+    summary = (
+        "start_nina: launched NINA into interactive desktop session. "
+        "Poll get_site_equipment_status() to confirm readiness."
+    )
     _log_payload("start_nina:", summary)
     try:
         await append_progress_entry("start_nina: " + "; ".join(log_extra))
     except Exception as e:
         _log_payload("start_nina: progress entry failed", repr(e))
-
-    return {
-        "summary": summary,
-        "nina_time": nina_time_info["nina_time"],
-        "host_time": nina_time_info["host_time"],
-        "delta_seconds": nina_time_info["delta_seconds"],
-        "simulated": nina_time_info["simulated"],
-    }
-
-
-async def get_nina_time() -> dict[str, Any]:
-    """Returns NINA's reported time alongside the host OS clock, the signed
-    delta between them (NINA − host), and a ``simulated`` flag (``True`` when
-    |delta| exceeds the configured drift tolerance).
-
-    Use this to detect whether NINA is running on simulated time (``simulated=True``)
-    or real time (``simulated=False`` and ``delta_seconds`` ≈ 0).
-
-    ``nina_time`` and ``host_time`` are timezone-aware ISO 8601 datetimes:
-    ``nina_time`` keeps the UTC offset N.I.N.A.'s Advanced API reports (e.g.
-    ``2026-10-05T12:19:46-05:00``), and ``host_time`` carries the host's local
-    offset. A naive ``/time`` value is interpreted as host-local so both fields
-    are always offset-aware. ``delta_seconds`` is the instant difference
-    ``nina_time − host_time``.
-    """
-    timestamp = await _api_get("/time")
-    nina_dt = datetime.fromisoformat(timestamp)
-    host_dt = datetime.now().astimezone()
-    # Emit an offset-aware value either way: keep N.I.N.A.'s own offset when the
-    # API supplies one, otherwise treat the naive value as host-local.
-    nina_aware = (
-        nina_dt.replace(tzinfo=host_dt.tzinfo) if nina_dt.tzinfo is None else nina_dt
-    )
-    nina_utc = nina_aware.astimezone(UTC)
-    host_utc = host_dt.astimezone(UTC)
-    delta_seconds = (nina_utc - host_utc).total_seconds()
-    return {
-        "nina_time": nina_aware.replace(microsecond=0).isoformat(),
-        "host_time": host_dt.replace(microsecond=0).isoformat(),
-        "delta_seconds": delta_seconds,
-        "simulated": abs(delta_seconds) > DRIFT_TOLERANCE_SECONDS,
-    }
+    return {"summary": summary}
 
 
 @mcp.tool()
 async def get_nina_status() -> dict[str, Any]:
-    """Lightweight NINA lifecycle and clock probe.
+    """Lightweight NINA lifecycle probe.
 
     Liveness is taken from NINA's REST API, which is authoritative and works
     whether NINA runs on this host or a remote one: ``running`` is ``True`` iff
@@ -1544,39 +1248,23 @@ async def get_nina_status() -> dict[str, Any]:
     start/stop NINA (Windows interop present), which is what decides whether
     ``start_nina``/``stop_nina`` will work. Cheaper than
     ``get_site_equipment_status`` (no device probes) and never raises on a down
-    NINA — partial failures degrade to ``None`` fields. Use this before
-    ``start_nina()`` to confirm a previous instance is down, or as a quick
-    "is NINA alive?" check.
+    NINA — the failure degrades to ``running`` ``False`` plus ``probe_error``.
+    Use this before ``start_nina()`` to confirm a previous instance is down, or
+    as a quick "is NINA alive?" check.
 
     Returns a dict with:
     - ``running`` (bool): authoritative liveness — ``GET /time`` answered
     - ``lifecycle_control_available`` (bool): this host has Windows interop, so
       ``start_nina``/``stop_nina`` can operate on NINA
-    - ``nina_time``, ``host_time``, ``delta_seconds``, ``simulated``: same
-      fields as ``get_nina_time()``, populated only when ``running`` is
-      ``True``; otherwise all ``None``
     - ``probe_error`` (str | None): N.I.N.A.'s own failure text when the probe
       failed — why the API looks down, not just that it did. ``None`` when
       ``running`` is ``True``
     - ``summary`` (str): human-readable one-line status, carrying
       ``probe_error`` when there is one
     """
-    running = False
-    nina_time: str | None = None
-    host_time: str | None = None
-    delta_seconds: float | None = None
-    simulated: bool | None = None
-    probe_error: str | None = None
-    try:
-        clock = await get_nina_time()
-        running = True
-        nina_time = clock["nina_time"]
-        host_time = clock["host_time"]
-        delta_seconds = clock["delta_seconds"]
-        simulated = clock["simulated"]
-    except Exception as e:
-        probe_error = str(e)
-        _log_payload("get_nina_status: api probe failed", repr(e))
+    running, probe_error = await _api_probe()
+    if not running and probe_error:
+        _log_payload("get_nina_status: api probe failed", probe_error)
 
     lifecycle_control_available = windows_interop_available()
 
@@ -1590,16 +1278,10 @@ async def get_nina_status() -> dict[str, Any]:
             summary += f" (probe error: {probe_error})"
         if not lifecycle_control_available:
             summary += " (remote; cannot be restarted from here)"
-    if simulated is True:
-        summary += ", on simulated time"
 
     return {
         "running": running,
         "lifecycle_control_available": lifecycle_control_available,
-        "nina_time": nina_time,
-        "host_time": host_time,
-        "delta_seconds": delta_seconds,
-        "simulated": simulated,
         "probe_error": probe_error,
         "summary": summary,
     }

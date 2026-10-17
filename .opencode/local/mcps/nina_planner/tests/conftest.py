@@ -16,7 +16,6 @@ _WINDOWS_INTEROP_EXES = (
     "tasklist.exe",
     "taskkill.exe",
     "schtasks.exe",
-    "powershell.exe",
 )
 
 
@@ -37,9 +36,9 @@ def windows_interop_available() -> bool:
 
     On Windows this is trivially true. Under WSL it requires interop to be
     enabled *and* the Windows binaries (``cmd.exe``, ``tasklist.exe``,
-    ``taskkill.exe``, ``schtasks.exe``, ``powershell.exe``) to be reachable on
-    ``PATH``. Tests that launch or kill NINA depend on this; tests that only
-    talk to the NINA REST API do not.
+    ``taskkill.exe``, ``schtasks.exe``) to be reachable on ``PATH``. Tests that
+    launch or kill NINA depend on this; tests that only talk to the NINA REST
+    API do not.
     """
     if sys.platform == "win32":
         return True
@@ -48,13 +47,8 @@ def windows_interop_available() -> bool:
     return all(shutil.which(exe) for exe in _WINDOWS_INTEROP_EXES)
 
 
-requires_wsl = unittest.skipUnless(
-    _is_wsl(),
-    "requires WSL host-clock behavior; set WSL_INTEROP or run on WSL.",
-)
-
 requires_windows_interop = unittest.skipUnless(
     windows_interop_available(),
-    "requires Windows interop (cmd.exe/tasklist.exe/schtasks.exe/powershell.exe "
+    "requires Windows interop (cmd.exe/tasklist.exe/schtasks.exe "
     "on PATH); REST-only live tests do not need this.",
 )

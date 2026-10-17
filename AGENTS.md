@@ -25,12 +25,8 @@ Multi-target night loop — when triggered (interval check, or a `RUN-FINISHED` 
 6. Append a `PROGRESS.md` entry: target chosen, altitude at start, why it was chosen over others, mosaic pane index and remaining panes if applicable, any caveats. Record completion in `PROGRESS.md` (leave `PLAN.md` untouched — the user may be editing it).
 7. Confirm the sequence is running via `get_sequence_state`, then await the next trigger.
 
-NINA lifecycle and time simulation:
-- `start_nina(time=None)` launches NINA into the interactive desktop session (GUI visible) on the real OS clock (today).
-- `start_nina(time="YYYY-MM-DDTHH:MM:SS")` briefly shifts the Windows host clock so a freshly-launched NINA captures simulated local time during its init, then restores the real OS clock. After the call, the host OS is on real time while NINA continues running on simulated local time.
-- If NINA is already running when `start_nina` is called (with or without `time`), it errors with `"NINA is already running. Call stop_nina() first."`
-- `stop_nina()` terminates `NINA.exe` immediately via taskkill. Use it before launching NINA with a new date or to shut down NINA.
-- `get_nina_status()` reports `running` (REST-API-authoritative liveness), `lifecycle_control_available`, and the clock/simulated fields in one cheap call. `lifecycle_control_available=false` means the MCP server is remote from NINA: `start_nina`/`stop_nina` cannot operate on it, so a down NINA must be restarted on its own host and an already-running NINA cannot be stopped from here.
-- `get_nina_time()` checks whether NINA is on simulated time (`simulated=True` when |delta| > 2 s) or real time.
-- The shift and restore require the calling Windows token to carry `SeSystemtimePrivilege` ("Change the system time"). When running over SSH/WSL the WSL interop token usually inherits the user's interactive Windows token; verify with `/mnt/c/Windows/System32/whoami.exe /priv | grep -i systemtime`.
-- When running on simulated time, treat clock-mismatched timestamps in logs/events as expected. Do not interpret the divergence as a hardware fault.
+NINA lifecycle:
+- `start_nina()` launches NINA into the interactive desktop session (GUI visible) on the current time.
+- If NINA is already running when `start_nina` is called, it errors with `"NINA is already running. Call stop_nina() first."`
+- `stop_nina()` terminates `NINA.exe` immediately via taskkill. Use it to shut down NINA.
+- `get_nina_status()` reports `running` (REST-API-authoritative liveness), `lifecycle_control_available`, and a one-line summary in one cheap call. `lifecycle_control_available=false` means the MCP server is remote from NINA: `start_nina`/`stop_nina` cannot operate on it, so a down NINA must be restarted on its own host and an already-running NINA cannot be stopped from here.

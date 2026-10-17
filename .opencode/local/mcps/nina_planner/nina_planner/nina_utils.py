@@ -85,3 +85,22 @@ def ascom_datetime(value: object) -> datetime | None:
             return None
         return parsed
     return None
+
+
+def to_local_display(dt: datetime) -> str:
+    """Render ``dt`` in the host's local zone, carrying its UTC offset.
+
+    All arithmetic in this package happens on UTC instants (see
+    ``_exposure_instant`` in ``progress.py``); this is the single place a
+    timestamp is turned back into something a person reads. The offset is
+    kept in the output so an unambiguous instant survives — a bare local
+    wall clock would silently mean a different moment depending on the
+    machine that renders it.
+
+    A naive input is taken as already-local (no conversion), matching the
+    "naive means local" reading used everywhere else a wall clock is
+    displayed.
+    """
+    if dt.tzinfo is None:
+        return dt.isoformat(timespec="seconds")
+    return dt.astimezone().isoformat(timespec="seconds")

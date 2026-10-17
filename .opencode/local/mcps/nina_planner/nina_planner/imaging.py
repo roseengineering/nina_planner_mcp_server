@@ -300,6 +300,25 @@ def _norm_ts(value: Any) -> str | None:
     return dt.strftime("%Y-%m-%dT%H:%M:%S.") + f"{milliseconds:03d}Z"
 
 
+def _local_ts(value: Any) -> str | None:
+    """Display form of a timestamp: host-local, carrying the UTC offset.
+
+    Joins and arithmetic stay on the canonical UTC form from :func:`_norm_ts`;
+    this is only for what a person reads back out of the tool. The offset is
+    preserved so the value is still an unambiguous instant. Unparseable input
+    falls through as raw text, exactly as ``_norm_ts`` does, so the display
+    never invents a value the CSV did not have.
+    """
+    utc_text = _norm_ts(value)
+    if utc_text is None:
+        return None
+    try:
+        dt = datetime.fromisoformat(utc_text.replace("Z", "+00:00"))
+    except ValueError:
+        return utc_text
+    return dt.astimezone().isoformat(timespec="milliseconds")
+
+
 def _weather_join_key(row: dict[str, Any]) -> tuple[str, str] | None:
     """Return the stable per-exposure weather join key, if complete."""
     exposure_number = row.get("exposure_number")
@@ -330,8 +349,10 @@ def widen_imaging_metadata(
 
     Identity fields (file_path, exposure_number, exposure_start,
     duration, filter_name, ...) keep their names; exposure_start is the
-    ExposureStartUTC value normalized to milliseconds-precision UTC ISO-8601
-    with a Z suffix, and the naive local ExposureStart column is dropped. Metric
+    ExposureStartUTC value rendered in the host's local time with its UTC
+    offset (e.g. 2026-09-21T21:16:25.000-05:00), and the naive local
+    ExposureStart column is dropped. Every window/join computation still runs
+    on the canonical UTC instant; only this display is converted. Metric
     columns are namespaced by group (quality.hfr, guiding.rms,
     background.adu_mean, ...) and only genuinely varying metrics appear as
     columns: columns whose cleaned values are all identical (constants) move
@@ -341,7 +362,7 @@ def widen_imaging_metadata(
 
     When ``weather_rows`` is given, per-exposure weather samples from
     WeatherData.csv are merged onto each frame by exposure number and its
-    normalized UTC exposure timestamp, and surface as weather.* columns in the
+    canonical UTC exposure timestamp, and surface as weather.* columns in the
     same row (weather.temperature, ...), with weather constants/unpopulated
     listed under their namespaced weather.* names.
     """
@@ -406,7 +427,9 @@ def widen_imaging_metadata(
         for k in id_columns:
             name = _OUTPUT_ID_NAME.get(k, k)
             if k == "exposure_start_utc":
-                out[name] = _norm_ts(row[k])
+                # Canonical UTC for the weather join above; local (with
+                # offset) for the row a person reads.
+                out[name] = _local_ts(row[k])
             else:
                 out[name] = row[k]
         for c in present_metrics:

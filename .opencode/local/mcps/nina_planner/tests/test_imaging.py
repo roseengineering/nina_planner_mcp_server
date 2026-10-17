@@ -2,6 +2,7 @@ import csv
 import os
 import tempfile
 import unittest
+from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath, PureWindowsPath
 from unittest.mock import patch
 
@@ -23,6 +24,23 @@ def _write_csv(path: Path, header: list[str], rows: list[list[str]]):
         writer = csv.writer(f)
         writer.writerow(header)
         writer.writerows(rows)
+
+
+def _assert_local_instant(testcase: unittest.TestCase, rendered: str, utc: str):
+    """``rendered`` is the local-zone display of the UTC instant ``utc``.
+
+    Compares instants rather than strings so the assertions hold in whatever
+    timezone the suite runs; the offset-carrying display itself is checked
+    separately by asserting tzinfo is present.
+    """
+    testcase.assertIsNotNone(
+        datetime.fromisoformat(rendered).tzinfo,
+        f"displayed timestamp must carry an offset: {rendered!r}",
+    )
+    testcase.assertEqual(
+        datetime.fromisoformat(rendered),
+        datetime.fromisoformat(utc.replace("Z", "+00:00")).astimezone(UTC),
+    )
 
 
 class ReadImagingCsvTest(unittest.TestCase):
@@ -388,9 +406,15 @@ class MeltImagingMetadataTest(unittest.TestCase):
         self.assertEqual(res["rows"][1]["exposure_number"], "1")
 
     def test_exposure_start_normalized_utc(self):
+        # Displayed in the host's local zone with the offset kept; the
+        # instant behind it is still the CSV's ExposureStartUTC.
         res = widen_imaging_metadata(self._rows())
-        self.assertEqual(res["rows"][0]["exposure_start"], "2026-09-22T02:16:25.000Z")
-        self.assertEqual(res["rows"][1]["exposure_start"], "2026-09-22T02:17:25.000Z")
+        _assert_local_instant(
+            self, res["rows"][0]["exposure_start"], "2026-09-22T02:16:25.000Z"
+        )
+        _assert_local_instant(
+            self, res["rows"][1]["exposure_start"], "2026-09-22T02:17:25.000Z"
+        )
         self.assertNotIn("exposure_start_utc", res["rows"][0])
         self.assertNotIn("exposure_start_utc", res["rows"][1])
 
@@ -532,7 +556,16 @@ class MeltWeatherTest(unittest.TestCase):
 
         res = widen_imaging_metadata(rows, weather_rows=weather)
 
-        self.assertEqual(res["rows"][0]["exposure_start"], "2026-09-22T02:16:25.123Z")
+        _assert_local_instant(
+            self, res["rows"][0]["exposure_start"], "2026-09-22T02:16:25.123Z"
+        )
+        # Sub-millisecond precision is truncated before display, so the
+        # render carries exactly .123 (not .1234) — verified timezone-
+        # independently via the microseconds component.
+        self.assertEqual(
+            datetime.fromisoformat(res["rows"][0]["exposure_start"]).microsecond,
+            123000,
+        )
         self.assertEqual(res["summary"]["constants"]["weather.temperature"], 24.5)
 
     def test_weather_constant_goes_to_summary(self):
@@ -548,8 +581,12 @@ class MeltWeatherTest(unittest.TestCase):
         res = widen_imaging_metadata(self._rows(), weather_rows=self._weather())
         self.assertEqual(len(res["rows"]), 2)
         self.assertEqual(res["rows"][0]["file_path"], "/d/2026-09-21/LIGHT/a.fits")
-        self.assertEqual(res["rows"][0]["exposure_start"], "2026-09-22T02:16:25.000Z")
-        self.assertEqual(res["rows"][1]["exposure_start"], "2026-09-22T02:17:25.000Z")
+        _assert_local_instant(
+            self, res["rows"][0]["exposure_start"], "2026-09-22T02:16:25.000Z"
+        )
+        _assert_local_instant(
+            self, res["rows"][1]["exposure_start"], "2026-09-22T02:17:25.000Z"
+        )
 
     def test_unmatched_weather_frame_gets_no_weather(self):
         weather = self._weather()
@@ -573,7 +610,9 @@ class MeltWeatherTest(unittest.TestCase):
         self.assertNotIn("temperature", res["summary"].get("constants", {}))
         self.assertNotIn("weather.temperature", res["rows"][0])
         self.assertEqual(res["rows"][0]["file_path"], "/d/2026-09-21/LIGHT/a.fits")
-        self.assertEqual(res["rows"][0]["exposure_start"], "2026-09-22T02:16:25.000Z")
+        _assert_local_instant(
+            self, res["rows"][0]["exposure_start"], "2026-09-22T02:16:25.000Z"
+        )
 
 
 class NormTsTest(unittest.TestCase):

@@ -1,12 +1,13 @@
 from __future__ import annotations
 
 import math
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import anyio
 
 from .models.plan import ObservationPlan
+from .nina_utils import to_local_display
 
 __all__ = [
     "filter_metadata_rows",
@@ -141,6 +142,28 @@ def _quality_accepted(
     return True
 
 
+def _exposure_instant(row: dict[str, Any]) -> datetime | None:
+    """The row's exposure start as a naive UTC instant, or ``None``.
+
+    Reads the CSV's ``ExposureStartUTC`` column — the only timestamp this
+    module trusts. The naive local ``ExposureStart`` column is deliberately
+    ignored: mixing the two in one window comparison would shift frames by
+    the UTC offset, so a row without a usable UTC stamp simply does not
+    count. Any offset that is present is converted to UTC, then dropped, so
+    every instant this module compares is naive UTC.
+    """
+    raw = row.get("exposure_start_utc")
+    if raw is None or raw == "":
+        return None
+    try:
+        stamp = datetime.fromisoformat(str(raw).strip().replace("Z", "+00:00"))
+    except (TypeError, ValueError):
+        return None
+    if stamp.tzinfo is not None:
+        stamp = stamp.astimezone(UTC).replace(tzinfo=None)
+    return stamp
+
+
 def _session_start(
     plan: ObservationPlan,
     rows: list[dict[str, Any]],
@@ -153,7 +176,7 @@ def _session_start(
     either side. Anchoring to the plan's own (fixed) light session rather
     than a moving "now" means calibration acquired for the session stays
     valid, instead of expiring and being re-acquired on every later run.
-    Timezone offsets are dropped, matching :func:`_within_age`.
+    The instant is naive UTC, matching :func:`_within_age`.
     """
     stamps: list[datetime] = []
     for row in rows:
@@ -161,14 +184,9 @@ def _session_start(
             continue
         if not _light_target_matches(plan, row, pointing_index=pointing_index):
             continue
-        raw = row.get("exposure_start")
-        if raw is None or raw == "":
-            continue
-        try:
-            stamp = datetime.fromisoformat(str(raw).strip())
-        except (TypeError, ValueError):
-            continue
-        stamps.append(stamp.replace(tzinfo=None) if stamp.tzinfo else stamp)
+        stamp = _exposure_instant(row)
+        if stamp is not None:
+            stamps.append(stamp)
     return min(stamps) if stamps else None
 
 
@@ -188,24 +206,18 @@ def _within_age(
     shot a week before the first light counts, one shot a week after it
     counts, and one shot a month after it does not.
 
-    Both times are on N.I.N.A.'s clock; any timezone offset is dropped rather
-    than converted, so the comparison is host-timezone independent.
+    Both instants are naive UTC (see :func:`_exposure_instant`), so the
+    comparison is independent of both N.I.N.A.'s timezone and the host's.
     """
     if max_age_days is None:
         return True
     if session_start is None:
         return True
-    raw = row.get("exposure_start")
-    if raw is None or raw == "":
+    shot_at = _exposure_instant(row)
+    if shot_at is None:
         return False
-    try:
-        shot_at = datetime.fromisoformat(str(raw).strip())
-    except (TypeError, ValueError):
-        return False
-    if shot_at.tzinfo is not None:
-        shot_at = shot_at.replace(tzinfo=None)
     if session_start.tzinfo is not None:
-        session_start = session_start.replace(tzinfo=None)
+        session_start = session_start.astimezone(UTC).replace(tzinfo=None)
     window = timedelta(days=max_age_days)
     return session_start - window <= shot_at <= session_start + window
 
@@ -312,7 +324,9 @@ def filter_metadata_rows(
         specs = [(None, None)]
     else:
         return []
-    session_start = _session_start(plan, rows, pointing_index) or now or datetime.now()
+    session_start = (
+        _session_start(plan, rows, pointing_index) or now or datetime.now(UTC)
+    )
     out: list[dict[str, Any]] = []
     for row in rows:
         for filter_name, exposure in specs:
@@ -355,13 +369,18 @@ def plan_progress(
       otherwise re-trigger acquisition on every later run).
 
     Calibration group items therefore also carry ``window_open`` (bool) and
-    ``window_end`` (naive ISO timestamp of ``anchor + window`` on N.I.N.A.'s
-    local clock), so a zero remaining can be told apart from a finished plan.
+    ``window_end`` (the window's upper bound, ``anchor + window``, rendered in
+    the host's local time with its UTC offset — the arithmetic behind it runs
+    on naive UTC), so a zero remaining can be told apart from a finished plan.
     Light items carry neither.
     """
-    reference_now = now or datetime.now()
+    # `now` defaults to the host clock in UTC; an aware caller value is
+    # converted to UTC, and a naive one is taken as already-UTC — the same
+    # convention `_exposure_instant` applies to the CSV stamps, so the two
+    # sides of the window comparison always share one clock.
+    reference_now = now or datetime.now(UTC)
     if reference_now.tzinfo is not None:
-        reference_now = reference_now.replace(tzinfo=None)
+        reference_now = reference_now.astimezone(UTC).replace(tzinfo=None)
     session_start = _session_start(plan, rows, pointing_index) or reference_now
     window = timedelta(days=plan.calibration_window_days)
     window_open = session_start - window <= reference_now <= session_start + window
@@ -394,7 +413,9 @@ def plan_progress(
             }
             if image_type != "LIGHT":
                 item["window_open"] = window_open
-                item["window_end"] = window_end.isoformat(timespec="seconds")
+                # window_end is a naive-UTC instant; attach UTC so it renders
+                # in the host's local zone with the offset kept.
+                item["window_end"] = to_local_display(window_end.replace(tzinfo=UTC))
                 if not window_open:
                     item["remaining_count"] = 0
             out.append(item)

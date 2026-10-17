@@ -100,7 +100,6 @@ class LiveNinaTest(unittest.TestCase):
         self.assertIsInstance(result, dict)
         self.assertIn("running", result)
         self.assertIn("lifecycle_control_available", result)
-        self.assertIn("simulated", result)
 
     # @pytest.mark.skip
     @requires_windows_interop

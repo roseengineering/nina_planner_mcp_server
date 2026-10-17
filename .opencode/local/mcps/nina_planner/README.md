@@ -59,8 +59,7 @@ Or register it with your MCP client, for example in OpenCode:
   inspect and control the running sequence
 
 **N.I.N.A. lifecycle**
-- `start_nina` / `stop_nina` / `get_nina_status` — launch, terminate, and probe N.I.N.A.,
-  including simulated-time starts for planning on a shifted clock
+- `start_nina` / `stop_nina` / `get_nina_status` — launch, terminate, and probe N.I.N.A.
 
 **Diagnostics**
 - `get_events` / `get_logs` — recent N.I.N.A. events and application log entries
