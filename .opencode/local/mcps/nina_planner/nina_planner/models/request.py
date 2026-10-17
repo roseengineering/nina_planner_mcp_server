@@ -58,9 +58,9 @@ class SequenceRequest(BaseModel):
         ge=1,
         description=(
             "1-based pointing of the plan to load; lights only (default 1 when "
-            "omitted). Lights embed `({base_plan_id}-{pointing_index})` in the "
+            "omitted). Lights embed `[{base_plan_id}-{pointing_index}]` in the "
             "target name so each pointing's frames are attributed independently "
-            "(the bare `({base_plan_id})` for a single-pointing plan). Must be "
+            "(the bare `[{base_plan_id}]` for a single-pointing plan). Must be "
             "omitted for `dark`/`bias`/`flat`: calibration is plan-level — its "
             "remaining is computed for the whole plan, not per pointing — and "
             "passing an index there is rejected."

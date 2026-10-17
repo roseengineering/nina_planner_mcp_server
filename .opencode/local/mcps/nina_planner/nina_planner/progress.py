@@ -73,19 +73,24 @@ def _light_target_matches(
         return False
 
     components = _path_components(path)
-    expected_tokens = [plan.attribution_token(pointing_index)]
+    # Both the current square-bracket token and the legacy parenthesised
+    # form (frames shot before the switch) count, in both the plan-level
+    # and the historically-stamped per-pointing shape.
+    base = plan.effective_plan_id(pointing_index)
+    expected_tokens = [f"[{base}]", f"({base})"]
     if len(plan.pointings) == 1 and pointing_index == 1:
         # Legacy: single-pointing plans historically stamped the per-pointing
-        # token ("({base}-1)"); frames acquired under it still count.
-        expected_tokens.append(f"({plan.per_pointing_plan_id(1)})")
+        # token ("{base}-1"); frames acquired under it still count.
+        per_pointing = plan.per_pointing_plan_id(1)
+        expected_tokens += [f"[{per_pointing}]", f"({per_pointing})"]
 
     # Substring match on purpose — any single path segment may carry the
-    # token. The token set is safe across pointings only because tokens are
-    # parenthesised: the closing ")" keeps "(plan-x)" out of "(plan-x-1)",
-    # and "(plan-x-1)" out of "(plan-x-10)". Do not drop the parens or match
-    # a bare unparenthesised id here — mosaics with >=10 pointings would
-    # silently absorb each other's frames (see the
-    # test_light_target_matches_*_paren regression tests).
+    # token. The token set is safe across pointings only because every form
+    # is delimited: the closing "]" keeps "[plan-x]" out of "[plan-x-1]",
+    # and "[plan-x-1]" out of "[plan-x-10]" (same for the "(" ")" forms).
+    # Do not drop the delimiters or match a bare un-delimited id here —
+    # mosaics with >=10 pointings would silently absorb each other's frames
+    # (see the test_light_target_matches_* regression tests).
     return any(
         token in component for token in expected_tokens for component in components
     )

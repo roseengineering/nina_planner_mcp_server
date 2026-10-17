@@ -171,14 +171,15 @@ class ObservationPlan(BaseModel):
     def attribution_token(self, pointing_index: int) -> str:
         """Target-name token stamped on frames so they attribute to a pointing.
 
-        Parenthesised because WebDAV mangles square brackets in target names.
-        The closing paren also keeps tokens from substring-matching each
-        other: ``(plan-x)`` never appears inside ``(plan-x-1)``, nor
-        ``(plan-x-1)`` inside ``(plan-x-10)``.
+        The closing bracket keeps tokens from substring-matching each
+        other: ``[plan-x]`` never appears inside ``[plan-x-1]``, nor
+        ``[plan-x-1]`` inside ``[plan-x-10]``. Attribution also accepts the
+        legacy parenthesised form (frames shot before the token switched to
+        square brackets) — see ``progress._light_target_matches``.
         """
-        return f"({self.effective_plan_id(pointing_index)})"
+        return f"[{self.effective_plan_id(pointing_index)}]"
 
     def plan_token(self) -> str:
         """Plan-level target-name token, used for calibration (darks/bias/
         flats): calibration belongs to the whole plan, not to any pane."""
-        return f"({self._base_plan_id()})"
+        return f"[{self._base_plan_id()}]"

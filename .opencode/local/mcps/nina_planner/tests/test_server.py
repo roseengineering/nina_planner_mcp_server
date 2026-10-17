@@ -1506,7 +1506,7 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
             "filter_name": "L",
             "duration": "60.0",
             "exposure_start": "2020-01-01 20:00:00",
-            "file_path": "C:/NINA/LIGHT/M31 (plan-test123-1)__60.00s_0000.fits",
+            "file_path": "C:/NINA/LIGHT/M31 [plan-test123-1]__60.00s_0000.fits",
         }
 
         with tempfile.TemporaryDirectory() as tmp:
@@ -2074,8 +2074,8 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
         steps = _target_items(payload)
         self.assertEqual(len(steps), 2, "one container per request, in order")
         self.assertTrue(all("DeepSkyObjectContainer" in s["$type"] for s in steps))
-        self.assertIn("(plan-test123-1)", steps[0]["Target"]["TargetName"])
-        self.assertIn("(plan-test123-2)", steps[1]["Target"]["TargetName"])
+        self.assertIn("[plan-test123-1]", steps[0]["Target"]["TargetName"])
+        self.assertIn("[plan-test123-2]", steps[1]["Target"]["TargetName"])
 
         end_types = [
             i["$type"] for i in payload["Items"]["$values"][2]["Items"]["$values"]
@@ -2107,7 +2107,7 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(api_post.await_count, 1)
         steps = _target_items(api_post.await_args.args[1])
         self.assertEqual(len(steps), 1)
-        self.assertIn("(plan-test123-2)", steps[0]["Target"]["TargetName"])
+        self.assertIn("[plan-test123-2]", steps[0]["Target"]["TargetName"])
 
         self.assertIn("request[0]: `light` pointing 1 is complete", result)
         self.assertIn("nothing to load", result)
@@ -3110,6 +3110,38 @@ class ScreenshotDashboardTest(unittest.IsolatedAsyncioTestCase):
                 await screenshot_dashboard()
 
         # Decoding happens before anything is written, so no partial file is left.
+        self.assertEqual(list(self.out_dir.iterdir()), [])
+
+    async def test_empty_payload_raises(self):
+        from nina_planner.server import screenshot_dashboard
+
+        for payload in ("", "   \n"):
+            with self.subTest(payload=payload):
+                with patch(
+                    "nina_planner.server._api_get",
+                    AsyncMock(side_effect=["imaging tab switched", payload]),
+                ):
+                    with self.assertRaisesRegex(
+                        RuntimeError, "returned no base64 screenshot"
+                    ):
+                        await screenshot_dashboard()
+
+                # An empty payload decodes to b"" silently, so without this
+                # guard the tool would write a 0-byte PNG and report success.
+                self.assertEqual(list(self.out_dir.iterdir()), [])
+
+    async def test_non_text_payload_raises(self):
+        from nina_planner.server import screenshot_dashboard
+
+        # The response envelope carries no "Response" field, so _api_get
+        # hands back the dict default — not base64 text.
+        with patch(
+            "nina_planner.server._api_get",
+            AsyncMock(side_effect=["imaging tab switched", {}]),
+        ):
+            with self.assertRaisesRegex(RuntimeError, r"got dict: \{\}"):
+                await screenshot_dashboard()
+
         self.assertEqual(list(self.out_dir.iterdir()), [])
 
 

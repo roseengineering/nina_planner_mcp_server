@@ -734,9 +734,8 @@ def acquisition_container(
     from the End area instead.
 
     The tag lives only in the event text, never in ``target``: the target
-    name is what ``$$TARGETNAME$$`` writes into the file path, and square
-    brackets are mangled there (which is why ``attribution_token`` uses
-    parentheses), so a tagged name would split the frame folder.
+    name is what ``$$TARGETNAME$$`` writes into the file path, so a tagged
+    name would bake the frame kind into every folder and file it touches.
     """
     return container_deepsky(
         name=name,
