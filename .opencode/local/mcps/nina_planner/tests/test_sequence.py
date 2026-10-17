@@ -280,7 +280,9 @@ class ReferenceNormalizationTest(unittest.TestCase):
 
 
 class PointingIndexValidationTest(unittest.TestCase):
-    """Covers line 838 in sequence.py: pointing_index out-of-range."""
+    """pointing_index out-of-range on the lights path: both the payload and
+    the container builder it delegates to raise ValueError naming the index,
+    the pointing count, and the valid range — never a bare IndexError."""
 
     def test_pointing_index_zero_raises(self):
         from nina_planner.sequence import build_sequence_lights
@@ -304,6 +306,54 @@ class PointingIndexValidationTest(unittest.TestCase):
                 equipment=ObservatoryEquipment(),
                 profile=_profile(),
                 pointing_index=99,
+            )
+
+    def test_sequence_deepsky_rejects_out_of_range_index(self):
+        """sequence_deepsky is the one place that indexes plan.pointings by a
+        caller-supplied index, so it validates even when called directly
+        (not only via target_payload_lights)."""
+        from nina_planner.sequence import sequence_deepsky
+
+        plan = _plan()
+        for bad in (0, -1, 99):
+            with self.assertRaises(ValueError) as ctx:
+                sequence_deepsky(plan, instructions=[], pointing_index=bad)
+            self.assertIn(
+                f"pointing_index={bad} out of range (plan has 1 pointings; valid 1..1)",
+                str(ctx.exception),
+            )
+
+    def test_sequence_deepsky_accepts_valid_index(self):
+        from nina_planner.sequence import sequence_deepsky
+
+        plan = _plan()
+        result = sequence_deepsky(plan, instructions=[], pointing_index=1)
+        self.assertEqual(len(_deepsky_targets(result)), 1)
+
+    def test_empty_pointings_raises_value_error_not_index_error(self):
+        """An empty pointings list reports a range error, not IndexError.
+
+        ObservationPlan forbids the empty list (min_length=1); clearing it
+        directly is what reaches this defensive branch."""
+        from nina_planner.sequence import build_sequence_lights, sequence_deepsky
+
+        plan = _plan()
+        plan.pointings = []
+        calls = [
+            lambda: sequence_deepsky(plan, instructions=[], pointing_index=1),
+            lambda: build_sequence_lights(
+                plan,
+                equipment=ObservatoryEquipment(),
+                profile=_profile(),
+                pointing_index=1,
+            ),
+        ]
+        for call in calls:
+            with self.assertRaises(ValueError) as ctx:
+                call()
+            self.assertIn(
+                "pointing_index=1 out of range (plan has 0 pointings",
+                str(ctx.exception),
             )
 
 
@@ -610,6 +660,53 @@ class SequenceBuildersTest(unittest.TestCase):
             # it in the file path and split the folder.
             dsos = _deepsky_targets(payload)
             self.assertEqual(dsos[0]["Target"]["TargetName"], "M31 (plan-test123)")
+
+    def test_calibration_builds_with_empty_pointings(self):
+        """Calibration never indexes by pointing_index, so an empty pointings
+        list builds cleanly — no bare IndexError — and falls back to the
+        decorative 0/0 coordinates with the plan-level token.
+
+        ObservationPlan forbids the empty list (min_length=1); clearing it
+        directly is what reaches this defensive branch in
+        sequence_calibration."""
+        from nina_planner.sequence import build_sequence_darks, build_sequence_flats
+
+        plan = self._plan()
+        plan.pointings = []
+        equipment = ObservatoryEquipment()
+        results = [
+            build_sequence_darks(plan, equipment=equipment, profile=self._profile()),
+            build_sequence_darks(
+                plan, equipment=equipment, profile=self._profile(), bias=True
+            ),
+            build_sequence_flats(
+                plan, equipment=equipment, profile=self._profile(), dusk=False
+            ),
+            build_sequence_flats(
+                plan, equipment=equipment, profile=self._profile(), dusk=True
+            ),
+        ]
+        for result in results:
+            dsos = _deepsky_targets(result)
+            self.assertEqual(len(dsos), 1)
+            target = dsos[0]["Target"]
+            coords = target["InputCoordinates"]
+            self.assertEqual(
+                (coords["RAHours"], coords["RAMinutes"], coords["RASeconds"]),
+                (0, 0, 0),
+            )
+            self.assertEqual(
+                (
+                    coords["DecDegrees"],
+                    coords["DecMinutes"],
+                    coords["DecSeconds"],
+                    coords["NegativeDec"],
+                ),
+                (0, 0, 0, False),
+            )
+            self.assertEqual(target["PositionAngle"], 0)
+            # still the plan-level token: no pane suffix to append
+            self.assertEqual(target["TargetName"], "M31 (plan-test123)")
 
 
 def _find_items(d: Any, type_substring: str) -> list[dict]:

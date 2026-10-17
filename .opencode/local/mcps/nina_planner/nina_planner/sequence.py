@@ -3,6 +3,7 @@ from typing import Any, cast
 
 from .models.observatory import ObservatoryEquipment
 from .models.plan import ObservationPlan
+from .models.pointing import Pointing
 from .models.profile import ObservatoryProfile
 
 NINA_FLATS_ALTITUDE = float(os.environ.get("NINA_FLATS_ALTITUDE", "80"))
@@ -752,6 +753,26 @@ def acquisition_container(
     )
 
 
+def _validated_pointing(plan: ObservationPlan, pointing_index: int) -> Pointing:
+    """Resolve a caller-supplied 1-based ``pointing_index`` to its pointing.
+
+    The one place ``plan.pointings`` is indexed by an index we do not
+    control: a bare ``plan.pointings[pointing_index - 1]`` surfaces as a
+    bare ``IndexError`` (or, on an empty list, an inscrutable one), so both
+    ``sequence_deepsky`` and ``target_payload_lights`` go through here and
+    get a ``ValueError`` naming the index, the pointing count, and the valid
+    range instead. Plan-level calibration never calls this: it does not take
+    a ``pointing_index`` at all (see ``sequence_calibration``).
+    """
+    if pointing_index < 1 or pointing_index > len(plan.pointings):
+        raise ValueError(
+            f"pointing_index={pointing_index} out of range "
+            f"(plan has {len(plan.pointings)} pointings; "
+            f"valid 1..{len(plan.pointings)})"
+        )
+    return plan.pointings[pointing_index - 1]
+
+
 def sequence_deepsky(
     plan: ObservationPlan, instructions: list, pointing_index: int = 1
 ) -> dict[str, Any]:
@@ -761,7 +782,7 @@ def sequence_deepsky(
     without touching the target name — informational only, like every
     ``ACQUISITION-*`` segment event (see ``acquisition_container``).
     """
-    pointing = plan.pointings[pointing_index - 1]
+    pointing = _validated_pointing(plan, pointing_index)
     prefix = f"{plan.target} - {pointing.label}" if pointing.label else plan.target
     target = f"{prefix} {plan.attribution_token(pointing_index)}"
     posang = 0 if pointing.position_angle_deg is None else pointing.position_angle_deg
@@ -1088,13 +1109,7 @@ def target_payload_lights(
     conditions, and triggers. Each safetynet unparks as needed, so a lights
     step follows a parked gap (or parked darks) without extra help.
     """
-    if pointing_index < 1 or pointing_index > len(plan.pointings):
-        raise ValueError(
-            f"pointing_index={pointing_index} out of range "
-            f"(plan has {len(plan.pointings)} pointings; "
-            f"valid 1..{len(plan.pointings)})"
-        )
-    pointing = plan.pointings[pointing_index - 1]
+    pointing = _validated_pointing(plan, pointing_index)
     reference_filter_name = plan.autofocus.reference_filter_name
     reference_filter_position = profile.filter_position(reference_filter_name)
     name_park = "Park Unless in View"
