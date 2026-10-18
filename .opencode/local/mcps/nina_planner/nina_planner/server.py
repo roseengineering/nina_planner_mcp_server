@@ -1,7 +1,7 @@
 """MCP entry point: importing the tool modules registers their tools on ``mcp``."""
 
 from .app import mcp
-from .tools import equipment, lifecycle, plans, sequence
+from .tools import equipment, lifecycle, plans, sequence, sky
 from .tools.equipment import (
     get_events,
     get_logs,
@@ -18,6 +18,7 @@ from .tools.plans import (
     write_mosaic_plan,
     write_plan_file,
 )
+from .tools.sky import resolve_target, target_altitudes
 from .tools.sequence import (
     get_sequence_state,
     load_sequence,
@@ -40,13 +41,16 @@ __all__ = [
     "load_sequence",
     "mcp",
     "plans",
+    "resolve_target",
     "screenshot_dashboard",
     "sequence",
+    "sky",
     "start_nina",
     "start_sequence",
     "stop_nina",
     "stop_sequence",
     "switch_site_profile",
+    "target_altitudes",
     "write_mosaic_plan",
     "write_plan_file",
 ]
