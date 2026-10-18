@@ -27,8 +27,6 @@ nina_planner
 
 Or register it with your MCP client, for example in OpenCode:
 
-`nina_planner` is an MCP server and can be used by MCP-compatible coding agents. The separate `nina-notify` plugin is OpenCode-specific; it is not an MCP server and cannot be loaded by other coding agents.
-
 ```json
 {
   "mcp": {
