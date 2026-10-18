@@ -273,19 +273,3 @@ def _sequence_with_steps(
             sequence_end(equipment, step_count=step_count),
         ]
     )
-
-
-def sequence_root(
-    equipment: ObservatoryEquipment, instructions: list[Any] | None = None
-) -> dict[str, Any]:
-    steps = [] if instructions is None else instructions
-    # These callers build exactly one step (one request entry) — or none, for
-    # the stow.
-    return _sequence_with_steps(equipment, steps, 1 if steps else 0)
-
-
-## TEARDOWN
-#
-# The plan-less whole sequence: an empty target area makes the End area run
-# straight away, so it completes within one bounded "On Safe" wait instead of
-# idling on the enclosure until sunrise (see test_end_area_waits_three_minutes_*).

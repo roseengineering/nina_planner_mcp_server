@@ -1,14 +1,14 @@
-import json
 import unittest
 from dataclasses import dataclass
 from typing import Any
+
+from sequence_helpers import build_sequence_lights
 
 from nina_planner.models.camera import CameraDevice
 from nina_planner.models.mount import MountDevice
 from nina_planner.models.observatory import ObservatoryEquipment
 from nina_planner.models.plan import ObservationPlan
 from nina_planner.models.profile import FilterInfo, ObservatoryProfile
-from nina_planner.sequence import build_sequence_lights
 
 
 def _plan(**overrides):
@@ -285,7 +285,7 @@ class PointingIndexValidationTest(unittest.TestCase):
     the pointing count, and the valid range — never a bare IndexError."""
 
     def test_pointing_index_zero_raises(self):
-        from nina_planner.sequence import build_sequence_lights
+        from sequence_helpers import build_sequence_lights
 
         plan = _plan()
         with self.assertRaises(ValueError):
@@ -297,7 +297,7 @@ class PointingIndexValidationTest(unittest.TestCase):
             )
 
     def test_pointing_index_too_high_raises(self):
-        from nina_planner.sequence import build_sequence_lights
+        from sequence_helpers import build_sequence_lights
 
         plan = _plan()
         with self.assertRaises(ValueError):
@@ -335,7 +335,9 @@ class PointingIndexValidationTest(unittest.TestCase):
 
         ObservationPlan forbids the empty list (min_length=1); clearing it
         directly is what reaches this defensive branch."""
-        from nina_planner.sequence import build_sequence_lights, sequence_deepsky
+        from sequence_helpers import build_sequence_lights
+
+        from nina_planner.sequence import sequence_deepsky
 
         plan = _plan()
         plan.pointings = []
@@ -530,17 +532,17 @@ class SequenceBuildersTest(unittest.TestCase):
         return _profile()
 
     def test_build_sequence_teardown(self):
-        """build_sequence_stow loads sequence_root(): the three sequence
-        areas, with stowing and warming carried by the End area."""
-        from nina_planner.sequence import sequence_root
+        """The stow (an empty request list): the three sequence areas, with
+        stowing and warming carried by the End area."""
+        from nina_planner.sequence import build_sequence_many
 
-        result = sequence_root(ObservatoryEquipment())
+        result = build_sequence_many(ObservatoryEquipment(), [])
         self.assertIsInstance(result, dict)
         areas = [item.get("Name") for item in result["Items"]["$values"]]
         self.assertEqual(areas, ["Start Sequence", "Target Sequence", "End Sequence"])
 
     def test_build_sequence_stow_parks_then_warms(self):
-        from nina_planner.sequence import build_sequence_stow
+        from sequence_helpers import build_sequence_stow
 
         result = build_sequence_stow(_stow_equipment())
 
@@ -555,7 +557,7 @@ class SequenceBuildersTest(unittest.TestCase):
         self.assertTrue(_find_items(result, "WarmCamera"), "stow then warms")
 
     def test_build_sequence_darks(self):
-        from nina_planner.sequence import build_sequence_darks
+        from sequence_helpers import build_sequence_darks
 
         plan = self._plan()
         result = build_sequence_darks(
@@ -564,7 +566,7 @@ class SequenceBuildersTest(unittest.TestCase):
         self.assertIsInstance(result, dict)
 
     def test_build_sequence_darks_with_bias(self):
-        from nina_planner.sequence import build_sequence_darks
+        from sequence_helpers import build_sequence_darks
 
         plan = self._plan()
         result = build_sequence_darks(
@@ -573,7 +575,7 @@ class SequenceBuildersTest(unittest.TestCase):
         self.assertIsInstance(result, dict)
 
     def test_build_sequence_flats_dawn(self):
-        from nina_planner.sequence import build_sequence_flats
+        from sequence_helpers import build_sequence_flats
 
         plan = self._plan()
         result = build_sequence_flats(
@@ -585,7 +587,7 @@ class SequenceBuildersTest(unittest.TestCase):
         self.assertIsInstance(result, dict)
 
     def test_build_sequence_flats_dusk(self):
-        from nina_planner.sequence import build_sequence_flats
+        from sequence_helpers import build_sequence_flats
 
         plan = self._plan()
         result = build_sequence_flats(
@@ -597,7 +599,7 @@ class SequenceBuildersTest(unittest.TestCase):
         self.assertIsInstance(result, dict)
 
     def test_flats_container_is_plan_level_with_kind_name(self):
-        from nina_planner.sequence import build_sequence_flats
+        from sequence_helpers import build_sequence_flats
 
         plan = self._plan()
         for dusk, kind in ((False, "Dawn Flats"), (True, "Dusk Flats")):
@@ -616,7 +618,9 @@ class SequenceBuildersTest(unittest.TestCase):
             self.assertEqual(dsos[0]["Name"], kind)
 
     def test_calibration_events_carry_kind_tag_but_target_does_not(self):
-        from nina_planner.sequence import build_sequence_flats, target_payload_darks
+        from sequence_helpers import build_sequence_flats
+
+        from nina_planner.sequence import target_payload_darks
 
         plan = self._plan()
         equipment = ObservatoryEquipment()
@@ -669,7 +673,7 @@ class SequenceBuildersTest(unittest.TestCase):
         ObservationPlan forbids the empty list (min_length=1); clearing it
         directly is what reaches this defensive branch in
         sequence_calibration."""
-        from nina_planner.sequence import build_sequence_darks, build_sequence_flats
+        from sequence_helpers import build_sequence_darks, build_sequence_flats
 
         plan = self._plan()
         plan.pointings = []
@@ -887,7 +891,7 @@ class SequenceBehaviorTest(unittest.TestCase):
     def test_single_step_sequence_brackets_its_one_step(self):
         """The Start/End run bracket wraps a one-entry load too, and stays
         out of the Target area, which holds exactly the step."""
-        from nina_planner.sequence import build_sequence_lights
+        from sequence_helpers import build_sequence_lights
 
         result = build_sequence_lights(
             self._plan(), equipment=ObservatoryEquipment(), profile=_profile()
@@ -1190,7 +1194,7 @@ class SequenceBehaviorTest(unittest.TestCase):
         )
 
     def test_darks_uses_dark_image_type(self):
-        from nina_planner.sequence import build_sequence_darks
+        from sequence_helpers import build_sequence_darks
 
         plan = self._plan()
         result = build_sequence_darks(
@@ -1203,7 +1207,7 @@ class SequenceBehaviorTest(unittest.TestCase):
         self.assertTrue(all(t["ImageType"] == "DARK" for t in takes))
 
     def test_darks_with_bias_flag_uses_bias_image_type(self):
-        from nina_planner.sequence import build_sequence_darks
+        from sequence_helpers import build_sequence_darks
 
         plan = self._plan()
         result = build_sequence_darks(
@@ -1216,7 +1220,7 @@ class SequenceBehaviorTest(unittest.TestCase):
 
     def test_darks_switch_to_the_profiles_dark_filter(self):
         """The Dark filter's position comes from the profile, not a hardcode."""
-        from nina_planner.sequence import build_sequence_darks
+        from sequence_helpers import build_sequence_darks
 
         plan = self._plan()
         for bias in (False, True):
@@ -1235,7 +1239,7 @@ class SequenceBehaviorTest(unittest.TestCase):
     def test_darks_cover_variant_wraps_exposures_in_the_cover(self):
         """The cover method closes the motorized cover, exposes with the
         wheel untouched, then reopens — and needs no `Dark` filter slot."""
-        from nina_planner.sequence import build_sequence_darks
+        from sequence_helpers import build_sequence_darks
 
         plan = self._plan()
         no_dark_slot = _profile().model_copy(
@@ -1268,7 +1272,7 @@ class SequenceBehaviorTest(unittest.TestCase):
     def test_darks_shutter_variant_exposes_without_filter_wheel_or_cover(self):
         """The shutter method exposes with the wheel untouched and no cover,
         relying on the camera's shutter — and needs no `Dark` filter slot."""
-        from nina_planner.sequence import build_sequence_darks
+        from sequence_helpers import build_sequence_darks
 
         plan = self._plan()
         no_dark_slot = _profile().model_copy(
@@ -1295,7 +1299,7 @@ class SequenceBehaviorTest(unittest.TestCase):
             self.assertTrue(all(t["ImageType"] == expected for t in takes))
 
     def test_darks_reject_an_unknown_variant(self):
-        from nina_planner.sequence import build_sequence_darks
+        from sequence_helpers import build_sequence_darks
 
         with self.assertRaises(ValueError) as ctx:
             build_sequence_darks(
@@ -1307,7 +1311,7 @@ class SequenceBehaviorTest(unittest.TestCase):
         self.assertIn("lens", str(ctx.exception))
 
     def test_darks_start_area_parks_scope_when_mount_can_park(self):
-        from nina_planner.sequence import build_sequence_darks
+        from sequence_helpers import build_sequence_darks
 
         plan = self._plan()
         mount = MountDevice(connected=True, name="m", can_park=True)
@@ -1317,7 +1321,7 @@ class SequenceBehaviorTest(unittest.TestCase):
         self.assertGreaterEqual(len(parks), 1)
 
     def test_flats_dawn_uses_sunrise_wait_and_dawn_azimuth(self):
-        from nina_planner.sequence import build_sequence_flats
+        from sequence_helpers import build_sequence_flats
 
         plan = self._plan()
         result = build_sequence_flats(
@@ -1333,7 +1337,7 @@ class SequenceBehaviorTest(unittest.TestCase):
         self.assertEqual(sunset, [])
 
     def test_flats_dusk_uses_sunset_wait_and_dusk_azimuth(self):
-        from nina_planner.sequence import build_sequence_flats
+        from sequence_helpers import build_sequence_flats
 
         plan = self._plan()
         result = build_sequence_flats(
@@ -1556,11 +1560,10 @@ class BuildSequenceManyTest(unittest.TestCase):
     def test_stow_and_empty_entries_emit_no_run_events(self):
         """A stow must never read as a finished run — the agent would
         re-plan immediately after being told to close down."""
-        from nina_planner.sequence import build_sequence_many, build_sequence_stow
+        from nina_planner.sequence import build_sequence_many
 
         equipment = _stow_equipment()
         for result in (
-            build_sequence_stow(equipment),
             build_sequence_many(equipment, []),
             build_sequence_many(equipment, [[]]),
         ):
@@ -1570,20 +1573,10 @@ class BuildSequenceManyTest(unittest.TestCase):
                 "stow-equivalent sequences must not bracket a run",
             )
 
-    def test_empty_payload_list_is_the_stow(self):
-        """An empty request list loads exactly the stow sequence."""
-        from nina_planner.sequence import build_sequence_many, build_sequence_stow
-
-        equipment = _stow_equipment()
-        self.assertEqual(
-            json.dumps(build_sequence_many(equipment, [])),
-            json.dumps(build_sequence_stow(equipment)),
-        )
-
     def test_darks_target_area_holds_the_container_directly(self):
         """darks used to nest a second Target area inside the real one; the
         payload form is a plain list, so the wrapper is gone."""
-        from nina_planner.sequence import build_sequence_darks
+        from sequence_helpers import build_sequence_darks
 
         result = build_sequence_darks(_plan(), _stow_equipment(), _profile())
         children = _items(result)[1]["Items"]["$values"]

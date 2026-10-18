@@ -10,7 +10,6 @@ from .builders import (
     sequence_cool_camera,
     sequence_deepsky,
     sequence_park_scope,
-    sequence_root,
     sequence_safetynet,
     sequence_unpark_scope,
 )
@@ -56,19 +55,6 @@ from .nodes import (
     trigger_meridian_flip,
     trigger_restore_guiding,
 )
-
-
-def build_sequence_stow(equipment: ObservatoryEquipment) -> dict[str, Any]:
-    """Close down: park (or home) the mount, then warm the camera.
-
-    The target area is empty, so the End area runs immediately: one bounded
-    3-minute "On Safe" pass from ``sequence_end``, then both halves — park,
-    then warm. This is what an empty ``request`` list loads. With no steps
-    there is no run to bracket, so it emits neither ``RUN-STARTING`` nor
-    ``RUN-FINISHED`` — a stow must never read as a finished run.
-    """
-    return sequence_root(equipment)
-
 
 ## LISTS
 #
@@ -167,19 +153,6 @@ def target_payload_darks(
             tag="bias" if bias else "dark",
         )
     ]
-
-
-def build_sequence_darks(
-    plan: ObservationPlan,
-    equipment: ObservatoryEquipment,
-    profile: ObservatoryProfile,
-    bias: bool = False,
-    variant: str = "wheel",
-) -> dict[str, Any]:
-    return sequence_root(
-        equipment=equipment,
-        instructions=target_payload_darks(plan, equipment, profile, bias, variant),
-    )
 
 
 ## LIGHTS
@@ -321,21 +294,6 @@ def target_payload_lights(
     ]
 
 
-def build_sequence_lights(
-    plan: ObservationPlan,
-    equipment: ObservatoryEquipment,
-    profile: ObservatoryProfile,
-    *,
-    pointing_index: int = 1,
-) -> dict[str, Any]:
-    return sequence_root(
-        equipment=equipment,
-        instructions=target_payload_lights(
-            plan, equipment, profile, pointing_index=pointing_index
-        ),
-    )
-
-
 ## FLATS
 
 
@@ -400,15 +358,3 @@ def target_payload_flats(
             ],
         )
     ]
-
-
-def build_sequence_flats(
-    plan: ObservationPlan,
-    equipment: ObservatoryEquipment,
-    profile: ObservatoryProfile,
-    dusk: bool = False,
-) -> dict[str, Any]:
-    return sequence_root(
-        equipment=equipment,
-        instructions=target_payload_flats(plan, equipment, profile, dusk=dusk),
-    )
