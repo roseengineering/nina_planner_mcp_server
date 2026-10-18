@@ -373,7 +373,7 @@ Configured in the plugin's options configuration. (see [`opencode.json`](#openco
 Make sure mirroring is setup in WSL to allow you to connect to NINA directly through localhost (otherwise you have to use your machines' IP address).  Do this by editing wslconfig and setting networking mode to mirrored.
 
 
-```
+```bash
 $ vi $HOME/.wslconfig
 [wsl2]
 networkingMode=mirrored
