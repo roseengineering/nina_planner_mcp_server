@@ -21,7 +21,7 @@ async def load_sequence(
     # The empty list is the API (it means stow) and is never mutated.
     request: list[SequenceRequest] = [],  # noqa: B006
 ) -> str:
-    """Loads one ordered sequence from a list of plan-backed steps; it never starts it. Call `start_sequence()` to run it. An empty request is the stow sequence, and every sequence ends by stowing. Default `remaining` mode skips completed work; use `mode="full"` to repeat the plan. A running sequence must be stopped before loading another. See the README for request options and variants."""
+    """Loads an ordered sequence from plan-backed steps but does not start it. Call `start_sequence()` to run it. An empty request stows; every sequence ends by stowing. Default `remaining` mode skips completed frames; `full` repeats them. Stop a running sequence before loading another. See the README for options."""
     if not isinstance(request, list):
         raise ValueError(
             "`request` must be a list of SequenceRequest objects "
