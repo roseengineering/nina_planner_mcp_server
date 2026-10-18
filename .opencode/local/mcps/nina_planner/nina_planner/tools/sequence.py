@@ -21,25 +21,7 @@ async def load_sequence(
     # The empty list is the API (it means stow) and is never mutated.
     request: list[SequenceRequest] = [],  # noqa: B006
 ) -> str:
-    """Loads a sequence with safety guardrails — it never starts it; call start_sequence() to begin acquisition.
-
-    `request` is a LIST of SequenceRequest objects composing a whole night into a single N.I.N.A. sequence. It defaults to an empty list.
-
-    The list composes ONE sequence: a single Start area, one Target area holding each step's containers in list order, and one End area that always stows — one bounded 3-minute "On Safe" wait, then park (or home) the mount and warm the camera. An EMPTY list (the default) is therefore the STOW: an empty Target area plus that closing End area. There is no `stow`, `park`, `warm`, or `unpark` action — every action is plan-backed, and `load_sequence()` with no arguments is the teardown.
-
-    Every entry is one `request` object: `action`, plus `variant` (how the action runs), `plan` (path to the observation-plan JSON file), `pointing_index`, `mode`, and the optional quality thresholds.
-
-    `action` decides WHAT gets built from `request.plan`, which every action requires:
-    - `light` / `dark` / `bias` / `flat` build that frame sequence. `pointing_index` (1-based, optional, default 1 when omitted) selects which pointing of the plan to load; it applies to lights only. Calibration (dark/bias/flat) is plan-level: its remaining is computed for the whole plan, not per pointing, so a calibration request must omit `pointing_index` — passing one is rejected. Lights embed the attribution token in the target name so each pointing's frames are attributed independently: `[{base_plan_id}]` for a single-pointing plan (shared with the plan's calibration), `[{base_plan_id}-{pointing_index}]` per pane for a mosaic. Light loads require `$$TARGETNAME$$` in the active profile's FilePattern for attribution. In the default `remaining` mode the sequence only acquires frames still needed (total minus frames already attributed to this plan/pointing in the imaging metadata); if nothing remains it reports the plan as complete and loads nothing. max_hfr and/or min_detected_stars exclude light frames failing quality thresholds from the acquired count. Pass `mode="full"` to acquire the entire plan again.
-
-    `variant` decides HOW an action runs and is scoped to it — it is validated against the action, and a bad pairing fails naming the entry:
-    - `flat` REQUIRES `dawn` (morning twilight — waits for dawn) or `dusk` (evening twilight — waits for sunset).
-    - `dark` and `bias` take `wheel` (default — park the wheel on the profile's `Dark` filter slot), `cover` (close the motorized cover — e.g. a flip-flat — around the exposures, then reopen it so a later step never shoots through a closed cover), or `shutter` (expose without moving the filter wheel, relying on the camera's shutter).
-    - `light` takes no variant.
-
-    Steps run in order as the sequence reaches them; a step carrying its own wait conditions (lights, flats) waits, or is skipped when its window has passed, without blocking the steps behind it, so list order controls timing. Entries already complete in `remaining` mode are skipped and reported; if every entry is complete, nothing is sent to N.I.N.A. Profile, equipment, and metadata are fetched once per call, one POST carries the whole sequence, and a validation failure names its 0-based position (`request[1]: ...`).
-
-    Fails if a sequence is already running — NINA's own error is reported; call stop_sequence() first."""
+    """Loads one ordered sequence from a list of plan-backed steps; it never starts it. Call `start_sequence()` to run it. An empty request is the stow sequence, and every sequence ends by stowing. Default `remaining` mode skips completed work; use `mode="full"` to repeat the plan. A running sequence must be stopped before loading another. See the README for request options and variants."""
     if not isinstance(request, list):
         raise ValueError(
             "`request` must be a list of SequenceRequest objects "
@@ -256,7 +238,7 @@ async def _load_many(requests: list[SequenceRequest]) -> str:
 
 @mcp.tool()
 async def stop_sequence() -> str:
-    """Stops the currently running NINA sequence immediately, leaving the telescope where it currently is — it does not stow the scope. Use for an urgent halt, to interrupt a stuck/looping sequence, or when the running sequence isn't what you wanted. If you then want to stow for the night, load `load_sequence()` (empty list = stow) and start it. `load_sequence` refuses to load while a sequence is running, so call this first and wait — it returns once NINA reports the sequencer has actually stopped. Avoid stopping an in-progress teardown during the stow maneuver unless safety requires it, since interrupting mid-slew can leave the scope in an unsafe position."""
+    """Stops the running sequence and waits until NINA reports it has stopped. This does not stow the scope; load and start an empty sequence to stow. Avoid stopping an in-progress stow unless safety requires it."""
     await client.stop_running_sequence_and_wait()
     return "Sequence stopped."
 
@@ -270,5 +252,5 @@ async def start_sequence() -> str:
 
 @mcp.tool()
 async def get_sequence_state() -> Any:
-    """Returns the loaded sequence structure and the current status of its containers, instructions, conditions, and triggers. Use it to determine whether a sequence is loaded, running, completed, failed, or waiting. This tool is read-only and takes no action."""
+    """Returns the loaded sequence and its current status (for example, running, completed, failed, or waiting). Read-only."""
     return await client.api_get("/sequence/json")
