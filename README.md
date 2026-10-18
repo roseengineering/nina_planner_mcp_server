@@ -2,7 +2,7 @@
 
 ![Banner for repository](banner.png)
 
-`nina_planner` is an MCP tool server for N.I.N.A. (Nighttime Imaging 'N' Astronomy).  The separate webevents `nina-notify` plugin is OpenCode-specific.  The focus is on building, executing, and monitoring multi-target sequence runs from observation plans, than blindly issuing Advanced API commands. 
+`nina_planner` is an MCP tool server for N.I.N.A. (Nighttime Imaging 'N' Astronomy).  The separate events `nina-notify` plugin is OpenCode-specific.  The focus is on building, executing, and monitoring multi-target sequence runs from observation plans, than blindly issuing Advanced API commands. 
 
 ## Quick Start
 
