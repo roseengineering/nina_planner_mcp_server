@@ -177,7 +177,7 @@ async def get_site_equipment_status() -> ObservatoryEquipment:
 
 @mcp.tool()
 async def get_site_profile() -> ObservatoryProfile:
-    """Returns the active NINA observatory profile and static configuration, including site location, optics, camera geometry, filters, plate solvers, and image-save path. `image_save_path` is the raw Windows path from the profile; `local_image_save_path` is the derived path usable on this host (drive letter mapped through NINA_DRIVE_MOUNT, default `/mnt/<drive>`, on Linux/WSL; unchanged on Windows) and is the one to use for local file access. Use get_site_equipment for live equipment state. This tool is read-only and takes no action."""
+    """Returns the active NINA observatory profile and static configuration, including site location, optics, camera geometry, filters, plate solvers, and image-save path. `image_save_path` is the raw Windows path from the profile; `local_image_save_path` is the derived path usable on this host (drive letter mapped through NINA_DRIVE_MOUNT, default `/mnt/<drive>`, on Linux/WSL; unchanged on Windows) and is the one to use for local file access. Use get_site_equipment_status for live equipment state. This tool is read-only and takes no action."""
     raw = await client.api_get("/profile/show?active=true")
 
     astrometry = raw.get("AstrometrySettings", {})
