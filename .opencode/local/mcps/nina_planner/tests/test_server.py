@@ -1968,6 +1968,53 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(any("ParkScope" in t for t in end_types), "End parks")
         self.assertTrue(any("WarmCamera" in t for t in end_types), "End warms")
 
+    async def test_load_sequence_stow_homes_when_mount_cannot_park(self):
+        """Capability-driven stow, end to end: no park, so Find Home instead."""
+        _, api_post = await self._load_list(
+            [], equipment=self._equipment(can_park=False, can_find_home=True)
+        )
+
+        _, payload = api_post.await_args.args
+        end_types = [
+            i["$type"] for i in payload["Items"]["$values"][2]["Items"]["$values"]
+        ]
+        self.assertFalse(any("ParkScope" in t for t in end_types))
+        self.assertTrue(any("FindHome" in t for t in end_types), "End homes")
+
+    async def test_load_sequence_stow_is_safe_gated_and_not_a_run(self):
+        """The stow waits one bounded, safety-gated pass in its End area and
+        carries no RUN-* bracket, so it never reads as a finished run."""
+        _, api_post = await self._load_list([])
+
+        _, payload = api_post.await_args.args
+        text = json.dumps(payload)
+        self.assertNotIn("RUN-STARTING", text)
+        self.assertNotIn("RUN-FINISHED", text)
+        self.assertEqual(text.count("SafetyMonitorCondition"), 1)
+        self.assertEqual(text.count("LoopCondition"), 1)
+        self.assertEqual(text.count("WaitForTimeSpan"), 1)
+
+    async def test_stow_without_a_stowable_mount_sends_nothing(self):
+        from nina_planner.server import load_sequence
+
+        api_post = AsyncMock(return_value={})
+        with (
+            patch(
+                "nina_planner.tools.equipment.get_site_profile",
+                AsyncMock(return_value=self._full_profile()),
+            ),
+            patch(
+                "nina_planner.tools.equipment._get_site_equipment_status",
+                AsyncMock(
+                    return_value=self._equipment(can_park=False, can_find_home=False)
+                ),
+            ),
+            patch("nina_planner.client.api_post", api_post),
+            self.assertRaises(ValueError),
+        ):
+            await load_sequence([])
+        api_post.assert_not_awaited()
+
     async def test_stow_requires_a_stowable_mount(self):
         with self.assertRaises(ValueError) as ctx:
             await self._load_list(
