@@ -72,7 +72,14 @@ async def _poll_until_async(
 
 @mcp.tool()
 async def stop_nina() -> dict[str, Any]:
-    """Stops NINA if it is running locally. No-ops if NINA is down; fails if NINA is remote and this host cannot control it."""
+    """Terminate the NINA.exe application immediately.
+
+    NINA liveness comes from its REST API (authoritative, and works against a
+    remote host). If the API is unresponsive NINA is already down and this is a
+    clean no-op. If NINA is up but this host has no Windows interop, NINA is
+    running on a remote host and cannot be terminated from here; the tool raises
+    with that explanation rather than attempting a doomed ``taskkill``.
+    """
     responsive, probe_error = await client.api_probe()
     if not responsive:
         summary = (
@@ -139,7 +146,10 @@ async def stop_nina() -> dict[str, Any]:
 
 @mcp.tool()
 async def start_nina() -> dict[str, Any]:
-    """Launches NINA in the interactive desktop session. Fails if NINA is already running or this host cannot control the remote NINA process."""
+    """Launches NINA into the interactive desktop session.
+
+    If NINA is already running, raises an error instructing the caller to stop it first.
+    """
     # Liveness comes from the REST API so this works against a remote NINA too.
     if await client.nina_api_responsive():
         if windows_interop_available():
@@ -175,7 +185,32 @@ async def start_nina() -> dict[str, Any]:
 
 @mcp.tool()
 async def get_nina_status() -> dict[str, Any]:
-    """Checks whether NINA's REST API is responsive and whether this host can start or stop it. Never raises when NINA is down."""
+    """Lightweight NINA lifecycle probe.
+
+    Liveness is taken from NINA's REST API, which is authoritative and works
+    whether NINA runs on this host or a remote one: ``running`` is ``True`` iff
+    ``GET /time`` answered. A missing local ``NINA.exe`` process does **not**
+    mean NINA is down — when the MCP server is remote from NINA the local
+    process is simply not visible.
+
+    ``lifecycle_control_available`` reports whether *this* host can actually
+    start/stop NINA (Windows interop present), which is what decides whether
+    ``start_nina``/``stop_nina`` will work. Cheaper than
+    ``get_site_equipment_status`` (no device probes) and never raises on a down
+    NINA — the failure degrades to ``running`` ``False`` plus ``probe_error``.
+    Use this before ``start_nina()`` to confirm a previous instance is down, or
+    as a quick "is NINA alive?" check.
+
+    Returns a dict with:
+    - ``running`` (bool): authoritative liveness — ``GET /time`` answered
+    - ``lifecycle_control_available`` (bool): this host has Windows interop, so
+      ``start_nina``/``stop_nina`` can operate on NINA
+    - ``probe_error`` (str | None): N.I.N.A.'s own failure text when the probe
+      failed — why the API looks down, not just that it did. ``None`` when
+      ``running`` is ``True``
+    - ``summary`` (str): human-readable one-line status, carrying
+      ``probe_error`` when there is one
+    """
     running, probe_error = await client.api_probe()
     if not running and probe_error:
         client.log_payload("get_nina_status: api probe failed", probe_error)

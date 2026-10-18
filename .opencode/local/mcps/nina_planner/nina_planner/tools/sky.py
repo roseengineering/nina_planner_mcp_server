@@ -16,7 +16,7 @@ def _resolve_name(name: str) -> SkyCoord:
 
 @mcp.tool()
 async def resolve_target(name: str) -> dict[str, Any]:
-    """Resolves a target name to J2000 RA/Dec using SIMBAD. Requires internet access; read-only."""
+    """Resolves a deep-sky object name (e.g. 'M31', 'NGC 6960') to J2000 RA/Dec via a SIMBAD lookup, so plans use verified coordinates instead of remembered ones. Returns `ra_hours` and `dec_deg`. Requires internet access; if the lookup fails, supply coordinates explicitly. This tool is read-only and takes no action."""
     try:
         coord = await anyio.to_thread.run_sync(_resolve_name, name)
     except Exception as e:
@@ -70,7 +70,7 @@ def _altitudes(
 async def target_altitudes(
     targets: list[dict[str, Any]], hours_ahead: float = 0.0
 ) -> dict[str, Any]:
-    """Returns targets' altitude and azimuth at the active site, sorted highest first. Supply coordinates or a resolvable name; `hours_ahead` optionally evaluates a future time. Read-only; NINA enforces altitude limits during acquisition."""
+    """Computes the altitude and azimuth of each target at the active site's location, sorted highest altitude first, for ranking night-loop candidates. Each target is `{"name": ...}` plus optional J2000 `ra_hours` and `dec_deg`; without coordinates the name is resolved via SIMBAD. `hours_ahead` evaluates a future time (default 0 = now, using this host's clock). Altitude is geometric (no refraction) and only orders candidates — N.I.N.A.'s altitude guards still enforce the floor at runtime. This tool is read-only and takes no action."""
     profile = await equipment_tools.get_site_profile()
     site = profile.site
     when = Time(datetime.now(timezone.utc)) + hours_ahead * u.hour

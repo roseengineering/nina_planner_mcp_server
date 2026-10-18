@@ -168,7 +168,7 @@ async def _get_site_equipment_status(
 
 @mcp.tool()
 async def get_site_equipment_status() -> ObservatoryEquipment:
-    """Returns current equipment status, measurements, capabilities, weather, and enclosure safety state. Automatically connects disconnected devices; retry in a few seconds if a device is still connecting."""
+    """Returns the current connection, operating state, measurements, and capabilities of active observatory equipment, including weather and safety-monitor status (whether the enclosure is open and it is safe to unpark), and mount capabilities (`can_park`, `can_find_home`) that determine how the scope can be stowed. Use it for live operational and safety checks. Auto-connects any device that is present but disconnected; if any device is mid-connect the call errors and should be retried after a few seconds."""
     profile = await get_site_profile()
     equipment = await _get_site_equipment_status(profile)
     client.log_payload("Equipment:", equipment.model_dump_json(indent=2))
@@ -177,7 +177,7 @@ async def get_site_equipment_status() -> ObservatoryEquipment:
 
 @mcp.tool()
 async def get_site_profile() -> ObservatoryProfile:
-    """Returns the active NINA profile's site, optics, camera, filters, plate solvers, and image paths. Use `local_image_save_path` for local file access; use `get_site_equipment_status()` for live device state. Read-only."""
+    """Returns the active NINA observatory profile and static configuration, including site location, optics, camera geometry, filters, plate solvers, and image-save path. `image_save_path` is the raw Windows path from the profile; `local_image_save_path` is the derived path usable on this host (drive letter mapped through NINA_DRIVE_MOUNT, default `/mnt/<drive>`, on Linux/WSL; unchanged on Windows) and is the one to use for local file access. Use get_site_equipment_status for live equipment state. This tool is read-only and takes no action."""
     raw = await client.api_get("/profile/show?active=true")
 
     astrometry = raw.get("AstrometrySettings", {})
@@ -284,7 +284,7 @@ async def get_site_profile() -> ObservatoryProfile:
 
 @mcp.tool()
 async def list_site_profiles() -> list[ProfileSummary]:
-    """Lists NINA profile summaries and marks the active profile. Use a profile's ID with `switch_site_profile()`; inspect active-profile details with `get_site_profile()`. Read-only."""
+    """Returns every NINA observatory profile as a list of summaries — each with its id, name, description, and last-used time — marking the currently active profile with `active: true`. Use it to discover which profiles exist and to find the id of the one you want, then pass that id to switch_site_profile. Only the active profile exposes full site/optics/filter detail, so use get_site_profile to inspect the active one. This tool is read-only and takes no action."""
     metas = await client.api_get("/profile/show?active=false")
     active_id = (await client.api_get("/profile/show?active=true")).get("Id", "")
     profiles = [
@@ -305,7 +305,7 @@ async def list_site_profiles() -> list[ProfileSummary]:
 
 @mcp.tool(structured_output=False)
 async def screenshot_dashboard() -> list[Image | str]:
-    """Captures the NINA Imaging tab and returns the screenshot path and image. Switches tabs and writes a new temporary PNG; does not change equipment or sequence state."""
+    """Switches NINA to the Imaging tab, waits briefly for the repaint to settle, captures the dashboard as a PNG, writes it to the system temp screenshot directory, and returns two content blocks: the absolute path of the written file as text (e.g. /var/folders/.../T/nina_screenshots/dashboard_20261005T120000123456.png), followed by the image itself. If your client renders MCP image blocks you see the capture inline; otherwise open the returned path with the read tool to view it. Use it to visually verify UI state — which panel is active, whether a sequence is running, and any on-screen errors. Each call writes a new uniquely named file; nothing is overwritten. Side effects: switching the active tab and creating the PNG — no sequence or equipment state is changed. If N.I.N.A. answers the capture with an empty or non-text payload, the tool raises an error naming the endpoint and writes no file."""
     await client.api_get("/application/switch-tab?tab=imaging")
     if config.SCREENSHOT_SETTLE_SECONDS:
         await anyio.sleep(config.SCREENSHOT_SETTLE_SECONDS)
@@ -326,13 +326,13 @@ async def screenshot_dashboard() -> list[Image | str]:
 
 @mcp.tool()
 async def switch_site_profile(profile_id: str) -> str:
-    """Switches to a profile ID returned by `list_site_profiles()`. This reconnects equipment and changes observatory settings; do not switch profiles while a sequence is running. Confirm with `get_site_profile()`."""
+    """Switches the active NINA observatory profile to the one with the given `profile_id` (a GUID obtained from list_site_profiles). Passes the id straight through to NINA; if the id is unknown or NINA otherwise refuses, the API's error is returned. Switching disconnects and reconnects equipment and changes site, filters, image-save path, and file pattern, so do not call it while a sequence is running. Confirm the result with get_site_profile afterward."""
     return cast(str, await client.api_get(f"/profile/switch?profileid={profile_id}"))
 
 
 @mcp.tool()
 async def get_events(since: int = 300) -> Any:
-    """Returns recent NINA events for sequence, equipment, safety, imaging, and error history. Use equipment and sequence status tools for current state. Read-only."""
+    """Returns recent timestamped NINA observatory events and their event-specific details from the last `since` seconds. Use it to reconstruct sequence, equipment, safety, imaging, and error activity. This tool is read-only; use get_site_equipment_status and get_sequence_state for current status."""
     res = await client.api_get("/event-history")
     res = _convert_to_met(res, since=since, name="Time")
     client.log_payload("Events:", json.dumps(res, indent=2))
@@ -341,7 +341,7 @@ async def get_events(since: int = 300) -> Any:
 
 @mcp.tool()
 async def get_logs(since: int = 300) -> Any:
-    """Returns recent NINA application logs for diagnosing sequence and equipment problems. Read-only."""
+    """Returns recent NINA application log entries, including informational messages, warnings, and errors with source and timestamp details from the last `since` seconds. Use it to diagnose sequence failures, equipment communication problems, and unexpected behavior. This tool is read-only and takes no action."""
     res = await client.api_get("/application/logs?lineCount=200")
     res = _convert_to_met(res, since=since, name="Timestamp")
     for d in res:
