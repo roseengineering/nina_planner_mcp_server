@@ -385,3 +385,30 @@ In addition, to get the system tools to work to stop and restart NINA should it 
 ```bash
 $ echo "$USER ALL=(ALL) NOPASSWD: ALL" | sudo tee /etc/sudoers.d/90-user
 ```
+## Setting up Windows
+
+I installed the following packages to start:
+
+```bash
+$ winget install git.git      # bash
+$ winget install Oven-sh.Bun  # bun
+$ winget install jqlang.jq    # jq
+$ winget install BurntSushi.ripgrep.MSVC  # rg
+$ winget install astral-sh.uv # uv
+```
+
+Next I installed opencode with:
+
+```bash
+$ bun install -g --trust @opencode/cli
+```
+
+Then to run opencode I ran in windows:
+
+```bash
+$ OPENCODE_SERVER_PASSWORD=pass
+$ opencode serve --port 4096
+$ opencode --server http://127.0.0.1:4096
+```
+
+
