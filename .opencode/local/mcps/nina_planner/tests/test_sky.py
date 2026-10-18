@@ -25,9 +25,8 @@ class AltitudesTest(unittest.TestCase):
         self.assertLess(rows[1]["alt_deg"], 0)
 
     def test_name_only_uses_resolver(self):
-        with patch.object(
-            sky, "_resolve_name", return_value=SkyCoord(2.53, 89.26, unit=("hourangle", "deg"))
-        ) as r:
+        coord = SkyCoord(2.53, 89.26, unit=("hourangle", "deg"))
+        with patch.object(sky, "_resolve_name", return_value=coord) as r:
             rows = sky._altitudes([{"name": "X"}], 45.0, -75.0, 0.0, Time("2026-10-18"))
         r.assert_called_once_with("X")
         self.assertAlmostEqual(rows[0]["alt_deg"], 45.0, delta=1.5)
