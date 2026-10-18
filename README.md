@@ -148,7 +148,7 @@ Each row becomes a `Pointing`: RA/DEC are parsed server-side (sexagesimal like `
 ## Notes
 
 - **Required N.I.N.A. plugins:** the MCP server requires the following three plugins to be installed in N.I.N.A.: **Advanced API**, **Sequencer+**, and **Session Metadata**.
-- **Image file pattern:** in the N.I.N.A. profile's `ImageFileSettings`, `FilePattern` must put `$$TARGETNAME$$` in a path segment. (e.g. `$$TARGETNAME$$\$$IMAGETYPE$$\...`)
+- **Image file pattern:** for **light frames only**, the N.I.N.A. profile's `ImageFileSettings.FilePattern` must put `$$TARGETNAME$$` in a path segment so frames can be attributed to a plan (e.g. `$$TARGETNAME$$\$$IMAGETYPE$$\...`). Calibration frames (dark, bias, and flat) do not require this token; they are matched by frame type and exposure settings within the calibration window.
 - **Quality thresholds:** `max_hfr` and `min_detected_stars` (optional) exclude light frames that fail the thresholds from the acquired count. Frames missing the quality fields are excluded whenever a threshold is set (fail-closed). Thresholds are applied only to light frames — calibration frames have no star quality.
 - **Manually failing a frame:** delete (or move using thumbs down icon) the image file on disk — e.g. a bad `.fits`/`.tif`. The metadata row stays in the CSV (the plugin only appends), but it is omitted when the metadata is read, so progress no longer counts that frame as acquired and the next `mode="remaining"` load re-acquires it.
 - **The plan file is persistent** — written to the current working directory. You can inspect, edit, and reuse it across sessions.  Changing the file will alter its plan_id, if not given.
