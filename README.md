@@ -2,7 +2,7 @@
 
 ![Banner for repository](banner.png)
 
-`nina_planner` is an MCP tool server for N.I.N.A. (Nighttime Imaging 'N' Astronomy).  The focus is on generating observation plans and managing N.I.N.A. sequences rather than issuing real-time raw Advanced API commands. 
+`nina_planner` is an MCP tool server for N.I.N.A. (Nighttime Imaging 'N' Astronomy).  The focus is on building, executing, and monitoring multi-target sequence runs from plans, rather than blindly issuing Advanced API commands. 
 
 ## Quick Start
 
