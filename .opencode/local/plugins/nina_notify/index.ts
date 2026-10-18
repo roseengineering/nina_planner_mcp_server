@@ -53,10 +53,7 @@ export default Plugin.define({
       typeof options.pluginLogs === "string" ? options.pluginLogs : null;
     const intervalCheckMinutes =
       typeof options.intervalCheckMinutes === "number"
-        ? options.intervalCheckMinutes
-        : typeof options.intervalCheck === "number"
-          ? options.intervalCheck
-          : -1;
+        ? options.intervalCheckMinutes : -1;
 
     log(
       `[${instanceId}] initializing (endpoint=${ninaEndpoint}, interval=${intervalCheckMinutes})`,

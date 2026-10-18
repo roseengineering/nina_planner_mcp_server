@@ -2,9 +2,7 @@
 
 ![Banner for repository](banner.png)
 
-`nina_planner` is an MCP tool server for N.I.N.A. (Nighttime Imaging 'N' Astronomy). It lets you inspect equipment, write observation plans, load sequences, and control the telescope — all through tool calls in your AI client.  The focus is on tools to generate and manage sequences on N.I.N.A. rather than issuing real-time raw Advanced API commands.  This MCP server can generate "plans" — in the style of ACP (DC-3 Dreams) observatory plans, but as JSON — which can then be loaded and run as N.I.N.A. Advanced sequences.
-
----
+`nina_planner` is an MCP tool server for N.I.N.A. (Nighttime Imaging 'N' Astronomy).  The focus is on generating observation plans and managing N.I.N.A. sequences rather than issuing real-time raw Advanced API commands. 
 
 ## Available Tools
 
@@ -35,8 +33,6 @@
 | `stop_nina()` | Terminate NINA.exe immediately via `taskkill`. Liveness comes from the REST API: a no-op when NINA is already down; raises when NINA is up but remote (no local Windows interop), since it cannot be terminated from here. |
 | `start_nina()` | Launch NINA into the interactive desktop session. Raises if NINA is already running (call `stop_nina()` first), or if this host has no Windows interop to launch a remote NINA. |
 | `get_nina_status()` | Lightweight lifecycle probe, cheaper than `get_site_equipment_status` (no device probes). Returns `running` (true iff `GET /time` answered — a missing local `NINA.exe` does not mean NINA is down when it runs remotely), `lifecycle_control_available` (this host has Windows interop, so `start_nina`/`stop_nina` can work), `probe_error` (N.I.N.A.'s failure text, or `None` when running), and a one-line `summary`. Never raises on a down NINA. |
-
----
 
 ## The Observation Plan
 
@@ -131,6 +127,7 @@ An example json plan:
 
 For `write_mosaic_plan`, use a Telescopius-formatted CSV with these nine columns in this order:
 See [mosaic.csv](./mosaic.csv) for an example:
+[mosaic.csv](./mosaic.csv)
 ```csv mosaic.csv
 Pane, RA, DEC, Position Angle (East), Pane width (arcmins), Pane height (arcmins), Overlap, Row, Column
 Pane 1, 0hr 56' 01", 45º 51' 18", 0.00, 309.00, 205.80, 10%, 1, 1
@@ -148,105 +145,27 @@ Each row becomes a `Pointing`: RA/DEC are parsed server-side (sexagesimal like `
 - **No rotator:** every pane's `position_angle_deg` must be `0`. Any nonzero PA fails loudly, since PA can't be enforced without a rotator.
 - **Acquiring panes:** query `get_plan_progress(file_path)` to see which panes still need frames, then load the first incomplete pane with `load_sequence(request=[{"plan": file_path, "action": "light", "pointing_index": N, "mode": "remaining"}])` and `start_sequence()`. Repeat pane by pane across the night; when the top-level `complete` is true, the mosaic is done.
 
----
-
-## Workflow: A Complete Imaging Run
-
-### 1. Write the plan
-
-Use `write_plan_file` with the plan object. This validates the filter names against your active N.I.N.A. profile and writes a JSON file named like `veil-nebula_widefield-supernova-remnant_20260913T080623.json`.
-
-### 2. Load and run each calibration type, including lights
-
-Each call to `load_sequence` composes the appropriate steps (lights, darks, flats, or bias) into one N.I.N.A. sequence and posts it — it only loads the sequence; it never starts it. Every step below is therefore two calls: `load_sequence(...)`, then `start_sequence()` when you are ready to begin (or press start in the NINA GUI yourself). N.I.N.A. rejects a load while a sequence is running, so stop any running sequence first with `stop_sequence()` (which blocks until it has actually stopped); `load_sequence` returns a clear error telling you to do so otherwise.
-
-**Or hand N.I.N.A. the whole night in one call:** pass the whole night as one **list** of request objects:
-
-`load_sequence(request=[{"plan": "<plan>.json", "action": "light", "pointing_index": 1}, {"plan": "<plan>.json", "action": "light", "pointing_index": 2}, {"plan": "<plan>.json", "action": "dark"}])` then a single `start_sequence()`
-
-The steps run in list order inside one sequence (one Start area, one Target area, one End area), one POST carries the lot, and entries already complete in `remaining` mode are skipped and reported. The End area always stows (park + warm) — so the night ends parked and warm no matter what ran, and an empty list with no steps at all is exactly the stow. Each step keeps its own conditions: a step whose window has passed (dawn flats after sunrise) is skipped instead of blocking the steps behind it.
-
-**Example order:**
-
-1. **Run lights** (main imaging overnight):
-   `load_sequence(request=[{"plan": "<plan>.json", "action": "light"}])` then `start_sequence()`
-   _(runs all night; autofocus and guiding triggers are built in)_
-
-2. **Run darks** (done during the day or while flats are not possible):
-   `load_sequence(request=[{"plan": "<plan>.json", "action": "dark"}])` then `start_sequence()`
-   _(wait for completion; add `"variant": "cover"` to cut the light with a motorized cover instead of the wheel's `Dark` slot)_
-
-3. **Run bias** (also done during the day):
-   `load_sequence(request=[{"plan": "<plan>.json", "action": "bias"}])` then `start_sequence()`
-   _(wait for completion)_
-
-4. **Run dawn flats** (morning twilight):
-   `load_sequence(request=[{"plan": "<plan>.json", "action": "flat", "variant": "dawn"}])` then `start_sequence()`
-   _(wait for completion)_
-
-5. **Run dusk flats** (as evening twilight begins):
-   `load_sequence(request=[{"plan": "<plan>.json", "action": "flat", "variant": "dusk"}])` then `start_sequence()`
-   _(wait for completion)_
-
-### 3. Teardown
-
-At session end:
-- The running sequence should teardown automatically at dawn.
-- `load_sequence()` then `start_sequence()` — the empty list is the stow; only needed if want to immediately close for the night or the running sequence fails to park. Every action is plan-backed, so an empty list is the only teardown form.
-
----
-
 ## Notes
 
 - **Required N.I.N.A. plugins:** the MCP server requires the following three plugins to be installed in N.I.N.A.: **Advanced API**, **Sequencer+**, and **Session Metadata**.
-- **Image file pattern:** in the N.I.N.A. profile's `ImageFileSettings`, `FilePattern` must put `$$IMAGETYPE$$` in a path segment (e.g. `$$DATEMINUS12$$\$$IMAGETYPE$$\...`) so frames can be read per type, and — for light attribution — must include `$$TARGETNAME$$` (see below). The `$$DATEMINUS12$$` date folder is no longer required: calibration age is measured from each frame's own `ExposureStart` timestamp, not the folder name.
-- **Filter validation:** `write_plan_file` and `load_sequence` check that every filter name in the plan (lights, flats, autofocus reference) matches a filter in your active N.I.N.A. profile. Unknown filters will be rejected with an error listing what is available.
-- **Frame attribution:** each light sequence names its target `<target>` (or `<target> - <label>` when the pointing has a label), followed by ` [{base_plan_id}-{pointing_index}]`, and N.I.N.A. expands `$$TARGETNAME$$` in `FilePattern` to that string. For the embedded id to be usable for attribution, `$$TARGETNAME$$` **must appear somewhere in the file pattern** — either as a filename token (e.g. `..._$$TARGETNAME$$_...`) or as a folder segment (e.g. `$$DATEMINUS12$$\$$IMAGETYPE$$\$$TARGETNAME$$\...`). Attribution reads the embedded id from the recorded file path (`file_path` in `ImageMetaData.csv`) and accepts it in **any** path segment — the filename, the target directory under `$$IMAGETYPE$$`, or an ancestor directory when `$$TARGETNAME$$` leads the pattern (e.g. `$$TARGETNAME$$\$$DATEMINUS12$$\$$IMAGETYPE$$\...`). The token is unique to a plan pointing, so ancestor matching cannot cross-attribute between plans; if the target name is not embedded in the path at all, attribution cannot determine which plan/pointing a light frame belongs to. The token is square-bracketed; the earlier parenthesised form `({base_plan_id}-{pointing_index})` is also recognised, so frames acquired before the switch to brackets continue to attribute. The sequence also records the target in `TargetName` in `AcquisitionDetails.csv` and as `OBJECT` in FITS headers, but those are informational — file-path attribution is what drives `get_plan_progress` and `mode="remaining"`.
-- **Resuming a pointing:** call `get_plan_progress(file_path, ...)` and read the entry for pointing `N` in the returned `pointings` list to see what it has already acquired, then `load_sequence(request=[{"plan": <plan_path>, "action": "light", "pointing_index": N, "mode": "remaining"}])` to acquire only the deficit. Lights are attributed by the `{base_plan_id}-{pointing_index}` id embedded in the file path (so `$$TARGETNAME$$` must be in the file pattern — see above). Different pointings of the same plan file are attributed independently because their embedded ids differ. Flats, darks, and bias are matched by image type/filter/exposure **and** are anchored to the plan's light session: they count only when shot within `calibration_window_days` (default 7) of the earliest attributed light, on either side of it. Calibration acquired inside that window stays counted, so it is not re-shot on every later run. While the current time is still inside the window the deficit is reported (and `window_open` is `true`); once the current time falls outside it, `remaining_count` reads 0 with `window_open: false` and `load_sequence(request=[{"plan": <plan_path>, "action": "dark", "mode": "remaining"}])` loads nothing — raise `calibration_window_days` or write a new plan to reopen the window. Pass `mode="full"` to deliberately re-acquire. For a mosaic, `get_plan_progress(file_path)` summarizes every pane at once — see [Mosaics](#mosaics).
+- **Image file pattern:** in the N.I.N.A. profile's `ImageFileSettings`, `FilePattern` must put `$$TARGETNAME$$` in a path segment. (e.g. `$$TARGETNAME$$\$$IMAGETYPE$$\...`)
 - **Quality thresholds:** `max_hfr` and `min_detected_stars` (optional) exclude light frames that fail the thresholds from the acquired count. Frames missing the quality fields are excluded whenever a threshold is set (fail-closed). Thresholds are applied only to light frames — calibration frames have no star quality.
-- **Manually failing a frame:** delete (or move) the image file on disk — e.g. a bad `.fits`/`.tif`. The metadata row stays in the CSV (the plugin only appends), but it is omitted when the metadata is read, so progress no longer counts that frame as acquired and the next `mode="remaining"` load re-acquires it.
-- **The plan file is persistent** — written to the current working directory. You can inspect, edit, and reuse it across sessions.
-- **Experimental:** This code is highly experimental.  At the moment I am testing it at my observatory.  However I don't have a camera cooler.  So those operations are untested.  The agent generates an advanced sequence that it loads into N.I.N.A.  This sequence is still in alpha.  
+- **Manually failing a frame:** delete (or move using thumbs down icon) the image file on disk — e.g. a bad `.fits`/`.tif`. The metadata row stays in the CSV (the plugin only appends), but it is omitted when the metadata is read, so progress no longer counts that frame as acquired and the next `mode="remaining"` load re-acquires it.
+- **The plan file is persistent** — written to the current working directory. You can inspect, edit, and reuse it across sessions.  Changing the file will alter its plan_id, if not given.
 
----
+## `nina_notify` — OpenCode v2 Autonomous Plugin
 
-## `nina-plugin.ts` — OpenCode v2 Autonomous Plugin
-
-`nina-plugin.ts` is an [opencode](https://opencode.ai) v2 plugin (not compatible with Claude Code or other MCP clients). Once registered in `opencode.json`, it runs as a background server inside opencode and does two things:
+`nina-notify` is an [opencode](https://opencode.ai) v2 plugin (not compatible with Claude Code or other MCP clients).  Registered in `opencode.json`, it runs as a background server inside opencode and does two things:
 
 1. **Websocket event monitoring** — Connects to the N.I.N.A. event socket (`ws://<host:port>/v2/socket`), subscribes to all events, and forwards them to the active agent as intervention prompts. Events are batched with a 1-second debounce to avoid flooding the conversation.
 
-2. **Interval check** — Every `NINA_INTERVAL_MINUTES` (default 10) it prompts the agent to query observatory status (`get_sequence_state`, `get_site_equipment_status`) and decide what to do next, even when no N.I.N.A. events are firing.
-
-The plugin triggers a dedicated opencode "agent" called `worker` (see [`worker.md`](#workermd--opencode-worker-agent)), if it is configured, otherwise it uses the main session model. Both websocket-event triggers and interval checks prompt the same `worker` agent in an isolated session, which checks observatory status and takes action.
+2. **Interval check** — Every `NINA_INTERVAL_MINUTES` (default -1, disabled) it prompts the agent to query observatory status (`get_sequence_state`, `get_site_equipment_status`) and decide what to do next, even when no N.I.N.A. events are firing.
 
 The plugin auto-reconnects on websocket disconnection with a 5-second retry. On server dispose, it cleans up all timers and the socket.
-
----
-
-## `AGENTS.md` — OpenCode Worker Agent
-
-`AGENTS.md` (in `.opencode/agents/`) defines the observer agent that the active console user becomes and the `nina-plugin.ts` triggers for automated safety interrupts, sequence halts, and recovery routines.
-
----
 
 ### `PLAN.md` — the living wishlist
 
 A markdown file at the project root, **edited by the user at any time** (before or during the night). It is intentionally lightweight — entries can be as simple as a target name:
-
-1. **Metadata** — night date, overall intent (optional).
-2. **Candidate targets** — each with:
-   - name / catalog designation (minimum required — everything else optional)
-   - optional: coordinates, filter + exposure + count (if you want specifics)
-   - optional: reference to an existing plan JSON file, or let the worker generate one
-   - priority (1 = highest, optional)
-   - optional time window / note
-3. **Selection rules** — how the worker picks among candidates:
-   - altitude floor (default e.g. 30°)
-   - horizon buffer
-   - tie-break order (priority, then highest current altitude, then earliest available)
-
-Example shapes (illustrative — both are valid):
 
 [PLAN.md](./PLAN.md)
 ```json PLAN.md
@@ -262,21 +181,10 @@ Rules:
 - tie_break: priority, then altitude
 ```
 
-### How the night runs
-
-- The worker evaluates each un-imaged candidate, computes its current altitude (or loads its plan sequence and lets N.I.N.A. report it), and picks the best target: highest priority, then highest current altitude, then earliest available. It never interrupts a running observation — re-selection only happens after a sequence finishes.
-- **Time and coordinates**: no MCP tool returns a clock — the worker reads the OS clock of the machine it runs on (the same clock the MCP server uses internally, and the same timezone N.I.N.A. runs in). Altitude is computed by the `target_altitudes` tool (astropy) from the target's J2000 `ra_hours`/`dec_deg` (from the plan JSON's `pointings`, or from `PLAN.md`) and the site's `latitude_deg`/`longitude_deg` from `get_site_profile()`; `resolve_target` looks up J2000 coordinates by name via SIMBAD (needs internet). That estimate only decides *ordering*: the generated sequence independently embeds `WaitForAltitude` / `AltitudeCondition` guards, so N.I.N.A. re-checks altitude at runtime and will not image below the floor even if the worker's arithmetic or clock is off.
-- For the chosen target, the worker loads the referenced plan JSON if given, otherwise generates one via `write_plan_file` (using coords/filter/count from `PLAN.md`, or sensible defaults), then `load_sequence(request=[{"plan": <plan_path>, "action": "light"}])` followed by `start_sequence()`. A target listed by name only (no `plan=` and no coordinates) leaves the worker to supply its own coordinates — add a plan path or RA/Dec to avoid that.
-- When no candidate is viable (all below the altitude floor, or the night is over), the worker writes `report.md` (overwriting any previous one) with the night's results, stows the scope, and stops. Editing `PLAN.md` later triggers re-evaluation.
-- You can add/remove/reorder lines at any moment. The worker records completion in `PROGRESS.md` instead and leaves `PLAN.md` untouched, so your editing isn't fought over.
-
----
-
 ## `PROGRESS.md` — Shared Progress File
 
-`PROGRESS.md` is a shared observatory progress file in the project directory. Both the active session and the automated `worker` sessions read it on start to restore context before acting, and append a short ISO-8601-timestamped entry after each significant action (status checks, plan writes, sequence loads/starts/stops, errors, and interventions), recording what was done, the observed equipment and safety state, and any decisions. This keeps history shared across sessions.
+`PROGRESS.md` is a shared observatory progress file in the project directory. The active session reads it on start to restore context before acting, and appends a timestamped entry after each significant action, recording what was done, the observed equipment and safety state, and any decisions. This keeps history shared across sessions.
 
----
 
 ## `opencode.json` — Opencode v2 Sample Configuration
 
@@ -314,16 +222,15 @@ Registers the opencode plugin and the `nina_planner` MCP server so both run toge
 
 ## Plugin Options
 
-### `nina-plugin.ts` (opencode v2 plugin)
+### `nina-notify` (opencode v2 plugin)
 
-Configured under `opencode.json > plugin` as the second array element (see [`opencode.json`](#opencodejson--opencode-v2-sample-configuration)).
+Configured in the plugin's options configuration. (see [`opencode.json`](#opencodejson--opencode-v2-sample-configuration)).
 
 | Option | Type | Default | Description |
 |---|---|---|---|
 | `ninaEndpoint` | string | `127.0.0.1:1888` | N.I.N.A. host and port (no scheme) for the websocket event stream, e.g. `192.168.0.24:1888`. The plugin connects to `ws://<ninaEndpoint>/v2/socket`. |
-| `intervalCheckMinutes` (or `intervalCheck`) | number | `-1` | Minutes between autonomous status-check triggers of the `worker` agent. Accepts a float; the value is multiplied by `60_000` ms before scheduling.  Disabled if 0 or less. |
+| `intervalCheckMinutes` | number | `-1` | Minutes between autonomous status-check triggers of the `worker` agent. Accepts a float; the value is multiplied by `60_000` ms before scheduling.  Disabled if 0 or less. |
 | `pluginLogs` | string | _(none)_ | File path appended on each plugin event (websocket open/message/close/error, batched flush, interval trigger failures). Set to a writable path (e.g. `/tmp/nina-plugins.log`) to capture diagnostic output. Omit or leave empty to disable file logging. |
-| `agentHistory` | string | _(none)_ | File path that receives an append-only JSON-lines record of every `worker` session the plugin spawns. Each line is `{ timestamp, sessionId, agent, messages }`. Omit or leave empty to skip history capture. |
 
 ---
 
@@ -342,21 +249,13 @@ Configured under `opencode.json > plugin` as the second array element (see [`ope
 
 ## Setting up WSL
 
-Make sure you have setup mirroring to allow you to connect to NINA via localhost.  Do this by editing wslconfig and setting networking mode to mirrored.  Otherwise you will have to know the external ip of your machine in order to connect to your NINA API endpoint.
+Make sure mirroring is setup in WSL to allow you to connect to NINA directly through localhost (otherwise you have to use your machines' IP address).  Do this by editing wslconfig and setting networking mode to mirrored.
 
 
 ```
 $ vi $HOME/.wslconfig
 [wsl2]
 networkingMode=mirrored
-```
-
-Then shutdown wsl and restart
-
-[$ wsl --shutdown](./$ wsl --shutdown)
-```bash
-$ wsl --shutdown
-<Error: File '$ wsl --shutdown' not found on disk>
 ```
 
 In addition, to get the system tools to work to stop and restart NINA should it stop, make sudo password less with:
