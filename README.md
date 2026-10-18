@@ -286,8 +286,8 @@ The plugin auto-reconnects on websocket disconnection with a 5-second retry. On 
 
 A markdown file at the project root, **edited by the user at any time** (before or during the night). It is intentionally lightweight — entries can be as simple as a target name:
 
-[PLAN.md](./PLAN.md)
-```markdown
+[./PLAN.md](././PLAN.md)
+```markdown ./PLAN.md
 # Tonight - 2026-10-08
 
 - M31          "before the moon comes up"
