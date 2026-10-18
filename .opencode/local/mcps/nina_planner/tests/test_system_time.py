@@ -278,7 +278,7 @@ class AppendProgressEntryTest(unittest.TestCase):
     def _call(self, text: str) -> str:
         from nina_planner.progress import append_progress_entry
 
-        with patch("nina_planner.server.PROJECT_DIR", self.project_dir):
+        with patch("nina_planner.config.PROJECT_DIR", self.project_dir):
             asyncio.run(append_progress_entry(text))
         return self.progress.read_text(encoding="utf-8")
 
@@ -314,13 +314,13 @@ class StopNinaTest(unittest.TestCase):
         from nina_planner.server import stop_nina
 
         with (
-            patch("nina_planner.server.PROJECT_DIR", self.project_dir),
+            patch("nina_planner.config.PROJECT_DIR", self.project_dir),
             patch(
-                "nina_planner.server._api_probe",
+                "nina_planner.client.api_probe",
                 AsyncMock(return_value=(False, "connection refused")),
             ),
-            patch("nina_planner.server._run_blocking") as mock_run,
-            patch("nina_planner.server._log_payload"),
+            patch("nina_planner.client.run_blocking") as mock_run,
+            patch("nina_planner.client.log_payload"),
         ):
             result = asyncio.run(stop_nina())
 
@@ -334,11 +334,11 @@ class StopNinaTest(unittest.TestCase):
         from nina_planner.server import stop_nina
 
         with (
-            patch("nina_planner.server.PROJECT_DIR", self.project_dir),
+            patch("nina_planner.config.PROJECT_DIR", self.project_dir),
             patch(
                 # First probe: NINA is up (stop proceeds to taskkill). Second
                 # probe: the kill verification poll sees the API gone.
-                "nina_planner.server._api_probe",
+                "nina_planner.client.api_probe",
                 AsyncMock(
                     side_effect=[
                         (True, None),
@@ -347,15 +347,15 @@ class StopNinaTest(unittest.TestCase):
                 ),
             ),
             patch(
-                "nina_planner.server.windows_interop_available",
+                "nina_planner.tools.lifecycle.windows_interop_available",
                 return_value=True,
             ),
             patch(
-                "nina_planner.server._run_blocking",
+                "nina_planner.client.run_blocking",
                 AsyncMock(return_value=MagicMock(returncode=0)),
             ) as mock_run,
-            patch("nina_planner.server.anyio.sleep", new=AsyncMockSleep()),
-            patch("nina_planner.server._log_payload"),
+            patch("nina_planner.tools.lifecycle.anyio.sleep", new=AsyncMockSleep()),
+            patch("nina_planner.client.log_payload"),
         ):
             result = asyncio.run(stop_nina())
 
@@ -371,17 +371,17 @@ class StopNinaTest(unittest.TestCase):
         from nina_planner.server import stop_nina
 
         with (
-            patch("nina_planner.server.PROJECT_DIR", self.project_dir),
+            patch("nina_planner.config.PROJECT_DIR", self.project_dir),
             patch(
-                "nina_planner.server._api_probe",
+                "nina_planner.client.api_probe",
                 AsyncMock(return_value=(True, None)),
             ),
             patch(
-                "nina_planner.server.windows_interop_available",
+                "nina_planner.tools.lifecycle.windows_interop_available",
                 return_value=False,
             ),
-            patch("nina_planner.server._run_blocking") as mock_run,
-            patch("nina_planner.server._log_payload"),
+            patch("nina_planner.client.run_blocking") as mock_run,
+            patch("nina_planner.client.log_payload"),
         ):
             with self.assertRaises(RuntimeError) as ctx:
                 asyncio.run(stop_nina())
@@ -392,21 +392,21 @@ class StopNinaTest(unittest.TestCase):
         from nina_planner.server import stop_nina
 
         with (
-            patch("nina_planner.server.PROJECT_DIR", self.project_dir),
+            patch("nina_planner.config.PROJECT_DIR", self.project_dir),
             patch(
-                "nina_planner.server._api_probe",
+                "nina_planner.client.api_probe",
                 AsyncMock(return_value=(True, None)),
             ),
             patch(
-                "nina_planner.server.windows_interop_available",
+                "nina_planner.tools.lifecycle.windows_interop_available",
                 return_value=True,
             ),
             patch(
-                "nina_planner.server._run_blocking",
+                "nina_planner.client.run_blocking",
                 AsyncMock(side_effect=RuntimeError("Access denied")),
             ),
-            patch("nina_planner.server.anyio.sleep", new=AsyncMockSleep()),
-            patch("nina_planner.server._log_payload"),
+            patch("nina_planner.tools.lifecycle.anyio.sleep", new=AsyncMockSleep()),
+            patch("nina_planner.client.log_payload"),
         ):
             with self.assertRaises(RuntimeError) as ctx:
                 asyncio.run(stop_nina())
@@ -427,16 +427,16 @@ class StartNinaTest(unittest.TestCase):
         from nina_planner.server import start_nina
 
         with (
-            patch("nina_planner.server.PROJECT_DIR", self.project_dir),
+            patch("nina_planner.config.PROJECT_DIR", self.project_dir),
             patch(
-                "nina_planner.server._nina_api_responsive",
+                "nina_planner.client.nina_api_responsive",
                 AsyncMock(return_value=True),
             ),
             patch(
-                "nina_planner.server.windows_interop_available",
+                "nina_planner.tools.lifecycle.windows_interop_available",
                 return_value=True,
             ),
-            patch("nina_planner.server._log_payload"),
+            patch("nina_planner.client.log_payload"),
         ):
             with self.assertRaises(RuntimeError) as ctx:
                 asyncio.run(start_nina())
@@ -455,17 +455,18 @@ class StartNinaTest(unittest.TestCase):
 
         with (
             patch(
-                "nina_planner.server._nina_api_responsive",
+                "nina_planner.client.nina_api_responsive",
                 AsyncMock(return_value=False),
             ),
             patch(
-                "nina_planner.server.windows_interop_available",
+                "nina_planner.tools.lifecycle.windows_interop_available",
                 return_value=False,
             ),
             patch(
-                "nina_planner.server._launch_nina_interactive", new_callable=AsyncMock
+                "nina_planner.tools.lifecycle._launch_nina_interactive",
+                new_callable=AsyncMock,
             ) as launch,
-            patch("nina_planner.server._log_payload"),
+            patch("nina_planner.client.log_payload"),
         ):
             with self.assertRaisesRegex(RuntimeError, "cannot be launched from here"):
                 asyncio.run(start_nina())
@@ -491,21 +492,21 @@ class StartNinaTest(unittest.TestCase):
             return absent_proc
 
         with (
-            patch("nina_planner.server.PROJECT_DIR", self.project_dir),
+            patch("nina_planner.config.PROJECT_DIR", self.project_dir),
             patch(
-                "nina_planner.server._nina_api_responsive",
+                "nina_planner.client.nina_api_responsive",
                 AsyncMock(return_value=False),
             ),
             patch(
-                "nina_planner.server.windows_interop_available",
+                "nina_planner.tools.lifecycle.windows_interop_available",
                 return_value=True,
             ),
-            patch("nina_planner.server._run_blocking", side_effect=fake_run),
+            patch("nina_planner.client.run_blocking", side_effect=fake_run),
             patch(
-                "nina_planner.server.write_nina_launcher",
+                "nina_planner.tools.lifecycle.write_nina_launcher",
                 return_value=self._STUB_LAUNCHER_PATHS,
             ),
-            patch("nina_planner.server._log_payload"),
+            patch("nina_planner.client.log_payload"),
         ):
             result = asyncio.run(start_nina())
 
@@ -530,21 +531,21 @@ class StartNinaTest(unittest.TestCase):
             return MagicMock(returncode=1, stdout="", stderr="Access denied")
 
         with (
-            patch("nina_planner.server.PROJECT_DIR", self.project_dir),
+            patch("nina_planner.config.PROJECT_DIR", self.project_dir),
             patch(
-                "nina_planner.server._nina_api_responsive",
+                "nina_planner.client.nina_api_responsive",
                 AsyncMock(return_value=False),
             ),
             patch(
-                "nina_planner.server.windows_interop_available",
+                "nina_planner.tools.lifecycle.windows_interop_available",
                 return_value=True,
             ),
-            patch("nina_planner.server._run_blocking", side_effect=fake_run),
+            patch("nina_planner.client.run_blocking", side_effect=fake_run),
             patch(
-                "nina_planner.server.write_nina_launcher",
+                "nina_planner.tools.lifecycle.write_nina_launcher",
                 return_value=self._STUB_LAUNCHER_PATHS,
             ),
-            patch("nina_planner.server._log_payload"),
+            patch("nina_planner.client.log_payload"),
         ):
             with self.assertRaisesRegex(
                 RuntimeError, "task creation command.*exit code 1.*Access denied"
@@ -565,21 +566,21 @@ class StartNinaTest(unittest.TestCase):
             return MagicMock(returncode=0, stdout="", stderr="")
 
         with (
-            patch("nina_planner.server.PROJECT_DIR", self.project_dir),
+            patch("nina_planner.config.PROJECT_DIR", self.project_dir),
             patch(
-                "nina_planner.server._nina_api_responsive",
+                "nina_planner.client.nina_api_responsive",
                 AsyncMock(return_value=False),
             ),
             patch(
-                "nina_planner.server.windows_interop_available",
+                "nina_planner.tools.lifecycle.windows_interop_available",
                 return_value=True,
             ),
-            patch("nina_planner.server._run_blocking", side_effect=fake_run),
+            patch("nina_planner.client.run_blocking", side_effect=fake_run),
             patch(
-                "nina_planner.server.write_nina_launcher",
+                "nina_planner.tools.lifecycle.write_nina_launcher",
                 return_value=self._STUB_LAUNCHER_PATHS,
             ),
-            patch("nina_planner.server._log_payload"),
+            patch("nina_planner.client.log_payload"),
         ):
             with self.assertRaisesRegex(
                 RuntimeError, "task execution command.*exit code 1.*Task failed"

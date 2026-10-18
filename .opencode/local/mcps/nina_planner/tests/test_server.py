@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any
 from unittest.mock import AsyncMock, patch
 
+from nina_planner.client import log_payload as _log_payload
 from nina_planner.models.camera import CameraDevice
 from nina_planner.models.mount import MountDevice
 from nina_planner.models.observatory import ObservatoryEquipment
@@ -21,15 +22,19 @@ from nina_planner.models.profile import (
     SiteLocationInfo,
 )
 from nina_planner.models.request import SequenceRequest
-from nina_planner.server import (
-    _check_pointing_index,
-    _convert_keys,
-    _convert_to_met,
-    _log_payload,
-    _sanitize_filename,
-    _validate_filters,
-    _validate_position_angle,
+from nina_planner.plan_utils import (
+    check_pointing_index as _check_pointing_index,
 )
+from nina_planner.plan_utils import (
+    sanitize_filename as _sanitize_filename,
+)
+from nina_planner.plan_utils import (
+    validate_filters as _validate_filters,
+)
+from nina_planner.plan_utils import (
+    validate_position_angle as _validate_position_angle,
+)
+from nina_planner.tools.equipment import _convert_keys, _convert_to_met
 
 _STUB_LAUNCHER_PATHS = (
     Path("/tmp/launch_nina.cmd"),
@@ -182,7 +187,7 @@ class HelperFunctionsTest(unittest.TestCase):
     def test_log_payload_writes_to_file(self):
         with tempfile.TemporaryDirectory() as tmp:
             log_path = Path(tmp) / "test.log"
-            with patch("nina_planner.server.NINA_PLANNER_LOG", str(log_path)):
+            with patch("nina_planner.config.NINA_PLANNER_LOG", str(log_path)):
                 _log_payload("Test", "payload")
             content = log_path.read_text()
             self.assertIn("Test", content)
@@ -190,7 +195,7 @@ class HelperFunctionsTest(unittest.TestCase):
 
     def test_log_payload_falls_back_to_stderr_when_no_env(self):
         # When NINA_PLANNER_LOG is unset, log_payload writes to stderr.
-        with patch("nina_planner.server.NINA_PLANNER_LOG", None):
+        with patch("nina_planner.config.NINA_PLANNER_LOG", None):
             _log_payload("Test", "payload")  # should not raise
 
     def test_log_payload_windows_path_relocated_on_posix(self):
@@ -200,10 +205,10 @@ class HelperFunctionsTest(unittest.TestCase):
 
         if os.name == "nt":
             self.skipTest("Windows uses the configured path as-is")
-        from nina_planner.server import _log_file
+        from nina_planner.client import _log_file as _log_file
 
         with patch(
-            "nina_planner.server.NINA_PLANNER_LOG",
+            "nina_planner.config.NINA_PLANNER_LOG",
             "C:/Windows/Temp/nina-planner-debug.log",
         ):
             expected = Path(tempfile.gettempdir()) / "nina-planner-debug.log"
@@ -212,16 +217,16 @@ class HelperFunctionsTest(unittest.TestCase):
         self.assertIn("Test", expected.read_text())
 
     def test_api_probe_reports_liveness_and_reason(self):
-        from nina_planner.server import _api_probe
+        from nina_planner.client import api_probe as _api_probe
 
         with patch(
-            "nina_planner.server._api_get",
+            "nina_planner.client.api_get",
             AsyncMock(return_value="2026-10-07T09:00:00"),
         ):
             self.assertEqual(asyncio.run(_api_probe()), (True, None))
 
         with patch(
-            "nina_planner.server._api_get",
+            "nina_planner.client.api_get",
             AsyncMock(side_effect=RuntimeError("HTTP 500: sequencer wedged")),
         ):
             self.assertEqual(
@@ -233,7 +238,7 @@ class HelperFunctionsTest(unittest.TestCase):
         log is its only home — /sequence/load's reply included."""
         import httpx
 
-        from nina_planner.server import _api_post
+        from nina_planner.client import api_post as _api_post
 
         response = httpx.Response(
             200,
@@ -253,10 +258,10 @@ class HelperFunctionsTest(unittest.TestCase):
 
         with (
             patch(
-                "nina_planner.server.httpx.AsyncClient",
+                "nina_planner.client.httpx.AsyncClient",
                 lambda **kwargs: _FakeClient(),
             ),
-            patch("nina_planner.server._log_payload") as log,
+            patch("nina_planner.client.log_payload") as log,
         ):
             result = asyncio.run(_api_post("/sequence/load", {"x": 1}))
 
@@ -278,7 +283,7 @@ class HelperFunctionsTest(unittest.TestCase):
     def test_api_error_surfaces_nina_body_behind_http_status(self):
         """A non-2xx refusal must carry NINA's own reason — httpx's
         raise_for_status would report only the status line."""
-        from nina_planner.server import _unwrap_response
+        from nina_planner.client import unwrap_response as _unwrap_response
 
         resp = self._api_response(
             400, json_body={"Success": False, "Error": "Sequence is already running"}
@@ -291,7 +296,7 @@ class HelperFunctionsTest(unittest.TestCase):
         self.assertIn("400", message)
 
     def test_api_error_surfaces_and_truncates_plain_text_body(self):
-        from nina_planner.server import _unwrap_response
+        from nina_planner.client import unwrap_response as _unwrap_response
 
         resp = self._api_response(502, text="upstream " + "x" * 600)
         with self.assertRaises(RuntimeError) as ctx:
@@ -301,7 +306,7 @@ class HelperFunctionsTest(unittest.TestCase):
         self.assertLess(len(message), 700)
 
     def test_api_error_on_empty_body_reports_status(self):
-        from nina_planner.server import _unwrap_response
+        from nina_planner.client import unwrap_response as _unwrap_response
 
         resp = self._api_response(500)
         with self.assertRaisesRegex(
@@ -310,7 +315,7 @@ class HelperFunctionsTest(unittest.TestCase):
             _unwrap_response("GET", "/time", resp)
 
     def test_api_200_with_success_false_keeps_nina_error_verbatim(self):
-        from nina_planner.server import _unwrap_response
+        from nina_planner.client import unwrap_response as _unwrap_response
 
         resp = self._api_response(
             200, json_body={"Success": False, "Error": "Filter 'L' not found"}
@@ -319,7 +324,7 @@ class HelperFunctionsTest(unittest.TestCase):
             _unwrap_response("GET", "/profile", resp)
 
     def test_api_200_with_non_json_body_reports_body(self):
-        from nina_planner.server import _unwrap_response
+        from nina_planner.client import unwrap_response as _unwrap_response
 
         resp = self._api_response(200, text="<html>gateway exploded</html>")
         with self.assertRaises(RuntimeError) as ctx:
@@ -554,11 +559,11 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
 
     async def test_resolve_imaging_root(self):
         from nina_planner.imaging import windows_to_local
-        from nina_planner.server import _resolve_imaging_root
+        from nina_planner.metadata import resolve_imaging_root as _resolve_imaging_root
 
         profile = self._full_profile()
         with patch(
-            "nina_planner.server.get_site_profile",
+            "nina_planner.tools.equipment.get_site_profile",
             AsyncMock(return_value=profile),
         ):
             result = await _resolve_imaging_root()
@@ -566,7 +571,7 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result, expected)
 
     async def test_load_plan_with_relative_path(self):
-        from nina_planner.server import _load_plan
+        from nina_planner.plan_utils import load_plan as _load_plan
 
         plan_dict = {
             "plan_id": "plan-test123",
@@ -586,30 +591,30 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
             project_dir = Path(tmp)
             plan_filename = "subdir_plan.json"
             (project_dir / plan_filename).write_text(json.dumps(plan_dict))
-            with patch("nina_planner.server.PROJECT_DIR", project_dir):
+            with patch("nina_planner.config.PROJECT_DIR", project_dir):
                 result = await _load_plan(plan_filename)
         self.assertEqual(result.plan_id, "plan-test123")
         self.assertEqual(result.target, "M31")
 
     async def test_read_metadata_with_image_type(self):
-        from nina_planner.server import _read_metadata
+        from nina_planner.metadata import read_metadata as _read_metadata
 
         def fake_read(root, image_type):
             return [{"image_type": image_type.upper(), "duration": "60.0"}]
 
         with (
             patch(
-                "nina_planner.server.get_site_profile",
+                "nina_planner.tools.equipment.get_site_profile",
                 AsyncMock(return_value=self._full_profile()),
             ),
-            patch("nina_planner.server.read_imaging_csv", side_effect=fake_read),
+            patch("nina_planner.metadata.read_imaging_csv", side_effect=fake_read),
         ):
             rows = await _read_metadata("light")
         self.assertEqual(len(rows), 1)
         self.assertEqual(rows[0]["image_type"], "LIGHT")
 
     async def test_read_metadata_without_image_type(self):
-        from nina_planner.server import _read_metadata
+        from nina_planner.metadata import read_metadata as _read_metadata
 
         types_seen = []
 
@@ -619,10 +624,10 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
 
         with (
             patch(
-                "nina_planner.server.get_site_profile",
+                "nina_planner.tools.equipment.get_site_profile",
                 AsyncMock(return_value=self._full_profile()),
             ),
-            patch("nina_planner.server.read_imaging_csv", side_effect=fake_read),
+            patch("nina_planner.metadata.read_imaging_csv", side_effect=fake_read),
         ):
             rows = await _read_metadata()
         self.assertEqual(set(types_seen), {"light", "dark", "bias", "flat"})
@@ -659,7 +664,7 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
             "FocuserSettings": {"Id": "Foc1"},
             "SwitchSettings": {},
         }
-        with patch("nina_planner.server._api_get", AsyncMock(return_value=raw)):
+        with patch("nina_planner.client.api_get", AsyncMock(return_value=raw)):
             result = await get_site_profile()
         self.assertEqual(result.profile_name, "Test")
         self.assertEqual(result.optics.focal_length_mm, 600)
@@ -690,7 +695,7 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
             "FocuserSettings": {},
             "SwitchSettings": {},
         }
-        with patch("nina_planner.server._api_get", AsyncMock(return_value=raw)):
+        with patch("nina_planner.client.api_get", AsyncMock(return_value=raw)):
             result = await get_site_profile()
         self.assertFalse(result.equipment.has_guider)
 
@@ -720,7 +725,7 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
             "FocuserSettings": {},
             "SwitchSettings": {},
         }
-        with patch("nina_planner.server._api_get", AsyncMock(return_value=raw)):
+        with patch("nina_planner.client.api_get", AsyncMock(return_value=raw)):
             result = await get_site_profile()
         self.assertEqual(len(result.filters), 2)
         self.assertEqual(result.filters[0].name, "L")
@@ -764,7 +769,7 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
             "FocuserSettings": {},
             "SwitchSettings": {},
         }
-        with patch("nina_planner.server._api_get", AsyncMock(return_value=raw)):
+        with patch("nina_planner.client.api_get", AsyncMock(return_value=raw)):
             result = await get_site_profile()
         kept = {f.name: f for f in result.filters}
         self.assertEqual(list(kept), ["L", "OIII", "B"])
@@ -795,7 +800,7 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
         async def fake(path):
             return metas if path == "/profile/show?active=false" else active
 
-        with patch("nina_planner.server._api_get", side_effect=fake):
+        with patch("nina_planner.client.api_get", side_effect=fake):
             result = await list_site_profiles()
         self.assertEqual([p.profile_id for p in result], ["p1", "p2"])
         self.assertFalse(result[0].active)
@@ -812,23 +817,27 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
             seen["path"] = path
             return "Successfully switched profile"
 
-        with patch("nina_planner.server._api_get", side_effect=fake):
+        with patch("nina_planner.client.api_get", side_effect=fake):
             result = await switch_site_profile("p2")
         self.assertEqual(seen["path"], "/profile/switch?profileid=p2")
         self.assertEqual(result, "Successfully switched profile")
 
     async def test_get_site_equipment_status_returns_empty_when_all_false(self):
-        from nina_planner.server import _get_site_equipment_status
+        from nina_planner.tools.equipment import (
+            _get_site_equipment_status as _get_site_equipment_status,
+        )
 
         profile = self._minimal_profile()
-        with patch("nina_planner.server._api_get", AsyncMock(return_value={})):
+        with patch("nina_planner.client.api_get", AsyncMock(return_value={})):
             equipment = await _get_site_equipment_status(profile)
         self.assertIsInstance(equipment, ObservatoryEquipment)
         self.assertIsNone(equipment.mount)
         self.assertIsNone(equipment.camera)
 
     async def test_get_site_equipment_status_connects_missing_devices(self):
-        from nina_planner.server import _get_site_equipment_status
+        from nina_planner.tools.equipment import (
+            _get_site_equipment_status as _get_site_equipment_status,
+        )
 
         profile = self._minimal_profile()
         # Set has_mount=True but Connected=False → should call connect.
@@ -855,13 +864,15 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
                 return {}
             return raw
 
-        with patch("nina_planner.server._api_get", side_effect=fake):
+        with patch("nina_planner.client.api_get", side_effect=fake):
             with self.assertRaises(RuntimeError) as ctx:
                 await _get_site_equipment_status(profile_connected)
         self.assertIn("Mount", str(ctx.exception))
 
     async def test_get_site_equipment_status_connected_device(self):
-        from nina_planner.server import _get_site_equipment_status
+        from nina_planner.tools.equipment import (
+            _get_site_equipment_status as _get_site_equipment_status,
+        )
 
         profile = self._minimal_profile().model_copy(
             update={
@@ -881,14 +892,16 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
         )
         raw = {"Mount": {"Connected": True, "Name": "TestMount"}}
 
-        with patch("nina_planner.server._api_get", AsyncMock(return_value=raw)):
+        with patch("nina_planner.client.api_get", AsyncMock(return_value=raw)):
             equipment = await _get_site_equipment_status(profile)
         self.assertIsNotNone(equipment.mount)
         self.assertEqual(equipment.mount.name, "TestMount")
         self.assertTrue(equipment.mount.connected)
 
     async def test_get_site_equipment_status_connects_direct_guider(self):
-        from nina_planner.server import _get_site_equipment_status
+        from nina_planner.tools.equipment import (
+            _get_site_equipment_status as _get_site_equipment_status,
+        )
 
         profile = self._minimal_profile().model_copy(
             update={
@@ -918,7 +931,7 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
                 return {}
             return raw
 
-        with patch("nina_planner.server._api_get", side_effect=fake):
+        with patch("nina_planner.client.api_get", side_effect=fake):
             with self.assertRaises(RuntimeError) as ctx:
                 await _get_site_equipment_status(profile)
         self.assertTrue(connect_called)
@@ -935,7 +948,7 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
             {"Time": (now - timedelta(seconds=7200)).isoformat(), "Type": "Info"},
         ]
 
-        with patch("nina_planner.server._api_get", AsyncMock(return_value=events)):
+        with patch("nina_planner.client.api_get", AsyncMock(return_value=events)):
             result = await get_events(since=3600)
         self.assertEqual(len(result), 1)
         # Rendered in the host's local zone; compare the instant.
@@ -958,7 +971,7 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
             }
         ]
 
-        with patch("nina_planner.server._api_get", AsyncMock(return_value=logs)):
+        with patch("nina_planner.client.api_get", AsyncMock(return_value=logs)):
             result = await get_logs(since=3600)
         self.assertEqual(len(result), 1)
         self.assertIn("timestamp", result[0])
@@ -988,9 +1001,9 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
             project_dir.mkdir()
             (project_dir / "progress.md").write_text("")
             with (
-                patch("nina_planner.server.PROJECT_DIR", project_dir),
+                patch("nina_planner.config.PROJECT_DIR", project_dir),
                 patch(
-                    "nina_planner.server.get_site_profile",
+                    "nina_planner.tools.equipment.get_site_profile",
                     AsyncMock(return_value=self._full_profile()),
                 ),
             ):
@@ -1020,9 +1033,9 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
             project_dir.mkdir()
             (project_dir / "progress.md").write_text("")
             with (
-                patch("nina_planner.server.PROJECT_DIR", project_dir),
+                patch("nina_planner.config.PROJECT_DIR", project_dir),
                 patch(
-                    "nina_planner.server.get_site_profile",
+                    "nina_planner.tools.equipment.get_site_profile",
                     AsyncMock(return_value=self._full_profile()),
                 ),
             ):
@@ -1052,7 +1065,7 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
             plan_path.write_text(json.dumps(plan_dict))
 
             with patch(
-                "nina_planner.server._read_metadata",
+                "nina_planner.metadata.read_metadata",
                 AsyncMock(return_value=[]),
             ):
                 result = await get_plan_progress(str(plan_path))
@@ -1125,9 +1138,9 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
             out.mkdir()
             plan_path, csv_path = self._write_mosaic_source(src)
             with (
-                patch("nina_planner.server.PROJECT_DIR", out),
+                patch("nina_planner.config.PROJECT_DIR", out),
                 patch(
-                    "nina_planner.server.get_site_profile",
+                    "nina_planner.tools.equipment.get_site_profile",
                     AsyncMock(return_value=self._full_profile()),
                 ),
             ):
@@ -1160,9 +1173,9 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
             out.mkdir()
             plan_path, csv_path = self._write_mosaic_source(src, pa=0.0)
             with (
-                patch("nina_planner.server.PROJECT_DIR", out),
+                patch("nina_planner.config.PROJECT_DIR", out),
                 patch(
-                    "nina_planner.server.get_site_profile",
+                    "nina_planner.tools.equipment.get_site_profile",
                     AsyncMock(return_value=profile),
                 ),
             ):
@@ -1184,9 +1197,9 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
             out.mkdir()
             plan_path, csv_path = self._write_mosaic_source(src, pa=90.0)
             with (
-                patch("nina_planner.server.PROJECT_DIR", out),
+                patch("nina_planner.config.PROJECT_DIR", out),
                 patch(
-                    "nina_planner.server.get_site_profile",
+                    "nina_planner.tools.equipment.get_site_profile",
                     AsyncMock(return_value=profile),
                 ),
                 self.assertRaises(ValueError) as ctx,
@@ -1218,7 +1231,7 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
             plan_path = Path(tmp) / "plan.json"
             plan_path.write_text(json.dumps(plan_dict))
             with patch(
-                "nina_planner.server._read_metadata",
+                "nina_planner.metadata.read_metadata",
                 AsyncMock(return_value=[]),
             ):
                 result = await get_plan_progress(str(plan_path))
@@ -1294,19 +1307,19 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
 
             with (
                 patch(
-                    "nina_planner.server.get_site_profile",
+                    "nina_planner.tools.equipment.get_site_profile",
                     AsyncMock(return_value=self._full_profile()),
                 ),
                 patch(
-                    "nina_planner.server._get_site_equipment_status",
+                    "nina_planner.tools.equipment._get_site_equipment_status",
                     AsyncMock(return_value=ObservatoryEquipment()),
                 ),
                 patch(
-                    "nina_planner.server._read_metadata",
+                    "nina_planner.metadata.read_metadata",
                     AsyncMock(return_value=[]),
                 ),
                 patch(
-                    "nina_planner.server.plan_progress",
+                    "nina_planner.tools.sequence.plan_progress",
                     return_value=fake_progress,
                 ),
             ):
@@ -1343,15 +1356,15 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
 
             with (
                 patch(
-                    "nina_planner.server.get_site_profile",
+                    "nina_planner.tools.equipment.get_site_profile",
                     AsyncMock(return_value=self._full_profile()),
                 ),
                 patch(
-                    "nina_planner.server._get_site_equipment_status",
+                    "nina_planner.tools.equipment._get_site_equipment_status",
                     AsyncMock(return_value=ObservatoryEquipment()),
                 ),
                 patch(
-                    "nina_planner.server._read_metadata",
+                    "nina_planner.metadata.read_metadata",
                     AsyncMock(side_effect=RuntimeError("imaging dir missing")),
                 ),
             ):
@@ -1391,15 +1404,15 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
 
             with (
                 patch(
-                    "nina_planner.server.get_site_profile",
+                    "nina_planner.tools.equipment.get_site_profile",
                     AsyncMock(return_value=self._full_profile()),
                 ),
                 patch(
-                    "nina_planner.server._get_site_equipment_status",
+                    "nina_planner.tools.equipment._get_site_equipment_status",
                     AsyncMock(return_value=ObservatoryEquipment()),
                 ),
                 patch(
-                    "nina_planner.server._read_metadata",
+                    "nina_planner.metadata.read_metadata",
                     AsyncMock(return_value=[]),
                 ),
             ):
@@ -1451,20 +1464,22 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
             darks_step = _MM(return_value=[{"$type": "darks"}])
             with (
                 patch(
-                    "nina_planner.server.get_site_profile",
+                    "nina_planner.tools.equipment.get_site_profile",
                     AsyncMock(return_value=self._full_profile()),
                 ),
                 patch(
-                    "nina_planner.server._get_site_equipment_status",
+                    "nina_planner.tools.equipment._get_site_equipment_status",
                     AsyncMock(return_value=ObservatoryEquipment()),
                 ),
                 patch(
-                    "nina_planner.server._read_metadata",
+                    "nina_planner.metadata.read_metadata",
                     AsyncMock(return_value=[]),
                 ),
-                patch("nina_planner.server.target_payload_darks", new=darks_step),
                 patch(
-                    "nina_planner.server._api_post",
+                    "nina_planner.tools.sequence.target_payload_darks", new=darks_step
+                ),
+                patch(
+                    "nina_planner.client.api_post",
                     AsyncMock(return_value={}),
                 ) as api_post,
             ):
@@ -1514,18 +1529,20 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
             darks_step = _MM(return_value=[{"$type": "darks"}])
             with (
                 patch(
-                    "nina_planner.server.get_site_profile",
+                    "nina_planner.tools.equipment.get_site_profile",
                     AsyncMock(return_value=self._full_profile()),
                 ),
                 patch(
-                    "nina_planner.server._get_site_equipment_status",
+                    "nina_planner.tools.equipment._get_site_equipment_status",
                     AsyncMock(return_value=ObservatoryEquipment()),
                 ),
                 patch(
-                    "nina_planner.server._read_metadata",
+                    "nina_planner.metadata.read_metadata",
                     AsyncMock(return_value=[old_light]),
                 ),
-                patch("nina_planner.server.target_payload_darks", new=darks_step),
+                patch(
+                    "nina_planner.tools.sequence.target_payload_darks", new=darks_step
+                ),
             ):
                 result = await load_sequence(
                     [SequenceRequest(plan=str(plan_path), action="dark")]
@@ -1565,23 +1582,23 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
 
             with (
                 patch(
-                    "nina_planner.server._read_metadata",
+                    "nina_planner.metadata.read_metadata",
                     AsyncMock(return_value=[]),
                 ),
                 patch(
-                    "nina_planner.server.get_site_profile",
+                    "nina_planner.tools.equipment.get_site_profile",
                     AsyncMock(return_value=self._full_profile()),
                 ),
                 patch(
-                    "nina_planner.server._get_site_equipment_status",
+                    "nina_planner.tools.equipment._get_site_equipment_status",
                     AsyncMock(return_value=ObservatoryEquipment()),
                 ),
                 patch(
-                    "nina_planner.server.target_payload_darks",
+                    "nina_planner.tools.sequence.target_payload_darks",
                     side_effect=fake_darks,
                 ),
                 patch(
-                    "nina_planner.server._api_post",
+                    "nina_planner.client.api_post",
                     AsyncMock(return_value={}),
                 ),
             ):
@@ -1623,20 +1640,24 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
             lights_step = _MM(return_value=[{"$type": "lights"}])
             with (
                 patch(
-                    "nina_planner.server.get_site_profile",
+                    "nina_planner.tools.equipment.get_site_profile",
                     AsyncMock(return_value=self._full_profile()),
                 ),
                 patch(
-                    "nina_planner.server._get_site_equipment_status",
+                    "nina_planner.tools.equipment._get_site_equipment_status",
                     AsyncMock(return_value=ObservatoryEquipment()),
                 ),
                 patch(
-                    "nina_planner.server._read_metadata",
+                    "nina_planner.metadata.read_metadata",
                     AsyncMock(return_value=[]),
                 ),
-                patch("nina_planner.server.target_payload_darks", new=darks_step),
-                patch("nina_planner.server.target_payload_lights", new=lights_step),
-                patch("nina_planner.server._api_post", AsyncMock(return_value={})),
+                patch(
+                    "nina_planner.tools.sequence.target_payload_darks", new=darks_step
+                ),
+                patch(
+                    "nina_planner.tools.sequence.target_payload_lights", new=lights_step
+                ),
+                patch("nina_planner.client.api_post", AsyncMock(return_value={})),
             ):
                 # Calibration is plan-level: any pointing_index — including
                 # the habit-shaped pointing_index=1 — is rejected with a
@@ -1705,23 +1726,23 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
 
             with (
                 patch(
-                    "nina_planner.server._read_metadata",
+                    "nina_planner.metadata.read_metadata",
                     AsyncMock(return_value=[]),
                 ),
                 patch(
-                    "nina_planner.server.get_site_profile",
+                    "nina_planner.tools.equipment.get_site_profile",
                     AsyncMock(return_value=self._full_profile()),
                 ),
                 patch(
-                    "nina_planner.server._get_site_equipment_status",
+                    "nina_planner.tools.equipment._get_site_equipment_status",
                     AsyncMock(return_value=ObservatoryEquipment()),
                 ),
                 patch(
-                    "nina_planner.server.target_payload_flats",
+                    "nina_planner.tools.sequence.target_payload_flats",
                     side_effect=fake_flats,
                 ),
                 patch(
-                    "nina_planner.server._api_post",
+                    "nina_planner.client.api_post",
                     AsyncMock(return_value={}),
                 ),
             ):
@@ -1768,23 +1789,23 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
 
             with (
                 patch(
-                    "nina_planner.server._read_metadata",
+                    "nina_planner.metadata.read_metadata",
                     AsyncMock(return_value=[]),
                 ),
                 patch(
-                    "nina_planner.server.get_site_profile",
+                    "nina_planner.tools.equipment.get_site_profile",
                     AsyncMock(return_value=self._full_profile()),
                 ),
                 patch(
-                    "nina_planner.server._get_site_equipment_status",
+                    "nina_planner.tools.equipment._get_site_equipment_status",
                     AsyncMock(return_value=ObservatoryEquipment()),
                 ),
                 patch(
-                    "nina_planner.server.target_payload_flats",
+                    "nina_planner.tools.sequence.target_payload_flats",
                     side_effect=fake_flats,
                 ),
                 patch(
-                    "nina_planner.server._api_post",
+                    "nina_planner.client.api_post",
                     AsyncMock(return_value={}),
                 ),
             ):
@@ -1826,7 +1847,7 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
 
             with (
                 patch(
-                    "nina_planner.server.get_site_profile",
+                    "nina_planner.tools.equipment.get_site_profile",
                     AsyncMock(
                         return_value=self._full_profile().model_copy(
                             update={"file_pattern": None}
@@ -1834,10 +1855,10 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
                     ),
                 ),
                 patch(
-                    "nina_planner.server._get_site_equipment_status",
+                    "nina_planner.tools.equipment._get_site_equipment_status",
                     AsyncMock(return_value=ObservatoryEquipment()),
                 ),
-                patch("nina_planner.server._api_post", api_post),
+                patch("nina_planner.client.api_post", api_post),
             ):
                 with self.assertRaisesRegex(
                     ValueError,
@@ -1879,23 +1900,23 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
             # In full mode, _read_metadata is NOT called.
             with (
                 patch(
-                    "nina_planner.server.get_site_profile",
+                    "nina_planner.tools.equipment.get_site_profile",
                     AsyncMock(return_value=self._full_profile()),
                 ),
                 patch(
-                    "nina_planner.server._get_site_equipment_status",
+                    "nina_planner.tools.equipment._get_site_equipment_status",
                     AsyncMock(return_value=ObservatoryEquipment()),
                 ),
                 patch(
-                    "nina_planner.server._read_metadata",
+                    "nina_planner.metadata.read_metadata",
                     new=_MM(side_effect=AssertionError("should not be called")),
                 ),
                 patch(
-                    "nina_planner.server._api_post",
+                    "nina_planner.client.api_post",
                     AsyncMock(return_value={}),
                 ) as api_post,
                 patch(
-                    "nina_planner.server._api_get",
+                    "nina_planner.client.api_get",
                     AsyncMock(return_value={}),
                 ) as api_get,
             ):
@@ -1920,7 +1941,7 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
         from nina_planner.server import start_sequence
 
         with patch(
-            "nina_planner.server._api_get",
+            "nina_planner.client.api_get",
             AsyncMock(return_value={}),
         ) as api_get:
             result = await start_sequence()
@@ -1932,7 +1953,7 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
         sequence — empty Target area, End area parks then warms — but never
         starts it."""
         with patch(
-            "nina_planner.server._api_get",
+            "nina_planner.client.api_get",
             AsyncMock(side_effect=AssertionError("no NINA reads expected")),
         ):
             result, api_post = await self._load_list([])
@@ -2024,15 +2045,15 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
         api_post = AsyncMock(return_value={})
         with (
             patch(
-                "nina_planner.server.get_site_profile",
+                "nina_planner.tools.equipment.get_site_profile",
                 AsyncMock(return_value=profile or self._full_profile()),
             ),
             patch(
-                "nina_planner.server._get_site_equipment_status",
+                "nina_planner.tools.equipment._get_site_equipment_status",
                 AsyncMock(return_value=equipment or self._equipment()),
             ),
-            patch("nina_planner.server._read_metadata", AsyncMock(return_value=[])),
-            patch("nina_planner.server._api_post", api_post),
+            patch("nina_planner.metadata.read_metadata", AsyncMock(return_value=[])),
+            patch("nina_planner.client.api_post", api_post),
         ):
             if progress is None:
                 result = await load_sequence(requests)
@@ -2042,7 +2063,7 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
                     if callable(progress)
                     else {"return_value": progress}
                 )
-                with patch("nina_planner.server.plan_progress", **kwargs):
+                with patch("nina_planner.tools.sequence.plan_progress", **kwargs):
                     result = await load_sequence(requests)
         return result, api_post
 
@@ -2187,23 +2208,23 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
 
             with (
                 patch(
-                    "nina_planner.server._read_metadata",
+                    "nina_planner.metadata.read_metadata",
                     AsyncMock(return_value=[]),
                 ),
                 patch(
-                    "nina_planner.server.get_site_profile",
+                    "nina_planner.tools.equipment.get_site_profile",
                     AsyncMock(return_value=self._full_profile()),
                 ),
                 patch(
-                    "nina_planner.server._get_site_equipment_status",
+                    "nina_planner.tools.equipment._get_site_equipment_status",
                     AsyncMock(return_value=ObservatoryEquipment()),
                 ),
                 patch(
-                    "nina_planner.server.target_payload_darks",
+                    "nina_planner.tools.sequence.target_payload_darks",
                     side_effect=fake_darks,
                 ),
                 patch(
-                    "nina_planner.server._api_post",
+                    "nina_planner.client.api_post",
                     AsyncMock(return_value={}),
                 ),
             ):
@@ -2252,23 +2273,23 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
 
             with (
                 patch(
-                    "nina_planner.server._read_metadata",
+                    "nina_planner.metadata.read_metadata",
                     AsyncMock(return_value=[]),
                 ),
                 patch(
-                    "nina_planner.server.get_site_profile",
+                    "nina_planner.tools.equipment.get_site_profile",
                     AsyncMock(return_value=self._full_profile()),
                 ),
                 patch(
-                    "nina_planner.server._get_site_equipment_status",
+                    "nina_planner.tools.equipment._get_site_equipment_status",
                     AsyncMock(return_value=ObservatoryEquipment()),
                 ),
                 patch(
-                    "nina_planner.server.target_payload_darks",
+                    "nina_planner.tools.sequence.target_payload_darks",
                     side_effect=fake_darks,
                 ),
                 patch(
-                    "nina_planner.server._api_post",
+                    "nina_planner.client.api_post",
                     AsyncMock(return_value={}),
                 ),
             ):
@@ -2317,7 +2338,7 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
                 return [{"Name": "Root", "Status": "RUNNING"}]
             return [{"Name": "Root", "Status": "CREATED"}]
 
-        with patch("nina_planner.server._api_get", side_effect=fake_get):
+        with patch("nina_planner.client.api_get", side_effect=fake_get):
             result = await stop_sequence()
         self.assertEqual(result, "Sequence stopped.")
         self.assertIn("/sequence/stop", calls)
@@ -2332,21 +2353,21 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
             calls.append(path)
             return [{"Name": "Root", "Status": "CREATED"}]
 
-        with patch("nina_planner.server._api_get", side_effect=fake_get):
+        with patch("nina_planner.client.api_get", side_effect=fake_get):
             result = await stop_sequence()
         self.assertEqual(result, "Sequence stopped.")
         self.assertNotIn("/sequence/stop", calls)
 
     async def test_load_sequence_surfaces_api_error_without_retry(self):
         """No local pre-check and no retry: NINA's own refusal is what propagates."""
-        from nina_planner.server import _load_sequence_payload
+        from nina_planner.client import load_sequence_payload as _load_sequence_payload
 
         api_post = AsyncMock(side_effect=RuntimeError("Sequence is already running"))
         api_get = AsyncMock(return_value=[{"Name": "Root", "Status": "RUNNING"}])
 
         with (
-            patch("nina_planner.server._api_post", api_post),
-            patch("nina_planner.server._api_get", api_get),
+            patch("nina_planner.client.api_post", api_post),
+            patch("nina_planner.client.api_get", api_get),
         ):
             with self.assertRaisesRegex(RuntimeError, "already running"):
                 await _load_sequence_payload({"x": 1})
@@ -2359,7 +2380,7 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
 
         expected = {"Sequence": {"Name": "Root"}}
         with patch(
-            "nina_planner.server._api_get",
+            "nina_planner.client.api_get",
             AsyncMock(return_value=expected),
         ):
             result = await get_sequence_state()
@@ -2388,11 +2409,11 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
 
             with (
                 patch(
-                    "nina_planner.server._resolve_imaging_root",
+                    "nina_planner.metadata.resolve_imaging_root",
                     AsyncMock(return_value=Path(tmp)),
                 ),
-                patch("nina_planner.server.read_imaging_csv", return_value=[]),
-                patch("nina_planner.server.read_weather_csv", return_value=[]),
+                patch("nina_planner.tools.plans.read_imaging_csv", return_value=[]),
+                patch("nina_planner.tools.plans.read_weather_csv", return_value=[]),
             ):
                 result = await get_imaging_metadata(
                     str(plan_path), pointing_index=1, image_type="light"
@@ -2407,11 +2428,11 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
 
         with (
             patch(
-                "nina_planner.server._api_probe",
+                "nina_planner.client.api_probe",
                 AsyncMock(return_value=(True, None)),
             ),
             patch(
-                "nina_planner.server.windows_interop_available",
+                "nina_planner.tools.lifecycle.windows_interop_available",
                 return_value=True,
             ),
         ):
@@ -2430,11 +2451,11 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
 
         with (
             patch(
-                "nina_planner.server._api_probe",
+                "nina_planner.client.api_probe",
                 AsyncMock(return_value=(False, "connection refused")),
             ),
             patch(
-                "nina_planner.server.windows_interop_available",
+                "nina_planner.tools.lifecycle.windows_interop_available",
                 return_value=True,
             ),
         ):
@@ -2455,11 +2476,11 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
 
         with (
             patch(
-                "nina_planner.server._api_probe",
+                "nina_planner.client.api_probe",
                 AsyncMock(return_value=(True, None)),
             ),
             patch(
-                "nina_planner.server.windows_interop_available",
+                "nina_planner.tools.lifecycle.windows_interop_available",
                 return_value=False,
             ),
         ):
@@ -2478,11 +2499,11 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
 
         with (
             patch(
-                "nina_planner.server._api_probe",
+                "nina_planner.client.api_probe",
                 AsyncMock(return_value=(False, "connection refused")),
             ),
             patch(
-                "nina_planner.server.windows_interop_available",
+                "nina_planner.tools.lifecycle.windows_interop_available",
                 return_value=False,
             ),
         ):
@@ -2503,11 +2524,11 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
             log_path = Path(tmp) / "test.log"
             with (
                 patch(
-                    "nina_planner.server.NINA_PLANNER_LOG",
+                    "nina_planner.config.NINA_PLANNER_LOG",
                     str(log_path),
                 ),
                 patch(
-                    "nina_planner.server._api_get",
+                    "nina_planner.client.api_get",
                     AsyncMock(return_value={}),
                 ),
             ):
@@ -2532,26 +2553,26 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
 
         with (
             patch(
-                "nina_planner.server._run_blocking",
+                "nina_planner.client.run_blocking",
                 return_value=FakeProcess(),
             ),
             patch(
-                "nina_planner.server.write_nina_launcher",
+                "nina_planner.tools.lifecycle.write_nina_launcher",
                 return_value=stub_launcher_paths,
             ),
             patch(
-                "nina_planner.server._nina_api_responsive",
+                "nina_planner.client.nina_api_responsive",
                 AsyncMock(return_value=False),
             ),
             patch(
-                "nina_planner.server.windows_interop_available",
+                "nina_planner.tools.lifecycle.windows_interop_available",
                 return_value=True,
             ),
             patch(
-                "nina_planner.server.append_progress_entry",
+                "nina_planner.tools.lifecycle.append_progress_entry",
                 AsyncMock(side_effect=OSError("disk full")),
             ),
-            patch("nina_planner.server._log_payload"),
+            patch("nina_planner.client.log_payload"),
         ):
             # Should not raise — the progress-entry failure is swallowed.
             result = await start_nina()
@@ -2562,11 +2583,11 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
 
         with (
             patch(
-                "nina_planner.server._nina_api_responsive",
+                "nina_planner.client.nina_api_responsive",
                 AsyncMock(return_value=True),
             ),
             patch(
-                "nina_planner.server.windows_interop_available",
+                "nina_planner.tools.lifecycle.windows_interop_available",
                 return_value=True,
             ),
         ):
@@ -2580,11 +2601,11 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
 
         with (
             patch(
-                "nina_planner.server._nina_api_responsive",
+                "nina_planner.client.nina_api_responsive",
                 AsyncMock(return_value=False),
             ),
             patch(
-                "nina_planner.server.windows_interop_available",
+                "nina_planner.tools.lifecycle.windows_interop_available",
                 return_value=False,
             ),
         ):
@@ -2597,10 +2618,10 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
 
         with (
             patch(
-                "nina_planner.server._api_probe",
+                "nina_planner.client.api_probe",
                 AsyncMock(return_value=(False, "connection refused")),
             ),
-            patch("nina_planner.server._log_payload"),
+            patch("nina_planner.client.log_payload"),
         ):
             result = await stop_nina()
         self.assertFalse(result["stopped"])
@@ -2612,14 +2633,14 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
 
         with (
             patch(
-                "nina_planner.server._api_probe",
+                "nina_planner.client.api_probe",
                 AsyncMock(return_value=(True, None)),
             ),
             patch(
-                "nina_planner.server.windows_interop_available",
+                "nina_planner.tools.lifecycle.windows_interop_available",
                 return_value=False,
             ),
-            patch("nina_planner.server._log_payload"),
+            patch("nina_planner.client.log_payload"),
         ):
             with self.assertRaises(RuntimeError) as ctx:
                 await stop_nina()
@@ -2637,7 +2658,7 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
             patch(
                 # First probe: NINA is up (stop proceeds to taskkill). Second
                 # probe: the kill verification poll sees the API gone.
-                "nina_planner.server._api_probe",
+                "nina_planner.client.api_probe",
                 AsyncMock(
                     side_effect=[
                         (True, None),
@@ -2646,19 +2667,19 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
                 ),
             ),
             patch(
-                "nina_planner.server.windows_interop_available",
+                "nina_planner.tools.lifecycle.windows_interop_available",
                 return_value=True,
             ),
             patch(
-                "nina_planner.server._run_blocking",
+                "nina_planner.client.run_blocking",
                 AsyncMock(return_value=FakeProcess()),
             ),
             patch(
-                "nina_planner.server.append_progress_entry",
+                "nina_planner.tools.lifecycle.append_progress_entry",
                 AsyncMock(),
             ),
-            patch("nina_planner.server.anyio.sleep", new=AsyncMockSleep()),
-            patch("nina_planner.server._log_payload"),
+            patch("nina_planner.tools.lifecycle.anyio.sleep", new=AsyncMockSleep()),
+            patch("nina_planner.client.log_payload"),
         ):
             result = await stop_nina()
         self.assertTrue(result["stopped"])
@@ -2668,7 +2689,9 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
         """When a device is marked has_X=True but the raw response has no
         entry for it (empty dict), _build returns None without trying to
         construct the model."""
-        from nina_planner.server import _get_site_equipment_status
+        from nina_planner.tools.equipment import (
+            _get_site_equipment_status as _get_site_equipment_status,
+        )
 
         profile = self._minimal_profile().model_copy(
             update={
@@ -2689,7 +2712,7 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
         # Raw doesn't include "Mount" at all → _build returns None.
         raw = {}
 
-        with patch("nina_planner.server._api_get", AsyncMock(return_value=raw)):
+        with patch("nina_planner.client.api_get", AsyncMock(return_value=raw)):
             equipment = await _get_site_equipment_status(profile)
         self.assertIsNone(equipment.mount)
 
@@ -2708,11 +2731,11 @@ class ScreenshotDashboardTest(unittest.IsolatedAsyncioTestCase):
         self._tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self._tmp.cleanup)
         self.out_dir = Path(self._tmp.name)
-        patcher = patch("nina_planner.server.SCREENSHOT_DIR", self.out_dir)
+        patcher = patch("nina_planner.config.SCREENSHOT_DIR", self.out_dir)
         patcher.start()
         self.addCleanup(patcher.stop)
         # Unit tests do not need to wait on NINA's repaint.
-        settle = patch("nina_planner.server.SCREENSHOT_SETTLE_SECONDS", 0.0)
+        settle = patch("nina_planner.config.SCREENSHOT_SETTLE_SECONDS", 0.0)
         settle.start()
         self.addCleanup(settle.stop)
 
@@ -2750,7 +2773,7 @@ class ScreenshotDashboardTest(unittest.IsolatedAsyncioTestCase):
         from nina_planner.server import mcp
 
         with patch(
-            "nina_planner.server._api_get",
+            "nina_planner.client.api_get",
             AsyncMock(side_effect=["imaging tab switched", self._payload()]),
         ):
             blocks = await mcp._tool_manager.call_tool(
@@ -2769,7 +2792,7 @@ class ScreenshotDashboardTest(unittest.IsolatedAsyncioTestCase):
         from nina_planner.server import screenshot_dashboard
 
         with patch(
-            "nina_planner.server._api_get",
+            "nina_planner.client.api_get",
             AsyncMock(side_effect=["imaging tab switched", self._payload()]),
         ):
             result = await screenshot_dashboard()
@@ -2799,9 +2822,9 @@ class ScreenshotDashboardTest(unittest.IsolatedAsyncioTestCase):
             calls.append(("sleep", seconds))
 
         with (
-            patch("nina_planner.server._api_get", side_effect=fake_api),
-            patch("nina_planner.server.SCREENSHOT_SETTLE_SECONDS", 0.5),
-            patch("nina_planner.server.anyio.sleep", fake_sleep),
+            patch("nina_planner.client.api_get", side_effect=fake_api),
+            patch("nina_planner.config.SCREENSHOT_SETTLE_SECONDS", 0.5),
+            patch("nina_planner.tools.lifecycle.anyio.sleep", fake_sleep),
         ):
             await screenshot_dashboard()
 
@@ -2818,9 +2841,9 @@ class ScreenshotDashboardTest(unittest.IsolatedAsyncioTestCase):
         from nina_planner.server import screenshot_dashboard
 
         missing = self.out_dir / "nested"
-        with patch("nina_planner.server.SCREENSHOT_DIR", missing):
+        with patch("nina_planner.config.SCREENSHOT_DIR", missing):
             with patch(
-                "nina_planner.server._api_get",
+                "nina_planner.client.api_get",
                 AsyncMock(side_effect=["imaging tab switched", self._payload()]),
             ):
                 await screenshot_dashboard()
@@ -2831,7 +2854,7 @@ class ScreenshotDashboardTest(unittest.IsolatedAsyncioTestCase):
         from nina_planner.server import screenshot_dashboard
 
         with patch(
-            "nina_planner.server._api_get",
+            "nina_planner.client.api_get",
             AsyncMock(
                 side_effect=[
                     "imaging tab switched",
@@ -2857,7 +2880,7 @@ class ScreenshotDashboardTest(unittest.IsolatedAsyncioTestCase):
             seen.append(path)
             return self._payload()
 
-        with patch("nina_planner.server._api_get", side_effect=fake):
+        with patch("nina_planner.client.api_get", side_effect=fake):
             path = self._unpack(await screenshot_dashboard())[0]
 
         self.assertEqual(
@@ -2870,7 +2893,7 @@ class ScreenshotDashboardTest(unittest.IsolatedAsyncioTestCase):
         from nina_planner.server import screenshot_dashboard
 
         with patch(
-            "nina_planner.server._api_get",
+            "nina_planner.client.api_get",
             AsyncMock(side_effect=RuntimeError("API request failed")),
         ):
             with self.assertRaisesRegex(RuntimeError, "API request failed"):
@@ -2882,7 +2905,7 @@ class ScreenshotDashboardTest(unittest.IsolatedAsyncioTestCase):
         from nina_planner.server import screenshot_dashboard
 
         with patch(
-            "nina_planner.server._api_get",
+            "nina_planner.client.api_get",
             AsyncMock(side_effect=["imaging tab switched", "not-base64!!"]),
         ):
             with self.assertRaises(binascii.Error):
@@ -2897,7 +2920,7 @@ class ScreenshotDashboardTest(unittest.IsolatedAsyncioTestCase):
         for payload in ("", "   \n"):
             with self.subTest(payload=payload):
                 with patch(
-                    "nina_planner.server._api_get",
+                    "nina_planner.client.api_get",
                     AsyncMock(side_effect=["imaging tab switched", payload]),
                 ):
                     with self.assertRaisesRegex(
@@ -2915,7 +2938,7 @@ class ScreenshotDashboardTest(unittest.IsolatedAsyncioTestCase):
         # The response envelope carries no "Response" field, so _api_get
         # hands back the dict default — not base64 text.
         with patch(
-            "nina_planner.server._api_get",
+            "nina_planner.client.api_get",
             AsyncMock(side_effect=["imaging tab switched", {}]),
         ):
             with self.assertRaisesRegex(RuntimeError, r"got dict: \{\}"):

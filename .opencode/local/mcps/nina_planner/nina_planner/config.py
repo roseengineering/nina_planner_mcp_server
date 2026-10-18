@@ -1,0 +1,18 @@
+import os
+import tempfile
+from pathlib import Path
+
+NINA_ENDPOINT = os.environ.get("NINA_ENDPOINT", "127.0.0.1:1888")
+NINA_API_URL = f"http://{NINA_ENDPOINT}/v2/api"
+# skipValidation=true is required here: without it NINA will not start the
+# sequences this server generates. Keep it — every start path uses it.
+SEQUENCE_START_PATH = "/sequence/start?skipValidation=true"
+NINA_PLANNER_LOG = os.environ.get("NINA_PLANNER_LOG")
+PROJECT_DIR = Path(__file__).resolve().parent.parent
+# Screenshots are transient visual checks, so they go to the system temp dir rather
+# than the project directory. Patched directly in tests, like PROJECT_DIR.
+SCREENSHOT_DIR = Path(tempfile.gettempdir()) / "nina_screenshots"
+# NINA's screenshot endpoint captures the window as last painted, so a capture taken
+# right after switch-tab can show the previous tab. The repaint settles within a
+# couple of seconds on a remote host.
+SCREENSHOT_SETTLE_SECONDS = 2.0

@@ -75,10 +75,12 @@ line-length = 88
 select = ["E", "F", "I", "B"]
 
 [tool.ruff.lint.per-file-ignores]
-# server.py docstrings are intentionally long for clarity; suppress E501 there.
+# Tool docstrings and the server instructions are intentionally long for clarity;
+# suppress E501 there.
 # sequence.py contains CLR type-name strings that cannot be broken.
-"nina_planner/server.py" = ["E501"]
-"nina_planner/sequence.py" = ["E501"]
+"nina_planner/app.py" = ["E501"]
+"nina_planner/tools/*.py" = ["E501"]
+"nina_planner/sequence/*.py" = ["E501"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

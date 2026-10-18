@@ -6,6 +6,7 @@ from typing import Any
 
 import anyio
 
+from . import config
 from .models.plan import ObservationPlan
 from .nina_utils import to_local_display
 
@@ -26,15 +27,12 @@ async def append_progress_entry(text: str) -> None:
     and later agent sessions can grep it by header. Existing content is
     preserved; the file always ends in a newline.
 
-    The path to ``PROGRESS.md`` is taken from :data:`nina_planner.server.PROJECT_DIR`,
-    imported lazily to avoid a module-load cycle with ``server.py``.
+    The path to ``PROGRESS.md`` is taken from :data:`nina_planner.config.PROJECT_DIR`.
     """
-    from .server import PROJECT_DIR
-
     now = datetime.now().astimezone()
     timestamp = now.isoformat(timespec="seconds")
     block = f"\n## {timestamp} — auto\n\n{text.strip()}\n"
-    path = PROJECT_DIR / "PROGRESS.md"
+    path = config.PROJECT_DIR / "PROGRESS.md"
     async with await anyio.open_file(path, "a", encoding="utf-8") as f:
         await f.write(block)
 

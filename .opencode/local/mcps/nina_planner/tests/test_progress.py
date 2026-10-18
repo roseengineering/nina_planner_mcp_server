@@ -657,7 +657,9 @@ class PointingIndexTest(unittest.TestCase):
     def test_out_of_range_pointing_index_excluded_via_filter(self):
         plan = _plan(pointings=[{"ra_hours": 0.71, "dec_deg": 41.27}])
         with self.assertRaises(ValueError):
-            from nina_planner.server import _check_pointing_index
+            from nina_planner.plan_utils import (
+                check_pointing_index as _check_pointing_index,
+            )
 
             _check_pointing_index(plan, 0)
         with self.assertRaises(ValueError):

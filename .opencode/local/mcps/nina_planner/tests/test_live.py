@@ -6,9 +6,9 @@ from pathlib import Path
 import pytest
 from conftest import requires_windows_interop, windows_interop_available
 
+from nina_planner.client import api_get as _api_get
 from nina_planner.models.request import SequenceRequest
 from nina_planner.server import (
-    _api_get,
     get_events,
     get_imaging_metadata,
     get_logs,
