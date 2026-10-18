@@ -149,17 +149,18 @@ Each row becomes a `Pointing`: RA/DEC are parsed server-side (sexagesimal like `
 
 - **Required N.I.N.A. plugins:** the MCP server requires the following three plugins to be installed in N.I.N.A.: **Advanced API**, **Sequencer+**, and **Session Metadata**.
 - **Image file pattern:** for **light frames only**, the N.I.N.A. profile's `ImageFileSettings.FilePattern` must put `$$TARGETNAME$$` in a path segment so frames can be attributed to a plan (e.g. `$$TARGETNAME$$\$$IMAGETYPE$$\...`). Calibration frames (dark, bias, and flat) do not require this token; they are matched by frame type and exposure settings within the calibration window.
-- **Quality thresholds:** `max_hfr` and `min_detected_stars` (optional) exclude light frames that fail the thresholds from the acquired count. Frames missing the quality fields are excluded whenever a threshold is set (fail-closed). Thresholds are applied only to light frames — calibration frames have no star quality.
+- **Quality thresholds:** `max_hfr`, `min_detected_stars`, and `max_guiding_rms_arcsec` (all optional) exclude light frames that fail the thresholds from the acquired count. Frames missing the quality fields are excluded whenever a threshold is set (fail-closed). Thresholds are applied only to light frames — calibration frames have no star quality.
 - **Manually failing a frame:** delete (or move using thumbs down icon) the image file on disk — e.g. a bad `.fits`/`.tif`. The metadata row stays in the CSV (the plugin only appends), but it is omitted when the metadata is read, so progress no longer counts that frame as acquired and the next `mode="remaining"` load re-acquires it.
-- **The plan file is persistent** — written to the current working directory. You can inspect, edit, and reuse it across sessions.  Changing the file will alter its plan_id, if not given.
+- **The plan file is persistent** You can inspect, edit, and reuse it across sessions.  Changing the file will however alter its derived plan_id, calculated if plan_id is missing.
+- **opencode.json variants** the repo contains example opencode.json variants: win_opencode.json would be used inside windows, wsl_opencode.json inside wsl, and smb_opencode.json inside, say a mac, accessing a N.I.N.A. running VM with its image file directory SMB mappped back.
 
-## `nina_notify` — OpenCode v2 Autonomous Plugin
+## `nina-notify` — OpenCode v2 Autonomous Plugin
 
-`nina-notify` is an [opencode](https://opencode.ai) v2 plugin (not compatible with Claude Code or other MCP clients).  Registered in `opencode.json`, it runs as a background server inside opencode and does two things:
+`nina-notify` is an [opencode](https://opencode.ai) v2 plugin (not compatible with Claude Code or other MCP clients).  Registered in `.opencode/opencode.json`, it runs as a background server inside opencode and does two things:
 
 1. **Websocket event monitoring** — Connects to the N.I.N.A. event socket (`ws://<host:port>/v2/socket`), subscribes to all events, and forwards them to the active agent as intervention prompts. Events are batched with a 1-second debounce to avoid flooding the conversation.
 
-2. **Interval check** — Every `NINA_INTERVAL_MINUTES` (default -1, disabled) it prompts the agent to query observatory status (`get_sequence_state`, `get_site_equipment_status`) and decide what to do next, even when no N.I.N.A. events are firing.
+2. **Interval check** — Every option `intervalCheckMinutes` (default -1, disabled) it prompts the agent to query observatory status (`get_sequence_state`, `get_site_equipment_status`) and decide what to do next, even when no N.I.N.A. events are firing.
 
 The plugin auto-reconnects on websocket disconnection with a 5-second retry. On server dispose, it cleans up all timers and the socket.
 
@@ -192,6 +193,7 @@ Rules:
 ```json .opencode/opencode.json
 {
   "$schema": "https://opencode.ai/config.json",
+  "instructions": [ ".opencode/rules/*.md" ],
   "plugins": [
     {
       "package": "./local/plugins/nina_notify",
@@ -258,7 +260,7 @@ $ vi $HOME/.wslconfig
 networkingMode=mirrored
 ```
 
-In addition, to get the system tools to work to stop and restart NINA should it stop, make sudo password less with:
+In addition, to get the system tools to work to stop and restart NINA should it stop, make sudo passwordless with:
 
 
 ```bash
