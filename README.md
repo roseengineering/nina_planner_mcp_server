@@ -17,7 +17,7 @@
 | `get_events(since=300)` | Recent NINA observatory events. |
 | `get_logs(since=300)` | Recent NINA application logs. |
 | `screenshot_dashboard()` | Capture and return the NINA Imaging dashboard. |
-| `get_imaging_metadata(file_path, pointing_index=1, image_type="light")` | Per-exposure imaging and weather metrics for a plan pointing. |
+| `get_imaging_metadata(file_path, pointing_index=1, image_type="light")` | Per-exposure metrics for a plan pointing from `ImageMetaData.csv` and `WeatherData.csv`. |
 | `write_plan_file(plan)` | Validate and write an observation-plan JSON file. |
 | `write_mosaic_plan(plan_path, mosaic_csv, output_path?)` | Create a multi-pointing mosaic plan from a base plan and CSV. |
 | `get_plan_progress(file_path, max_hfr?, min_detected_stars?, max_guiding_rms_arcsec?)` | Show acquired and remaining counts by frame type and pointing. |
