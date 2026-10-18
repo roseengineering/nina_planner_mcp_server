@@ -7,7 +7,7 @@
 ## Quick Start
 
 1. **Prepare N.I.N.A.** — install the **Advanced API**, **Sequencer+**, and **Session Metadata** plugins, and put `$$TARGETNAME$$` in the profile's `FilePattern` (see [Notes](#notes)).
-2. **Install requirements** — [opencode](https://opencode.ai) v2 (the plugin is not compatible with Claude Code or other MCP clients), Python 3.11+, and [uv](https://docs.astral.sh/uv/). Dependencies are installed by `uv` on first run.
+2. **Install requirements** — [opencode](https://opencode.ai) v2 (the `nina-notify` plugin is not compatible with Claude Code or other coding agents), Python 3.11+, and [uv](https://docs.astral.sh/uv/). Dependencies are installed by `uv` on first run.
 3. **Pick a config** — copy the variant that matches where opencode runs over `.opencode/opencode.json`, overwriting it: `win_opencode.json` (Windows), `wsl_opencode.json` (WSL), or `smb_opencode.json` (e.g. a Mac reaching a N.I.N.A. VM).
 4. **Point at N.I.N.A.** — set `NINA_ENDPOINT` (default `127.0.0.1:1888`) in the config's `environment`. If the server isn't on the N.I.N.A. machine, also set `NINA_DRIVE_MOUNT` so image metadata can be read, as `smb_opencode.json` does (see [Environment Variables](#environment-variables)).
 5. **Start opencode** in the project root; it launches the MCP server for you.
@@ -109,7 +109,7 @@ Expands a base observation plan into a multi-pointing mosaic plan from a Telesco
 
 ### `get_plan_progress`
 
-Returns per-frame-type acquisition progress for every pointing of an observation-plan JSON file: for each exposure group, `total_count` from the plan, `acquired_count` attributed to that plan/pointing from the imaging metadata (`ImageMetaData.csv` + `AcquisitionDetails.csv`), and `remaining_count`.
+Returns per-frame-type acquisition progress for every pointing of an observation-plan JSON file: for each exposure group, `total_count` from the plan, `acquired_count` attributed to that plan/pointing from the imaging metadata (`ImageMetaData.csv`), and `remaining_count`.
 
 - **Attribution:** lights are attributed via `{base_plan_id}` (single-pointing) or `{base_plan_id}-{pointing_index}` (mosaic pane). Flats/darks/bias are matched by image type, filter, and exposure and count only when shot within `calibration_window_days` of the earliest attributed light, on either side of it (inclusive; a 1-day window spans `anchor − 1d … anchor + 1d`).
 - **Calibration window:** calibration groups also carry `window_open` (bool) and `window_end` (`earliest light + calibration_window_days`, **displayed in the host's local time with its UTC offset**). While the current time is inside the window `remaining_count` is `total − acquired`; once outside, no frame shot now could be credited, so `remaining_count` is `0` (with `window_open: false`). `acquired_count` stays truthful, and lights carry neither field. Raise `calibration_window_days` or write a new plan to reopen the window.
@@ -274,7 +274,7 @@ Each row becomes a `Pointing`: RA/DEC are parsed server-side (sexagesimal like `
 
 ## `nina-notify` — OpenCode v2 Autonomous Plugin
 
-`nina-notify` is an [opencode](https://opencode.ai) v2 plugin (not compatible with Claude Code or other MCP clients).  Registered in `.opencode/opencode.json`, it runs as a background server inside opencode and does two things:
+`nina-notify` is an [opencode](https://opencode.ai) v2 plugin (not compatible with Claude Code or other coding agents).  Registered in `.opencode/opencode.json`, it runs as a background server inside opencode and does two things:
 
 1. **Websocket event monitoring** — Connects to the N.I.N.A. event socket (`ws://<host:port>/v2/socket`), subscribes to all events, and forwards them to the active agent as intervention prompts. Events are batched with a 1-second debounce to avoid flooding the conversation.
 
