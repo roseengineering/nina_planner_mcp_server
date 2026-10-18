@@ -7,7 +7,7 @@
 ## Quick Start
 
 1. **Prepare N.I.N.A.** — install the **Advanced API**, **Sequencer+**, and **Session Metadata** plugins, and put `$$TARGETNAME$$` in the profile's `FilePattern` (see [Notes](#notes)).
-2. **Install requirements** — Python 3.11+ and [uv](https://docs.astral.sh/uv/). Dependencies are installed by `uv` on first run.
+2. **Install requirements** — [opencode](https://opencode.ai) v2 (the plugin is not compatible with Claude Code or other MCP clients), Python 3.11+, and [uv](https://docs.astral.sh/uv/). Dependencies are installed by `uv` on first run.
 3. **Pick a config** — copy the variant that matches where opencode runs over `.opencode/opencode.json`, overwriting it: `win_opencode.json` (Windows), `wsl_opencode.json` (WSL), or `smb_opencode.json` (e.g. a Mac reaching a N.I.N.A. VM).
 4. **Point at N.I.N.A.** — set `NINA_ENDPOINT` (default `127.0.0.1:1888`) in the config's `environment`. If the server isn't on the N.I.N.A. machine, also set `NINA_DRIVE_MOUNT` so image metadata can be read, as `smb_opencode.json` does (see [Environment Variables](#environment-variables)).
 5. **Start opencode** in the project root; it launches the MCP server for you.
