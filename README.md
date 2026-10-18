@@ -155,7 +155,7 @@ Each row becomes a `Pointing`: RA/DEC are parsed server-side (sexagesimal like `
 
 ## `nina_notify` — OpenCode v2 Autonomous Plugin
 
-`nina-notify` is an [opencode](https://opencode.ai) v2 plugin (not compatible with Claude Code or other MCP clients).  Registered in `opencode.json`, it runs as a background server inside opencode and does two things:
+`nina-notify` is an [opencode](https://opencode.ai) v2 plugin for OpenCode coding agents only; it is not an MCP server and cannot be loaded by Claude Code or other coding agents. The separate `nina_planner` MCP server can be registered with MCP-compatible coding agents, including OpenCode. Registered in `opencode.json`, the plugin runs in the background inside OpenCode and does two things:
 
 1. **Websocket event monitoring** — Connects to the N.I.N.A. event socket (`ws://<host:port>/v2/socket`), subscribes to all events, and forwards them to the active agent as intervention prompts. Events are batched with a 1-second debounce to avoid flooding the conversation.
 
