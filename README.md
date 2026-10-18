@@ -8,7 +8,7 @@
 
 1. **Prepare N.I.N.A.** — install the **Advanced API**, **Sequencer+**, and **Session Metadata** plugins, and put `$$TARGETNAME$$` in the profile's `FilePattern` (see [Notes](#notes)).
 2. **Install requirements** — [opencode](https://opencode.ai) v2 (the `nina-notify` plugin is not compatible with Claude Code or other coding agents), Python 3.11+, and [uv](https://docs.astral.sh/uv/). Dependencies are installed by `uv` on first run.
-3. **Pick a config** — copy the opencode.json variant that matches where opencode runs to `.opencode/opencode.json`: `win_opencode.json` (Windows), `wsl_opencode.json` (WSL), or `smb_opencode.json` (e.g. a Mac reaching a N.I.N.A. VM).
+3. **Pick a config** — replace `.opencode/opencode.json` with the opencode.json variant that matches where opencode runs: `win_opencode.json` (Windows), `wsl_opencode.json` (WSL), or `smb_opencode.json` (e.g. a Mac reaching a N.I.N.A. VM).
 4. **Point at N.I.N.A.** — set `NINA_ENDPOINT` (default `127.0.0.1:1888`) in the config's `environment`. If the server isn't on the N.I.N.A. machine, also set `NINA_DRIVE_MOUNT` so image metadata can be read, as `smb_opencode.json` does (see [Environment Variables](#environment-variables)).
 5. **Start opencode** in the project root; it launches the MCP server for you.
 6. **Plan a night** — list targets in `PLAN.md` and let the agent write plans, load a sequence, and start it.
@@ -269,8 +269,8 @@ Each row becomes a `Pointing`: RA/DEC are parsed server-side (sexagesimal like `
 - **Image file pattern:** for **light frames only**, the N.I.N.A. profile's `ImageFileSettings.FilePattern` must put `$$TARGETNAME$$` in a path segment so frames can be attributed to a plan (e.g. `$$TARGETNAME$$\$$IMAGETYPE$$\...`). Calibration frames (dark, bias, and flat) do not require this token; they are matched by frame type and exposure settings within the calibration window.
 - **Quality thresholds:** `max_hfr`, `min_detected_stars`, and `max_guiding_rms_arcsec` (all optional) exclude light frames that fail the thresholds from the acquired count. Frames missing the quality fields are excluded whenever a threshold is set (fail-closed). Thresholds are applied only to light frames — calibration frames have no star quality.
 - **Manually failing a frame:** delete (or move using thumbs down icon) the image file on disk — e.g. a bad `.fits`/`.tif`. The metadata row stays in the CSV (the plugin only appends), but it is omitted when the metadata is read, so progress no longer counts that frame as acquired and the next `mode="remaining"` load re-acquires it.
-- **The plan file is persistent** You can inspect, edit, and reuse it across sessions.  Changing the file will however alter its derived plan_id, calculated if plan_id is missing.
-- **opencode.json variants** the repo contains example opencode.json variants: win_opencode.json would be used inside windows, wsl_opencode.json inside wsl, and smb_opencode.json inside, say a mac, accessing a N.I.N.A. running VM with its image file directory SMB mappped back.
+- **The plan file is persistent.** You can inspect, edit, and reuse it across sessions. Changing the file will, however, alter its derived `plan_id`, which is calculated when `plan_id` is missing.
+- **opencode.json variants:** the repo contains example opencode.json variants: `win_opencode.json` for Windows, `wsl_opencode.json` for WSL, and `smb_opencode.json` for, say, a Mac accessing a N.I.N.A. VM with its image file directory mapped back over SMB.
 
 ## `nina-notify` — OpenCode v2 Autonomous Plugin
 
@@ -349,7 +349,7 @@ Configured in the plugin's options configuration. (see [`opencode.json`](#openco
 | Option | Type | Default | Description |
 |---|---|---|---|
 | `ninaEndpoint` | string | `127.0.0.1:1888` | N.I.N.A. host and port (no scheme) for the websocket event stream, e.g. `192.168.0.24:1888`. The plugin connects to `ws://<ninaEndpoint>/v2/socket`. |
-| `intervalCheckMinutes` | number | `-1` | Minutes between autonomous status-check triggers of the `worker` agent. Accepts a float; the value is multiplied by `60_000` ms before scheduling.  Disabled if 0 or less. |
+| `intervalCheckMinutes` | number | `-1` | Minutes between autonomous status-check triggers. Accepts a float; converted to milliseconds (×60,000) only when greater than 0; with 0 or less (the default `-1`) no timer is scheduled. |
 | `pluginLogs` | string | _(none)_ | File path appended on each plugin event (websocket open/message/close/error, batched flush, interval trigger failures). Set to a writable path (e.g. `/tmp/nina-plugins.log`) to capture diagnostic output. Omit or leave empty to disable file logging. |
 
 ---
@@ -362,6 +362,7 @@ Configured in the plugin's options configuration. (see [`opencode.json`](#openco
 |---|---|---|
 | `NINA_ENDPOINT` | `127.0.0.1:1888` | N.I.N.A. host and port for the REST API (`host:port`).  For WSL, try `192.168.0.24:1888`. When this points at a remote host (not the MCP server's own machine), `get_nina_status().lifecycle_control_available` is false and `start_nina`/`stop_nina` cannot operate on NINA. |
 | `NINA_DRIVE_MOUNT` | — | Local mount root for the drive letter in the profile's `image_save_path`, used by `get_imaging_metadata` to resolve the imaging directory on Linux, WSL, and macOS. The value must be the local path where the Windows drive **root** is mounted (`C:\Users\me\img` becomes `<value>/Users/me/img`), e.g. `/mnt/c` in WSL, or wherever you mounted the share on macOS (such as `/System/Volumes/Data/Network`). The mount point is arbitrary and the drive need not be `C:`; the drive letter in the profile path is replaced by this value whatever it is. Defaults to `/mnt/<drive>` (e.g. `/mnt/c`). On Windows (`win32`) the profile `image_save_path` is used directly. The resolved value is also exposed as the derived `local_image_save_path` field on the profile returned by `get_site_profile`. |
+| `NINA_PLANNER_LOG` | _(none)_ | File path where the server appends each NINA request/response payload for debugging. Logging is disabled when unset. A Windows-style path (e.g. `C:/Windows/Temp/nina-planner-debug.log`) on a non-Windows host is redirected to the system temp dir under the same file name. |
 | `NINA_FLATS_ALTITUDE` | `80` | Altitude in degrees for flat panel calibration frames |
 | `NINA_FLATS_AZIMUTH_DAWN` | `270` | Azimuth in degrees pointing west for dawn flats |
 | `NINA_FLATS_AZIMUTH_DUSK` | `90` | Azimuth in degrees pointing east for dusk flats |
