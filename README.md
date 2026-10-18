@@ -107,18 +107,6 @@ Returns per-frame-type acquisition progress for every pointing of an observation
 - **Quality thresholds:** pass `max_hfr`, `min_detected_stars`, and/or `max_guiding_rms_arcsec` to exclude light frames that fail them (frames missing the relevant field are excluded when a threshold is set).
 - **Output:** `complete` (all panes done) plus a `pointings` list with per-pane progress and per-pane `complete`, so panes can be acquired sequentially.
 
-### `get_nina_status`
-
-Cheaper than `get_site_equipment_status`. Returns `running` (true iff `GET /time` answered — a missing local `NINA.exe` does not mean NINA is down when it runs remotely), `lifecycle_control_available` (this host has Windows interop, so `start_nina`/`stop_nina` can work), `probe_error` (N.I.N.A.'s failure text, or `None` when running), and a one-line `summary`.
-
-### `start_nina` / `stop_nina`
-
-`stop_nina` determines liveness from the REST API: it is a no-op when NINA is already down and raises when NINA is up but remote (no local Windows interop), since it cannot be terminated from here. `start_nina` raises if NINA is already running (call `stop_nina()` first) or if this host has no Windows interop to launch a remote NINA.
-
-### `stop_sequence`
-
-For an urgent halt or a stuck sequence. The scope is left where it is. To stow afterward, `load_sequence()` (empty list) and start it. Avoid interrupting an in-progress stow unless safety requires it, since stopping mid-slew can leave the scope in an unsafe position.
-
 ### `load_sequence`
 
 `load_sequence(request=[{action, plan, variant?, pointing_index?, mode="remaining", max_hfr?, min_detected_stars?, max_guiding_rms_arcsec?}, ...])`
@@ -142,6 +130,18 @@ Behavior:
 - Steps run in order as the sequence reaches them; a step with its own waits (lights, flats) waits, or is skipped once its window has passed, without blocking the steps behind it.
 - Entries already complete are skipped and reported; if every entry is complete nothing is sent to N.I.N.A.
 - Profile, equipment, and metadata are fetched once, one POST carries the whole sequence, and a validation error names the entry by 0-based position (`request[1]: ...`).
+
+### `stop_sequence`
+
+For an urgent halt or a stuck sequence. The scope is left where it is. To stow afterward, `load_sequence()` (empty list) and start it. Avoid interrupting an in-progress stow unless safety requires it, since stopping mid-slew can leave the scope in an unsafe position.
+
+### `get_nina_status`
+
+Cheaper than `get_site_equipment_status`. Returns `running` (true iff `GET /time` answered — a missing local `NINA.exe` does not mean NINA is down when it runs remotely), `lifecycle_control_available` (this host has Windows interop, so `start_nina`/`stop_nina` can work), `probe_error` (N.I.N.A.'s failure text, or `None` when running), and a one-line `summary`.
+
+### `start_nina` / `stop_nina`
+
+`stop_nina` determines liveness from the REST API: it is a no-op when NINA is already down and raises when NINA is up but remote (no local Windows interop), since it cannot be terminated from here. `start_nina` raises if NINA is already running (call `stop_nina()` first) or if this host has no Windows interop to launch a remote NINA.
 
 ## The Observation Plan
 
@@ -278,7 +278,7 @@ The plugin auto-reconnects on websocket disconnection with a 5-second retry. On 
 A markdown file at the project root, **edited by the user at any time** (before or during the night). It is intentionally lightweight — entries can be as simple as a target name:
 
 [PLAN.md](./PLAN.md)
-```json PLAN.md
+```markdown
 # Tonight - 2026-10-08
 
 - M31          "before the moon comes up"
