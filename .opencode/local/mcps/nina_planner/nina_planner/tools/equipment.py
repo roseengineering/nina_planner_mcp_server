@@ -168,7 +168,7 @@ async def _get_site_equipment_status(
 
 @mcp.tool()
 async def get_site_equipment_status() -> ObservatoryEquipment:
-    """Returns the current connection, operating state, measurements, and capabilities of active observatory equipment, including weather and safety-monitor status (whether the enclosure is open and it is safe to unpark), and mount capabilities (`can_park`, `can_find_home`) that determine how the scope can be stowed. Use it for live operational and safety checks. This tool is read-only and takes no action."""
+    """Returns the current connection, operating state, measurements, and capabilities of active observatory equipment, including weather and safety-monitor status (whether the enclosure is open and it is safe to unpark), and mount capabilities (`can_park`, `can_find_home`) that determine how the scope can be stowed. Use it for live operational and safety checks. Auto-connects any device that is present but disconnected; if any device is mid-connect the call errors and should be retried after a few seconds."""
     profile = await get_site_profile()
     equipment = await _get_site_equipment_status(profile)
     client.log_payload("Equipment:", equipment.model_dump_json(indent=2))
@@ -177,7 +177,7 @@ async def get_site_equipment_status() -> ObservatoryEquipment:
 
 @mcp.tool()
 async def get_site_profile() -> ObservatoryProfile:
-    """Returns the active NINA observatory profile and static configuration, including site location, optics, camera geometry, filters, plate solvers, and image-save path. `image_save_path` is the raw Windows path from the profile; `local_image_save_path` is the derived path usable on this host (drive letter mapped through NINA_DRIVE_MOUNT, default `/mnt/<drive>`, on Linux/WSL; unchanged on Windows) and is the one to use for local file access. Use get_site_equipment for live equipment state. This tool is read-only and takes no action."""
+    """Returns the active NINA observatory profile and static configuration, including site location, optics, camera geometry, filters, plate solvers, and image-save path. `image_save_path` is the raw Windows path from the profile; `local_image_save_path` is the derived path usable on this host (drive letter mapped through NINA_DRIVE_MOUNT, default `/mnt/<drive>`, on Linux/WSL; unchanged on Windows) and is the one to use for local file access. Use get_site_equipment_status for live equipment state. This tool is read-only and takes no action."""
     raw = await client.api_get("/profile/show?active=true")
 
     astrometry = raw.get("AstrometrySettings", {})
