@@ -342,7 +342,7 @@ async def get_events(since: int = 300) -> Any:
 @mcp.tool()
 async def get_logs(since: int = 300) -> Any:
     """Returns recent NINA application log entries, including informational messages, warnings, and errors with source and timestamp details from the last `since` seconds. Use it to diagnose sequence failures, equipment communication problems, and unexpected behavior. This tool is read-only and takes no action."""
-    res = await client.api_get("/application/logs?lineCount=200")
+    res = await client.api_get("/application/logs?lineCount=1000")
     res = _convert_to_met(res, since=since, name="Timestamp")
     for d in res:
         if "line" in d:
