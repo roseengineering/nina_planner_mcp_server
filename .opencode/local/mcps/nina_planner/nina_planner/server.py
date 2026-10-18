@@ -18,13 +18,13 @@ from .tools.plans import (
     write_mosaic_plan,
     write_plan_file,
 )
-from .tools.sky import resolve_target, target_altitudes
 from .tools.sequence import (
     get_sequence_state,
     load_sequence,
     start_sequence,
     stop_sequence,
 )
+from .tools.sky import resolve_target, target_altitudes
 
 __all__ = [
     "equipment",
