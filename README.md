@@ -130,7 +130,7 @@ An example json plan:
 ### Mosaic CSV format
 
 For `write_mosaic_plan`, use a Telescopius-formatted CSV with these nine columns in this order:
-`[mosaic.csv](./mosaic.csv)
+See [mosaic.csv](./mosaic.csv) for an example:
 ```csv mosaic.csv
 Pane, RA, DEC, Position Angle (East), Pane width (arcmins), Pane height (arcmins), Overlap, Row, Column
 Pane 1, 0hr 56' 01", 45º 51' 18", 0.00, 309.00, 205.80, 10%, 1, 1
