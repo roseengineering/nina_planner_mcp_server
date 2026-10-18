@@ -21,6 +21,12 @@ function log(message: string) {
   }
 }
 
+// One compact JSON document per line (JSON Lines).
+function toJSONL(value: unknown): string {
+  const items = Array.isArray(value) ? value : [value];
+  return items.map((item) => JSON.stringify(item)).join("\n");
+}
+
 // Module-level handle to ensure only one instance is active per process
 let activeCleanup: (() => Promise<void>) | null = null;
 
@@ -53,7 +59,8 @@ export default Plugin.define({
       typeof options.pluginLogs === "string" ? options.pluginLogs : null;
     const intervalCheckMinutes =
       typeof options.intervalCheckMinutes === "number"
-        ? options.intervalCheckMinutes : -1;
+        ? options.intervalCheckMinutes
+        : -1;
 
     log(
       `[${instanceId}] initializing (endpoint=${ninaEndpoint}, interval=${intervalCheckMinutes})`,
@@ -81,7 +88,7 @@ export default Plugin.define({
       const text =
         events == null
           ? "Trigger: Routine interval check. No new N.I.N.A. events."
-          : `Trigger: New N.I.N.A. events follow:\n\n\`\`\`json\n${JSON.stringify(events, null, 2)}\n\`\`\``;
+          : `Trigger: New N.I.N.A. events follow:\n\n\`\`\`jsonl\n${toJSONL(events)}\n\`\`\``;
 
       if (!targetSessionID) {
         log(`[${instanceId}] no target session yet; skipping injection`);
