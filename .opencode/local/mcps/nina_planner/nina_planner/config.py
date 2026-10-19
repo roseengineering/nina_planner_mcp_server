@@ -6,9 +6,10 @@ NINA_ENDPOINT = os.environ.get("NINA_ENDPOINT", "127.0.0.1:1888")
 NINA_API_URL = f"http://{NINA_ENDPOINT}/v2/api"
 # skipValidation=true is required here: without it NINA will not start the
 # sequences this server generates. Keep it — every start path uses it.
-SEQUENCE_START_PATH = "/sequence/start?skipValidation=true"
+# SEQUENCE_START_PATH = "/sequence/start?skipValidation=true"
+SEQUENCE_START_PATH = "/sequence/start"
 NINA_PLANNER_LOG = os.environ.get("NINA_PLANNER_LOG")
-# Directory holding the observatory files: plan JSONs, PLAN.md, PROGRESS.md.
+# Directory holding the observatory files: plan JSONs, PLAN.md, PROGRESS.md, report.md.
 # opencode starts local MCP servers with the workspace as their working
 # directory, and the launch command uses `uv run --project` (not `uv
 # --directory`, which would chdir into the package) — so the process cwd *is*

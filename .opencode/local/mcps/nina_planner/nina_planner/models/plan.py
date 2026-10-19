@@ -1,9 +1,20 @@
 import hashlib
 import json
+import re
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from .pointing import Pointing
+
+# A plan id is stamped into the target name, which N.I.N.A. rewrites on its way
+# into the file path — it turned "[" and "]" into "_" even though NTFS allows
+# them — so an id only works if it survives that rewrite verbatim. This is the
+# deliberately conservative charset proven to survive: every recorded target
+# directory carries its "plan-<hex>" id unchanged. "_" is refused outright
+# because it is the attribution-token delimiter (an id containing it could
+# substring-match inside a longer id's token); everything else outside this set
+# is refused because we cannot prove N.I.N.A. leaves it alone.
+_PLAN_ID_ALLOWED = re.compile(r"[A-Za-z0-9.-]+")
 
 
 class LightExposurePlan(BaseModel):
@@ -77,7 +88,11 @@ class ObservationPlan(BaseModel):
     plan_id: str = Field(
         default="",
         description="stable identifier for this acquisition goal; stamped on write, "
-        "derived from plan content if absent",
+        "derived from plan content if absent. Empty, or ASCII letters, digits, "
+        "'.' and '-' only: '_' is the frame-attribution token delimiter, and "
+        "N.I.N.A. rewrites other characters when it puts $$TARGETNAME$$ into "
+        "the file path, so an id outside that charset could never be matched "
+        "back to the frames it stamped.",
     )
     description: str = Field(
         default="",
@@ -143,6 +158,31 @@ class ObservationPlan(BaseModel):
         ),
     )
 
+    @field_validator("plan_id")
+    @classmethod
+    def _plan_id_charset(cls, v: str) -> str:
+        """Refuse ids that could not be matched back to their own frames.
+
+        Emitted as ``_{plan_id}_`` in the target name and read back out of the
+        recorded path, so the id must survive N.I.N.A.'s path sanitisation
+        unchanged *and* must not contain the delimiter itself. Empty stays
+        legal: it means "derive one on write" (the derived id is always
+        ``plan-<hex>``, which passes).
+        """
+        if v and not _PLAN_ID_ALLOWED.fullmatch(v):
+            raise ValueError(
+                f"plan_id {v!r} must be empty (a content-derived id is stamped "
+                "instead) or consist only of ASCII letters, digits, '.' and "
+                "'-'. '_' is the plan-id token delimiter, so an id containing "
+                "it could substring-match inside a longer id's token. Every "
+                "other character is refused because N.I.N.A. rewrites the "
+                "target name on its way into the file path — it turned '[' "
+                "and ']' into '_' although NTFS allows them — and an id that "
+                "does not survive that rewrite verbatim can never be matched "
+                "back to its frames."
+            )
+        return v
+
     def _base_plan_id(self) -> str:
         if self.plan_id:
             return self.plan_id
@@ -171,15 +211,24 @@ class ObservationPlan(BaseModel):
     def attribution_token(self, pointing_index: int) -> str:
         """Target-name token stamped on frames so they attribute to a pointing.
 
-        The closing bracket keeps tokens from substring-matching each
-        other: ``[plan-x]`` never appears inside ``[plan-x-1]``, nor
-        ``[plan-x-1]`` inside ``[plan-x-10]``. Attribution also accepts the
-        legacy parenthesised form (frames shot before the token switched to
-        square brackets) — see ``progress._light_target_matches``.
+        Underscore-delimited: N.I.N.A. rewrites ``[`` and ``]`` to ``_``
+        when it substitutes ``$$TARGETNAME$$`` into the file path, so a
+        bracketed token never survives into the recorded path and the
+        frames stop attributing. Emitting ``_plan-x_`` writes exactly what
+        N.I.N.A. would have produced anyway.
+
+        The closing underscore keeps tokens from substring-matching each
+        other: ``_plan-x_`` never appears inside ``_plan-x-1_``, nor
+        ``_plan-x-1_`` inside ``_plan-x-10_`` — as long as the id itself
+        contains no underscore (ids never do when derived; see
+        ``_base_plan_id``). Attribution also accepts the legacy bracketed
+        and parenthesised forms (frames shot under the earlier conventions,
+        or recorded before N.I.N.A. rewrote the brackets) — see
+        ``progress._light_target_matches``.
         """
-        return f"[{self.effective_plan_id(pointing_index)}]"
+        return f"_{self.effective_plan_id(pointing_index)}_"
 
     def plan_token(self) -> str:
         """Plan-level target-name token, used for calibration (darks/bias/
         flats): calibration belongs to the whole plan, not to any pane."""
-        return f"[{self._base_plan_id()}]"
+        return f"_{self._base_plan_id()}_"

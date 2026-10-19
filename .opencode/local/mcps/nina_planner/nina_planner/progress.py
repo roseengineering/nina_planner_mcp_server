@@ -72,24 +72,34 @@ def _light_target_matches(
         return False
 
     components = _path_components(path)
-    # Both the current square-bracket token and the legacy parenthesised
-    # form (frames shot before the switch) count, in both the plan-level
-    # and the historically-stamped per-pointing shape.
+    # The underscore token is primary: it is what N.I.N.A. writes, since it
+    # rewrites "[" and "]" to "_" when substituting $$TARGETNAME$$ into the
+    # path. The bracketed and parenthesised forms count as legacy (frames
+    # shot under the earlier conventions, or paths recorded before the
+    # rewrite), in both the plan-level and the historically-stamped
+    # per-pointing shape.
     base = plan.effective_plan_id(pointing_index)
-    expected_tokens = [f"[{base}]", f"({base})"]
+    expected_tokens = [f"_{base}_", f"[{base}]", f"({base})"]
     if len(plan.pointings) == 1 and pointing_index == 1:
         # Legacy: single-pointing plans historically stamped the per-pointing
         # token ("{base}-1"); frames acquired under it still count.
         per_pointing = plan.per_pointing_plan_id(1)
-        expected_tokens += [f"[{per_pointing}]", f"({per_pointing})"]
+        expected_tokens += [
+            f"_{per_pointing}_",
+            f"[{per_pointing}]",
+            f"({per_pointing})",
+        ]
 
     # Substring match on purpose — any single path segment may carry the
     # token. The token set is safe across pointings only because every form
-    # is delimited: the closing "]" keeps "[plan-x]" out of "[plan-x-1]",
-    # and "[plan-x-1]" out of "[plan-x-10]" (same for the "(" ")" forms).
-    # Do not drop the delimiters or match a bare un-delimited id here —
-    # mosaics with >=10 pointings would silently absorb each other's frames
-    # (see the test_light_target_matches_* regression tests).
+    # is delimited: the closing "_" keeps "_plan-x_" out of "_plan-x-1_",
+    # and "_plan-x-1_" out of "_plan-x-10_" (same for the "[" "]" and
+    # "(" ")" forms). Do not drop the delimiters or match a bare
+    # un-delimited id here — mosaics with >=10 pointings would silently
+    # absorb each other's frames (see the test_light_target_matches_*
+    # regression tests). The guarantee leans on ids containing no "_"
+    # (derived ids are "plan-<hex>"), since an id that carries the
+    # delimiter could contain its own token.
     return any(
         token in component for token in expected_tokens for component in components
     )

@@ -92,7 +92,7 @@ Returns **two content blocks: the absolute file path as text, then the image its
 
 Returns per-exposure imaging metadata for one pointing of an observation plan, parsed from `ImageMetaData.csv` and `WeatherData.csv` in the N.I.N.A. imaging directory. `image_type` is `light` (default), `dark`, `bias`, or `flat` (case-insensitive).
 
-- **Attribution:** lights are attributed via the plan id in the recorded file path (`{base_plan_id}` for a single-pointing plan, `{base_plan_id}-{pointing_index}` per pane for a mosaic; no target-name fallback). Dark/bias/flat frames are matched plan-wide by image type, filter, and exposure, and count only when shot within `calibration_window_days` of the session start (the earliest attributed light), on either side of it.
+- **Attribution:** lights are attributed via the underscore-delimited plan-id token in the recorded file path (`_{base_plan_id}_` for a single-pointing plan, `_{base_plan_id}-{pointing_index}_` per pane for a mosaic; no target-name fallback). Dark/bias/flat frames are matched plan-wide by image type, filter, and exposure, and count only when shot within `calibration_window_days` of the session start (the earliest attributed light), on either side of it.
 - **`pointing_index`:** range-checked (1..pointing count) for every image type and labels the response. For lights it selects the pointing; for calibration types it only selects which pointing's light session anchors the window.
 - **Scope:** reports the frames that are attributable, not what the plan still needs — use `get_plan_progress` for that.
 - **Output:** a wide table with one row per exposure: identity fields (`file_path`, `exposure_number`, `exposure_start`, `duration`, `filter_name`) plus metrics as columns namespaced by group (`quality.hfr`, `guiding.rms`, `background.adu_mean`, `pointing.airmass`, `weather.temperature`, ...). Weather samples are joined by exposure number and UTC exposure start. The result also carries `plan_id`, `pointing_index`, and `target`.
@@ -111,7 +111,7 @@ Expands a base observation plan into a multi-pointing mosaic plan from a Telesco
 
 Returns per-frame-type acquisition progress for every pointing of an observation-plan JSON file: for each exposure group, `total_count` from the plan, `acquired_count` attributed to that plan/pointing from the imaging metadata (`ImageMetaData.csv`), and `remaining_count`.
 
-- **Attribution:** lights are attributed via `{base_plan_id}` (single-pointing) or `{base_plan_id}-{pointing_index}` (mosaic pane). Flats/darks/bias are matched by image type, filter, and exposure and count only when shot within `calibration_window_days` of the earliest attributed light, on either side of it (inclusive; a 1-day window spans `anchor − 1d … anchor + 1d`).
+- **Attribution:** lights are attributed via `_{base_plan_id}_` (single-pointing) or `_{base_plan_id}-{pointing_index}_` (mosaic pane). Flats/darks/bias are matched by image type, filter, and exposure and count only when shot within `calibration_window_days` of the earliest attributed light, on either side of it (inclusive; a 1-day window spans `anchor − 1d … anchor + 1d`).
 - **Calibration window:** calibration groups also carry `window_open` (bool) and `window_end` (`earliest light + calibration_window_days`, **displayed in the host's local time with its UTC offset**). While the current time is inside the window `remaining_count` is `total − acquired`; once outside, no frame shot now could be credited, so `remaining_count` is `0` (with `window_open: false`). `acquired_count` stays truthful, and lights carry neither field. Raise `calibration_window_days` or write a new plan to reopen the window.
 - **Quality thresholds:** pass `max_hfr`, `min_detected_stars`, and/or `max_guiding_rms_arcsec` to exclude light frames that fail them (frames missing the relevant field are excluded when a threshold is set).
 - **Output:** `complete` (all panes done) plus a `pointings` list with per-pane progress and per-pane `complete`, so panes can be acquired sequentially.
@@ -135,7 +135,7 @@ Loads a sequence with safety guardrails — it **never starts it**; call `start_
 
 Behavior:
 
-- Lights embed `[{base_plan_id}]` (single-pointing plan, shared with its calibration) or `[{base_plan_id}-{pointing_index}]` (per mosaic pane) in the target name for attribution, which requires `$$TARGETNAME$$` in the profile's `FilePattern`.
+- Lights embed `_{base_plan_id}_` (single-pointing plan, shared with its calibration) or `_{base_plan_id}-{pointing_index}_` (per mosaic pane) in the target name for attribution, which requires `$$TARGETNAME$$` in the profile's `FilePattern`. The token is underscore-delimited on purpose: N.I.N.A. rewrites `[` and `]` to `_` when it substitutes `$$TARGETNAME$$` into the path, so the id is written exactly as it will be recorded (the older bracketed and parenthesised spellings still attribute as legacy).
 - Steps run in order as the sequence reaches them; a step with its own waits (lights, flats) waits, or is skipped once its window has passed, without blocking the steps behind it.
 - Entries already complete are skipped and reported; if every entry is complete nothing is sent to N.I.N.A.
 - Profile, equipment, and metadata are fetched once, one POST carries the whole sequence, and a validation error names the entry by 0-based position (`request[1]: ...`).
@@ -233,7 +233,7 @@ An example json plan:
 |---|---|---|
 | `target` | no | Catalog designation, e.g. "M31", "NGC 7000" |
 | `intent` | no | 2-3 words describing the goal |
-| `plan_id` | no | Stable identifier stamped on write. Used for frame attribution; when absent, a deterministic hash of plan content is used. |
+| `plan_id` | no | Stable identifier stamped on write. Used for frame attribution; when absent, a deterministic hash of plan content is used. Must be empty or ASCII letters, digits, `.` and `-` only: `_` is the attribution-token delimiter, and N.I.N.A. rewrites other characters when it puts `$$TARGETNAME$$` into the file path, so an id outside that charset is refused at write and at load rather than silently never matching its frames. |
 | `description` | no | Explanation of the observation plan, including rationale, exposure goals, equipment, or sky constraints. |
 | `pointings` | **yes** | One or more pointing objects. Each requires `ra_hours` (J2000 RA in hours, `[0, 24)`) and `dec_deg` (J2000 declination in degrees, `[-90, +90]`). Optional `label` is shown in the N.I.N.A. target name; `position_angle_deg` is rotator PA in degrees east of north, `[0, 360)`. If omitted, `0` is sent to N.I.N.A., leaving the rotator at its current/synced position. Optional `row` and `column` are nonnegative mosaic metadata not sent to N.I.N.A. |
 | `batch_size` | no | Exposures per batch; defaults to `5`. Set to `0` to disable batching. |
@@ -264,7 +264,7 @@ Pane 7, 0hr 54' 15", 36º 36' 00", 0.00, 309.00, 205.80, 10%, 4, 1
 Pane 8, 0hr 31' 14", 36º 36' 00", 0.00, 309.00, 205.80, 10%, 4, 2
 ```
 
-Each row becomes a `Pointing`: RA/DEC are parsed server-side (sexagesimal like `0hr 56' 01"` / `45º 51' 18"` or decimal), `Pane` becomes the `label`, and `Row`/`Column` are stored as `row`/`column` metadata (N.I.N.A. does not use them — they are kept for ordering, labeling, and later mosaic assembly). The base plan's `plan_id` is cleared so the mosaic gets its own content-derived id; each pane is attributed independently via `[{plan_id}-{pointing_index}]`.
+Each row becomes a `Pointing`: RA/DEC are parsed server-side (sexagesimal like `0hr 56' 01"` / `45º 51' 18"` or decimal), `Pane` becomes the `label`, and `Row`/`Column` are stored as `row`/`column` metadata (N.I.N.A. does not use them — they are kept for ordering, labeling, and later mosaic assembly). The base plan's `plan_id` is cleared so the mosaic gets its own content-derived id; each pane is attributed independently via `_{plan_id}-{pointing_index}_`.
 
 - **No rotator:** every pane's `position_angle_deg` must be `0`. Any nonzero PA fails loudly, since PA can't be enforced without a rotator.
 - **Acquiring panes:** query `get_plan_progress(file_path)` to see which panes still need frames, then load the first incomplete pane with `load_sequence(request=[{"plan": file_path, "action": "light", "pointing_index": N, "mode": "remaining"}])` and `start_sequence()`. Repeat pane by pane across the night; when the top-level `complete` is true, the mosaic is done.
@@ -275,7 +275,7 @@ Each row becomes a `Pointing`: RA/DEC are parsed server-side (sexagesimal like `
 - **Image file pattern:** for **light frames only**, the N.I.N.A. profile's `ImageFileSettings.FilePattern` must put `$$TARGETNAME$$` in a path segment so frames can be attributed to a plan (e.g. `$$TARGETNAME$$\$$IMAGETYPE$$\...`). Calibration frames (dark, bias, and flat) do not require this token; they are matched by frame type and exposure settings within the calibration window.
 - **Quality thresholds:** `max_hfr`, `min_detected_stars`, and `max_guiding_rms_arcsec` (all optional) exclude light frames that fail the thresholds from the acquired count. Frames missing the quality fields are excluded whenever a threshold is set (fail-closed). Thresholds are applied only to light frames — calibration frames have no star quality.
 - **Manually failing a frame:** delete (or move using thumbs down icon) the image file on disk — e.g. a bad `.fits`/`.tif`. The metadata row stays in the CSV (the plugin only appends), but it is omitted when the metadata is read, so progress no longer counts that frame as acquired and the next `mode="remaining"` load re-acquires it.
-- **The plan file is persistent.** You can inspect, edit, and reuse it across sessions. Changing the file will, however, alter its derived `plan_id`, which is calculated when `plan_id` is missing.
+- **The plan file is persistent.** You can inspect, edit, and reuse it across sessions. Changing the file will, however, alter its derived `plan_id`, which is calculated when `plan_id` is missing. A hand-written `plan_id` must satisfy the same charset rule (empty, or ASCII letters, digits, `.` and `-`) — anything else, `_` included, is refused when the plan is loaded.
 - **opencode.json variants:** the repo contains example opencode.json variants: `win_opencode.json` for Windows, `wsl_opencode.json` for WSL, and `smb_opencode.json` for, say, a Mac accessing a N.I.N.A. VM with its image file directory mapped back over SMB.
 
 ## `nina-notify` — OpenCode v2 Autonomous Plugin
@@ -310,6 +310,25 @@ Rules:
 
 Plan JSON files, `PLAN.md`, and `PROGRESS.md` live in the *project directory*. Relative paths (e.g. a `plan=` entry in `PLAN.md`, or `mosaic_csv`) resolve against it, and the project directory is simply the server process's working directory: opencode starts local MCP servers in the workspace, and the launch command uses `uv run --project` rather than `uv --directory` — `--directory` chdirs into `.opencode/local/mcps/nina_planner`, which would make relative paths resolve inside `.opencode/` instead of the project.
 
+## `AGENTS.md` — Agent Instructions
+
+Tells the agent it runs an observatory.
+
+[.opencode/rules/AGENTS.md](./.opencode/rules/AGENTS.md)
+```markdown .opencode/rules/AGENTS.md
+# Observatory intervention controller
+
+You are the automated observatory intervention controller. The observatory runs NINA via the nina-planner MCP server.
+
+Always-on rules:
+- `is_safe=false` (enclosure closed) or weather violations mean: scope stowed, if not by the NINA sequence then by you.
+- Append a timestamped entry to `PROGRESS.md` after each action; never edit `PLAN.md` (the user's living wishlist).
+
+Detailed procedures live in `.agents/skills/`:
+- `safety-interrupt-recovery` — on any new event or interval check: NINA liveness, equipment/safety checks, stowing.
+- `night-loop` — on interval check or `RUN-FINISHED`: pick and start the next target, or end the night.
+- `nina-lifecycle` — start/stop/status of the NINA application.
+```
 
 ## `PROGRESS.md` — Shared Progress File
 

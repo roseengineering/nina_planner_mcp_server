@@ -614,7 +614,7 @@ class SequenceBuildersTest(unittest.TestCase):
             # Plan-level token — no pointing suffix. The kind lives in the
             # container name, not the target name: $$TARGETNAME$$ would put
             # the target name in the file path and split the folder.
-            self.assertEqual(dsos[0]["Target"]["TargetName"], "M31 [plan-test123]")
+            self.assertEqual(dsos[0]["Target"]["TargetName"], "M31 _plan-test123_")
             self.assertEqual(dsos[0]["Name"], kind)
 
     def test_calibration_events_carry_kind_tag_but_target_does_not(self):
@@ -658,12 +658,12 @@ class SequenceBuildersTest(unittest.TestCase):
         for payload, tag in cases:
             msgs = messages(payload)
             # The event text is self-describing: kind-tagged, plan-level.
-            self.assertIn(f"ACQUISITION-STARTING: [{tag}] M31 [plan-test123]", msgs)
-            self.assertIn(f"ACQUISITION-FINISHED: [{tag}] M31 [plan-test123]", msgs)
+            self.assertIn(f"ACQUISITION-STARTING: [{tag}] M31 _plan-test123_", msgs)
+            self.assertIn(f"ACQUISITION-FINISHED: [{tag}] M31 _plan-test123_", msgs)
             # The tag stays out of the target name — $$TARGETNAME$$ would put
             # it in the file path and split the folder.
             dsos = _deepsky_targets(payload)
-            self.assertEqual(dsos[0]["Target"]["TargetName"], "M31 [plan-test123]")
+            self.assertEqual(dsos[0]["Target"]["TargetName"], "M31 _plan-test123_")
 
     def test_calibration_builds_with_empty_pointings(self):
         """Calibration never indexes by pointing_index, so an empty pointings
@@ -710,7 +710,7 @@ class SequenceBuildersTest(unittest.TestCase):
             )
             self.assertEqual(target["PositionAngle"], 0)
             # still the plan-level token: no pane suffix to append
-            self.assertEqual(target["TargetName"], "M31 [plan-test123]")
+            self.assertEqual(target["TargetName"], "M31 _plan-test123_")
 
 
 def _find_items(d: Any, type_substring: str) -> list[dict]:
@@ -798,7 +798,7 @@ class SequenceBehaviorTest(unittest.TestCase):
         target = dsos[0]["Target"]["TargetName"]
         self.assertIn("M31 - core", target)
         # Single-pointing plan: bare plan-level token, shared with calibration.
-        self.assertIn("[plan-test123]", target)
+        self.assertIn("_plan-test123_", target)
 
     def test_lights_mosaic_target_name_appends_pane_index(self):
         plan = self._plan(
@@ -816,7 +816,7 @@ class SequenceBehaviorTest(unittest.TestCase):
         dsos = _deepsky_targets(result)
         target = dsos[0]["Target"]["TargetName"]
         # Mosaic pane: per-pane token.
-        self.assertTrue(target.startswith("M31 [plan-test123-2]"), target)
+        self.assertTrue(target.startswith("M31 _plan-test123-2_"), target)
 
     def test_lights_without_pointing_label_omits_label_segment(self):
         plan = self._plan(pointings=[{"ra_hours": 0.71, "dec_deg": 41.27}])
@@ -826,7 +826,7 @@ class SequenceBehaviorTest(unittest.TestCase):
         dsos = _deepsky_targets(result)
         self.assertEqual(len(dsos), 1)
         target = dsos[0]["Target"]["TargetName"]
-        self.assertTrue(target.startswith("M31 [plan-test123]"))
+        self.assertTrue(target.startswith("M31 _plan-test123_"))
 
     def test_lights_slew_and_center_when_position_angle_none(self):
         plan = self._plan(pointings=[{"ra_hours": 0.71, "dec_deg": 41.27}])
@@ -860,16 +860,16 @@ class SequenceBehaviorTest(unittest.TestCase):
         # Light events carry the same kind tag as calibration events, so the
         # night loop matches the positive form rather than a missing bracket.
         self.assertIn(
-            "ACQUISITION-STARTING: [light] M31 - core [plan-test123]", messages
+            "ACQUISITION-STARTING: [light] M31 - core _plan-test123_", messages
         )
         self.assertIn(
-            "ACQUISITION-FINISHED: [light] M31 - core [plan-test123]", messages
+            "ACQUISITION-FINISHED: [light] M31 - core _plan-test123_", messages
         )
         # The tag stays out of the target name — $$TARGETNAME$$ would put it
         # in the file path and split the folder.
         self.assertEqual(
             _deepsky_targets(result)[0]["Target"]["TargetName"],
-            "M31 - core [plan-test123]",
+            "M31 - core _plan-test123_",
         )
 
     def test_lights_mosaic_pane_event_carries_pointing_token(self):
@@ -886,7 +886,7 @@ class SequenceBehaviorTest(unittest.TestCase):
             pointing_index=2,
         )
         messages = [e["Message"] for e in _find_items(result, "SendEventInstruction")]
-        self.assertIn("ACQUISITION-FINISHED: [light] M31 [plan-test123-2]", messages)
+        self.assertIn("ACQUISITION-FINISHED: [light] M31 _plan-test123-2_", messages)
 
     def test_single_step_sequence_brackets_its_one_step(self):
         """The Start/End run bracket wraps a one-entry load too, and stays
@@ -1483,7 +1483,7 @@ class BuildSequenceManyTest(unittest.TestCase):
         self.assertEqual(len(steps), 3, "steps in list order, nothing merged")
         self.assertIn("DeepSkyObjectContainer", steps[0]["$type"])
         self.assertIn(
-            "[plan-test123]", steps[0]["Target"]["TargetName"], "lights step first"
+            "_plan-test123_", steps[0]["Target"]["TargetName"], "lights step first"
         )
         self.assertIn("DeepSkyObjectContainer", steps[1]["$type"])
         self.assertIn("DeepSkyObjectContainer", steps[2]["$type"])

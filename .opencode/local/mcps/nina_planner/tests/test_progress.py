@@ -15,7 +15,7 @@ def _row(
     image_type="LIGHT",
     filter_name="LP",
     duration="60.0",
-    target: str | None = "M31 [plan-abc123-1]",
+    target: str | None = "M31 _plan-abc123_",
     exposure_start: str | None = None,
 ):
     if exposure_start is None:
@@ -56,40 +56,49 @@ class PlanProgressTest(unittest.TestCase):
     def test_embedded_plan_id_matching(self):
         plan = _plan(plan_id="plan-abc123")
         rows = [
-            _row(target="M31 [plan-abc123-1]"),
-            _row(target="M31 [plan-abc123-1]"),
-            _row(target="M31 [other-id-1]"),  # different plan, ignored
+            _row(target="M31 _plan-abc123_"),
+            _row(target="M31 _plan-abc123_"),
+            _row(target="M31 _other-id-1_"),  # different plan, ignored
             _row(target="M31"),  # no embedded id, ignored
         ]
         lights = plan_progress(plan, rows)["light"][0]
         self.assertEqual(lights["acquired_count"], 2)
         self.assertEqual(lights["remaining_count"], 18)
 
-    def test_legacy_paren_token_still_attributed(self):
-        # Frames shot before the token switched to square brackets carry the
-        # parenthesised form and still count; the other pointing's bracket
-        # token does not leak in.
+    def test_legacy_bracket_and_paren_tokens_still_attributed(self):
+        # Frames shot before the token switched to underscores carry the
+        # bracketed form (square brackets, then parentheses) and still count
+        # — N.I.N.A. only rewrites them once they reach the path — while the
+        # other pointing's token does not leak in.
         plan = _plan(plan_id="plan-abc123")
         rows = [
+            _row(target="M31 _plan-abc123-1_"),
             _row(target="M31 [plan-abc123-1]"),
             _row(target="M31 (plan-abc123-1)"),
             _row(target="M31 [plan-abc123-2]"),
         ]
         lights = plan_progress(plan, rows)["light"][0]
-        self.assertEqual(lights["acquired_count"], 2)
-        self.assertEqual(lights["remaining_count"], 18)
+        self.assertEqual(lights["acquired_count"], 3)
+        self.assertEqual(lights["remaining_count"], 17)
 
-    def test_attribution_token_is_bracketed(self):
+    def test_attribution_token_is_underscore_delimited(self):
+        # Underscore-delimited: N.I.N.A. rewrites "[" and "]" to "_" when it
+        # substitutes $$TARGETNAME$$ into the file path, so the token is
+        # written the way it will be recorded.
         # Single-pointing plan: bare plan-level token (shared with calibration).
         single = _plan(plan_id="plan-abc123")
-        self.assertEqual(single.attribution_token(1), "[plan-abc123]")
+        self.assertEqual(single.attribution_token(1), "_plan-abc123_")
         # Mosaic: per-pane tokens.
         multi = _plan(
             plan_id="plan-abc123",
             pointings=[{"ra_hours": 0.71, "dec_deg": 41.27}] * 2,
         )
-        self.assertEqual(multi.attribution_token(1), "[plan-abc123-1]")
-        self.assertEqual(multi.attribution_token(2), "[plan-abc123-2]")
+        self.assertEqual(multi.attribution_token(1), "_plan-abc123-1_")
+        self.assertEqual(multi.attribution_token(2), "_plan-abc123-2_")
+
+    def test_plan_token_is_underscore_delimited(self):
+        plan = _plan(plan_id="plan-abc123")
+        self.assertEqual(plan.plan_token(), "_plan-abc123_")
 
     def test_token_matches_in_any_path_segment(self):
         plan = _plan(plan_id="plan-abc123")
@@ -99,21 +108,21 @@ class PlanProgressTest(unittest.TestCase):
                 **_row(target=None),
                 "file_path": (
                     r"C:\NINA\2026-09-28\LIGHT"
-                    r"\M31 [plan-abc123-1]\frame.fits"
+                    r"\M31 _plan-abc123_\frame.fits"
                 ),
             },
             {
                 # token in the filename
                 **_row(target=None),
                 "file_path": (
-                    "/NINA/2026-09-28/LIGHT/M31 [plan-abc123-1]__60.00s_0000.fits"
+                    "/NINA/2026-09-28/LIGHT/M31 _plan-abc123__60.00s_0000.fits"
                 ),
             },
             {
                 # token in an ancestor directory: FilePattern
                 # $$TARGETNAME$$\$$DATEMINUS12$$\$$IMAGETYPE$$\...
                 **_row(target=None),
-                "file_path": ("/NINA/M31 [plan-abc123-1]/2026-09-28/LIGHT/frame.fits"),
+                "file_path": ("/NINA/M31 _plan-abc123_/2026-09-28/LIGHT/frame.fits"),
             },
             {
                 # no token anywhere
@@ -123,7 +132,7 @@ class PlanProgressTest(unittest.TestCase):
             {
                 # a different plan's token only
                 **_row(target=None),
-                "file_path": "/NINA/NGC 7331 (other-id-1)/2026-09-28/LIGHT/f.fits",
+                "file_path": "/NINA/NGC 7331 _other-id-1_/2026-09-28/LIGHT/f.fits",
             },
         ]
 
@@ -136,8 +145,8 @@ class PlanProgressTest(unittest.TestCase):
         self.assertEqual(plan.plan_id, "")
         pid = plan._base_plan_id()
         rows = [
-            _row(target=f"M31 [{pid}-1]"),
-            _row(target=f"M31 [{pid}-1]"),
+            _row(target=f"M31 _{pid}_"),
+            _row(target=f"M31 _{pid}_"),
         ]
         lights = plan_progress(plan, rows)["light"][0]
         self.assertEqual(lights["acquired_count"], 2)
@@ -145,7 +154,7 @@ class PlanProgressTest(unittest.TestCase):
 
     def test_other_target_not_counted(self):
         plan = _plan()
-        rows = [_row(target="NGC 7331 [plan-other-1]")]
+        rows = [_row(target="NGC 7331 _plan-other-1_")]
         lights = plan_progress(plan, rows)["light"][0]
         self.assertEqual(lights["acquired_count"], 0)
         self.assertEqual(lights["remaining_count"], 20)
@@ -153,8 +162,8 @@ class PlanProgressTest(unittest.TestCase):
     def test_filter_and_exposure_match(self):
         plan = _plan()
         rows = [
-            _row(filter_name="SII", target="M31 [plan-abc123-1]"),  # wrong filter
-            _row(duration="30.0", target="M31 [plan-abc123-1]"),  # wrong exposure
+            _row(filter_name="SII", target="M31 _plan-abc123_"),  # wrong filter
+            _row(duration="30.0", target="M31 _plan-abc123_"),  # wrong exposure
             _row(),  # match
         ]
         lights = plan_progress(plan, rows)["light"][0]
@@ -176,8 +185,8 @@ class PlanProgressTest(unittest.TestCase):
     def test_non_light_rows_excluded_from_lights(self):
         plan = _plan()
         rows = [
-            _row(image_type="DARK", target="M31 [plan-x-1]"),
-            _row(image_type="FLAT", target="M31 [plan-x-1]"),
+            _row(image_type="DARK", target="M31 _plan-x-1_"),
+            _row(image_type="FLAT", target="M31 _plan-x-1_"),
         ]
         lights = plan_progress(plan, rows)["light"][0]
         self.assertEqual(lights["acquired_count"], 0)
@@ -561,13 +570,13 @@ class FilterMetadataRowsTest(unittest.TestCase):
     def test_lights_match_plan_id(self):
         plan = _plan()
         rows = [
-            _row(target="M31 [plan-abc123-1]"),
-            _row(target="M31 [other-id-1]"),
+            _row(target="M31 _plan-abc123_"),
+            _row(target="M31 _other-id-1_"),
             _row(target="M31"),
         ]
         out = filter_metadata_rows(plan, rows, "light")
         self.assertEqual(len(out), 1)
-        self.assertIn("plan-abc123-1", out[0]["file_path"])
+        self.assertIn("plan-abc123", out[0]["file_path"])
 
     def test_dark_matches_exposure_and_age(self):
         plan = _plan()
@@ -643,9 +652,9 @@ class PointingIndexTest(unittest.TestCase):
             ],
         )
         rows = [
-            _row(target="M31 [plan-abc123-1]"),
-            _row(target="M31 [plan-abc123-1]"),
-            _row(target="M31 [plan-abc123-2]"),
+            _row(target="M31 _plan-abc123-1_"),
+            _row(target="M31 _plan-abc123-1_"),
+            _row(target="M31 _plan-abc123-2_"),
         ]
         lights_p1 = plan_progress(plan, rows, pointing_index=1)["light"][0]
         lights_p2 = plan_progress(plan, rows, pointing_index=2)["light"][0]
@@ -723,45 +732,70 @@ class PrivateHelperDefensivePathsTest(unittest.TestCase):
         self.assertFalse(_light_target_matches(plan, {"file_path": ""}))
         self.assertFalse(_light_target_matches(plan, {"file_path": "   "}))
 
-    def test_light_target_matches_bracket_blocks_cross_pointing_match(self):
+    def test_light_target_matches_delimiter_blocks_cross_pointing_match(self):
         from nina_planner.progress import _light_target_matches
 
-        # 10-pane mosaic: the closing bracket keeps "[plan-test123-1]" from
-        # matching inside "[plan-test123-10]", and "[plan-test123-11]" from
-        # matching "[plan-test123-1]".
+        # 10-pane mosaic: the closing underscore keeps "_plan-test123-1_"
+        # from matching inside "_plan-test123-10_", and "_plan-test123-11_"
+        # from matching "_plan-test123-1_". N.I.N.A. records exactly this
+        # shape — it rewrites "[" and "]" to "_" — and the bracketed and
+        # parenthesised spellings behave the same way (see the legacy test
+        # below), so the delimiter argument holds for every accepted form.
         plan = self._plan(pointings=[{"ra_hours": 0.71, "dec_deg": 41.27}] * 10)
-        row_p1 = {"file_path": r"C:\lights\[plan-test123-1]\img001.fits"}
-        row_p10 = {"file_path": r"C:\lights\[plan-test123-10]\img001.fits"}
-        row_p11 = {"file_path": r"C:\lights\[plan-test123-11]\img001.fits"}
+        row_p1 = {"file_path": r"C:\lights\M31 _plan-test123-1_\img001.fits"}
+        row_p10 = {"file_path": r"C:\lights\M31 _plan-test123-10_\img001.fits"}
+        row_p11 = {"file_path": r"C:\lights\M31 _plan-test123-11_\img001.fits"}
+        row_p1_bracket = {"file_path": r"C:\lights\[plan-test123-1]\img001.fits"}
+        row_p10_bracket = {"file_path": r"C:\lights\[plan-test123-10]\img001.fits"}
         self.assertTrue(_light_target_matches(plan, row_p1, pointing_index=1))
         self.assertFalse(_light_target_matches(plan, row_p10, pointing_index=1))
         self.assertTrue(_light_target_matches(plan, row_p10, pointing_index=10))
         self.assertFalse(_light_target_matches(plan, row_p1, pointing_index=10))
         self.assertFalse(_light_target_matches(plan, row_p11, pointing_index=1))
         self.assertTrue(_light_target_matches(plan, row_p11, pointing_index=11))
+        self.assertTrue(_light_target_matches(plan, row_p1_bracket, pointing_index=1))
+        self.assertFalse(_light_target_matches(plan, row_p10_bracket, pointing_index=1))
 
     def test_light_target_matches_single_pointing_token_and_legacy(self):
         from nina_planner.progress import _light_target_matches
 
-        # Single-pointing plan: the bare bracket token is primary, both legacy
-        # shapes still count as acquired ("[base-1]" stamped before the bare
-        # form existed, "(base)" from the parenthesis era), and
-        # "[plan-test123]" never appears inside "[plan-test123-2]".
+        # Single-pointing plan: the bare underscore token is primary, the
+        # legacy shapes still count as acquired ("_base-1" stamped before the
+        # bare form existed, "[base]" and "[base-1]" from the square-bracket
+        # era before N.I.N.A.'s rewrite was matched, "(base)" from the
+        # parenthesis era), and "_plan-test123_" never appears inside
+        # "_plan-test123-2_".
         plan = self._plan()
-        bare = {"file_path": r"C:\lights\[plan-test123]\img001.fits"}
-        legacy_bracket = {"file_path": r"C:\lights\[plan-test123-1]\img001.fits"}
+        bare = {"file_path": r"C:\lights\M31 _plan-test123_\img001.fits"}
+        legacy_underscore_per_pointing = {
+            "file_path": r"C:\lights\M31 _plan-test123-1_\img001.fits"
+        }
+        legacy_bracket = {"file_path": r"C:\lights\[plan-test123]\img001.fits"}
+        legacy_bracket_per_pointing = {
+            "file_path": r"C:\lights\[plan-test123-1]\img001.fits"
+        }
         legacy_paren = {"file_path": r"C:\lights\(plan-test123)\img001.fits"}
         legacy_paren_per_pointing = {
             "file_path": r"C:\lights\(plan-test123-1)\img001.fits"
         }
-        other = {"file_path": r"C:\lights\[plan-test123-2]\img001.fits"}
+        other = {"file_path": r"C:\lights\M31 _plan-test123-2_\img001.fits"}
+        other_bracket = {"file_path": r"C:\lights\[plan-test123-2]\img001.fits"}
         self.assertTrue(_light_target_matches(plan, bare, pointing_index=1))
+        self.assertTrue(
+            _light_target_matches(
+                plan, legacy_underscore_per_pointing, pointing_index=1
+            )
+        )
         self.assertTrue(_light_target_matches(plan, legacy_bracket, pointing_index=1))
+        self.assertTrue(
+            _light_target_matches(plan, legacy_bracket_per_pointing, pointing_index=1)
+        )
         self.assertTrue(_light_target_matches(plan, legacy_paren, pointing_index=1))
         self.assertTrue(
             _light_target_matches(plan, legacy_paren_per_pointing, pointing_index=1)
         )
         self.assertFalse(_light_target_matches(plan, other, pointing_index=1))
+        self.assertFalse(_light_target_matches(plan, other_bracket, pointing_index=1))
 
     # ---- _quality_accepted (lines 88-89, 95, 98-99, 108-109) ----
 

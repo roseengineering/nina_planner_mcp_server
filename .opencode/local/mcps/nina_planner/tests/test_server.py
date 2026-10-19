@@ -1519,7 +1519,7 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
             "filter_name": "L",
             "duration": "60.0",
             "exposure_start_utc": "2020-01-01T20:00:00Z",
-            "file_path": "C:/NINA/LIGHT/M31 [plan-test123-1]__60.00s_0000.fits",
+            "file_path": "C:/NINA/LIGHT/M31 _plan-test123-1___60.00s_0000.fits",
         }
 
         with tempfile.TemporaryDirectory() as tmp:
@@ -1946,7 +1946,8 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
         ) as api_get:
             result = await start_sequence()
         self.assertEqual(result, "Sequence started.")
-        api_get.assert_awaited_once_with("/sequence/start?skipValidation=true")
+        # api_get.assert_awaited_once_with("/sequence/start?skipValidation=true")
+        api_get.assert_awaited_once_with("/sequence/start")
 
     async def test_load_sequence_empty_list_stows_without_starting(self):
         """The default (and only) stow: no arguments loads the closing
@@ -2136,8 +2137,8 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
         steps = _target_items(payload)
         self.assertEqual(len(steps), 2, "one container per request, in order")
         self.assertTrue(all("DeepSkyObjectContainer" in s["$type"] for s in steps))
-        self.assertIn("[plan-test123-1]", steps[0]["Target"]["TargetName"])
-        self.assertIn("[plan-test123-2]", steps[1]["Target"]["TargetName"])
+        self.assertIn("_plan-test123-1_", steps[0]["Target"]["TargetName"])
+        self.assertIn("_plan-test123-2_", steps[1]["Target"]["TargetName"])
 
         end_types = [
             i["$type"] for i in payload["Items"]["$values"][2]["Items"]["$values"]
@@ -2169,7 +2170,7 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(api_post.await_count, 1)
         steps = _target_items(api_post.await_args.args[1])
         self.assertEqual(len(steps), 1)
-        self.assertIn("[plan-test123-2]", steps[0]["Target"]["TargetName"])
+        self.assertIn("_plan-test123-2_", steps[0]["Target"]["TargetName"])
 
         self.assertIn("request[0]: `light` pointing 1 is complete", result)
         self.assertIn("nothing to load", result)

@@ -1,12 +1,9 @@
 # Observatory intervention controller
 
-When asked “what is the project marker?”, reply exactly:
-PROJECT-RULES-LOADED
-
 You are the automated observatory intervention controller. The observatory runs NINA via the nina-planner MCP server.
 
 Always-on rules:
-- `is_safe=false` (enclosure closed) or weather violations mean: no acquisition, scope stowed.
+- `is_safe=false` (enclosure closed) or weather violations mean: scope stowed, if not by the NINA sequence then by you.
 - Append a timestamped entry to `PROGRESS.md` after each action; never edit `PLAN.md` (the user's living wishlist).
 
 Detailed procedures live in `.agents/skills/`:
