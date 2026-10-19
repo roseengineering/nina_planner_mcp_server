@@ -16,6 +16,7 @@ from .builders import (
     sequence_safetynet,
     sequence_unpark_scope,
     sequence_warm_camera,
+    sequence_wait_until_sunset,
 )
 from .instructions import (
     annotation,
@@ -27,11 +28,11 @@ from .instructions import (
     home_scope,
     loop_for_iterations,
     loop_until_dawn,
+    loop_until_sunrise,
     loop_until_meridian,
     loop_until_sun_altitude,
     loop_until_sun_altitude_above,
     loop_until_sun_altitude_below,
-    loop_until_sunrise,
     loop_until_time,
     loop_while_above_altitude,
     loop_while_above_horizon,
@@ -142,6 +143,7 @@ __all__ = [
     "sequence_safetynet",
     "sequence_unpark_scope",
     "sequence_warm_camera",
+    "sequence_wait_until_sunset",
     "set_readout",
     "set_tracking",
     "sky_flats",

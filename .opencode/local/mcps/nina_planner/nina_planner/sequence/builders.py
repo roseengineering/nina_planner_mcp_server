@@ -10,6 +10,7 @@ from .instructions import (
     home_scope,
     loop_for_iterations,
     loop_until_sunrise,
+    loop_until_sunset,
     loop_while_safe,
     park_scope,
     run_finished_event,
@@ -18,6 +19,7 @@ from .instructions import (
     unpark_scope,
     wait_for_timespan,
     wait_until_safe,
+    wait_until_sunset,
     warm_camera,
 )
 from .nodes import (
@@ -191,6 +193,30 @@ def sequence_park_scope(equipment: ObservatoryEquipment) -> list[dict[str, Any]]
 
 def sequence_unpark_scope(equipment: ObservatoryEquipment) -> list[dict[str, Any]]:
     return [unpark_scope()] if equipment.mount and equipment.mount.can_park else []
+
+
+def sequence_wait_until_sunset(
+    equipment: ObservatoryEquipment
+) -> dict[str, Any]:
+    name = 'Wait For Sunset'
+    return container_sequential(
+        name=name,
+        conditions=[loop_until_sunset()],
+        instructions=[
+            container_sequential(
+                name="On Safe",
+                conditions=[loop_while_safe()],
+                instructions=[
+                    wait_until_sunset(),
+                    end_instruction(name)
+                ],
+            )
+        ]
+        + sequence_park_scope(equipment)
+        + [
+            wait_until_safe(),
+        ],
+    )
 
 
 def sequence_safetynet(

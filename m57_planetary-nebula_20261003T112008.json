@@ -1,0 +1,63 @@
+{
+  "target": "M57",
+  "intent": "Planetary nebula",
+  "plan_id": "plan-4315b6196ec7",
+  "description": "Seestar S30 starter plan for M57 (Ring Nebula). Use the available LP filter; 120 ten-second light frames for 20 minutes total.",
+  "pointings": [
+    {
+      "label": "M57 center",
+      "ra_hours": 18.89308,
+      "dec_deg": 33.02917,
+      "position_angle_deg": null,
+      "row": null,
+      "column": null
+    }
+  ],
+  "batch_size": 10,
+  "calibration_window_days": 7,
+  "cooler": {
+    "on": false,
+    "setpoint_celsius": -10.0
+  },
+  "constraints": {
+    "min_altitude": 30.0,
+    "horizon_offset_degrees": 2.0
+  },
+  "autofocus": {
+    "reference_filter_name": "L",
+    "hfr_increase_sample_size": 3,
+    "hfr_increase_threshold_percent": 15.0,
+    "every_n_exposures": 10,
+    "threshold_celsius": 1.0
+  },
+  "guiding": {
+    "dither_every_n_exposures": 2,
+    "check_drift_every_n_exposures": 6,
+    "max_drift_arcmin": 1.5
+  },
+  "light_frames": [
+    {
+      "filter_name": "LP",
+      "exposure_time_seconds": 10.0,
+      "total_count": 120
+    }
+  ],
+  "flat_frames": [
+    {
+      "filter_name": "LP",
+      "exposure_time_seconds": 1.0,
+      "total_count": 20
+    }
+  ],
+  "dark_frames": [
+    {
+      "exposure_time_seconds": 10.0,
+      "total_count": 20
+    }
+  ],
+  "bias_frames": [
+    {
+      "total_count": 20
+    }
+  ]
+}

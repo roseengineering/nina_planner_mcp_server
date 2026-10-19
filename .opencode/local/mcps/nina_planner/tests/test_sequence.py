@@ -1330,11 +1330,12 @@ class SequenceBehaviorTest(unittest.TestCase):
             profile=_profile(),
             dusk=False,
         )
-        # Wait for dawn means SunsetProvider should not appear; DawnProvider should.
+        # Dawn flats skip the daytime with a Wait For Sunset container, then
+        # Wait For Time waits for dawn (DawnProvider), not sunset.
         dawn = _find_items(result, "DawnProvider")
         sunset = _find_items(result, "SunsetProvider")
         self.assertGreaterEqual(len(dawn), 1)
-        self.assertEqual(sunset, [])
+        self.assertGreaterEqual(len(sunset), 1)
 
     def test_flats_dusk_uses_sunset_wait_and_dusk_azimuth(self):
         from sequence_helpers import build_sequence_flats

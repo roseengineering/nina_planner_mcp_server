@@ -248,29 +248,35 @@ def loop_until_sun_altitude_below(degrees: float) -> dict[str, Any]:
     return loop_until_sun_altitude(degrees, 1)
 
 
-def loop_until_time(source: str) -> dict[str, Any]:
+def loop_until_time(source: str, minutes: float) -> dict[str, Any]:
     return _child("NINA.Sequencer.Conditions.TimeCondition, NINA.Sequencer") | {
-        "MinutesOffset": 0,
+        "MinutesOffset": minutes,
         "SelectedProvider": _child(source),
     }
 
 
-def loop_until_sunrise() -> dict[str, Any]:
+def loop_until_sunset(minutes: float = 0) -> dict[str, Any]:
     return loop_until_time(
-        "NINA.Sequencer.Utility.DateTimeProvider.SunriseProvider, NINA.Sequencer"
-    )
+        "NINA.Sequencer.Utility.DateTimeProvider.SunsetProvider, NINA.Sequencer",
+        minutes)
 
 
-def loop_until_dawn() -> dict[str, Any]:
+def loop_until_dawn(minutes: float = 0) -> dict[str, Any]:
     return loop_until_time(
-        "NINA.Sequencer.Utility.DateTimeProvider.DawnProvider, NINA.Sequencer"
-    )
+        "NINA.Sequencer.Utility.DateTimeProvider.DawnProvider, NINA.Sequencer",
+        minutes)
 
 
-def loop_until_meridian() -> dict[str, Any]:
+def loop_until_sunrise(minutes: float = 0) -> dict[str, Any]:
     return loop_until_time(
-        "NINA.Sequencer.Utility.DateTimeProvider.MeridianProvider, NINA.Sequencer"
-    )
+        "NINA.Sequencer.Utility.DateTimeProvider.SunriseProvider, NINA.Sequencer",
+        minutes)
+
+
+def loop_until_meridian(minutes: float = 0) -> dict[str, Any]:
+    return loop_until_time(
+        "NINA.Sequencer.Utility.DateTimeProvider.MeridianProvider, NINA.Sequencer",
+        minutes)
 
 
 def loop_while_safe() -> dict[str, Any]:
@@ -394,3 +400,5 @@ def end_instruction(name: str) -> dict[str, Any]:
     return _child(
         "NINA.Plugin.SequencerPlus.EndInstructionSet, NINA.Plugin.SequencerPlus"
     ) | {"InstructionSetName": name}
+
+

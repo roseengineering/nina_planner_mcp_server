@@ -12,6 +12,7 @@ from .builders import (
     sequence_park_scope,
     sequence_safetynet,
     sequence_unpark_scope,
+    sequence_wait_until_sunset,
 )
 from .instructions import (
     close_cover,
@@ -202,6 +203,8 @@ def target_payload_lights(
                     # out of view: park (or home) until the safetynets unpark
                     + sequence_park_scope(equipment),
                 ),
+                # wait for sunset first
+                sequence_wait_until_sunset(equipment),
                 # wait for dusk before imaging
                 sequence_safetynet(
                     name="Wait For Dusk",
@@ -313,6 +316,7 @@ def target_payload_flats(
             kind="Dusk Flats" if dusk else "Dawn Flats",
             tag="dusk flats" if dusk else "dawn flats",
             instructions=[
+                sequence_wait_until_sunset(equipment),
                 # wait until start time
                 sequence_safetynet(
                     name="Wait For Time",
