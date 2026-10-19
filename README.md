@@ -160,21 +160,27 @@ A plan is a JSON document that describes one complete imaging session. It encode
 
 An example json plan:
 
-[veil-nebula_widefield-supernova-remnant_20260913T080623.json](./veil-nebula_widefield-supernova-remnant_20260913T080623.json)
-```json veil-nebula_widefield-supernova-remnant_20260913T080623.json
+[m15_globular-cluster_20261003T112008.json](./m15_globular-cluster_20261003T112008.json)
+```json m15_globular-cluster_20261003T112008.json
 {
-  "target": "Veil Nebula",
-  "intent": "Widefield supernova remnant",
-  "description": "Veil Nebula complex centered between Western NGC 6960 and Eastern NGC 6992",
+  "target": "M15",
+  "intent": "Globular cluster",
+  "plan_id": "plan-a745ffa2357a",
+  "description": "Seestar S30 starter plan for M15. Use the available broadband L filter and short exposures to help preserve the bright cluster core; 90 ten-second light frames for 15 minutes total.",
   "pointings": [
     {
-      "ra_hours": 20.85,
-      "dec_deg": 31.22
+      "label": "M15 center",
+      "ra_hours": 21.49954,
+      "dec_deg": 12.167,
+      "position_angle_deg": null,
+      "row": null,
+      "column": null
     }
   ],
-  "batch_size": 5,
+  "batch_size": 10,
+  "calibration_window_days": 7,
   "cooler": {
-    "on": true,
+    "on": false,
     "setpoint_celsius": -10.0
   },
   "constraints": {
@@ -182,7 +188,7 @@ An example json plan:
     "horizon_offset_degrees": 2.0
   },
   "autofocus": {
-    "reference_filter_name": "LP",
+    "reference_filter_name": "L",
     "hfr_increase_sample_size": 3,
     "hfr_increase_threshold_percent": 15.0,
     "every_n_exposures": 10,
@@ -195,27 +201,27 @@ An example json plan:
   },
   "light_frames": [
     {
-      "filter_name": "LP",
-      "exposure_time_seconds": 60.0,
-      "total_count": 60
+      "filter_name": "L",
+      "exposure_time_seconds": 10.0,
+      "total_count": 90
     }
   ],
   "flat_frames": [
     {
-      "filter_name": "LP",
-      "exposure_time_seconds": 5.0,
-      "total_count": 30
+      "filter_name": "L",
+      "exposure_time_seconds": 1.0,
+      "total_count": 20
     }
   ],
   "dark_frames": [
     {
-      "exposure_time_seconds": 60.0,
+      "exposure_time_seconds": 10.0,
       "total_count": 20
     }
   ],
   "bias_frames": [
     {
-      "total_count": 30
+      "total_count": 20
     }
   ]
 }
@@ -300,6 +306,11 @@ Rules:
 - tie_break: priority, then altitude
 ```
 
+## Project directory
+
+Plan JSON files, `PLAN.md`, and `PROGRESS.md` live in the *project directory*. Relative paths (e.g. a `plan=` entry in `PLAN.md`, or `mosaic_csv`) resolve against it, and the project directory is simply the server process's working directory: opencode starts local MCP servers in the workspace, and the launch command uses `uv run --project` rather than `uv --directory` — `--directory` chdirs into `.opencode/local/mcps/nina_planner`, which would make relative paths resolve inside `.opencode/` instead of the project.
+
+
 ## `PROGRESS.md` — Shared Progress File
 
 `PROGRESS.md` is a shared observatory progress file in the project directory. The active session reads it on start to restore context before acting, and appends a timestamped entry after each significant action, recording what was done, the observed equipment and safety state, and any decisions. This keeps history shared across sessions.
@@ -328,7 +339,7 @@ Rules:
           "NINA_PLANNER_LOG": "C:/Windows/Temp/nina-planner-debug.log"
         },
         "command": [
-          "uv", "--directory", ".opencode/local/mcps/nina_planner", "run", "-m", "nina_planner"
+          "uv", "run", "--project", ".opencode/local/mcps/nina_planner", "-m", "nina_planner"
         ]
       }
     }

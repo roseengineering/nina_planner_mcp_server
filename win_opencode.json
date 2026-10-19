@@ -17,7 +17,7 @@
           "NINA_PLANNER_LOG": "C:/Windows/Temp/nina-planner-debug.log"
         },
         "command": [
-          "uv", "--directory", ".opencode/local/mcps/nina_planner", "run", "-m", "nina_planner"
+          "uv", "run", "--project", ".opencode/local/mcps/nina_planner", "-m", "nina_planner"
         ]
       }
     }
