@@ -102,8 +102,9 @@ def switch_filter(
     return _child(
         "NINA.Sequencer.SequenceItem.FilterWheel.SwitchFilter, NINA.Sequencer"
     ) | {
-        "Filter": _child("NINA.Core.Model.Equipment.FilterInfo, NINA.Core")
-        | {"_name": filter_name, "_position": filter_position}
+        "Filter": None if filter_name is None else (
+        _child("NINA.Core.Model.Equipment.FilterInfo, NINA.Core")
+        | {"_name": filter_name, "_position": filter_position})
     }
 
 
@@ -336,7 +337,7 @@ def smart_exposure(
     image_type: str,
     filter_name: str | None = None,
     filter_position: int | None = None,
-    dither: int | None = None,
+    dither: int | None = 0,
 ) -> dict[str, Any]:
     return _container_base(
         ctype="NINA.Sequencer.SequenceItem.Imaging.SmartExposure, NINA.Sequencer",

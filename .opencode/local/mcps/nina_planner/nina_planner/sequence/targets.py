@@ -319,7 +319,7 @@ def target_payload_flats(
                 sequence_wait_until_sunset(equipment),
                 # wait until start time
                 sequence_safetynet(
-                    name="Wait For Time",
+                    name="Wait Until Sunset" if dusk else "Wait Until Dawn",
                     equipment=equipment,
                     instructions=[
                         (wait_until_sunset() if dusk else wait_until_dawn()),
