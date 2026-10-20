@@ -266,19 +266,24 @@ def sequence_end(
     # silent, so a stow never reads as a finished run.
     delay_minutes = 3
     head = [run_finished_event(step_count)] if step_count else []
-    return container_end(
-        head
-        + [
-            container_sequential(
-                name="On Safe",
-                conditions=[loop_while_safe(), loop_for_iterations(1)],
-                instructions=[wait_for_timespan(delay_minutes * 60)],
-            ),
-            connect_all_equipment(),
-        ]
-        + sequence_park_scope(equipment)
-        + sequence_warm_camera(equipment)
-    )
+    return container_end([
+        container_sequential(
+            name='Stow Telescope',
+            instructions=(
+                head
+                + [
+                    container_sequential(
+                        name="On Safe",
+                        conditions=[loop_while_safe(), loop_for_iterations(1)],
+                        instructions=[wait_for_timespan(delay_minutes * 60)],
+                    ),
+                    connect_all_equipment(),
+                ]
+                + sequence_park_scope(equipment)
+                + sequence_warm_camera(equipment)
+            )
+        )
+    ])
 
 
 def _sequence_with_steps(
