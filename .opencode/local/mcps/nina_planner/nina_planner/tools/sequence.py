@@ -6,14 +6,15 @@ from ..app import mcp
 from ..models.observatory import ObservatoryEquipment
 from ..models.profile import ObservatoryProfile
 from ..models.request import SequenceRequest
-from ..sequence_state import project_sequence_state
 from ..progress import plan_progress, plan_with_remaining
 from ..sequence import (
     build_sequence_many,
     target_payload_darks,
     target_payload_flats,
     target_payload_lights,
+    validate_dark_variant,
 )
+from ..sequence_state import project_sequence_state
 from . import equipment as equipment_tools
 
 
@@ -35,7 +36,7 @@ async def load_sequence(
 
     `variant` decides HOW an action runs and is scoped to it — it is validated against the action, and a bad pairing fails naming the entry:
     - `flat` REQUIRES `dawn` (morning twilight — waits for dawn) or `dusk` (evening twilight — waits for sunset).
-    - `dark` and `bias` take `wheel` (default — park the wheel on the profile's `Dark` filter slot), `cover` (close the motorized cover — e.g. a flip-flat — around the exposures, then reopen it so a later step never shoots through a closed cover), or `shutter` (expose without moving the filter wheel, relying on the camera's shutter).
+    - `dark` and `bias` take `wheel` (default — park the wheel on the profile's `Dark` filter slot), `cover` (close the motorized cover — e.g. a flip-flat — around the exposures, then reopen it so a later step never shoots through a closed cover), or `shutter` (expose without moving the filter wheel, relying on the camera's shutter). The variant is capability-checked at load: `wheel` needs a configured filter wheel with a `Dark` slot, `cover` a configured flat device reporting open/close support, `shutter` a camera reporting HasShutter. A variant the rig cannot perform fails naming the reason and the variants it supports — the default is checked the same way, so an omitted variant never silently picks another method.
     - `light` takes no variant.
 
     Steps run in order as the sequence reaches them; a step carrying its own wait conditions (lights, flats) waits, or is skipped when its window has passed, without blocking the steps behind it, so list order controls timing. Entries already complete in `remaining` mode are skipped and reported; if every entry is complete, nothing is sent to N.I.N.A. Profile, equipment, and metadata are fetched once per call, one POST carries the whole sequence, and a validation failure names its 0-based position (`request[1]: ...`).
@@ -137,6 +138,15 @@ async def _load_many(requests: list[SequenceRequest]) -> str:
         if action == "light":
             plan_utils.check_pointing_index(plan, pointing_index)
         eq = await equipment()
+
+        # Capability check before anything is counted or built: a dark/bias
+        # variant this rig cannot perform fails here, naming the variants it
+        # supports, instead of at 2 a.m. inside N.I.N.A. It runs for the
+        # default (`wheel`) exactly as for an explicit variant, and ahead of
+        # the remaining-mode metadata read, so the answer never depends on
+        # how many frames are left or on the imaging root being readable.
+        if action in ("dark", "bias"):
+            validate_dark_variant(request.variant or "wheel", eq, site_profile)
 
         if request.mode == "remaining":
             progress = plan_progress(

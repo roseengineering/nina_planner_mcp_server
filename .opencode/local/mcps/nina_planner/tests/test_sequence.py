@@ -50,6 +50,7 @@ def _profile() -> ObservatoryProfile:
             "has_focuser": True,
             "has_guider": True,
             "has_filter_wheel": True,
+            "has_flat_device": False,
             "has_rotator": True,
             "has_dome": True,
             "has_weather": True,

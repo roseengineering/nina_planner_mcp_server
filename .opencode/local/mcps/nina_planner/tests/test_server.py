@@ -11,6 +11,7 @@ from unittest.mock import AsyncMock, patch
 
 from nina_planner.client import log_payload as _log_payload
 from nina_planner.models.camera import CameraDevice
+from nina_planner.models.flat_device import FlatDevice
 from nina_planner.models.mount import MountDevice
 from nina_planner.models.observatory import ObservatoryEquipment
 from nina_planner.models.plan import ObservationPlan
@@ -392,6 +393,7 @@ class HelperFunctionsTest(unittest.TestCase):
                 has_weather=False,
                 has_safety_monitor=False,
                 has_switch=False,
+                has_flat_device=False,
             ),
         )
 
@@ -519,12 +521,23 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
                 has_weather=False,
                 has_safety_monitor=False,
                 has_switch=False,
+                has_flat_device=False,
             ),
         )
 
-    def _full_profile(self, filters=None):
+    def _full_profile(self, filters=None, has_flat_device: bool = False):
+        """The usual rig for load tests: filter wheel with a `Dark` slot, so
+        the default (wheel) dark/bias variant passes its capability check.
+
+        `filters` overrides the wheel contents for tests that need a
+        different one (a profile with no `Dark` slot, say), and
+        `has_flat_device` turns on the flat panel the `cover` variant needs.
+        """
         if filters is None:
-            filters = [FilterInfo(name="L", position=1, focus_offset=0)]
+            filters = [
+                FilterInfo(name="Dark", position=0),
+                FilterInfo(name="L", position=1, focus_offset=0),
+            ]
         return ObservatoryProfile(
             profile_name="Test",
             profile_id="abc",
@@ -555,6 +568,7 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
                 has_weather=False,
                 has_safety_monitor=False,
                 has_switch=False,
+                has_flat_device=has_flat_device,
             ),
         )
 
@@ -872,6 +886,7 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
                     has_weather=False,
                     has_safety_monitor=False,
                     has_switch=False,
+                    has_flat_device=False,
                 )
             }
         )
@@ -905,6 +920,7 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
                     has_weather=False,
                     has_safety_monitor=False,
                     has_switch=False,
+                    has_flat_device=False,
                 )
             }
         )
@@ -935,6 +951,7 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
                     has_weather=False,
                     has_safety_monitor=False,
                     has_switch=False,
+                    has_flat_device=False,
                 ),
             }
         )
@@ -2275,11 +2292,19 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
                 ),
                 patch(
                     "nina_planner.tools.equipment.get_site_profile",
-                    AsyncMock(return_value=self._full_profile()),
+                    AsyncMock(return_value=self._full_profile(has_flat_device=True)),
                 ),
                 patch(
                     "nina_planner.tools.equipment._get_site_equipment_status",
-                    AsyncMock(return_value=ObservatoryEquipment()),
+                    AsyncMock(
+                        return_value=ObservatoryEquipment(
+                            flat_device=FlatDevice(
+                                connected=True,
+                                cover_state="Closed",
+                                supports_open_close=True,
+                            )
+                        )
+                    ),
                 ),
                 patch(
                     "nina_planner.tools.sequence.target_payload_darks",
@@ -2344,7 +2369,13 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
                 ),
                 patch(
                     "nina_planner.tools.equipment._get_site_equipment_status",
-                    AsyncMock(return_value=ObservatoryEquipment()),
+                    AsyncMock(
+                        return_value=ObservatoryEquipment(
+                            camera=CameraDevice(
+                                connected=True, name="cam", has_shutter=True
+                            )
+                        )
+                    ),
                 ),
                 patch(
                     "nina_planner.tools.sequence.target_payload_darks",
@@ -2369,6 +2400,134 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn("`dark` (shutter) — ", result)
         self.assertNotIn("pointing", result, "calibration is plan-level")
         self.assertIn("Sequence loaded (1 of 1 step(s))", result)
+
+    # dark/bias variant capability checks (fail closed at load time)
+
+    async def test_load_sequence_dark_wheel_needs_a_dark_filter_slot(self):
+        """The default (wheel) variant is checked like an explicit one: a
+        profile with no `Dark` slot fails at load, naming what this rig can
+        run instead of letting N.I.N.A. discover it mid-sequence."""
+        no_dark_slot = self._full_profile(
+            filters=[FilterInfo(name="L", position=1, focus_offset=0)],
+            has_flat_device=True,
+        )
+        # The rest of the rig is capable, so only `wheel` fails and the
+        # message lists the two variants this rig could run instead.
+        capable_rig = ObservatoryEquipment(
+            camera=CameraDevice(connected=True, name="cam", has_shutter=True),
+            flat_device=FlatDevice(
+                connected=True, cover_state="Open", supports_open_close=True
+            ),
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            plan_path = Path(tmp) / "plan.json"
+            plan_path.write_text(json.dumps(self._list_plan_dict()))
+            with self.assertRaises(ValueError) as ctx:
+                await self._load_list(
+                    [SequenceRequest(plan=str(plan_path), action="dark")],
+                    profile=no_dark_slot,
+                    equipment=capable_rig,
+                )
+        message = str(ctx.exception)
+        self.assertIn("request[0]", message)
+        self.assertIn("'Dark' filter slot", message)
+        self.assertIn("Supported here: cover, shutter", message)
+
+    async def test_load_sequence_dark_cover_needs_a_flat_device(self):
+        """`cover` closes a motorized cover, so a profile without one fails
+        the load rather than emitting CloseCover instructions N.I.N.A. cannot
+        run."""
+        # Camera reports a shutter so only `cover` is unsupported here.
+        capable_rig = ObservatoryEquipment(
+            camera=CameraDevice(connected=True, name="cam", has_shutter=True)
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            plan_path = Path(tmp) / "plan.json"
+            plan_path.write_text(json.dumps(self._list_plan_dict()))
+            with self.assertRaises(ValueError) as ctx:
+                await self._load_list(
+                    [
+                        SequenceRequest(
+                            plan=str(plan_path), action="dark", variant="cover"
+                        )
+                    ],
+                    equipment=capable_rig,
+                )
+        message = str(ctx.exception)
+        self.assertIn("request[0]", message)
+        self.assertIn("no flat device configured", message)
+        self.assertIn("Supported here: wheel, shutter", message)
+
+    async def test_load_sequence_dark_shutter_needs_a_camera_shutter(self):
+        """A camera reporting HasShutter=false cannot cut the light, so
+        `shutter` fails instead of producing light-contaminated darks that
+        would otherwise look like a successful run."""
+        # The rest of the rig is capable, so the message lists `cover` too.
+        no_shutter = ObservatoryEquipment(
+            camera=CameraDevice(connected=True, name="cam", has_shutter=False),
+            flat_device=FlatDevice(
+                connected=True, cover_state="Open", supports_open_close=True
+            ),
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            plan_path = Path(tmp) / "plan.json"
+            plan_path.write_text(json.dumps(self._list_plan_dict()))
+            with self.assertRaises(ValueError) as ctx:
+                await self._load_list(
+                    [
+                        SequenceRequest(
+                            plan=str(plan_path), action="bias", variant="shutter"
+                        )
+                    ],
+                    profile=self._full_profile(has_flat_device=True),
+                    equipment=no_shutter,
+                )
+        message = str(ctx.exception)
+        self.assertIn("request[0]", message)
+        self.assertIn("HasShutter=false", message)
+        self.assertIn("Supported here: wheel, cover", message)
+
+    async def test_load_sequence_dark_guard_fires_before_metadata_read(self):
+        """The capability check runs ahead of the remaining-mode metadata
+        read, so a rig that cannot take the dark fails on the variant even
+        when the imaging root is unreadable — the two errors must not be
+        able to mask each other."""
+        from nina_planner.server import load_sequence
+
+        no_shutter = ObservatoryEquipment(
+            camera=CameraDevice(connected=True, name="cam", has_shutter=False)
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            plan_path = Path(tmp) / "plan.json"
+            plan_path.write_text(json.dumps(self._list_plan_dict()))
+            with (
+                patch(
+                    "nina_planner.tools.equipment.get_site_profile",
+                    AsyncMock(return_value=self._full_profile()),
+                ),
+                patch(
+                    "nina_planner.tools.equipment._get_site_equipment_status",
+                    AsyncMock(return_value=no_shutter),
+                ),
+                patch(
+                    "nina_planner.metadata.read_metadata",
+                    AsyncMock(side_effect=FileNotFoundError("no imaging root")),
+                ),
+                patch("nina_planner.client.api_post", AsyncMock(return_value={})),
+            ):
+                with self.assertRaises(ValueError) as ctx:
+                    await load_sequence(
+                        [
+                            SequenceRequest(
+                                plan=str(plan_path),
+                                action="dark",
+                                variant="shutter",
+                            )
+                        ]
+                    )
+        message = str(ctx.exception)
+        self.assertIn("HasShutter=false", message)
+        self.assertNotIn("imaging root", message)
 
     async def test_load_sequence_list_error_names_the_entry(self):
         """A failure in entry i says `request[i]:`, so the agent knows which
@@ -2768,6 +2927,7 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
                     has_weather=False,
                     has_safety_monitor=False,
                     has_switch=False,
+                    has_flat_device=False,
                 )
             }
         )
@@ -2777,6 +2937,90 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
         with patch("nina_planner.client.api_get", AsyncMock(return_value=raw)):
             equipment = await _get_site_equipment_status(profile)
         self.assertIsNone(equipment.mount)
+
+    # flat device / camera shutter: the capabilities the dark variants check
+
+    async def test_get_site_profile_reads_the_flat_device_settings(self):
+        from nina_planner.server import get_site_profile
+
+        def raw_with(flat_settings: dict | None) -> dict:
+            raw = {
+                "Name": "Test",
+                "Id": "abc",
+                "Description": "",
+                "AstrometrySettings": {},
+                "TelescopeSettings": {},
+                "CameraSettings": {},
+                "FilterWheelSettings": {"FilterWheelFilters": []},
+                "ImageFileSettings": {"FilePath": "C:\\NINA", "FilePattern": None},
+                "PlateSolveSettings": {},
+                "FramingAssistantSettings": {},
+                "GuiderSettings": {},
+                "RotatorSettings": {},
+                "DomeSettings": {},
+                "WeatherDataSettings": {},
+                "SafetyMonitorSettings": {},
+                "FocuserSettings": {},
+                "SwitchSettings": {},
+            }
+            if flat_settings is not None:
+                raw["FlatDeviceSettings"] = flat_settings
+            return raw
+
+        cases = [
+            ({"Id": "abc-flat"}, True),  # a flat panel is configured
+            ({"Id": "No_Device"}, False),  # N.I.N.A.'s "no device" marker
+            (None, False),  # section absent from the payload entirely
+        ]
+        for flat_settings, expected in cases:
+            with self.subTest(flat_settings=flat_settings):
+                with patch(
+                    "nina_planner.client.api_get",
+                    AsyncMock(return_value=raw_with(flat_settings)),
+                ):
+                    profile = await get_site_profile()
+                self.assertEqual(profile.equipment.has_flat_device, expected)
+
+    async def test_get_site_equipment_status_reads_the_flat_device(self):
+        from nina_planner.tools.equipment import _get_site_equipment_status
+
+        profile = self._full_profile(has_flat_device=True)
+        # The live shape: N.I.N.A. always reports a FlatDevice block, and it
+        # carries no Name at all when nothing is connected.
+        raw = {
+            "FlatDevice": {
+                "Connected": True,
+                "CoverState": "Closed",
+                "SupportsOpenClose": True,
+                "SupportsOnOff": True,
+                "LightOn": False,
+                "Brightness": 12,
+            }
+        }
+        with patch("nina_planner.client.api_get", AsyncMock(return_value=raw)):
+            equipment = await _get_site_equipment_status(profile)
+        flat = equipment.flat_device
+        self.assertIsNotNone(flat)
+        self.assertTrue(flat.connected)
+        self.assertEqual(flat.cover_state, "Closed")
+        self.assertTrue(flat.supports_open_close)
+        self.assertEqual(flat.brightness, 12)
+
+        # No FlatDevice block at all → None, which the cover check rejects
+        # rather than guessing.
+        with patch("nina_planner.client.api_get", AsyncMock(return_value={})):
+            equipment = await _get_site_equipment_status(profile)
+        self.assertIsNone(equipment.flat_device)
+
+    async def test_get_site_equipment_status_reads_camera_has_shutter(self):
+        from nina_planner.tools.equipment import _get_site_equipment_status
+
+        profile = self._full_profile()
+        raw = {"Camera": {"Connected": True, "Name": "cam", "HasShutter": False}}
+        with patch("nina_planner.client.api_get", AsyncMock(return_value=raw)):
+            equipment = await _get_site_equipment_status(profile)
+        self.assertIsNotNone(equipment.camera)
+        self.assertIs(equipment.camera.has_shutter, False)
 
 
 class ScreenshotDashboardTest(unittest.IsolatedAsyncioTestCase):

@@ -27,6 +27,7 @@ class EquipmentConfig(BaseModel):
     has_focuser: bool
     has_guider: bool
     has_filter_wheel: bool
+    has_flat_device: bool
     has_rotator: bool
     has_dome: bool
     has_weather: bool

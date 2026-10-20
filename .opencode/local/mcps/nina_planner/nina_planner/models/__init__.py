@@ -10,6 +10,7 @@ from .camera import (
 )
 from .dome import DomeDevice, compute_dome_status
 from .filter_wheel import FilterWheelDevice
+from .flat_device import FlatDevice
 from .focuser import FocuserDevice
 from .guider import GuiderDevice, GuiderMetric
 from .meridian import MeridianInfo
@@ -35,6 +36,7 @@ __all__ = [
     "ExposureInfo",
     "FilterInfo",
     "FilterWheelDevice",
+    "FlatDevice",
     "FocuserDevice",
     "GainInfo",
     "GuiderDevice",
