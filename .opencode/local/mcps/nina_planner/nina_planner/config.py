@@ -4,9 +4,6 @@ from pathlib import Path
 
 NINA_ENDPOINT = os.environ.get("NINA_ENDPOINT", "127.0.0.1:1888")
 NINA_API_URL = f"http://{NINA_ENDPOINT}/v2/api"
-# skipValidation=true is required here: without it NINA will not start the
-# sequences this server generates. Keep it — every start path uses it.
-# SEQUENCE_START_PATH = "/sequence/start?skipValidation=true"
 SEQUENCE_START_PATH = "/sequence/start"
 SEQUENCE_STATE_PATH = "/sequence/state"
 SEQUENCE_JSON_PATH = "/sequence/json"

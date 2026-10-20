@@ -1981,7 +1981,6 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
         ) as api_get:
             result = await start_sequence()
         self.assertEqual(result, "Sequence started.")
-        # api_get.assert_awaited_once_with("/sequence/start?skipValidation=true")
         api_get.assert_awaited_once_with("/sequence/start")
 
     async def test_load_sequence_empty_list_stows_without_starting(self):
