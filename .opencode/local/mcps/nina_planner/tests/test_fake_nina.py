@@ -70,7 +70,7 @@ class FakeNinaTest(unittest.IsolatedAsyncioTestCase):
         with fake.installed(), self._patched():
             await load_sequence([])
             await start_sequence()
-            state = await get_sequence_state()
+            state = await get_sequence_state(detail="raw")
 
         self.assertTrue(fake.running)
         self.assertEqual(state["Status"], "RUNNING")

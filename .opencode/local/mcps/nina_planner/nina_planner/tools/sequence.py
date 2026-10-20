@@ -6,6 +6,7 @@ from ..app import mcp
 from ..models.observatory import ObservatoryEquipment
 from ..models.profile import ObservatoryProfile
 from ..models.request import SequenceRequest
+from ..sequence_state import project_sequence_state
 from ..progress import plan_progress, plan_with_remaining
 from ..sequence import (
     build_sequence_many,
@@ -269,6 +270,19 @@ async def start_sequence() -> str:
 
 
 @mcp.tool()
-async def get_sequence_state() -> Any:
-    """Returns the loaded sequence structure and the current status of its containers, instructions, conditions, and triggers. Use it to determine whether a sequence is loaded, running, completed, failed, or waiting. This tool is read-only and takes no action."""
-    return await client.api_get("/sequence/json")
+async def get_sequence_state(detail: str = "summary") -> Any:
+    """Returns the loaded sequence and the status of its steps. Use it to determine whether a sequence is loaded, running, completed, failed, or waiting. Read-only.
+
+    detail:
+      "summary" (default) - compact per-step view: `target_name`, `plan_id` / `pointing_index` (attribution), `frame_type`, `status`, running `phase`, `exposure` (seconds, gain, offset, binning, filter, `completed`/`total` frames), `horizon` (`current_altitude`, `min_altitude`, `expected_time`; null if unavailable), and `fired_events` (SendEvent messages whose node is FINISHED). `issues` lists errors on FAILED nodes only (per step and overall); the top-level `preflight_issues` lists validation notes such as "Focuser not connected" that do not mean failure.
+      "raw" - full unfiltered /sequence/state payload (per-node `Issues`, expanded Smart Exposure children, no `$type`). Its node-level `Iterations` is the completed count; the loop total is in `Conditions[].Iterations`."""
+    if detail not in ("summary", "raw"):
+        raise ValueError('detail must be "summary" or "raw"')
+    state = await client.api_get(config.SEQUENCE_STATE_PATH)
+    if detail == "raw":
+        return state
+    try:
+        json_state = await client.api_get(config.SEQUENCE_JSON_PATH)
+    except Exception:
+        json_state = None
+    return project_sequence_state(state, json_state)

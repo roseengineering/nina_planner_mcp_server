@@ -29,6 +29,8 @@ _FIXTURES_DIR = Path(__file__).parent / "fixtures"
 
 
 def _is_running(state) -> bool:
+    if isinstance(state, dict) and "running" in state:
+        return bool(state["running"])
     if isinstance(state, dict):
         if state.get("Status") == "RUNNING":
             return True
@@ -150,6 +152,20 @@ class LiveNinaTest(unittest.TestCase):
     def test_get_sequence_state(self):
         result = asyncio.run(get_sequence_state())
         self.assertIsInstance(result, (dict, list))
+
+    def test_sequence_summary_invariants(self):
+        plan_path = str(_FIXTURES_DIR / "veil.json")
+        asyncio.run(
+            load_sequence(
+                [SequenceRequest(plan=plan_path, action="light", mode="full")]
+            )
+        )
+        summary = asyncio.run(get_sequence_state())
+        self.assertEqual(summary["step_count"], 1)
+        for step in summary["steps"]:
+            self.assertIsNotNone(step["plan_id"])
+            self.assertGreater(step["exposure"]["total"], 0)
+        asyncio.run(stop_sequence())
 
     def test_get_events(self):
         result = asyncio.run(get_events(since=60))

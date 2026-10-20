@@ -54,7 +54,7 @@ class FakeNina:
         if path == "/sequence/stop":
             self.running = False
             return _envelope("Sequence stopped")
-        if path == "/sequence/json":
+        if path in ("/sequence/json", "/sequence/state"):
             return _envelope(self._state())
         return _envelope(error=f"Unknown endpoint {path}", status=404)
 

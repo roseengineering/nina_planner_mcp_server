@@ -8,6 +8,8 @@ NINA_API_URL = f"http://{NINA_ENDPOINT}/v2/api"
 # sequences this server generates. Keep it — every start path uses it.
 # SEQUENCE_START_PATH = "/sequence/start?skipValidation=true"
 SEQUENCE_START_PATH = "/sequence/start"
+SEQUENCE_STATE_PATH = "/sequence/state"
+SEQUENCE_JSON_PATH = "/sequence/json"
 NINA_PLANNER_LOG = os.environ.get("NINA_PLANNER_LOG")
 # Directory holding the observatory files: plan JSONs, PLAN.md, PROGRESS.md, report.md.
 # opencode starts local MCP servers with the workspace as their working

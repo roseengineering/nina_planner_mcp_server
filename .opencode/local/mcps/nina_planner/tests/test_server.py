@@ -2445,7 +2445,7 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
             "nina_planner.client.api_get",
             AsyncMock(return_value=expected),
         ):
-            result = await get_sequence_state()
+            result = await get_sequence_state(detail="raw")
         self.assertEqual(result, expected)
 
     async def test_get_imaging_metadata_returns_widened(self):

@@ -54,7 +54,7 @@ Powered by [astropy](https://www.astropy.org); no NINA connection is needed for 
 | `load_sequence(request=[...])` | Load a sequence for the whole night with safety guardrails. **Never starts it.** An empty list is the stow. See [details](#load_sequence). |
 | `start_sequence()` | Start the currently loaded sequence immediately. Use after `load_sequence()`. |
 | `stop_sequence()` | Stop the running sequence and wait until NINA reports it stopped. Does **not** stow the scope. |
-| `get_sequence_state()` | Loaded sequence structure and the status of its containers, instructions, conditions, and triggers. Read-only. |
+| `get_sequence_state(detail)` | Per-step view of the loaded sequence: plan attribution, status, exposure progress, horizon altitude, errors. `detail`: `summary` (default) or `raw` (`/sequence/state`). Read-only. |
 
 ### NINA Lifecycle
 
