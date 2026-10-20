@@ -36,21 +36,29 @@ class ProjectSequenceStateTests(unittest.TestCase):
     def test_preflight_issues_are_not_errors(self):
         self.assertEqual(self.out["issues"], [])
         self.assertNotIn("preflight_issues", self.out["steps"][0])
-        self.assertIn("Run Autofocus: Focuser not connected", self.out["preflight_issues"])
+        self.assertIn(
+            "Run Autofocus: Focuser not connected", self.out["preflight_issues"]
+        )
 
     def test_failed_node_surfaces_at_step_and_root(self):
         state = json.loads(json.dumps(STATE))
-        step = next(n for n in state["Response"] if n.get("Name") == "Target Sequence_Container")["Items"][0]
+        step = next(
+            n for n in state["Response"] if n.get("Name") == "Target Sequence_Container"
+        )["Items"][0]
         af = next(n for n in _nodes(step) if n.get("Name") == "Run Autofocus")
         af["Status"] = "FAILED"
         out = project_sequence_state(state["Response"])
-        self.assertEqual(out["steps"][0]["issues"], ["Run Autofocus: Focuser not connected"])
+        self.assertEqual(
+            out["steps"][0]["issues"], ["Run Autofocus: Focuser not connected"]
+        )
         self.assertEqual(out["issues"], ["Run Autofocus: Focuser not connected"])
 
     def test_horizon_from_json_and_graceful_without(self):
         self.assertEqual(self.out["steps"][0]["horizon"]["min_altitude"], 30)
         self.assertIsNone(self.out["steps"][7]["horizon"])
-        self.assertIsNone(project_sequence_state(STATE["Response"])["steps"][0]["horizon"])
+        self.assertIsNone(
+            project_sequence_state(STATE["Response"])["steps"][0]["horizon"]
+        )
 
     def test_empty_payload(self):
         out = project_sequence_state([])
@@ -80,7 +88,10 @@ class FinishedRunTests(unittest.TestCase):
     def test_failed_autofocus_is_a_real_issue(self):
         self.assertEqual(
             self.out["steps"][0]["issues"],
-            ["Run Autofocus: Camera not connected", "Run Autofocus: Focuser not connected"],
+            [
+                "Run Autofocus: Camera not connected",
+                "Run Autofocus: Focuser not connected",
+            ],
         )
         self.assertEqual(self.out["steps"][1]["issues"], [])
 

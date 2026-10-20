@@ -95,8 +95,7 @@ def project_sequence_state(state: Any, json_state: Any = None) -> dict[str, Any]
             (
                 n.get("Name")
                 for n in _walk(step.get("Items"))
-                if n.get("Status") == "RUNNING"
-                and "Items" not in n
+                if n.get("Status") == "RUNNING" and "Items" not in n
             ),
             None,
         )
@@ -114,7 +113,9 @@ def project_sequence_state(state: Any, json_state: Any = None) -> dict[str, Any]
                 "name": step.get("Name"),
                 "target_name": name,
                 "plan_id": match.group(1) if match else None,
-                "pointing_index": int(match.group(2)) if match and match.group(2) else None,
+                "pointing_index": int(match.group(2))
+                if match and match.group(2)
+                else None,
                 "frame_type": (take or {}).get("ImageType"),
                 "status": step.get("Status"),
                 "phase": running,

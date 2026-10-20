@@ -196,10 +196,8 @@ def sequence_unpark_scope(equipment: ObservatoryEquipment) -> list[dict[str, Any
     return [unpark_scope()] if equipment.mount and equipment.mount.can_park else []
 
 
-def sequence_wait_until_sunset(
-    equipment: ObservatoryEquipment
-) -> dict[str, Any]:
-    name = 'Wait For Sunset'
+def sequence_wait_until_sunset(equipment: ObservatoryEquipment) -> dict[str, Any]:
+    name = "Wait For Sunset"
     return container_sequential(
         name=name,
         conditions=[loop_until_dusk()],
@@ -207,10 +205,7 @@ def sequence_wait_until_sunset(
             container_sequential(
                 name="On Safe",
                 conditions=[loop_while_safe()],
-                instructions=[
-                    wait_until_sunset(),
-                    end_instruction(name)
-                ],
+                instructions=[wait_until_sunset(), end_instruction(name)],
             )
         ]
         + sequence_park_scope(equipment)
@@ -267,24 +262,26 @@ def sequence_end(
     # silent, so a stow never reads as a finished run.
     delay_minutes = 3
     head = [run_finished_event(step_count)] if step_count else []
-    return container_end([
-        container_sequential(
-            name='Stow Telescope',
-            instructions=(
-                head
-                + [
-                    container_sequential(
-                        name="On Safe",
-                        conditions=[loop_while_safe(), loop_for_iterations(1)],
-                        instructions=[wait_for_timespan(delay_minutes * 60)],
-                    ),
-                    connect_all_equipment(),
-                ]
-                + sequence_park_scope(equipment)
-                + sequence_warm_camera(equipment)
+    return container_end(
+        [
+            container_sequential(
+                name="Stow Telescope",
+                instructions=(
+                    head
+                    + [
+                        container_sequential(
+                            name="On Safe",
+                            conditions=[loop_while_safe(), loop_for_iterations(1)],
+                            instructions=[wait_for_timespan(delay_minutes * 60)],
+                        ),
+                        connect_all_equipment(),
+                    ]
+                    + sequence_park_scope(equipment)
+                    + sequence_warm_camera(equipment)
+                ),
             )
-        )
-    ])
+        ]
+    )
 
 
 def _sequence_with_steps(

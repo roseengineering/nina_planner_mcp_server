@@ -102,9 +102,12 @@ def switch_filter(
     return _child(
         "NINA.Sequencer.SequenceItem.FilterWheel.SwitchFilter, NINA.Sequencer"
     ) | {
-        "Filter": None if filter_name is None else (
-        _child("NINA.Core.Model.Equipment.FilterInfo, NINA.Core")
-        | {"_name": filter_name, "_position": filter_position})
+        "Filter": None
+        if filter_name is None
+        else (
+            _child("NINA.Core.Model.Equipment.FilterInfo, NINA.Core")
+            | {"_name": filter_name, "_position": filter_position}
+        )
     }
 
 
@@ -259,31 +262,34 @@ def loop_until_time(source: str, minutes: float) -> dict[str, Any]:
 def loop_until_sunset(minutes: float = 0) -> dict[str, Any]:
     return loop_until_time(
         "NINA.Sequencer.Utility.DateTimeProvider.SunsetProvider, NINA.Sequencer",
-        minutes)
+        minutes,
+    )
 
 
 def loop_until_sunrise(minutes: float = 0) -> dict[str, Any]:
     return loop_until_time(
         "NINA.Sequencer.Utility.DateTimeProvider.SunriseProvider, NINA.Sequencer",
-        minutes)
+        minutes,
+    )
 
 
 def loop_until_dawn(minutes: float = 0) -> dict[str, Any]:
     return loop_until_time(
-        "NINA.Sequencer.Utility.DateTimeProvider.DawnProvider, NINA.Sequencer",
-        minutes)
+        "NINA.Sequencer.Utility.DateTimeProvider.DawnProvider, NINA.Sequencer", minutes
+    )
 
 
 def loop_until_dusk(minutes: float = 0) -> dict[str, Any]:
     return loop_until_time(
-       "NINA.Sequencer.Utility.DateTimeProvider.DuskProvider, NINA.Sequencer",
-        minutes)
+        "NINA.Sequencer.Utility.DateTimeProvider.DuskProvider, NINA.Sequencer", minutes
+    )
 
 
 def loop_until_meridian(minutes: float = 0) -> dict[str, Any]:
     return loop_until_time(
         "NINA.Sequencer.Utility.DateTimeProvider.MeridianProvider, NINA.Sequencer",
-        minutes)
+        minutes,
+    )
 
 
 def loop_while_safe() -> dict[str, Any]:
@@ -407,5 +413,3 @@ def end_instruction(name: str) -> dict[str, Any]:
     return _child(
         "NINA.Plugin.SequencerPlus.EndInstructionSet, NINA.Plugin.SequencerPlus"
     ) | {"InstructionSetName": name}
-
-
