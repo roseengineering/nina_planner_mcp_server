@@ -5,6 +5,7 @@ from pydantic import BaseModel
 from .camera import CameraDevice
 from .dome import DomeDevice
 from .filter_wheel import FilterWheelDevice
+from .flat_device import FlatDevice
 from .focuser import FocuserDevice
 from .guider import GuiderDevice
 from .mount import MountDevice
@@ -20,6 +21,7 @@ class ObservatoryEquipment(BaseModel):
     focuser: FocuserDevice | None = None
     guider: GuiderDevice | None = None
     filter_wheel: FilterWheelDevice | None = None
+    flat_device: FlatDevice | None = None
     rotator: RotatorDevice | None = None
     dome: DomeDevice | None = None
     weather: Weather | None = None

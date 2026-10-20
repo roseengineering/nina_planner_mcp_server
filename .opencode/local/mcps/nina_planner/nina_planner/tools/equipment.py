@@ -88,6 +88,7 @@ async def _get_site_equipment_status(
     from ..models.camera import CameraDevice
     from ..models.dome import DomeDevice
     from ..models.filter_wheel import FilterWheelDevice
+    from ..models.flat_device import FlatDevice
     from ..models.focuser import FocuserDevice
     from ..models.guider import GuiderDevice
     from ..models.mount import MountDevice
@@ -107,6 +108,7 @@ async def _get_site_equipment_status(
         "WeatherData": (Weather, "/equipment/weather"),
         "Dome": (DomeDevice, "/equipment/dome"),
         "FilterWheel": (FilterWheelDevice, "/equipment/filterwheel"),
+        "FlatDevice": (FlatDevice, "/equipment/flatdevice"),
         "Rotator": (RotatorDevice, "/equipment/rotator"),
         "Switch": (Switch, "/equipment/switch"),
     }
@@ -116,6 +118,7 @@ async def _get_site_equipment_status(
         "Camera": profile.equipment.has_camera,
         "Focuser": profile.equipment.has_focuser,
         "FilterWheel": profile.equipment.has_filter_wheel,
+        "FlatDevice": profile.equipment.has_flat_device,
         "Guider": profile.equipment.has_guider,
         "Rotator": profile.equipment.has_rotator,
         "Dome": profile.equipment.has_dome,
@@ -161,6 +164,7 @@ async def _get_site_equipment_status(
         weather=_build(raw.get("WeatherData", {}), Weather),
         dome=_build(raw.get("Dome", {}), DomeDevice),
         filter_wheel=_build(raw.get("FilterWheel", {}), FilterWheelDevice),
+        flat_device=_build(raw.get("FlatDevice", {}), FlatDevice),
         rotator=_build(raw.get("Rotator", {}), RotatorDevice),
         switch=_build(raw.get("Switch", {}), Switch),
     )
@@ -194,6 +198,11 @@ async def get_site_profile() -> ObservatoryProfile:
     safety = raw.get("SafetyMonitorSettings", {})
     focuser = raw.get("FocuserSettings", {})
     switch = raw.get("SwitchSettings", {})
+    # The flat panel / motorized cover lives in its own profile section
+    # (Id is "No_Device" when none is configured — _exists skips that), so
+    # the profile can say a cover exists even though only /equipment/info
+    # reports whether it can actually open and close.
+    flat_device = raw.get("FlatDeviceSettings", {})
 
     pixel_size = ascom_float(camera.get("PixelSize")) or 0
     gain = ascom_int(camera.get("Gain")) or 0
@@ -257,6 +266,7 @@ async def get_site_profile() -> ObservatoryProfile:
         has_camera=_exists(camera, "Id"),
         has_focuser=_exists(focuser, "Id"),
         has_filter_wheel=_exists(filter_wheel, "Id"),
+        has_flat_device=_exists(flat_device, "Id"),
         has_rotator=_exists(rotator, "Id"),
         has_dome=_exists(dome, "Id"),
         has_weather=_exists(weather, "Id"),

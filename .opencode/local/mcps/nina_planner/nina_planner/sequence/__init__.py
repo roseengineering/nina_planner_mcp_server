@@ -1,8 +1,9 @@
 """N.I.N.A. Advanced Sequencer JSON builders.
 
 ``nodes`` holds containers and triggers, ``instructions`` the leaf instructions,
-``builders`` the per-step sequence parts, and ``targets`` the plan-to-payload
-entry points. Names are re-exported here so ``from nina_planner.sequence
+``builders`` the per-step sequence parts, ``targets`` the plan-to-payload entry
+points, and ``variants`` the capability check for how a dark/bias step cuts
+the light. Names are re-exported here so ``from nina_planner.sequence
 import ...`` keeps working.
 """
 
@@ -97,9 +98,15 @@ from .targets import (
     target_payload_flats,
     target_payload_lights,
 )
+from .variants import (
+    DARK_VARIANTS,
+    dark_variant_reasons,
+    validate_dark_variant,
+)
 
 __all__ = [
     "_add_refs",
+    "DARK_VARIANTS",
     "NINA_FLATS_ALTITUDE",
     "NINA_FLATS_AZIMUTH_DAWN",
     "NINA_FLATS_AZIMUTH_DUSK",
@@ -117,6 +124,7 @@ __all__ = [
     "container_start",
     "container_target",
     "cool_camera",
+    "dark_variant_reasons",
     "dither_after_exposures",
     "end_instruction",
     "home_scope",
@@ -170,6 +178,7 @@ __all__ = [
     "trigger_meridian_flip",
     "trigger_restore_guiding",
     "unpark_scope",
+    "validate_dark_variant",
     "wait_for_timespan",
     "wait_if_sun_altitude",
     "wait_if_sun_altitude_above",

@@ -87,6 +87,10 @@ class CameraDevice(BaseModel):
     name: str
     description: str | None = None
     state: str | None = None
+    # CameraInfo.HasShutter: whether the camera can cut the light itself,
+    # which is what the `shutter` dark/bias variant relies on. None means
+    # NINA did not report it — unread capability, treated as unsupported.
+    has_shutter: bool | None = None
     sensor: SensorInfo = Field(default_factory=SensorInfo)
     exposure: ExposureInfo = Field(default_factory=ExposureInfo)
     gain: GainInfo = Field(default_factory=GainInfo)

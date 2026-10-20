@@ -50,7 +50,11 @@ class SequenceRequest(BaseModel):
             "wheel on the profile's `Dark` filter slot), `cover` (close "
             "the motorized cover, e.g. a flip-flat, around the exposures "
             "and reopen it after), or `shutter` (expose without moving the "
-            "filter wheel, relying on the camera's shutter); `light` takes none."
+            "filter wheel, relying on the camera's shutter); `light` takes "
+            "none. A dark/bias variant the rig cannot perform — no `Dark` "
+            "slot, no flat device that opens and closes, or no camera "
+            "shutter — fails at load naming the reason and the variants "
+            "this rig supports."
         ),
     )
     pointing_index: int | None = Field(

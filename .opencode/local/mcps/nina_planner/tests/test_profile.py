@@ -76,6 +76,7 @@ class ObservatoryProfileFilterPositionTest(unittest.TestCase):
                 has_weather=False,
                 has_safety_monitor=False,
                 has_switch=False,
+                has_flat_device=False,
             ),
         )
 
@@ -145,6 +146,7 @@ class ObservatoryProfileLocalSavePathTest(unittest.TestCase):
                 has_weather=False,
                 has_safety_monitor=False,
                 has_switch=False,
+                has_flat_device=False,
             ),
         )
 
