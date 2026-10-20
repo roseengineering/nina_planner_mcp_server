@@ -262,15 +262,21 @@ def loop_until_sunset(minutes: float = 0) -> dict[str, Any]:
         minutes)
 
 
+def loop_until_sunrise(minutes: float = 0) -> dict[str, Any]:
+    return loop_until_time(
+        "NINA.Sequencer.Utility.DateTimeProvider.SunriseProvider, NINA.Sequencer",
+        minutes)
+
+
 def loop_until_dawn(minutes: float = 0) -> dict[str, Any]:
     return loop_until_time(
         "NINA.Sequencer.Utility.DateTimeProvider.DawnProvider, NINA.Sequencer",
         minutes)
 
 
-def loop_until_sunrise(minutes: float = 0) -> dict[str, Any]:
+def loop_until_dusk(minutes: float = 0) -> dict[str, Any]:
     return loop_until_time(
-        "NINA.Sequencer.Utility.DateTimeProvider.SunriseProvider, NINA.Sequencer",
+       "NINA.Sequencer.Utility.DateTimeProvider.DuskProvider, NINA.Sequencer",
         minutes)
 
 

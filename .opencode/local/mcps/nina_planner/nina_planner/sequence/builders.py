@@ -11,6 +11,7 @@ from .instructions import (
     loop_for_iterations,
     loop_until_sunrise,
     loop_until_sunset,
+    loop_until_dusk,
     loop_while_safe,
     park_scope,
     run_finished_event,
@@ -201,7 +202,7 @@ def sequence_wait_until_sunset(
     name = 'Wait For Sunset'
     return container_sequential(
         name=name,
-        conditions=[loop_until_sunset()],
+        conditions=[loop_until_dusk()],
         instructions=[
             container_sequential(
                 name="On Safe",
