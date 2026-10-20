@@ -49,6 +49,24 @@ def _target_items(payload: dict) -> list[dict]:
     return target["Items"]["$values"]
 
 
+def _end_stow_items(payload: dict) -> list[dict]:
+    """The teardown instructions of a root sequence's End area.
+
+    The End area itself holds exactly one child — the ``Stow Telescope``
+    container — and the wait, connect, park/home and warm instructions live
+    one level deeper inside it.
+    """
+    root = payload["Items"]["$values"]
+    end = next(i for i in root if "EndAreaContainer" in str(i.get("$type", "")))
+    stow = end["Items"]["$values"]
+    if len(stow) != 1 or stow[0].get("Name") != "Stow Telescope":
+        raise AssertionError(
+            f"End area must hold one 'Stow Telescope' container, got "
+            f"{[i.get('Name') for i in stow]}"
+        )
+    return stow[0]["Items"]["$values"]
+
+
 class ConvertToMetTest(unittest.TestCase):
     def _now(self) -> datetime:
         return datetime(2026, 9, 22, 3, 0, 0, tzinfo=UTC)
@@ -1965,7 +1983,7 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(path, "/sequence/load")
         areas = payload["Items"]["$values"]
         self.assertEqual(areas[1]["Items"]["$values"], [], "empty target area")
-        end_types = [i["$type"] for i in areas[2]["Items"]["$values"]]
+        end_types = [i["$type"] for i in _end_stow_items(payload)]
         self.assertTrue(any("ParkScope" in t for t in end_types), "End parks")
         self.assertTrue(any("WarmCamera" in t for t in end_types), "End warms")
 
@@ -1976,9 +1994,7 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
         )
 
         _, payload = api_post.await_args.args
-        end_types = [
-            i["$type"] for i in payload["Items"]["$values"][2]["Items"]["$values"]
-        ]
+        end_types = [i["$type"] for i in _end_stow_items(payload)]
         self.assertFalse(any("ParkScope" in t for t in end_types))
         self.assertTrue(any("FindHome" in t for t in end_types), "End homes")
 
@@ -2140,9 +2156,7 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn("_plan-test123-1_", steps[0]["Target"]["TargetName"])
         self.assertIn("_plan-test123-2_", steps[1]["Target"]["TargetName"])
 
-        end_types = [
-            i["$type"] for i in payload["Items"]["$values"][2]["Items"]["$values"]
-        ]
+        end_types = [i["$type"] for i in _end_stow_items(payload)]
         self.assertTrue(any("ParkScope" in t for t in end_types), "End parks")
         self.assertTrue(any("WarmCamera" in t for t in end_types), "End warms")
 

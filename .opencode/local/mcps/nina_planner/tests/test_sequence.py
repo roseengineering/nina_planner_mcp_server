@@ -1126,10 +1126,14 @@ class SequenceBehaviorTest(unittest.TestCase):
         # The wait lives in a nested container; the End area itself has none.
         self.assertEqual(end["Conditions"]["$values"], [], "End must not wait")
 
+        stow = _items(end)
+        self.assertEqual(len(stow), 1, "the End area is one stow container")
+        self.assertEqual(stow[0]["Name"], "Stow Telescope")
+        self.assertIn("SequentialContainer", stow[0]["$type"])
+
         containers = _find_items(end, "SequentialContainer")
-        self.assertEqual(len(containers), 1, "exactly one waiting container")
-        wait = containers[0]
-        self.assertEqual(wait["Name"], "On Safe")
+        self.assertEqual(len(containers), 2, "stow + its waiting container")
+        wait = next(c for c in containers if c["Name"] == "On Safe")
         wait_types = [c["$type"] for c in wait["Conditions"]["$values"]]
         self.assertEqual(len(wait_types), 2, "safety gate + bounded loop")
         self.assertTrue(
@@ -1146,11 +1150,11 @@ class SequenceBehaviorTest(unittest.TestCase):
         waits = _find_items(wait, "WaitForTimeSpan")
         self.assertEqual([w["Time"] for w in waits], [3 * 60], "one 3-minute pass")
 
-        # The End area itself carries no safety condition of its own — the
-        # single gate lives inside the wait container — and stows before
-        # warming, after the wait.
+        # Neither container carries a safety condition of its own — the
+        # single gate lives inside the wait container — and the stow warms
+        # only after waiting, connecting and parking.
         self.assertEqual(len(_find_items(end, "SafetyMonitorCondition")), 1)
-        order = [item.get("$type", "") for item in end["Items"]["$values"]]
+        order = [item.get("$type", "") for item in stow[0]["Items"]["$values"]]
         self.assertEqual(len(order), 4, "wait, then connect, then park, then warm")
         self.assertIn("SequentialContainer", order[0])
         self.assertIn("ConnectAllEquipment", order[1])
@@ -1458,7 +1462,12 @@ class BuildSequenceManyTest(unittest.TestCase):
 
     @staticmethod
     def _end_types(result: dict) -> list[str]:
-        return [i["$type"] for i in _items(result)[2]["Items"]["$values"]]
+        """``$type`` of every teardown step: the End area holds a single
+        ``Stow Telescope`` container, whose children do the stowing."""
+        end = _items(result)[2]["Items"]["$values"]
+        if [i.get("Name") for i in end] != ["Stow Telescope"]:
+            raise AssertionError(f"End area must be the stow, got {end}")
+        return [i["$type"] for i in end[0]["Items"]["$values"]]
 
     def test_flattens_payloads_into_one_target_area_in_order(self):
         from nina_planner.sequence import (
@@ -1528,8 +1537,10 @@ class BuildSequenceManyTest(unittest.TestCase):
         self.assertEqual(
             start["Items"]["$values"][0]["Message"], "RUN-STARTING: 3 steps"
         )
+        stow = end["Items"]["$values"]
+        self.assertEqual([i["Name"] for i in stow], ["Stow Telescope"])
         self.assertEqual(
-            end["Items"]["$values"][0]["Message"],
+            stow[0]["Items"]["$values"][0]["Message"],
             "RUN-FINISHED: 3 steps complete",
         )
         # The bracket wraps the run rather than joining it: the Target area
@@ -1539,7 +1550,7 @@ class BuildSequenceManyTest(unittest.TestCase):
             [m for m in _event_messages(target) if m.startswith("RUN-")], []
         )
         # RUN-FINISHED precedes the bounded wait and the park.
-        self.assertIn("SendEventInstruction", end["Items"]["$values"][0]["$type"])
+        self.assertIn("SendEventInstruction", stow[0]["Items"]["$values"][0]["$type"])
 
     def test_step_count_counts_only_entries_that_produced_steps(self):
         from nina_planner.sequence import (
