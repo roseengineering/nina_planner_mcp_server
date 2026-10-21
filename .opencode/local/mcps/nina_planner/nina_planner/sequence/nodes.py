@@ -101,6 +101,9 @@ def _azalt_coordinates(az: float, alt: float) -> dict[str, Any]:
 def _round_robin(
     exposures: list[Any], batch_size: int = 0, reverse: bool = False
 ) -> list[tuple[int, float, str | None]]:
+    # The exposure element is unused by the flat callers: FlatExposurePlan
+    # carries no exposure_time_seconds (N.I.N.A.'s SkyFlat chooses it), so it
+    # falls back to 0 and sky_flats() only ever reads count and filter.
     current_count = 0
     result = []
     while True:

@@ -326,9 +326,10 @@ def filter_metadata_rows(
         ]
     specs: list[tuple[str | None, float | None]]
     if image_type_upper == "FLAT":
-        # Flats match by filter only: a flat's exposure is chosen to hit a
-        # signal level, not to make it a different kind of calibration, so
-        # any flat through the right filter inside the window counts.
+        # Flats match by filter only: a flat's exposure is chosen by N.I.N.A.
+        # to hit a signal level, not to make it a different kind of
+        # calibration, so any flat through the right filter inside the window
+        # counts. (The plan's flat specs carry no exposure at all.)
         # Darks keep matching on exposure — their dark current scales with
         # exposure time, so duration is part of what makes a dark usable.
         specs = [(g.filter_name, None) for g in plan.flat_frames]
@@ -411,7 +412,8 @@ def plan_progress(
                 rows,
                 image_type,
                 filter_name=filter_name,
-                # Flats are matched by filter only, mirroring
+                # Flats are matched by filter only — and a flat spec carries
+                # no exposure_time_seconds at all — mirroring
                 # filter_metadata_rows above.
                 exposure=None if image_type == "FLAT" else exposure,
                 plan=plan if image_type == "LIGHT" else None,

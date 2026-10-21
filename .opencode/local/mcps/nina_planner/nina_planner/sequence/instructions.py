@@ -137,7 +137,7 @@ def sky_flats(count: int, filter_name: str, filter_position: int) -> dict[str, A
         ],
     ) | {
         "MinExposure": 0.0,
-        "MaxExposure": 30.0,
+        "MaxExposure": 10.0,
         "HistogramTargetPercentage": 0.5,
         "HistogramTolerancePercentage": 0.1,
         "ShouldDither": False,
@@ -349,7 +349,7 @@ def smart_exposure(
     image_type: str,
     filter_name: str | None = None,
     filter_position: int | None = None,
-    dither: int | None = 0,
+    dither: int = 0,
 ) -> dict[str, Any]:
     return _container_base(
         ctype="NINA.Sequencer.SequenceItem.Imaging.SmartExposure, NINA.Sequencer",

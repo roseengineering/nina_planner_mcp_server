@@ -18,9 +18,7 @@ def _payload(**overrides):
         "light_frames": [
             {"filter_name": "L", "exposure_time_seconds": 60.0, "total_count": 1}
         ],
-        "flat_frames": [
-            {"filter_name": "L", "exposure_time_seconds": 5.0, "total_count": 1}
-        ],
+        "flat_frames": [{"filter_name": "L", "total_count": 1}],
         "dark_frames": [{"exposure_time_seconds": 60.0, "total_count": 1}],
         "bias_frames": [{"total_count": 1}],
     }
@@ -82,6 +80,27 @@ class PlanIdCharsetTest(unittest.TestCase):
     def test_token_still_built_from_a_valid_id(self):
         plan = _plan(plan_id="m31.lrgb")
         self.assertEqual(plan.attribution_token(1), "_m31.lrgb_")
+
+
+class FlatExposurePlanTest(unittest.TestCase):
+    """Flats carry no exposure time: N.I.N.A.'s SkyFlat chooses it."""
+
+    def test_flat_spec_is_filter_and_count_only(self):
+        flat = _plan().flat_frames[0]
+        self.assertFalse(hasattr(flat, "exposure_time_seconds"))
+        self.assertEqual(flat.filter_name, "L")
+        self.assertEqual(flat.total_count, 1)
+
+    def test_stale_exposure_time_in_a_flat_entry_is_ignored(self):
+        # Older plan files still carry one; it is dropped rather than
+        # refused, so every recorded plan keeps loading.
+        plan = _plan(
+            flat_frames=[
+                {"filter_name": "L", "exposure_time_seconds": 5.0, "total_count": 1}
+            ]
+        )
+        data = plan.flat_frames[0].model_dump()
+        self.assertNotIn("exposure_time_seconds", data)
 
 
 class LoadPlanPlanIdTest(unittest.IsolatedAsyncioTestCase):

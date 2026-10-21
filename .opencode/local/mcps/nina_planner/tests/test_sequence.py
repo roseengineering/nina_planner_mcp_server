@@ -19,9 +19,7 @@ def _plan(**overrides):
         "light_frames": [
             {"filter_name": "L", "exposure_time_seconds": 60.0, "total_count": 5}
         ],
-        "flat_frames": [
-            {"filter_name": "L", "exposure_time_seconds": 5.0, "total_count": 5}
-        ],
+        "flat_frames": [{"filter_name": "L", "total_count": 5}],
         "dark_frames": [{"exposure_time_seconds": 60.0, "total_count": 5}],
         "bias_frames": [{"total_count": 5}],
     }
@@ -520,9 +518,7 @@ class SequenceBuildersTest(unittest.TestCase):
             "light_frames": [
                 {"filter_name": "L", "exposure_time_seconds": 60.0, "total_count": 1}
             ],
-            "flat_frames": [
-                {"filter_name": "L", "exposure_time_seconds": 5.0, "total_count": 1}
-            ],
+            "flat_frames": [{"filter_name": "L", "total_count": 1}],
             "dark_frames": [{"exposure_time_seconds": 60.0, "total_count": 1}],
             "bias_frames": [{"total_count": 1}],
         }
@@ -779,7 +775,6 @@ class SequenceBehaviorTest(unittest.TestCase):
             "flat_frames": [
                 {
                     "filter_name": "L",
-                    "exposure_time_seconds": 5.0,
                     "total_count": 3,
                 }
             ],
@@ -1370,9 +1365,7 @@ class CoordinateHelpersTest(unittest.TestCase):
             light_frames=[
                 {"filter_name": "L", "exposure_time_seconds": 60.0, "total_count": 1}
             ],
-            flat_frames=[
-                {"filter_name": "L", "exposure_time_seconds": 5.0, "total_count": 1}
-            ],
+            flat_frames=[{"filter_name": "L", "total_count": 1}],
             dark_frames=[{"exposure_time_seconds": 60.0, "total_count": 1}],
             bias_frames=[{"total_count": 1}],
         )
@@ -1393,9 +1386,7 @@ class CoordinateHelpersTest(unittest.TestCase):
             light_frames=[
                 {"filter_name": "L", "exposure_time_seconds": 60.0, "total_count": 1}
             ],
-            flat_frames=[
-                {"filter_name": "L", "exposure_time_seconds": 5.0, "total_count": 1}
-            ],
+            flat_frames=[{"filter_name": "L", "total_count": 1}],
             dark_frames=[{"exposure_time_seconds": 60.0, "total_count": 1}],
             bias_frames=[{"total_count": 1}],
         )

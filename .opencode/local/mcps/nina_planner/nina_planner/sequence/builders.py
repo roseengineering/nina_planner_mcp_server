@@ -16,6 +16,7 @@ from .instructions import (
     run_finished_event,
     run_starting_event,
     send_event,
+    smart_exposure,
     unpark_scope,
     wait_for_timespan,
     wait_until_safe,

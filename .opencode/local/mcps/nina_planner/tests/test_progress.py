@@ -42,9 +42,7 @@ def _plan(**overrides):
         "light_frames": [
             {"filter_name": "LP", "exposure_time_seconds": 60.0, "total_count": 20}
         ],
-        "flat_frames": [
-            {"filter_name": "LP", "exposure_time_seconds": 5.0, "total_count": 10}
-        ],
+        "flat_frames": [{"filter_name": "LP", "total_count": 10}],
         "dark_frames": [{"exposure_time_seconds": 60.0, "total_count": 10}],
         "bias_frames": [{"total_count": 10}],
     }
@@ -183,8 +181,9 @@ class PlanProgressTest(unittest.TestCase):
         self.assertEqual(prog["bias"][0]["acquired_count"], 1)
 
     def test_flat_progress_ignores_exposure_mismatch(self):
-        # plan_progress counts flats by filter alone too — a flat at the
-        # wrong duration still satisfies the group.
+        # Flat specs carry no exposure at all now (N.I.N.A. picks it), and
+        # attribution is by filter alone — a flat shot at any duration still
+        # satisfies the group.
         plan = _plan()
         rows = [
             _row(image_type="FLAT", filter_name="LP", duration="10.0", target=None),
@@ -193,6 +192,8 @@ class PlanProgressTest(unittest.TestCase):
         prog = plan_progress(plan, rows)
         self.assertEqual(prog["flat"][0]["acquired_count"], 1)
         self.assertEqual(prog["flat"][0]["remaining_count"], 9)
+        # The group reports filter and count only: no exposure_time_seconds.
+        self.assertNotIn("exposure_time_seconds", prog["flat"][0])
 
     def test_non_light_rows_excluded_from_lights(self):
         plan = _plan()
@@ -713,9 +714,7 @@ class PrivateHelperDefensivePathsTest(unittest.TestCase):
             "light_frames": [
                 {"filter_name": "L", "exposure_time_seconds": 60.0, "total_count": 1}
             ],
-            "flat_frames": [
-                {"filter_name": "L", "exposure_time_seconds": 5.0, "total_count": 1}
-            ],
+            "flat_frames": [{"filter_name": "L", "total_count": 1}],
             "dark_frames": [{"exposure_time_seconds": 60.0, "total_count": 1}],
             "bias_frames": [{"total_count": 1}],
         }

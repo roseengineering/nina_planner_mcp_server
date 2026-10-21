@@ -359,9 +359,7 @@ class HelperFunctionsTest(unittest.TestCase):
             "light_frames": [
                 {"filter_name": "L", "exposure_time_seconds": 60.0, "total_count": 5}
             ],
-            "flat_frames": [
-                {"filter_name": "L", "exposure_time_seconds": 5.0, "total_count": 5}
-            ],
+            "flat_frames": [{"filter_name": "L", "total_count": 5}],
             "dark_frames": [{"exposure_time_seconds": 60.0, "total_count": 5}],
             "bias_frames": [{"total_count": 5}],
         }
@@ -431,9 +429,7 @@ class HelperFunctionsTest(unittest.TestCase):
             light_frames=[
                 {"filter_name": "L", "exposure_time_seconds": 60.0, "total_count": 1}
             ],
-            flat_frames=[
-                {"filter_name": "L", "exposure_time_seconds": 5.0, "total_count": 1}
-            ],
+            flat_frames=[{"filter_name": "L", "total_count": 1}],
         )
         asyncio.run(_validate_filters(plan, profile))
 
@@ -612,9 +608,7 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
             "light_frames": [
                 {"filter_name": "L", "exposure_time_seconds": 60.0, "total_count": 1}
             ],
-            "flat_frames": [
-                {"filter_name": "L", "exposure_time_seconds": 5.0, "total_count": 1}
-            ],
+            "flat_frames": [{"filter_name": "L", "total_count": 1}],
             "dark_frames": [{"exposure_time_seconds": 60.0, "total_count": 1}],
             "bias_frames": [{"total_count": 1}],
         }
@@ -1024,9 +1018,7 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
             light_frames=[
                 {"filter_name": "L", "exposure_time_seconds": 60.0, "total_count": 1}
             ],
-            flat_frames=[
-                {"filter_name": "L", "exposure_time_seconds": 5.0, "total_count": 1}
-            ],
+            flat_frames=[{"filter_name": "L", "total_count": 1}],
             dark_frames=[{"exposure_time_seconds": 60.0, "total_count": 1}],
             bias_frames=[{"total_count": 1}],
         )
@@ -1056,9 +1048,7 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
             light_frames=[
                 {"filter_name": "L", "exposure_time_seconds": 60.0, "total_count": 1}
             ],
-            flat_frames=[
-                {"filter_name": "L", "exposure_time_seconds": 5.0, "total_count": 1}
-            ],
+            flat_frames=[{"filter_name": "L", "total_count": 1}],
             dark_frames=[{"exposure_time_seconds": 60.0, "total_count": 1}],
             bias_frames=[{"total_count": 1}],
         )
@@ -1088,9 +1078,7 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
             "light_frames": [
                 {"filter_name": "L", "exposure_time_seconds": 60.0, "total_count": 1}
             ],
-            "flat_frames": [
-                {"filter_name": "L", "exposure_time_seconds": 5.0, "total_count": 1}
-            ],
+            "flat_frames": [{"filter_name": "L", "total_count": 1}],
             "dark_frames": [{"exposure_time_seconds": 60.0, "total_count": 1}],
             "bias_frames": [{"total_count": 1}],
         }
@@ -1141,7 +1129,6 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
                     "flat_frames": [
                         {
                             "filter_name": "L",
-                            "exposure_time_seconds": 5.0,
                             "total_count": 1,
                         }
                     ],
@@ -1255,9 +1242,7 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
             "light_frames": [
                 {"filter_name": "L", "exposure_time_seconds": 60.0, "total_count": 2}
             ],
-            "flat_frames": [
-                {"filter_name": "L", "exposure_time_seconds": 5.0, "total_count": 1}
-            ],
+            "flat_frames": [{"filter_name": "L", "total_count": 1}],
             "dark_frames": [{"exposure_time_seconds": 60.0, "total_count": 1}],
             "bias_frames": [{"total_count": 1}],
         }
@@ -1290,9 +1275,7 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
             "light_frames": [
                 {"filter_name": "L", "exposure_time_seconds": 60.0, "total_count": 1}
             ],
-            "flat_frames": [
-                {"filter_name": "L", "exposure_time_seconds": 5.0, "total_count": 1}
-            ],
+            "flat_frames": [{"filter_name": "L", "total_count": 1}],
             "dark_frames": [{"exposure_time_seconds": 60.0, "total_count": 1}],
             "bias_frames": [{"total_count": 1}],
         }
@@ -1378,9 +1361,7 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
             "light_frames": [
                 {"filter_name": "L", "exposure_time_seconds": 60.0, "total_count": 1}
             ],
-            "flat_frames": [
-                {"filter_name": "L", "exposure_time_seconds": 5.0, "total_count": 1}
-            ],
+            "flat_frames": [{"filter_name": "L", "total_count": 1}],
             "dark_frames": [{"exposure_time_seconds": 60.0, "total_count": 1}],
             "bias_frames": [{"total_count": 1}],
         }
@@ -1426,9 +1407,7 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
             "light_frames": [
                 {"filter_name": "L", "exposure_time_seconds": 60.0, "total_count": 1}
             ],
-            "flat_frames": [
-                {"filter_name": "L", "exposure_time_seconds": 5.0, "total_count": 1}
-            ],
+            "flat_frames": [{"filter_name": "L", "total_count": 1}],
             "dark_frames": [{"exposure_time_seconds": 60.0, "total_count": 1}],
             "bias_frames": [{"total_count": 1}],
         }
@@ -1485,9 +1464,7 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
             "light_frames": [
                 {"filter_name": "L", "exposure_time_seconds": 60.0, "total_count": 1}
             ],
-            "flat_frames": [
-                {"filter_name": "L", "exposure_time_seconds": 5.0, "total_count": 1}
-            ],
+            "flat_frames": [{"filter_name": "L", "total_count": 1}],
             "dark_frames": [{"exposure_time_seconds": 60.0, "total_count": 1}],
             "bias_frames": [{"total_count": 1}],
         }
@@ -1543,9 +1520,7 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
             "light_frames": [
                 {"filter_name": "L", "exposure_time_seconds": 60.0, "total_count": 1}
             ],
-            "flat_frames": [
-                {"filter_name": "L", "exposure_time_seconds": 5.0, "total_count": 1}
-            ],
+            "flat_frames": [{"filter_name": "L", "total_count": 1}],
             "dark_frames": [{"exposure_time_seconds": 60.0, "total_count": 1}],
             "bias_frames": [{"total_count": 1}],
         }
@@ -1596,9 +1571,7 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
             "light_frames": [
                 {"filter_name": "L", "exposure_time_seconds": 60.0, "total_count": 1}
             ],
-            "flat_frames": [
-                {"filter_name": "L", "exposure_time_seconds": 5.0, "total_count": 1}
-            ],
+            "flat_frames": [{"filter_name": "L", "total_count": 1}],
             "dark_frames": [{"exposure_time_seconds": 60.0, "total_count": 1}],
             "bias_frames": [{"total_count": 1}],
         }
@@ -1660,9 +1633,7 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
             "light_frames": [
                 {"filter_name": "L", "exposure_time_seconds": 60.0, "total_count": 1}
             ],
-            "flat_frames": [
-                {"filter_name": "L", "exposure_time_seconds": 5.0, "total_count": 1}
-            ],
+            "flat_frames": [{"filter_name": "L", "total_count": 1}],
             "dark_frames": [{"exposure_time_seconds": 60.0, "total_count": 1}],
             "bias_frames": [{"total_count": 1}],
         }
@@ -1742,9 +1713,7 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
             "light_frames": [
                 {"filter_name": "L", "exposure_time_seconds": 60.0, "total_count": 1}
             ],
-            "flat_frames": [
-                {"filter_name": "L", "exposure_time_seconds": 5.0, "total_count": 1}
-            ],
+            "flat_frames": [{"filter_name": "L", "total_count": 1}],
             "dark_frames": [{"exposure_time_seconds": 60.0, "total_count": 1}],
             "bias_frames": [{"total_count": 1}],
         }
@@ -1805,9 +1774,7 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
             "light_frames": [
                 {"filter_name": "L", "exposure_time_seconds": 60.0, "total_count": 1}
             ],
-            "flat_frames": [
-                {"filter_name": "L", "exposure_time_seconds": 5.0, "total_count": 1}
-            ],
+            "flat_frames": [{"filter_name": "L", "total_count": 1}],
             "dark_frames": [{"exposure_time_seconds": 60.0, "total_count": 1}],
             "bias_frames": [{"total_count": 1}],
         }
@@ -1868,9 +1835,7 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
             "light_frames": [
                 {"filter_name": "L", "exposure_time_seconds": 60.0, "total_count": 1}
             ],
-            "flat_frames": [
-                {"filter_name": "L", "exposure_time_seconds": 5.0, "total_count": 1}
-            ],
+            "flat_frames": [{"filter_name": "L", "total_count": 1}],
             "dark_frames": [{"exposure_time_seconds": 60.0, "total_count": 1}],
             "bias_frames": [{"total_count": 1}],
         }
@@ -1921,9 +1886,7 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
             "light_frames": [
                 {"filter_name": "L", "exposure_time_seconds": 60.0, "total_count": 1}
             ],
-            "flat_frames": [
-                {"filter_name": "L", "exposure_time_seconds": 5.0, "total_count": 1}
-            ],
+            "flat_frames": [{"filter_name": "L", "total_count": 1}],
             "dark_frames": [{"exposure_time_seconds": 60.0, "total_count": 1}],
             "bias_frames": [{"total_count": 1}],
         }
@@ -2071,9 +2034,7 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
             "light_frames": [
                 {"filter_name": "L", "exposure_time_seconds": 60.0, "total_count": 3}
             ],
-            "flat_frames": [
-                {"filter_name": "L", "exposure_time_seconds": 5.0, "total_count": 3}
-            ],
+            "flat_frames": [{"filter_name": "L", "total_count": 3}],
             "dark_frames": [{"exposure_time_seconds": 60.0, "total_count": 3}],
             "bias_frames": [{"total_count": 3}],
         }
@@ -2100,7 +2061,7 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
             "light": group(
                 counts["light"], filter_name="L", exposure_time_seconds=60.0
             ),
-            "flat": group(counts["flat"], filter_name="L", exposure_time_seconds=5.0),
+            "flat": group(counts["flat"], filter_name="L"),
             "dark": group(counts["dark"], exposure_time_seconds=60.0),
             "bias": group(counts["bias"]),
         }
@@ -2266,9 +2227,7 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
             "light_frames": [
                 {"filter_name": "L", "exposure_time_seconds": 60.0, "total_count": 1}
             ],
-            "flat_frames": [
-                {"filter_name": "L", "exposure_time_seconds": 5.0, "total_count": 1}
-            ],
+            "flat_frames": [{"filter_name": "L", "total_count": 1}],
             "dark_frames": [{"exposure_time_seconds": 60.0, "total_count": 1}],
             "bias_frames": [{"total_count": 1}],
         }
@@ -2339,9 +2298,7 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
             "light_frames": [
                 {"filter_name": "L", "exposure_time_seconds": 60.0, "total_count": 1}
             ],
-            "flat_frames": [
-                {"filter_name": "L", "exposure_time_seconds": 5.0, "total_count": 1}
-            ],
+            "flat_frames": [{"filter_name": "L", "total_count": 1}],
             "dark_frames": [{"exposure_time_seconds": 60.0, "total_count": 1}],
             "bias_frames": [{"total_count": 1}],
         }
@@ -2616,9 +2573,7 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
             "light_frames": [
                 {"filter_name": "L", "exposure_time_seconds": 60.0, "total_count": 1}
             ],
-            "flat_frames": [
-                {"filter_name": "L", "exposure_time_seconds": 5.0, "total_count": 1}
-            ],
+            "flat_frames": [{"filter_name": "L", "total_count": 1}],
             "dark_frames": [{"exposure_time_seconds": 60.0, "total_count": 1}],
             "bias_frames": [{"total_count": 1}],
         }

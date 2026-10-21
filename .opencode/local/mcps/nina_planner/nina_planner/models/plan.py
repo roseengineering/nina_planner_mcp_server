@@ -24,8 +24,11 @@ class LightExposurePlan(BaseModel):
 
 
 class FlatExposurePlan(BaseModel):
+    # No exposure_time_seconds: N.I.N.A.'s SkyFlat item picks the exposure
+    # itself to hit a target signal level, so a plan-specified duration is
+    # never sent. Stale plans carrying one still load (extra fields are
+    # ignored) — the value is simply dropped.
     filter_name: str
-    exposure_time_seconds: float = Field(gt=0)
     total_count: int = Field(ge=1)
 
 
@@ -138,7 +141,8 @@ class ObservationPlan(BaseModel):
     flat_frames: list[FlatExposurePlan] = Field(
         min_length=1,
         description=(
-            "Flat exposure specs; loaded with action='flat' and "
+            "Flat specs (filter + count only — N.I.N.A.'s SkyFlat picks the "
+            "exposure itself); loaded with action='flat' and "
             "variant='dawn' (morning) or variant='dusk' (evening)."
         ),
     )
