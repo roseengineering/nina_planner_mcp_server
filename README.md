@@ -33,9 +33,11 @@ Each table gives a one-line summary; details for the larger tools are in [Tool D
 
 | Tool | Purpose |
 |---|---|
+| `list_plans(project_dir?)` | List every observation plan file in the project directory with its `file`, absolute `path`, `plan_id`, `target`, `intent`, `pointing_count`, and mtime — enumerate plans without globbing. Read-only. |
 | `write_plan_file(plan)` | Validate and write an observation plan JSON file for later use by `load_sequence`. Creates the file only; loads and starts nothing. |
 | `write_mosaic_plan(plan_path, mosaic_csv, output_path?)` | Expand a base plan into a multi-pointing mosaic plan from a Telescopius CSV. Creates the file only. |
 | `get_plan_progress(file_path, max_hfr?, min_detected_stars?, max_guiding_rms_arcsec?)` | Per-frame-type acquired/remaining counts for every pointing of a plan. Use before `load_sequence` to see what still needs acquiring. Read-only. |
+| `audit_plans(plans?, project_dir?, types?, include_orphans=true)` | **Whole-project capture audit in one call**: reconcile plan expectations, frames on disk, and CSV attribution for every plan into an `all_saved` verdict plus `left_to_do`, `attribution_debt`, and `blocked` work lists. Read-only. |
 | `get_imaging_metadata(file_path, pointing_index=1, image_type="light")` | Per-exposure quality, guiding, pointing, and weather metrics for one pointing of a plan. Read-only. |
 
 ### Sky Calculations
@@ -114,7 +116,34 @@ Returns per-frame-type acquisition progress for every pointing of an observation
 - **Attribution:** lights are attributed via `_{base_plan_id}_` (single-pointing) or `_{base_plan_id}-{pointing_index}_` (mosaic pane). Flats are matched by image type and filter, darks/bias by image type and exposure, and all count only when shot within `calibration_window_days` of the earliest attributed light, on either side of it (inclusive; a 1-day window spans `anchor − 1d … anchor + 1d`).
 - **Calibration window:** calibration groups also carry `window_open` (bool) and `window_end` (`earliest light + calibration_window_days`, **displayed in the host's local time with its UTC offset**). While the current time is inside the window `remaining_count` is `total − acquired`; once outside, no frame shot now could be credited, so `remaining_count` is `0` (with `window_open: false`). `acquired_count` stays truthful, and lights carry neither field. Raise `calibration_window_days` or write a new plan to reopen the window.
 - **Quality thresholds:** pass `max_hfr`, `min_detected_stars`, and/or `max_guiding_rms_arcsec` to exclude light frames that fail them (frames missing the relevant field are excluded when a threshold is set).
+- **Scope:** one plan per call — for a whole-project sweep (every plan, disk files included, in one call), use [`audit_plans`](#audit_plans).
 - **Output:** `complete` (all panes done) plus a `pointings` list with per-pane progress and per-pane `complete`, so panes can be acquired sequentially.
+
+### `list_plans`
+
+`list_plans(project_dir?)`
+
+Returns `{"plans": [...], "errors": [...]}` — one entry per plan JSON in the project directory (default: the server's working directory) with `file`, absolute `path`, `plan_id`, `target`, `intent`, `pointing_count`, and `written` (mtime, ISO-8601 local with offset). Unparseable JSON files are reported per file under `errors` instead of failing the call, and a relative `project_dir` resolves against the project directory. Use it to enumerate plans without globbing; `audit_plans` shares the same discovery.
+
+### `audit_plans`
+
+`audit_plans(plans?, project_dir?, types?, include_orphans=true)`
+
+Answers **"are all my targets' captures saved to disk, and what is left to do?"** for every plan in one call, replacing per-plan `get_plan_progress` sweeps (15 plans = 15 calls otherwise). `plans` selects a subset (paths or names, resolved against `project_dir`, default = every `*.json` in the project directory); `types` subsets the output rows to any of `light` / `flat` / `dark` / `bias` (case-insensitive).
+
+- **Three truth sources, reconciled per plan × frame type:** `expected` (the plan's `total_count`, summed over its exposure groups — per pointing for lights, plan-level for calibration); `on_disk` (frame files physically inside *this plan's own* landing directories — `<root>/<label> _<token>_/<date>/<TYPE>/*.fits.fz`, where the token is `_{base_plan_id}_` for single-pointing plans and calibration, `_{base_plan_id}-{n}_` per mosaic pane, counted by the TYPE-named parent directory at any depth); and `attributed` / `remaining` (exactly what `get_plan_progress` reports, quirks included).
+- **Top-level output:** `all_saved` (true only when no row needs work and no plan file failed to load), `totals` (expected / on_disk / attributed across everything), `left_to_do`, `attribution_debt`, `blocked`, `rows`, `orphans`, `errors`, and `root` (the imaging directory actually scanned).
+- **`left_to_do`** holds only what *running a sequence* can fix — `MISSING_FILES` rows, with `missing` = `remaining` and an `action` hint per type. **`attribution_debt`** is CSV-repair work (frames exist but aren't counted — fixing it means reindexing, *never* re-acquiring). **`blocked`** is `EXPIRED`: the calibration window closed under a deficit, so only raising `calibration_window_days` or writing a new plan helps.
+- **`status` per row** (first match wins):
+  - `EXPIRED` — calibration window closed with an uncredited deficit; surfaces it despite `remaining` being forced to `0` by the window rule ⏳
+  - `ATTRIBUTION_LAG` — lights only, and only when `junk == 0`: frames on disk the CSV doesn't count, so a `remaining`-mode load would re-shoot duplicates. Repair the CSV, do **not** reshoot 🚨
+  - `MISSING_FILES` — `remaining > 0` and the frames genuinely aren't there: shoot more 🔫
+  - `SUSPECT_JUNK` — degenerate light/dark rows (duration under half the plan's exposure or `0.01s`, e.g. `0.00003s` Smart-Exposure junk) riding alongside an otherwise-complete set. Bias and flats are exempt (0s is correct for bias; SkyFlat adapts). When junk instead *leaves a deficit*, the status is `MISSING_FILES` with the junk count as the cause 🗑️
+  - `POOL_CREDITED` — calibration satisfied plan-wide from another target's directory while this plan's own dir is short — informational, not a gap 🏷️
+  - `OVERSHOT` — lights attributed above expected from a `mode="full"` re-run; harmless ℹ️
+  - `OK` ✅
+- **Why the columns can disagree:** calibration is matched **plan-wide** (flats by type+filter, darks by type+exposure, bias by type, all within the window around the earliest attributed light), so one bias set credits every plan and `attributed` can legitimately exceed a plan's own `on_disk`. Lights also require the exposure duration to match (±0.05s), so degenerate frames never count. The dangerous direction — `on_disk > attributed` with `remaining > 0` — is exactly what `ATTRIBUTION_LAG` exists to catch.
+- **Failure semantics:** a missing or unmounted imaging root **raises** (naming the site profile path and `NINA_DRIVE_MOUNT`) rather than reporting empty counts — "no frames" and "no mount" must never look alike. A broken plan file lands in `errors` and the rest of the sweep still runs; a project directory with no plans returns a `warning` with `root: null`. `orphans` lists landing token directories whose plan file no longer exists (from deleted plans).
 
 ### `load_sequence`
 
