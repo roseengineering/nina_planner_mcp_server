@@ -1,13 +1,17 @@
-"""Compact projection of N.I.N.A.'s ``/sequence/state`` (plus horizon data from ``/sequence/json``)."""
+"""Compact projection of N.I.N.A.'s ``/sequence/state``.
+
+Horizon data is merged in from ``/sequence/json``.
+"""
 
 import re
+from collections.abc import Iterator
 from typing import Any
 
 _ATTRIBUTION = re.compile(r"_(plan-[a-f0-9]{12})(?:-(\d+))?_")
 _TARGET_AREA = "Target Sequence_Container"
 
 
-def _walk(node: Any):
+def _walk(node: Any) -> Iterator[dict[str, Any]]:
     if isinstance(node, dict):
         yield node
         for value in node.values():
@@ -50,7 +54,7 @@ def _exposure(step: dict[str, Any]) -> dict[str, Any] | None:
         return None
     # Node-level Iterations means "completed" here but "total" in /sequence/json;
     # the loop condition is the only unambiguous source.
-    loop = next(
+    loop: dict[str, Any] = next(
         (
             c
             for c in (smart or {}).get("Conditions") or []

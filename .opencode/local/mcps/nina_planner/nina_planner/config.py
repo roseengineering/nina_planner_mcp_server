@@ -8,7 +8,8 @@ SEQUENCE_START_PATH = "/sequence/start"
 SEQUENCE_STATE_PATH = "/sequence/state"
 SEQUENCE_JSON_PATH = "/sequence/json"
 NINA_PLANNER_LOG = os.environ.get("NINA_PLANNER_LOG")
-# Directory holding the observatory files: plan JSONs, PLAN.md, PROGRESS.md, report_<YYYY-MM-DD>.md.
+# Directory holding the observatory files: plan JSONs, PLAN.md, PROGRESS.md,
+# report_<YYYY-MM-DD>.md.
 # opencode starts local MCP servers with the workspace as their working
 # directory, and the launch command uses `uv run --project` (not `uv
 # --directory`, which would chdir into the package) — so the process cwd *is*

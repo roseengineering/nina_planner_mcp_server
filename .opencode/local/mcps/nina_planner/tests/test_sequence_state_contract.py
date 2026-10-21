@@ -6,7 +6,6 @@ output is derived from. If one fails, update the projection and refresh the
 ``sequence_*_unrun.json`` fixtures from a real NINA.
 """
 
-import re
 import unittest
 
 from sequence_helpers import build_sequence_darks, build_sequence_lights
