@@ -13,8 +13,10 @@ from .tools.equipment import (
 )
 from .tools.lifecycle import get_nina_status, start_nina, stop_nina
 from .tools.plans import (
+    audit_plans,
     get_imaging_metadata,
     get_plan_progress,
+    list_plans,
     write_mosaic_plan,
     write_plan_file,
 )
@@ -27,6 +29,7 @@ from .tools.sequence import (
 from .tools.sky import resolve_target, target_altitudes
 
 __all__ = [
+    "audit_plans",
     "equipment",
     "get_events",
     "get_imaging_metadata",
@@ -37,6 +40,7 @@ __all__ = [
     "get_site_equipment_status",
     "get_site_profile",
     "lifecycle",
+    "list_plans",
     "list_site_profiles",
     "load_sequence",
     "mcp",

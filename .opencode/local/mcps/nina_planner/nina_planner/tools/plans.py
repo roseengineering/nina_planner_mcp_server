@@ -171,4 +171,617 @@ async def get_plan_progress(
     return res
 
 
+# capture audit
+
+
+_AUDIT_TYPES = ("light", "flat", "dark", "bias")
+# Landing TYPE folders are uppercase (LIGHT/DARK/BIAS/FLAT); compare in that
+# casing at the filesystem boundary — mixing cases silently counts zero.
+_AUDIT_TYPES_UPPER = tuple(t.upper() for t in _AUDIT_TYPES)
+_FITS_SUFFIXES = (".fits", ".fits.fz")
+# Statuses that mean "not everything is saved/counted right" — the
+# `all_saved` verdict fails on any of them (see audit_plans' docstring).
+_AUDIT_BROKEN = ("MISSING_FILES", "ATTRIBUTION_LAG", "EXPIRED", "SUSPECT_JUNK")
+
+
+async def _load_project_plans(
+    plan_dir: Path, selected: list[str] | None = None
+) -> tuple[list[tuple[Path, ObservationPlan]], list[dict[str, str]]]:
+    """Load plan files from ``plan_dir`` (or the ``selected`` paths).
+
+    Returns ``(path, plan)`` pairs so callers like ``list_plans`` can report
+    the file behind each plan. A broken/unparseable plan must not abort a
+    whole-project sweep, so every failure is collected into ``errors`` as
+    ``{file, reason}`` and the rest keep going — the audit reports partial
+    truth rather than none.
+    """
+    if selected:
+        files = []
+        for entry in selected:
+            path = Path(entry)
+            if not path.is_absolute():
+                path = plan_dir / path
+            files.append(path)
+    else:
+        files = sorted(plan_dir.glob("*.json"))
+    plans: list[tuple[Path, ObservationPlan]] = []
+    errors: list[dict[str, str]] = []
+    for file in files:
+        try:
+            plans.append((file, await plan_utils.load_plan(str(file))))
+        except Exception as exc:  # noqa: BLE001 - one bad file, whole sweep lives
+            errors.append({"file": file.name, "reason": str(exc)})
+    return plans, errors
+
+
+def _plan_type_totals(
+    progress: dict[str, list[dict[str, Any]]], image_type: str
+) -> dict[str, Any]:
+    """Sum one frame type's plan-progress groups into expected/acquired/remaining.
+
+    ``plan_progress`` returns a *list* of exposure groups per type (one per
+    filter/exposure combination); lights vary per pointing, calibration is
+    plan-level. ``window_open``/``window_end`` are identical across a type's
+    groups, so the first group carries them.
+    """
+    groups = progress.get(image_type) or []
+    return {
+        "expected": sum(int(g.get("total_count", 0)) for g in groups),
+        "attributed": sum(int(g.get("acquired_count", 0)) for g in groups),
+        "remaining": sum(int(g.get("remaining_count", 0)) for g in groups),
+        "window_open": groups[0].get("window_open") if groups else None,
+        "window_end": groups[0].get("window_end") if groups else None,
+    }
+
+
+def _count_fits(token_dir: Path) -> dict[str, int]:
+    """Count frame files under ``token_dir`` by their TYPE parent directory.
+
+    Layout (verified): ``<token_dir>/<YYYY-MM-DD>/<TYPE>/<file>.fits.fz`` —
+    the immediate parent directory name is the image type. Counting by parent
+    name at any depth tolerates N.I.N.A. writing extra date folders or
+    skipping them, and the ``.fits.fz``/``.fits`` suffix filter keeps the
+    ImageMetaData/AcquisitionDetails sidecars out.
+    """
+    counts: dict[str, int] = {}
+    for path in token_dir.rglob("*"):
+        if not path.is_file():
+            continue
+        if not path.name.lower().endswith(_FITS_SUFFIXES):
+            continue
+        image_type = path.parent.name.upper()
+        if image_type in _AUDIT_TYPES_UPPER:
+            # Compare in uppercase, store in lowercase: every consumer
+            # (rows, orphans, disk buckets) speaks the lowercase type names.
+            counts[image_type.lower()] = counts.get(image_type.lower(), 0) + 1
+    return counts
+
+
+def _own_token_rows(
+    plan: ObservationPlan,
+    rows: list[dict[str, Any]],
+    image_type: str,
+    *,
+    pointing_index: int,
+) -> list[dict[str, Any]]:
+    """Rows of ``image_type`` whose recorded path carries this plan's token.
+
+    Deliberately *not* ``filter_metadata_rows``: that applies the pooled
+    calibration matchers (type+filter / type+exposure / window), which
+    exclude exactly the rows junk detection cares about — a 0.00003s dark
+    never matches a 60s plan group, so scanning only matched rows would make
+    junk invisible. Token containment (the same delimited ``_plan-..._``
+    shape attribution uses) plus the row's own image_type is the right
+    scope for "this plan's frame files".
+    """
+    type_upper = image_type.upper()
+    if image_type == "light":
+        ids = {
+            plan.effective_plan_id(pointing_index),
+            plan.per_pointing_plan_id(pointing_index),
+        }
+    else:
+        ids = {plan._base_plan_id()}
+        ids.update(plan.effective_plan_id(i) for i in range(1, len(plan.pointings) + 1))
+    tokens = [f"_{pid}_" for pid in ids]
+    matched: list[dict[str, Any]] = []
+    for row in rows:
+        if (row.get("image_type") or "").upper() != type_upper:
+            continue
+        path = (row.get("file_path") or "").strip()
+        if not path:
+            continue
+        components = [part for part in path.replace("\\", "/").split("/") if part]
+        if any(tok in comp for tok in tokens for comp in components):
+            matched.append(row)
+    return matched
+
+
+def _junk_count(
+    plan: ObservationPlan,
+    rows: list[dict[str, Any]],
+    image_type: str,
+    *,
+    pointing_index: int,
+) -> int:
+    """Count degenerate frames among this plan's own token rows.
+
+    Campaign precedent: a default Smart Exposure produced DARK frames at
+    0.00003s inside the plan's landing dir. Junk = duration below
+    ``max(0.01, half of the plan's smallest exposure for this type)``. Bias
+    is exempt (0s is *correct* for bias) and flat is exempt (SkyFlat
+    legitimately adapts from 0.01s). Frames failing the duration parse are
+    not counted — the CSV contract can change under us and a parse quirk
+    must never invent junk.
+
+    Scope trade-off: a junk *dark* is excluded from ``attributed`` by the
+    ±0.05s exposure matcher, so such a plan surfaces as MISSING_FILES (those
+    frames genuinely should be re-shot) with ``junk`` naming the cause.
+    SUSPECT_JUNK fires when attribution is satisfied while junk rides along —
+    lights match on token alone, so junk lights *do* count.
+    """
+    if image_type not in ("light", "dark"):
+        return 0
+
+    # The plan model is pydantic: nested frame groups may surface as models,
+    # so read exposure values through a dict-or-attribute accessor instead of
+    # assuming plain dicts.
+    def _exposure_of(group: Any) -> Any:
+        if isinstance(group, dict):
+            return group.get("exposure_time_seconds")
+        return getattr(group, "exposure_time_seconds", None)
+
+    frame_groups = getattr(plan, f"{image_type}_frames", None) or []
+    exposures = [
+        float(value) for value in map(_exposure_of, frame_groups) if value is not None
+    ]
+    floor = max(0.01, 0.5 * min(exposures)) if exposures else 0.01
+    junk = 0
+    for row in _own_token_rows(plan, rows, image_type, pointing_index=pointing_index):
+        try:
+            # str() first: an absent duration arrives as None, and
+            # float(None) is a TypeError the ValueError handler would miss.
+            duration = float(str(row.get("duration")))
+        except ValueError:
+            continue
+        if duration < floor:
+            junk += 1
+    return junk
+
+
+def _status_for(
+    *,
+    image_type: str,
+    expected: int,
+    on_disk: int,
+    attributed: int,
+    remaining: int,
+    window_open: bool | None,
+    junk: int,
+) -> str:
+    """First-match-wins audit verdict (see audit_plans' docstring, §3 table).
+
+    Order matters: the window-closed deficit (EXPIRED) must win over the
+    ``remaining == 0`` contract that would otherwise read it as done; the
+    attribution lag must win over MISSING_FILES because the frames *do*
+    exist and re-acquiring would duplicate them.
+    """
+    is_calibration = image_type != "light"
+    if is_calibration and window_open is False and attributed < expected:
+        return "EXPIRED"
+    if not is_calibration and remaining > 0 and on_disk > attributed and junk == 0:
+        # LIGHTS only: frames sit on disk but the CSV doesn't count them —
+        # remaining-mode would re-shoot exactly what already exists (the
+        # Oct-18 trap). junk == 0 guards the look-alike: junk frames are
+        # ALSO excluded from attribution (the ±0.05s exposure matcher runs
+        # on lights too), and there re-shooting is the correct action, so
+        # that gap falls through to MISSING_FILES with junk as the cause.
+        # Calibration is excluded because its pooled matchers
+        # (filter/exposure/window) have many legitimate reasons to skip an
+        # on-disk file — out-of-window, wrong exposure — where
+        # re-acquiring is the correct, conservative action.
+        return "ATTRIBUTION_LAG"
+    if remaining > 0:
+        return "MISSING_FILES"
+    if junk > 0:
+        return "SUSPECT_JUNK"
+    if is_calibration and attributed >= expected and on_disk < expected:
+        # Satisfied by the plan-wide calibration pool, but this plan's own
+        # landing dir holds fewer frames than the plan wants.
+        return "POOL_CREDITED"
+    if not is_calibration and attributed > expected:
+        return "OVERSHOT"  # full-mode re-acquisition extras; harmless
+    return "OK"
+
+
+def _audit_row(
+    *,
+    plan: ObservationPlan,
+    image_type: str,
+    expected: int,
+    on_disk: int,
+    attributed: int,
+    remaining: int,
+    window_open: bool | None,
+    window_end: str | None,
+    junk: int,
+    pointing_index: int | None,
+) -> dict[str, Any]:
+    status = _status_for(
+        image_type=image_type,
+        expected=expected,
+        on_disk=on_disk,
+        attributed=attributed,
+        remaining=remaining,
+        window_open=window_open,
+        junk=junk,
+    )
+    # Lights carry the pointing-specific id (base for single-pointing plans,
+    # base-N for a mosaic pane); calibration is plan-level and always uses
+    # the bare base id — its landing dir shares the base token.
+    effective = (
+        plan.effective_plan_id(pointing_index or 1)
+        if image_type == "light"
+        else plan._base_plan_id()
+    )
+    row: dict[str, Any] = {
+        "plan_id": plan._base_plan_id(),
+        "effective_plan_id": effective,
+        "target": plan.target,
+        "pointing_index": pointing_index,
+        "type": image_type,
+        "expected": expected,
+        "on_disk": on_disk,
+        "attributed": attributed,
+        "remaining": remaining,
+        "junk": junk,
+        "status": status,
+    }
+    if image_type != "light":
+        row["window_open"] = window_open
+        row["window_end"] = window_end
+    return row
+
+
+def _action_for(image_type: str) -> str:
+    return {
+        "light": "load_sequence light for this plan",
+        "flat": "load_sequence flat (dawn or dusk) for this plan",
+        "dark": "load_sequence dark for this plan",
+        "bias": "load_sequence bias for this plan",
+    }[image_type]
+
+
+@mcp.tool()
+async def audit_plans(
+    plans: list[str] | None = None,
+    project_dir: str | None = None,
+    types: list[str] | None = None,
+    include_orphans: bool = True,
+) -> dict[str, Any]:
+    """Audits every observation plan at once: are all captures saved to disk, and what is left to do?
+
+    One call replaces per-plan get_plan_progress sweeps. For each plan (all
+    ``*.json`` plan files in the project directory by default, or exactly the
+    ``plans`` paths/names given) and each requested frame type it reconciles
+    THREE truth sources and reports them side by side per row:
+
+    - ``expected`` — the plan's total_count (per pointing for lights,
+      plan-level for calibration, summed over the type's exposure groups).
+    - ``on_disk`` — frame files physically inside THIS plan's own landing
+      directories (``<root>/<label> _<token>_/<date>/<TYPE>/*.fits.fz``,
+      token = ``_{base_plan_id}_`` for single-pointing plans and
+      calibration, ``_{base_plan_id}-{n}_`` per mosaic pane; counted by the
+      TYPE-named parent directory at any depth, sidecar CSV/JSON excluded).
+    - ``attributed`` / ``remaining`` — exactly what get_plan_progress
+      reports: lights match the underscore token in the recorded path AND the
+      exposure duration (±0.05s, so degenerate 0s frames never count);
+      calibration is POOLED plan-wide (flats by type+filter, darks by
+      type+exposure, bias by type) inside ± calibration_window_days of the
+      earliest attributed light. While a calibration window is closed,
+      remaining is reported as 0 even when a true deficit exists, so this
+      audit surfaces that case explicitly as EXPIRED.
+
+    Because calibration is pooled, ``attributed`` can legitimately exceed a
+    plan's own ``on_disk`` (one bias set credits every plan) — that is
+    POOL_CREDITED, informational, not a gap. The dangerous direction is the
+    reverse: ``on_disk > attributed`` with ``remaining > 0`` means frames
+    exist that the CSV does not count, so a 'remaining'-mode load would
+    re-shoot duplicates — ATTRIBUTION_LAG: repair ImageMetaData, do NOT
+    reshoot.
+
+    ``status`` per row (first match wins): EXPIRED (window closed with an
+    uncredited deficit — needs a new plan/window, shooting cannot fix it) →
+    ATTRIBUTION_LAG (lights only: files saved, not counted — repair, never
+    reshoot; calibration is excluded because its pooled matchers have many
+    legitimate skip reasons, where re-acquiring is the conservative action) →
+    MISSING_FILES (remaining > 0 — shoot more; ``missing`` equals
+    ``remaining``) → SUSPECT_JUNK (light/dark rows whose duration is under
+    half the plan's exposure or 0.01s — e.g. 0.00003s Smart Exposure junk —
+    riding alongside a set whose attribution is otherwise complete; bias and
+    flats exempt; when junk instead leaves a deficit the status is
+    MISSING_FILES with the junk count as the cause) → POOL_CREDITED (calibration satisfied from the
+    pool while this plan's own dir is short) → OVERSHOT (light attributed
+    above expected from full-mode re-runs; harmless) → OK.
+
+    Top level: ``all_saved`` (true iff no row is MISSING_FILES,
+    ATTRIBUTION_LAG, EXPIRED or SUSPECT_JUNK and no plan file failed to
+    load), ``totals``, ``left_to_do`` (ONLY rows a sequence run can fix,
+    with missing = remaining), ``attribution_debt`` (CSV-repair work),
+    ``blocked`` (EXPIRED — needs plan/window changes), ``rows`` (every
+    plan × type, plus per-pointing light rows for mosaics; single-pointing
+    plans carry pointing_index null), ``orphans`` (landing token directories
+    matching no current plan — from deleted plans), ``errors`` (per-file
+    load failures, never fatal to the sweep), and ``root`` (the imaging
+    directory actually scanned).
+
+    A missing/unmounted imaging root RAISES (check the site profile's image
+    save path and, on non-Windows hosts, NINA_DRIVE_MOUNT) rather than
+    reporting empty counts — "no frames" and "no mount" must never look
+    alike. ``types`` (case-insensitive) subsets the output rows; ``plans``
+    entries resolve against ``project_dir`` (default: the server's project
+    directory). Read-only; makes no N.I.N.A. calls beyond the site profile.
+    """
+    plan_dir = Path(project_dir) if project_dir else config.PROJECT_DIR
+    if not plan_dir.is_absolute():
+        plan_dir = config.PROJECT_DIR / plan_dir
+
+    wanted = tuple(t.lower() for t in (types or _AUDIT_TYPES))
+    unknown = [t for t in wanted if t not in _AUDIT_TYPES]
+    if unknown:
+        raise ValueError(
+            f"unknown types {unknown}: valid types are {', '.join(_AUDIT_TYPES)}"
+        )
+
+    loaded, errors = await _load_project_plans(plan_dir, plans)
+    if not loaded:
+        res: dict[str, Any] = {
+            "all_saved": not errors,
+            "totals": {
+                "expected": 0,
+                "on_disk": 0,
+                "attributed": 0,
+                "plans": 0,
+                "plan_errors": len(errors),
+            },
+            "left_to_do": [],
+            "attribution_debt": [],
+            "blocked": [],
+            "rows": [],
+            "orphans": [],
+            "errors": errors,
+            "root": None,
+        }
+        if errors:
+            res["warning"] = f"no plan could be loaded from {plan_dir}"
+        else:
+            res["warning"] = f"no plan files in {plan_dir}"
+        client.log_payload("Audit:", json.dumps(res, indent=2))
+        return res
+
+    # read_metadata validates the imaging root (_require_root) before any
+    # counting: a dead mount must raise here, not surface as zero frames.
+    root = await metadata.resolve_imaging_root()
+    rows = await metadata.read_metadata()
+    now = datetime.now(UTC).replace(microsecond=0)
+
+    # One filesystem pass: bucket each landing token directory by its
+    # trailing token, longest-first so pane tokens (base-N) win over base.
+    known: dict[str, tuple[str, int | None]] = {}
+    for _path, plan in loaded:
+        base = plan._base_plan_id()
+        multi = len(plan.pointings) > 1
+        for i in range(1, len(plan.pointings) + 1):
+            known[f"_{plan.effective_plan_id(i)}_"] = (
+                base,
+                i if multi else None,
+            )
+        # Calibration is plan-level: it may share the base token dir (and,
+        # for mosaics, the pane dirs' TYPE folders are still counted per
+        # pane above; the base token below covers plan-level calibration).
+        known.setdefault(f"_{base}_", (base, None))
+    tokens_longest_first = sorted(known, key=len, reverse=True)
+
+    disk: dict[tuple[str, int | None], dict[str, int]] = {}
+    unclaimed: list[Path] = []
+    for entry in sorted(root.iterdir(), key=lambda p: p.name):
+        if not entry.is_dir():
+            continue
+        matched_key = None
+        for token in tokens_longest_first:
+            if entry.name.endswith(token):
+                matched_key = known[token]
+                break
+        if matched_key is None:
+            if any(
+                p.is_file() and p.name.lower().endswith(_FITS_SUFFIXES)
+                for p in entry.rglob("*")
+            ):
+                unclaimed.append(entry)
+            continue
+        counts = _count_fits(entry)
+        bucket = disk.setdefault(matched_key, {})
+        for image_type, count in counts.items():
+            bucket[image_type] = bucket.get(image_type, 0) + count
+
+    def disk_total(image_type: str, *, plan: ObservationPlan) -> int:
+        base = plan._base_plan_id()
+        return sum(
+            counts.get(image_type, 0)
+            for (key_base, _pointing), counts in disk.items()
+            if key_base == base
+        )
+
+    rows_out: list[dict[str, Any]] = []
+    left_to_do: list[dict[str, Any]] = []
+    attribution_debt: list[dict[str, Any]] = []
+    blocked: list[dict[str, Any]] = []
+
+    for _path, plan in loaded:
+        base = plan._base_plan_id()
+        multi = len(plan.pointings) > 1
+        for i in range(1, len(plan.pointings) + 1):
+            progress = plan_progress(plan, rows, pointing_index=i, now=now)
+            pointing = i if multi else None
+
+            totals = _plan_type_totals(progress, "light")
+            light_disk = disk.get((base, pointing), {}).get("light", 0)
+            junk = _junk_count(plan, rows, "light", pointing_index=i)
+            row = _audit_row(
+                plan=plan,
+                image_type="light",
+                expected=totals["expected"],
+                on_disk=light_disk,
+                attributed=totals["attributed"],
+                remaining=totals["remaining"],
+                window_open=totals["window_open"],
+                window_end=totals["window_end"],
+                junk=junk,
+                pointing_index=pointing,
+            )
+            rows_out.append(row)
+
+        # Calibration is plan-level: derive it once (pointing 1 anchors the
+        # session window) and count disk frames across every dir of the plan.
+        if len(plan.pointings) >= 1:
+            progress = plan_progress(plan, rows, pointing_index=1, now=now)
+            for image_type in ("flat", "dark", "bias"):
+                if image_type not in wanted:
+                    continue
+                totals = _plan_type_totals(progress, image_type)
+                type_disk = disk_total(image_type, plan=plan)
+                junk = _junk_count(plan, rows, image_type, pointing_index=1)
+                row = _audit_row(
+                    plan=plan,
+                    image_type=image_type,
+                    expected=totals["expected"],
+                    on_disk=type_disk,
+                    attributed=totals["attributed"],
+                    remaining=totals["remaining"],
+                    window_open=totals["window_open"],
+                    window_end=totals["window_end"],
+                    junk=junk,
+                    pointing_index=None,
+                )
+                rows_out.append(row)
+
+    if "light" not in wanted:
+        rows_out = [r for r in rows_out if r["type"] != "light"]
+
+    for row in rows_out:
+        status = row["status"]
+        if status == "MISSING_FILES":
+            left_to_do.append(
+                {
+                    "plan_id": row["plan_id"],
+                    "target": row["target"],
+                    "pointing_index": row["pointing_index"],
+                    "type": row["type"],
+                    "missing": row["remaining"],
+                    "reason": status,
+                    "action": _action_for(row["type"]),
+                }
+            )
+        elif status == "ATTRIBUTION_LAG":
+            attribution_debt.append(
+                {
+                    "plan_id": row["plan_id"],
+                    "target": row["target"],
+                    "pointing_index": row["pointing_index"],
+                    "type": row["type"],
+                    "on_disk": row["on_disk"],
+                    "attributed": row["attributed"],
+                    "action": "reindex/repair ImageMetaData, DO NOT reshoot",
+                }
+            )
+        elif status == "EXPIRED":
+            blocked.append(
+                {
+                    "plan_id": row["plan_id"],
+                    "target": row["target"],
+                    "type": row["type"],
+                    "expected": row["expected"],
+                    "attributed": row["attributed"],
+                    "window_end": row["window_end"],
+                    "reason": status,
+                    "action": (
+                        "raise calibration_window_days or write a new plan "
+                        "to reopen the window"
+                    ),
+                }
+            )
+
+    orphans = []
+    if include_orphans:
+        for entry in unclaimed:
+            counts = _count_fits(entry)
+            orphans.append(
+                {
+                    "dir": entry.name,
+                    "frames": sum(counts.values()),
+                    "types": counts,
+                    "note": "no plan file with this plan_id",
+                }
+            )
+
+    broken = [r for r in rows_out if r["status"] in _AUDIT_BROKEN]
+    res = {
+        "all_saved": not broken and not errors,
+        "totals": {
+            "expected": sum(r["expected"] for r in rows_out),
+            "on_disk": sum(r["on_disk"] for r in rows_out),
+            "attributed": sum(r["attributed"] for r in rows_out),
+            "plans": len(loaded),
+            "plan_errors": len(errors),
+        },
+        "left_to_do": left_to_do,
+        "attribution_debt": attribution_debt,
+        "blocked": blocked,
+        "rows": rows_out,
+        "orphans": orphans,
+        "errors": errors,
+        "root": str(root),
+    }
+    client.log_payload("Audit:", json.dumps(res, indent=2))
+    return res
+
+
+@mcp.tool()
+async def list_plans(project_dir: str | None = None) -> dict[str, Any]:
+    """Returns every observation plan file in the project directory with its identity, so an agent can enumerate plans without globbing.
+
+    Each entry carries ``file``, absolute ``path``, ``plan_id``, ``target``,
+    ``intent``, ``pointing_count``, and ``written`` (file mtime, ISO-8601
+    local with offset). Unparseable JSON files are reported per file under
+    ``errors`` instead of failing the call. Read-only."""
+    plan_dir = Path(project_dir) if project_dir else config.PROJECT_DIR
+    if not plan_dir.is_absolute():
+        plan_dir = config.PROJECT_DIR / plan_dir
+    plans, errors = await _load_project_plans(plan_dir)
+    entries = []
+    for path, plan in plans:
+        try:
+            written: str | None = (
+                datetime.fromtimestamp(path.stat().st_mtime)
+                .astimezone()
+                .isoformat(timespec="seconds")
+            )
+        except OSError:
+            written = None
+        entries.append(
+            {
+                "file": path.name,
+                "path": str(path),
+                "plan_id": plan._base_plan_id(),
+                "target": plan.target,
+                "intent": plan.intent,
+                "pointing_count": len(plan.pointings),
+                "written": written,
+            }
+        )
+    res = {"plans": entries, "errors": errors}
+    client.log_payload("Plans:", json.dumps(res, indent=2))
+    return res
+
+
 # sequence tools
