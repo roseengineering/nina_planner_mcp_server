@@ -204,7 +204,7 @@ def sequence_smart_exposure(
     filter_name: str | None = None,
     filter_position: int | None = None,
     dither: int = 0,
-) -> list[dict[str, Any]]:
+) -> dict[str, Any]:
     fltr = "(Current)" if filter_name is None else filter_name
     name = f"{count} x {exposure} sec exposures using `{fltr}` filter"
     return container_sequential(
