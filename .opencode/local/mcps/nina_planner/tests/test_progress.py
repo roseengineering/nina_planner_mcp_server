@@ -182,6 +182,18 @@ class PlanProgressTest(unittest.TestCase):
         self.assertEqual(prog["dark"][0]["acquired_count"], 1)
         self.assertEqual(prog["bias"][0]["acquired_count"], 1)
 
+    def test_flat_progress_ignores_exposure_mismatch(self):
+        # plan_progress counts flats by filter alone too — a flat at the
+        # wrong duration still satisfies the group.
+        plan = _plan()
+        rows = [
+            _row(image_type="FLAT", filter_name="LP", duration="10.0", target=None),
+            _row(image_type="FLAT", filter_name="SII", duration="10.0", target=None),
+        ]
+        prog = plan_progress(plan, rows)
+        self.assertEqual(prog["flat"][0]["acquired_count"], 1)
+        self.assertEqual(prog["flat"][0]["remaining_count"], 9)
+
     def test_non_light_rows_excluded_from_lights(self):
         plan = _plan()
         rows = [
@@ -594,7 +606,10 @@ class FilterMetadataRowsTest(unittest.TestCase):
         self.assertEqual(len(out), 1)
         self.assertEqual(out[0]["duration"], "60.0")
 
-    def test_flat_matches_filter_and_exposure(self):
+    def test_flat_matches_filter_only(self):
+        # Exposure is not part of flat attribution: any flat through the
+        # right filter inside the window counts, whatever duration it was
+        # shot at. The wrong filter still does not.
         plan = _plan()
         rows = [
             _row(image_type="FLAT", filter_name="LP", duration="5.0", target=None),
@@ -602,8 +617,8 @@ class FilterMetadataRowsTest(unittest.TestCase):
             _row(image_type="FLAT", filter_name="LP", duration="10.0", target=None),
         ]
         out = filter_metadata_rows(plan, rows, "flat", max_age_days=7, now=self._ref())
-        self.assertEqual(len(out), 1)
-        self.assertEqual(out[0]["filter_name"], "LP")
+        self.assertEqual(len(out), 2)
+        self.assertTrue(all(r["filter_name"] == "LP" for r in out))
 
     def test_bias_returns_within_window(self):
         plan = _plan()

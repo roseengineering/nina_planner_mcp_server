@@ -306,8 +306,9 @@ def filter_metadata_rows(
     """Rows attributed to `plan` for `image_type`.
 
     Lights match by the plan_id embedded in their file path (with the
-    pointing_index suffix appended at load time); dark/bias/flat frames match
-    the plan's exposure specs (filter too, for flats). Calibration is anchored
+    pointing_index suffix appended at load time); dark/bias frames match the
+    plan's exposure specs, and flat frames match by filter alone.
+    Calibration is anchored
     to the plan's light session: a frame counts when it was shot within
     ``max_age_days`` of ``session_start`` on either side, where
     ``session_start`` is the earliest attributed light exposure (falling back
@@ -325,7 +326,12 @@ def filter_metadata_rows(
         ]
     specs: list[tuple[str | None, float | None]]
     if image_type_upper == "FLAT":
-        specs = [(g.filter_name, g.exposure_time_seconds) for g in plan.flat_frames]
+        # Flats match by filter only: a flat's exposure is chosen to hit a
+        # signal level, not to make it a different kind of calibration, so
+        # any flat through the right filter inside the window counts.
+        # Darks keep matching on exposure — their dark current scales with
+        # exposure time, so duration is part of what makes a dark usable.
+        specs = [(g.filter_name, None) for g in plan.flat_frames]
     elif image_type_upper == "DARK":
         specs = [(None, g.exposure_time_seconds) for g in plan.dark_frames]
     elif image_type_upper == "BIAS":
@@ -405,7 +411,9 @@ def plan_progress(
                 rows,
                 image_type,
                 filter_name=filter_name,
-                exposure=exposure,
+                # Flats are matched by filter only, mirroring
+                # filter_metadata_rows above.
+                exposure=None if image_type == "FLAT" else exposure,
                 plan=plan if image_type == "LIGHT" else None,
                 pointing_index=pointing_index,
                 max_hfr=max_hfr,

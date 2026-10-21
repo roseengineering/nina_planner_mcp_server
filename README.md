@@ -92,7 +92,7 @@ Returns **two content blocks: the absolute file path as text, then the image its
 
 Returns per-exposure imaging metadata for one pointing of an observation plan, parsed from `ImageMetaData.csv` and `WeatherData.csv` in the N.I.N.A. imaging directory. `image_type` is `light` (default), `dark`, `bias`, or `flat` (case-insensitive).
 
-- **Attribution:** lights are attributed via the underscore-delimited plan-id token in the recorded file path (`_{base_plan_id}_` for a single-pointing plan, `_{base_plan_id}-{pointing_index}_` per pane for a mosaic; no target-name fallback). Dark/bias/flat frames are matched plan-wide by image type, filter, and exposure, and count only when shot within `calibration_window_days` of the session start (the earliest attributed light), on either side of it.
+- **Attribution:** lights are attributed via the underscore-delimited plan-id token in the recorded file path (`_{base_plan_id}_` for a single-pointing plan, `_{base_plan_id}-{pointing_index}_` per pane for a mosaic; no target-name fallback). Dark/bias frames are matched plan-wide by image type and exposure; flat frames by image type and filter (exposure is not checked for flats). All calibration frames count only when shot within `calibration_window_days` of the session start (the earliest attributed light), on either side of it.
 - **`pointing_index`:** range-checked (1..pointing count) for every image type and labels the response. For lights it selects the pointing; for calibration types it only selects which pointing's light session anchors the window.
 - **Scope:** reports the frames that are attributable, not what the plan still needs — use `get_plan_progress` for that.
 - **Output:** a wide table with one row per exposure: identity fields (`file_path`, `exposure_number`, `exposure_start`, `duration`, `filter_name`) plus metrics as columns namespaced by group (`quality.hfr`, `guiding.rms`, `background.adu_mean`, `pointing.airmass`, `weather.temperature`, ...). Weather samples are joined by exposure number and UTC exposure start. The result also carries `plan_id`, `pointing_index`, and `target`.
@@ -111,7 +111,7 @@ Expands a base observation plan into a multi-pointing mosaic plan from a Telesco
 
 Returns per-frame-type acquisition progress for every pointing of an observation-plan JSON file: for each exposure group, `total_count` from the plan, `acquired_count` attributed to that plan/pointing from the imaging metadata (`ImageMetaData.csv`), and `remaining_count`.
 
-- **Attribution:** lights are attributed via `_{base_plan_id}_` (single-pointing) or `_{base_plan_id}-{pointing_index}_` (mosaic pane). Flats/darks/bias are matched by image type, filter, and exposure and count only when shot within `calibration_window_days` of the earliest attributed light, on either side of it (inclusive; a 1-day window spans `anchor − 1d … anchor + 1d`).
+- **Attribution:** lights are attributed via `_{base_plan_id}_` (single-pointing) or `_{base_plan_id}-{pointing_index}_` (mosaic pane). Flats are matched by image type and filter, darks/bias by image type and exposure, and all count only when shot within `calibration_window_days` of the earliest attributed light, on either side of it (inclusive; a 1-day window spans `anchor − 1d … anchor + 1d`).
 - **Calibration window:** calibration groups also carry `window_open` (bool) and `window_end` (`earliest light + calibration_window_days`, **displayed in the host's local time with its UTC offset**). While the current time is inside the window `remaining_count` is `total − acquired`; once outside, no frame shot now could be credited, so `remaining_count` is `0` (with `window_open: false`). `acquired_count` stays truthful, and lights carry neither field. Raise `calibration_window_days` or write a new plan to reopen the window.
 - **Quality thresholds:** pass `max_hfr`, `min_detected_stars`, and/or `max_guiding_rms_arcsec` to exclude light frames that fail them (frames missing the relevant field are excluded when a threshold is set).
 - **Output:** `complete` (all panes done) plus a `pointings` list with per-pane progress and per-pane `complete`, so panes can be acquired sequentially.
@@ -316,9 +316,9 @@ Tells the agent it runs an observatory.
 
 [.opencode/rules/AGENTS.md](./.opencode/rules/AGENTS.md)
 ```markdown .opencode/rules/AGENTS.md
-# Observatory intervention controller
+# Observatory Controller
 
-You are the automated observatory intervention controller. The observatory runs NINA via the nina-planner MCP server.
+You are the automated observatory controller. The observatory runs NINA via the nina-planner MCP server.
 
 Always-on rules:
 - `is_safe=false` (enclosure closed) or weather violations mean: scope stowed, if not by the NINA sequence then by you.
