@@ -209,6 +209,7 @@ An example json plan:
   "flat_frames": [
     {
       "filter_name": "L",
+      "exposure_time_seconds": 1.0,
       "total_count": 20
     }
   ],

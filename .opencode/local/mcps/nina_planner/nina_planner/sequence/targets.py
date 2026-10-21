@@ -11,6 +11,7 @@ from .builders import (
     sequence_deepsky,
     sequence_park_scope,
     sequence_safetynet,
+    sequence_smart_exposure,
     sequence_unpark_scope,
     sequence_wait_until_sunset,
 )
@@ -30,7 +31,6 @@ from .instructions import (
     slew_and_center,
     slew_center_and_rotate,
     slew_to_azalt,
-    smart_exposure,
     start_guiding,
     stop_guiding,
     switch_filter,
@@ -124,19 +124,23 @@ def target_payload_darks(
                 base
                 + [close_cover()]
                 + [
-                    smart_exposure(count=d[0], exposure=d[1], image_type=image_type)
+                    sequence_smart_exposure(
+                        count=d[0], exposure=d[1], image_type=image_type
+                    )
                     for d in frames
                 ]
                 + [open_cover()]
             )
         if variant == "shutter":
             return base + [
-                smart_exposure(count=d[0], exposure=d[1], image_type=image_type)
+                sequence_smart_exposure(
+                    count=d[0], exposure=d[1], image_type=image_type
+                )
                 for d in frames
             ]
         dark_filter = "Dark"
         return base + [
-            smart_exposure(
+            sequence_smart_exposure(
                 count=d[0],
                 exposure=d[1],
                 filter_name=dark_filter,
@@ -276,7 +280,7 @@ def target_payload_lights(
                         start_guiding(),
                     ]
                     + [
-                        smart_exposure(
+                        sequence_smart_exposure(
                             count=d[0],
                             exposure=d[1],
                             filter_name=d[2],

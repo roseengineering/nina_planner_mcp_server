@@ -63,6 +63,7 @@ def acquisition_container(
     name is what ``$$TARGETNAME$$`` writes into the file path, so a tagged
     name would bake the frame kind into every folder and file it touches.
     """
+    text = f"[{tag}] {target}"
     return container_deepsky(
         name=name,
         target=target,
@@ -70,10 +71,10 @@ def acquisition_container(
         dec=dec,
         posang=posang,
         instructions=[
-            send_event(f"ACQUISITION-STARTING: [{tag}] {target}"),
+            send_event(f"ACQUISITION-STARTING: {text}"),
             connect_all_equipment(),
             *instructions,
-            send_event(f"ACQUISITION-FINISHED: [{tag}] {target}"),
+            send_event(f"ACQUISITION-FINISHED: {text}"),
         ],
     )
 
@@ -194,6 +195,33 @@ def sequence_park_scope(equipment: ObservatoryEquipment) -> list[dict[str, Any]]
 
 def sequence_unpark_scope(equipment: ObservatoryEquipment) -> list[dict[str, Any]]:
     return [unpark_scope()] if equipment.mount and equipment.mount.can_park else []
+
+
+def sequence_smart_exposure(
+    count: int,
+    exposure: float,
+    image_type: str,
+    filter_name: str | None = None,
+    filter_position: int | None = None,
+    dither: int = 0,
+) -> list[dict[str, Any]]:
+    fltr = "(Current)" if filter_name is None else filter_name
+    name = f"{count} x {exposure} sec exposures using `{fltr}` filter"
+    return container_sequential(
+        name=name,
+        instructions=[
+            send_event(f"EXPOSING-STARTING: {name}"),
+            smart_exposure(
+                count=count,
+                exposure=exposure,
+                image_type=image_type,
+                filter_name=filter_name,
+                filter_position=filter_position,
+                dither=dither,
+            ),
+            send_event(f"EXPOSING-FINISHED: {name}"),
+        ],
+    )
 
 
 def sequence_wait_until_sunset(equipment: ObservatoryEquipment) -> dict[str, Any]:
