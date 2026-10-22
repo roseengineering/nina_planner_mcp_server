@@ -206,7 +206,7 @@ _AUDIT_TYPES_UPPER = tuple(t.upper() for t in _AUDIT_TYPES)
 _FITS_SUFFIXES = (".fits", ".fits.fz")
 # Statuses that mean "not everything is saved/counted right" — the
 # `all_saved` verdict fails on any of them (see audit_plans' docstring).
-_AUDIT_BROKEN = ("MISSING_FILES", "ATTRIBUTION_LAG", "EXPIRED", "SUSPECT_JUNK")
+_AUDIT_BROKEN = ("MISSING_FILES", "EXPIRED", "SUSPECT_JUNK")
 
 
 async def _load_project_plans(
@@ -267,18 +267,29 @@ def _count_fits(token_dir: Path) -> dict[str, int]:
     name at any depth tolerates N.I.N.A. writing extra date folders or
     skipping them, and the ``.fits.fz``/``.fits`` suffix filter keeps the
     ImageMetaData/AcquisitionDetails sidecars out.
+
+    N.I.N.A. marks a rejected frame by renaming it with a ``.bad`` infix
+    (``M41_Light_001.fits`` -> ``M41_Light_001.bad.fits``). Those count under
+    ``bad_<type>`` instead of ``<type>`` so a deliberate reject never inflates
+    a type's on-disk total. The CSV row still points at the pre-rename name,
+    so the frame is dropped from attribution anyway; this keeps it out of
+    ``on_disk`` too, which is what stops it skewing the disk-vs-CSV picture.
     """
     counts: dict[str, int] = {}
     for path in token_dir.rglob("*"):
         if not path.is_file():
             continue
-        if not path.name.lower().endswith(_FITS_SUFFIXES):
+        name = path.name.lower()
+        if not name.endswith(_FITS_SUFFIXES):
             continue
         image_type = path.parent.name.upper()
         if image_type in _AUDIT_TYPES_UPPER:
             # Compare in uppercase, store in lowercase: every consumer
             # (rows, orphans, disk buckets) speaks the lowercase type names.
-            counts[image_type.lower()] = counts.get(image_type.lower(), 0) + 1
+            key = image_type.lower()
+            if ".bad." in name:
+                key = f"bad_{key}"
+            counts[key] = counts.get(key, 0) + 1
     return counts
 
 
@@ -387,25 +398,11 @@ def _status_for(
     """First-match-wins audit verdict (see audit_plans' docstring, §3 table).
 
     Order matters: the window-closed deficit (EXPIRED) must win over the
-    ``remaining == 0`` contract that would otherwise read it as done; the
-    attribution lag must win over MISSING_FILES because the frames *do*
-    exist and re-acquiring would duplicate them.
+    ``remaining == 0`` contract that would otherwise read it as done.
     """
     is_calibration = image_type != "light"
     if is_calibration and window_open is False and attributed < expected:
         return "EXPIRED"
-    if not is_calibration and remaining > 0 and on_disk > attributed and junk == 0:
-        # LIGHTS only: frames sit on disk but the CSV doesn't count them —
-        # remaining-mode would re-shoot exactly what already exists (the
-        # Oct-18 trap). junk == 0 guards the look-alike: junk frames are
-        # ALSO excluded from attribution (the ±0.05s exposure matcher runs
-        # on lights too), and there re-shooting is the correct action, so
-        # that gap falls through to MISSING_FILES with junk as the cause.
-        # Calibration is excluded because its pooled matchers
-        # (filter/exposure/window) have many legitimate reasons to skip an
-        # on-disk file — out-of-window, wrong exposure — where
-        # re-acquiring is the correct, conservative action.
-        return "ATTRIBUTION_LAG"
     if remaining > 0:
         return "MISSING_FILES"
     if junk > 0:
@@ -430,6 +427,7 @@ def _audit_row(
     window_open: bool | None,
     window_end: str | None,
     junk: int,
+    bad: int,
     pointing_index: int | None,
 ) -> dict[str, Any]:
     status = _status_for(
@@ -462,6 +460,11 @@ def _audit_row(
         "junk": junk,
         "status": status,
     }
+    if image_type == "light":
+        # Frames deliberately rejected via N.I.N.A.'s .bad rename. Excluded
+        # from on_disk above; reported so an operator can see how many were
+        # rejected, which explains a remaining deficit without implying a gap.
+        row["bad"] = bad
     if image_type != "light":
         row["window_open"] = window_open
         row["window_end"] = window_end
@@ -498,6 +501,9 @@ async def audit_plans(
       token = ``_{base_plan_id}_`` for single-pointing plans and
       calibration, ``_{base_plan_id}-{n}_`` per mosaic pane; counted by the
       TYPE-named parent directory at any depth, sidecar CSV/JSON excluded).
+      Frames N.I.N.A. rejected via its ``.bad`` rename
+      (``M41_Light_001.fits`` -> ``M41_Light_001.bad.fits``) are excluded
+      here and reported separately as the light row's ``bad`` count.
     - ``attributed`` / ``remaining`` — exactly what get_plan_progress
       reports: lights match the underscore token in the recorded path AND the
       exposure duration (±0.05s, so degenerate 0s frames never count);
@@ -509,17 +515,15 @@ async def audit_plans(
 
     Because calibration is pooled, ``attributed`` can legitimately exceed a
     plan's own ``on_disk`` (one bias set credits every plan) — that is
-    POOL_CREDITED, informational, not a gap. The dangerous direction is the
-    reverse: ``on_disk > attributed`` with ``remaining > 0`` means frames
-    exist that the CSV does not count, so a 'remaining'-mode load would
-    re-shoot duplicates — ATTRIBUTION_LAG: repair ImageMetaData, do NOT
-    reshoot.
+    POOL_CREDITED, informational, not a gap. The reverse, ``on_disk >
+    attributed`` with ``remaining > 0``, means frames exist that the CSV does
+    not count: either the Session Metadata plugin crashed before appending
+    their rows, or they were rejected via a ``.bad`` rename. Both are rare and
+    both are safe to re-shoot, so this audit reports them as the plain
+    MISSING_FILES deficit they are and does not attempt to distinguish them.
 
     ``status`` per row (first match wins): EXPIRED (window closed with an
     uncredited deficit — needs a new plan/window, shooting cannot fix it) →
-    ATTRIBUTION_LAG (lights only: files saved, not counted — repair, never
-    reshoot; calibration is excluded because its pooled matchers have many
-    legitimate skip reasons, where re-acquiring is the conservative action) →
     MISSING_FILES (remaining > 0 — shoot more; ``missing`` equals
     ``remaining``) → SUSPECT_JUNK (light/dark rows whose duration is under
     half the plan's exposure or 0.01s — e.g. 0.00003s Smart Exposure junk —
@@ -530,9 +534,9 @@ async def audit_plans(
     above expected from full-mode re-runs; harmless) → OK.
 
     Top level: ``all_saved`` (true iff no row is MISSING_FILES,
-    ATTRIBUTION_LAG, EXPIRED or SUSPECT_JUNK and no plan file failed to
+    EXPIRED or SUSPECT_JUNK and no plan file failed to
     load), ``totals``, ``left_to_do`` (ONLY rows a sequence run can fix,
-    with missing = remaining), ``attribution_debt`` (CSV-repair work),
+    with missing = remaining),
     ``blocked`` (EXPIRED — needs plan/window changes), ``rows`` (every
     plan × type, plus per-pointing light rows for mosaics; single-pointing
     plans carry pointing_index null), ``orphans`` (landing token directories
@@ -570,7 +574,6 @@ async def audit_plans(
                 "plan_errors": len(errors),
             },
             "left_to_do": [],
-            "attribution_debt": [],
             "blocked": [],
             "rows": [],
             "orphans": [],
@@ -639,7 +642,6 @@ async def audit_plans(
 
     rows_out: list[dict[str, Any]] = []
     left_to_do: list[dict[str, Any]] = []
-    attribution_debt: list[dict[str, Any]] = []
     blocked: list[dict[str, Any]] = []
 
     for _path, plan in loaded:
@@ -650,7 +652,9 @@ async def audit_plans(
             pointing = i if multi else None
 
             totals = _plan_type_totals(progress, "light")
-            light_disk = disk.get((base, pointing), {}).get("light", 0)
+            light_bucket = disk.get((base, pointing), {})
+            light_disk = light_bucket.get("light", 0)
+            light_bad = light_bucket.get("bad_light", 0)
             junk = _junk_count(plan, rows, "light", pointing_index=i)
             row = _audit_row(
                 plan=plan,
@@ -662,6 +666,7 @@ async def audit_plans(
                 window_open=totals["window_open"],
                 window_end=totals["window_end"],
                 junk=junk,
+                bad=light_bad,
                 pointing_index=pointing,
             )
             rows_out.append(row)
@@ -686,6 +691,7 @@ async def audit_plans(
                     window_open=totals["window_open"],
                     window_end=totals["window_end"],
                     junk=junk,
+                    bad=0,
                     pointing_index=None,
                 )
                 rows_out.append(row)
@@ -705,18 +711,6 @@ async def audit_plans(
                     "missing": row["remaining"],
                     "reason": status,
                     "action": _action_for(row["type"]),
-                }
-            )
-        elif status == "ATTRIBUTION_LAG":
-            attribution_debt.append(
-                {
-                    "plan_id": row["plan_id"],
-                    "target": row["target"],
-                    "pointing_index": row["pointing_index"],
-                    "type": row["type"],
-                    "on_disk": row["on_disk"],
-                    "attributed": row["attributed"],
-                    "action": "reindex/repair ImageMetaData, DO NOT reshoot",
                 }
             )
         elif status == "EXPIRED":
@@ -760,7 +754,6 @@ async def audit_plans(
             "plan_errors": len(errors),
         },
         "left_to_do": left_to_do,
-        "attribution_debt": attribution_debt,
         "blocked": blocked,
         "rows": rows_out,
         "orphans": orphans,

@@ -194,7 +194,6 @@ class AuditTest(AuditBase):
 
         self.assertTrue(res["all_saved"])
         self.assertEqual(res["left_to_do"], [])
-        self.assertEqual(res["attribution_debt"], [])
         self.assertEqual(res["blocked"], [])
         self.assertEqual(res["errors"], [])
         self.assertEqual(res["root"], str(self.root))
@@ -218,20 +217,43 @@ class AuditTest(AuditBase):
         self.assertIn("load_sequence light", res["left_to_do"][0]["action"])
         self.assertFalse(res["all_saved"])
 
-    async def test_attribution_lag_is_debt_not_reshoot(self):
-        # 20 frames on disk but the CSV only knows 15 — the Oct-18 trap:
-        # remaining stays positive while the files already exist.
+    async def test_unattributed_disk_frames_are_missing_files(self):
+        # 20 frames on disk but the CSV only knows 15. The CSV can lag or
+        # permanently drop rows (plugin crash), and a .bad rename looks the
+        # same — none are distinguishable from disk+CSV alone, so all fall
+        # through to the safe, self-correcting MISSING_FILES (re-shoot).
         self.seed_full(light_rows=15, light_files=20)
 
         res = await self.audit(project_dir=str(self.proj))
 
         light = self.row_by(res, "light")
-        self.assertEqual(light["status"], "ATTRIBUTION_LAG")
+        self.assertEqual(light["status"], "MISSING_FILES")
         self.assertEqual(light["on_disk"], 20)
         self.assertEqual(light["attributed"], 15)
-        self.assertEqual(res["left_to_do"], [])  # never "shoot more"
-        self.assertEqual(len(res["attribution_debt"]), 1)
-        self.assertIn("DO NOT reshoot", res["attribution_debt"][0]["action"])
+        self.assertEqual(light["remaining"], 5)
+        self.assertEqual(len(res["left_to_do"]), 1)
+        self.assertEqual(res["left_to_do"][0]["missing"], 5)
+        self.assertFalse(res["all_saved"])
+
+    async def test_bad_rename_is_counted_not_on_disk(self):
+        # N.I.N.A. rejects a frame by renaming it with a .bad infix. The CSV
+        # row still points at the pre-rename name (so it is not attributed),
+        # and the file must NOT count toward on_disk either — otherwise the
+        # reject masquerades as a disk-vs-CSV divergence. It is surfaced as
+        # the light row's `bad` count instead.
+        # 19 good + 1 bad-renamed file, but only 19 CSV rows (the bad frame's
+        # row is dropped by the file-exists gate once renamed).
+        self.seed_full(light_rows=19, light_files=19)
+        self.frame(_TOKEN, "LIGHT", "l_0019.bad.fits.fz")
+
+        res = await self.audit(project_dir=str(self.proj))
+
+        light = self.row_by(res, "light")
+        self.assertEqual(light["bad"], 1)
+        self.assertEqual(light["on_disk"], 19)  # the .bad file is excluded
+        self.assertEqual(light["attributed"], 19)
+        self.assertEqual(light["remaining"], 1)  # the rejected frame is a gap
+        self.assertEqual(light["status"], "MISSING_FILES")
         self.assertFalse(res["all_saved"])
 
     async def test_pooled_bias_credits_from_another_dir(self):
