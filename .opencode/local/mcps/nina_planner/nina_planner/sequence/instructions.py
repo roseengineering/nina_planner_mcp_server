@@ -137,7 +137,7 @@ def sky_flats(count: int, filter_name: str, filter_position: int) -> dict[str, A
         ],
     ) | {
         "MinExposure": 0.0,
-        "MaxExposure": 10.0,
+        "MaxExposure": 30.0,
         "HistogramTargetPercentage": 0.5,
         "HistogramTolerancePercentage": 0.1,
         "ShouldDither": False,
