@@ -886,16 +886,17 @@ class SequenceBehaviorTest(unittest.TestCase):
 
     def test_single_step_sequence_brackets_its_one_step(self):
         """The Start/End run bracket wraps a one-entry load too, and stays
-        out of the Target area, which holds exactly the step."""
+        out of the Target area, which holds exactly the step. The Start area
+        leads with the equipment connect, then the bracketing event."""
         from sequence_helpers import build_sequence_lights
 
         result = build_sequence_lights(
             self._plan(), equipment=ObservatoryEquipment(), profile=_profile()
         )
         start, target, _end = _items(result)
-        self.assertEqual(
-            start["Items"]["$values"][0]["Message"], "RUN-STARTING: 1 step"
-        )
+        start_items = start["Items"]["$values"]
+        self.assertIn("ConnectAllEquipment", start_items[0]["$type"])
+        self.assertEqual(start_items[1]["Message"], "RUN-STARTING: 1 step")
         self.assertEqual(len(target["Items"]["$values"]), 1)
         self.assertIn("RUN-FINISHED: 1 step complete", _event_messages(result))
 
@@ -1109,10 +1110,11 @@ class SequenceBehaviorTest(unittest.TestCase):
 
     def test_end_area_waits_three_minutes_then_stows_and_warms(self):
         """The End area waits out one bounded "On Safe" pass — a single
-        3-minute iteration gated on the safety monitor — then parks and warms.
-        Bounded matters: a teardown sequence completes within that one pass
-        (immediately when the enclosure is already closed) instead of idling
-        until sunrise, so "nothing running" stays an unambiguous state."""
+        3-minute iteration gated on the safety monitor — then announces and
+        performs the stow: park, then warm. Bounded matters: a teardown
+        sequence completes within that one pass (immediately when the
+        enclosure is already closed) instead of idling until sunrise, so
+        "nothing running" stays an unambiguous state."""
         from nina_planner.sequence import sequence_end
 
         mount = MountDevice(connected=True, name="m", can_park=True)
@@ -1148,14 +1150,31 @@ class SequenceBehaviorTest(unittest.TestCase):
 
         # Neither container carries a safety condition of its own — the
         # single gate lives inside the wait container — and the stow warms
-        # only after waiting, connecting and parking.
+        # only after waiting, announcing, connecting and parking. The stow
+        # re-connects here (the Start area also connects) so it is
+        # self-contained even if the run never connected.
         self.assertEqual(len(_find_items(end, "SafetyMonitorCondition")), 1)
         order = [item.get("$type", "") for item in stow[0]["Items"]["$values"]]
-        self.assertEqual(len(order), 4, "wait, then connect, then park, then warm")
+        self.assertEqual(
+            len(order), 6, "wait, stow-starting, connect, park, warm, stow-finished"
+        )
         self.assertIn("SequentialContainer", order[0])
-        self.assertIn("ConnectAllEquipment", order[1])
-        self.assertIn("ParkScope", order[2])
-        self.assertIn("WarmCamera", order[3])
+        self.assertIn("SendEventInstruction", order[1])
+        self.assertIn("ConnectAllEquipment", order[2])
+        self.assertIn("ParkScope", order[3])
+        self.assertIn("WarmCamera", order[4])
+        self.assertIn("SendEventInstruction", order[5])
+        stow_messages = [
+            item["Message"]
+            for item in stow[0]["Items"]["$values"]
+            if "SendEventInstruction" in item.get("$type", "")
+        ]
+        self.assertEqual(stow_messages, ["STOW-STARTING", "STOW-FINISHED"])
+        self.assertEqual(
+            [i["Message"] for i in wait["Items"]["$values"] if "Message" in i],
+            ["PRESTOW-DELAY: 3 min"],
+            "the wait announces itself",
+        )
 
     def test_end_area_stow_is_capability_driven(self):
         from nina_planner.sequence import sequence_end
@@ -1506,9 +1525,10 @@ class BuildSequenceManyTest(unittest.TestCase):
         self.assertTrue(any("ParkScope" in t for t in end_types))
 
     def test_run_is_bracketed_by_starting_and_finished_events(self):
-        """`RUN-STARTING` opens the Start area and `RUN-FINISHED` heads the
-        End area — the only place N.I.N.A. reaches when nothing in the run
-        is left, so it is the trustworthy end-of-run signal."""
+        """`RUN-STARTING` follows the equipment connect in the Start area and
+        `RUN-FINISHED` heads the End area — the only place N.I.N.A. reaches
+        when nothing in the run is left, so it is the trustworthy end-of-run
+        signal."""
         from nina_planner.sequence import (
             build_sequence_many,
             target_payload_darks,
@@ -1526,9 +1546,9 @@ class BuildSequenceManyTest(unittest.TestCase):
         result = build_sequence_many(equipment, payloads)
 
         start, target, end = _items(result)
-        self.assertEqual(
-            start["Items"]["$values"][0]["Message"], "RUN-STARTING: 3 steps"
-        )
+        start_items = start["Items"]["$values"]
+        self.assertIn("ConnectAllEquipment", start_items[0]["$type"])
+        self.assertEqual(start_items[1]["Message"], "RUN-STARTING: 3 steps")
         stow = end["Items"]["$values"]
         self.assertEqual([i["Name"] for i in stow], ["Stow Telescope"])
         self.assertEqual(

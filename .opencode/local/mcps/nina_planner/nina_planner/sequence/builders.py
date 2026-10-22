@@ -282,12 +282,17 @@ def sequence_end(
     # the camera. The wait is a single 3-minute iteration gated on the safety
     # monitor, so it is skipped entirely when the enclosure is already closed
     # and never idles until sunrise (see test_end_area_waits_three_minutes_*).
+    # Equipment connects in the Start area (see _sequence_with_steps) and
+    # again here before park, so the stow is self-contained even if the
+    # run never connected.
     #
     # With steps behind it, the very first instruction announces the finished
     # run: the End area is reached only when the Target area has nothing
     # left, so this fires before the wait and before park — while the night
     # can still be re-planned. An empty request passes step_count=0 and stays
-    # silent, so a stow never reads as a finished run.
+    # silent, so a stow never reads as a finished run. The park and the warm
+    # are each bracketed by their own event so the log shows exactly when
+    # the scope went away and when it is safe to open the dome.
     delay_minutes = 3
     head = [run_finished_event(step_count)] if step_count else []
     return container_end(
@@ -300,12 +305,17 @@ def sequence_end(
                         container_sequential(
                             name="On Safe",
                             conditions=[loop_while_safe(), loop_for_iterations(1)],
-                            instructions=[wait_for_timespan(delay_minutes * 60)],
+                            instructions=[
+                                send_event(f"PRESTOW-DELAY: {delay_minutes} min"),
+                                wait_for_timespan(delay_minutes * 60),
+                            ],
                         ),
+                        send_event("STOW-STARTING"),
                         connect_all_equipment(),
                     ]
                     + sequence_park_scope(equipment)
                     + sequence_warm_camera(equipment)
+                    + [send_event("STOW-FINISHED")]
                 ),
             )
         ]
@@ -325,7 +335,10 @@ def _sequence_with_steps(
     """
     return container_root(
         [
-            container_start([run_starting_event(step_count)] if step_count else []),
+            container_start(
+                [connect_all_equipment()]
+                + ([run_starting_event(step_count)] if step_count else [])
+            ),
             container_target(steps),
             sequence_end(equipment, step_count=step_count),
         ]
