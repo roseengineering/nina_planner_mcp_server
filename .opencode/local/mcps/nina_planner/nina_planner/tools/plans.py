@@ -268,8 +268,9 @@ def _count_fits(token_dir: Path) -> dict[str, int]:
     skipping them, and the ``.fits.fz``/``.fits`` suffix filter keeps the
     ImageMetaData/AcquisitionDetails sidecars out.
 
-    N.I.N.A. marks a rejected frame by renaming it with a ``.bad`` infix
-    (``M41_Light_001.fits`` -> ``M41_Light_001.bad.fits``). Those count under
+    N.I.N.A. marks a rejected frame by prefixing its filename with ``BAD_``
+    (verified against the live landing dir: ``2026-10-22_04-46-37_L_...fits.fz``
+    -> ``BAD_2026-10-22_04-46-37_L_...fits.fz``). Those count under
     ``bad_<type>`` instead of ``<type>`` so a deliberate reject never inflates
     a type's on-disk total. The CSV row still points at the pre-rename name,
     so the frame is dropped from attribution anyway; this keeps it out of
@@ -287,7 +288,7 @@ def _count_fits(token_dir: Path) -> dict[str, int]:
             # Compare in uppercase, store in lowercase: every consumer
             # (rows, orphans, disk buckets) speaks the lowercase type names.
             key = image_type.lower()
-            if ".bad." in name:
+            if name.startswith("bad_"):
                 key = f"bad_{key}"
             counts[key] = counts.get(key, 0) + 1
     return counts
@@ -461,9 +462,10 @@ def _audit_row(
         "status": status,
     }
     if image_type == "light":
-        # Frames deliberately rejected via N.I.N.A.'s .bad rename. Excluded
-        # from on_disk above; reported so an operator can see how many were
-        # rejected, which explains a remaining deficit without implying a gap.
+        # Frames deliberately rejected via N.I.N.A.'s BAD_ filename prefix.
+        # Excluded from on_disk above; reported so an operator can see how
+        # many were rejected, which explains a remaining deficit without
+        # implying a gap.
         row["bad"] = bad
     if image_type != "light":
         row["window_open"] = window_open
@@ -501,8 +503,9 @@ async def audit_plans(
       token = ``_{base_plan_id}_`` for single-pointing plans and
       calibration, ``_{base_plan_id}-{n}_`` per mosaic pane; counted by the
       TYPE-named parent directory at any depth, sidecar CSV/JSON excluded).
-      Frames N.I.N.A. rejected via its ``.bad`` rename
-      (``M41_Light_001.fits`` -> ``M41_Light_001.bad.fits``) are excluded
+      Frames N.I.N.A. rejected via its ``BAD_`` filename prefix
+      (``2026-10-22_04-46-37_L_...fits.fz`` ->
+      ``BAD_2026-10-22_04-46-37_L_...fits.fz``) are excluded
       here and reported separately as the light row's ``bad`` count.
     - ``attributed`` / ``remaining`` — exactly what get_plan_progress
       reports: lights match the underscore token in the recorded path AND the
@@ -518,8 +521,8 @@ async def audit_plans(
     POOL_CREDITED, informational, not a gap. The reverse, ``on_disk >
     attributed`` with ``remaining > 0``, means frames exist that the CSV does
     not count: either the Session Metadata plugin crashed before appending
-    their rows, or they were rejected via a ``.bad`` rename. Both are rare and
-    both are safe to re-shoot, so this audit reports them as the plain
+    their rows, or they were rejected via a ``BAD_`` filename prefix. Both are
+    rare and both are safe to re-shoot, so this audit reports them as the plain
     MISSING_FILES deficit they are and does not attempt to distinguish them.
 
     ``status`` per row (first match wins): EXPIRED (window closed with an

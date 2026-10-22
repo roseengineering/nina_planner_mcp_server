@@ -218,10 +218,13 @@ class AuditTest(AuditBase):
         self.assertFalse(res["all_saved"])
 
     async def test_unattributed_disk_frames_are_missing_files(self):
-        # 20 frames on disk but the CSV only knows 15. The CSV can lag or
-        # permanently drop rows (plugin crash), and a .bad rename looks the
-        # same — none are distinguishable from disk+CSV alone, so all fall
-        # through to the safe, self-correcting MISSING_FILES (re-shoot).
+        # 20 frames on disk but the CSV only knows 15 — the Session Metadata
+        # plugin crashed before appending their rows. Disk and CSV disagree
+        # and nothing in the data says which frame is unrecorded, so the
+        # deficit falls through to the safe, self-correcting MISSING_FILES
+        # (re-shoot) rather than a verdict that could advise against it.
+        # BAD_-rejected frames do not land here: they are excluded from
+        # on_disk and attributed alike, and surface via `bad` instead.
         self.seed_full(light_rows=15, light_files=20)
 
         res = await self.audit(project_dir=str(self.proj))
@@ -236,21 +239,22 @@ class AuditTest(AuditBase):
         self.assertFalse(res["all_saved"])
 
     async def test_bad_rename_is_counted_not_on_disk(self):
-        # N.I.N.A. rejects a frame by renaming it with a .bad infix. The CSV
-        # row still points at the pre-rename name (so it is not attributed),
-        # and the file must NOT count toward on_disk either — otherwise the
-        # reject masquerades as a disk-vs-CSV divergence. It is surfaced as
-        # the light row's `bad` count instead.
-        # 19 good + 1 bad-renamed file, but only 19 CSV rows (the bad frame's
-        # row is dropped by the file-exists gate once renamed).
+        # N.I.N.A. rejects a frame by prefixing its filename with BAD_
+        # (verified against the live landing dir). The CSV row still points at
+        # the pre-rename name (so it is not attributed), and the file must NOT
+        # count toward on_disk either — otherwise the reject masquerades as a
+        # disk-vs-CSV divergence. It is surfaced as the light row's `bad`
+        # count instead.
+        # 19 good + 1 BAD_-prefixed file, but only 19 CSV rows (the bad
+        # frame's row is dropped by the file-exists gate once renamed).
         self.seed_full(light_rows=19, light_files=19)
-        self.frame(_TOKEN, "LIGHT", "l_0019.bad.fits.fz")
+        self.frame(_TOKEN, "LIGHT", "BAD_l_0019.fits.fz")
 
         res = await self.audit(project_dir=str(self.proj))
 
         light = self.row_by(res, "light")
         self.assertEqual(light["bad"], 1)
-        self.assertEqual(light["on_disk"], 19)  # the .bad file is excluded
+        self.assertEqual(light["on_disk"], 19)  # the BAD_ file is excluded
         self.assertEqual(light["attributed"], 19)
         self.assertEqual(light["remaining"], 1)  # the rejected frame is a gap
         self.assertEqual(light["status"], "MISSING_FILES")
