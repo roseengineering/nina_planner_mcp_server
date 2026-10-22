@@ -387,7 +387,19 @@ def plan_progress(
     ``window_end`` (the window's upper bound, ``anchor + window``, rendered in
     the host's local time with its UTC offset — the arithmetic behind it runs
     on naive UTC), so a zero remaining can be told apart from a finished plan.
-    Light items carry neither.
+    Light items carry neither, but do carry ``surplus_count`` — frames
+    attributed beyond the plan's ``total_count``. It cannot exceed zero for
+    calibration, so it is lights-only.
+
+    ``surplus_count`` exists because ``acquired_count`` is cumulative across
+    every run of the plan while ``total_count`` is a per-plan constant. A
+    ``mode=full`` re-shoot asks N.I.N.A. for ``total_count`` *more* frames,
+    but older frames keep satisfying the plan, so ``remaining_count`` stays 0
+    and ``complete`` stays true whether the re-shoot delivered all of them or
+    a handful. Surplus is the one signal here that a re-shoot happened at all;
+    it is a flag to investigate, not a verdict — a target legitimately shot on
+    several nights accumulates the same surplus. ``audit_plans`` and the
+    per-date frame folders are what separate those two cases.
     """
     # `now` defaults to the host clock in UTC; an aware caller value is
     # converted to UTC, and a naive one is taken as already-UTC — the same
@@ -429,6 +441,21 @@ def plan_progress(
                 "acquired_count": acquired,
                 "remaining_count": max(total - acquired, 0),
             }
+            if image_type == "LIGHT":
+                # Frames beyond what the plan asked for. Deliberately
+                # lights-only: calibration is pool-credited by type+filter
+                # across plans, so a flat group routinely reads 103/20 and a
+                # surplus there would be permanent noise on every plan.
+                #
+                # This is the field that catches a truncated mode=full
+                # re-shoot, which `remaining_count` cannot: the re-shoot asks
+                # for `total_count` *more* frames, but acquired is cumulative
+                # across every run, so older frames keep satisfying the plan
+                # and remaining stays 0 no matter what the re-shoot delivered.
+                # M42 read acquired=137 / total=120 / remaining=0 at 17/120
+                # frames for the night; surplus=17 is the only number in this
+                # output that exposes it.
+                item["surplus_count"] = max(acquired - total, 0)
             if image_type != "LIGHT":
                 item["window_open"] = window_open
                 # window_end is a naive-UTC instant; attach UTC so it renders

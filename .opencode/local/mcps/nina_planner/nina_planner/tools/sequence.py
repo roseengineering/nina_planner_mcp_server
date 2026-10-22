@@ -4,6 +4,7 @@ from typing import Any, cast
 from .. import client, config, metadata, plan_utils
 from ..app import mcp
 from ..models.observatory import ObservatoryEquipment
+from ..models.plan import ObservationPlan
 from ..models.profile import ObservatoryProfile
 from ..models.request import SequenceRequest
 from ..progress import plan_progress, plan_with_remaining
@@ -32,7 +33,7 @@ async def load_sequence(
     Every entry is one `request` object: `action`, plus `variant` (how the action runs), `plan` (path to the observation-plan JSON file), `pointing_index`, `mode`, and the optional quality thresholds.
 
     `action` decides WHAT gets built from `request.plan`, which every action requires:
-    - `light` / `dark` / `bias` / `flat` build that frame sequence. `pointing_index` (1-based, optional, default 1 when omitted) selects which pointing of the plan to load; it applies to lights only. Calibration (dark/bias/flat) is plan-level: its remaining is computed for the whole plan, not per pointing, so a calibration request must omit `pointing_index` — passing one is rejected. Lights embed the attribution token in the target name so each pointing's frames are attributed independently: `_{base_plan_id}_` for a single-pointing plan (shared with the plan's calibration), `_{base_plan_id}-{pointing_index}_` per pane for a mosaic. Light loads require `$$TARGETNAME$$` in the active profile's FilePattern for attribution. In the default `remaining` mode the sequence only acquires frames still needed (total minus frames already attributed to this plan/pointing in the imaging metadata); if nothing remains it reports the plan as complete and loads nothing. max_hfr and/or min_detected_stars exclude light frames failing quality thresholds from the acquired count. Pass `mode="full"` to acquire the entire plan again.
+    - `light` / `dark` / `bias` / `flat` build that frame sequence. `pointing_index` (1-based, optional, default 1 when omitted) selects which pointing of the plan to load; it applies to lights only. Calibration (dark/bias/flat) is plan-level: its remaining is computed for the whole plan, not per pointing, so a calibration request must omit `pointing_index` — passing one is rejected. Lights embed the attribution token in the target name so each pointing's frames are attributed independently: `_{base_plan_id}_` for a single-pointing plan (shared with the plan's calibration), `_{base_plan_id}-{pointing_index}_` per pane for a mosaic. Light loads require `$$TARGETNAME$$` in the active profile's FilePattern for attribution. In the default `remaining` mode the sequence only acquires frames still needed (total minus frames already attributed to this plan/pointing in the imaging metadata); if nothing remains it reports the plan as complete and loads nothing. max_hfr and/or min_detected_stars exclude light frames failing quality thresholds from the acquired count. Pass `mode="full"` to acquire the entire plan again. A full-mode load of a group that is already complete appends a warning naming the frame count, because nothing downstream can verify the outcome afterwards: `get_plan_progress` reports the plan `complete: true` whether the re-shoot delivered every frame or a handful, since its acquired counts are cumulative across runs. Check what actually landed with `audit_plans` and the per-date frame folders after a full-mode run.
 
     `variant` decides HOW an action runs and is scoped to it — it is validated against the action, and a bad pairing fails naming the entry:
     - `flat` REQUIRES `dawn` (morning twilight — waits for dawn) or `dusk` (evening twilight — waits for sunset).
@@ -57,6 +58,50 @@ async def load_sequence(
         except ValueError as e:
             raise ValueError(f"request[{i}]: not a valid SequenceRequest: {e}") from e
     return await _load_many(requests)
+
+
+async def _full_mode_note(
+    plan: ObservationPlan,
+    group: str,
+    pointing_index: int,
+    total: int,
+    now: datetime,
+) -> str:
+    """Warning appended to a ``mode="full"`` load whose frames already exist.
+
+    ``mode="full"`` re-acquires the whole group whatever is already
+    attributed, so loading it against a complete plan silently collapses
+    "acquire more" and "acquire again" into one another. Nothing downstream
+    can tell them apart afterwards: ``get_plan_progress`` reports the plan
+    ``complete: true, remaining: 0`` either way, because acquired counts are
+    cumulative across runs. Loading is the last point where the operator can
+    still revisit the decision, and the only point where the re-shoot's
+    intended size is known — so say it here.
+
+    Lights only. Calibration is pool-credited by type+filter across plans, so
+    a dark/bias/flat group reads "already complete" on nearly every plan and
+    warning on it would fire on every routine calibration load.
+
+    A metadata read failure must not block the load: ``mode="full"`` is the
+    mode chosen precisely when remaining counts are not to be trusted, and a
+    plan file plus a full-mode request is enough to load. Any read error
+    therefore yields no warning rather than an error.
+    """
+    if group != "light":
+        return ""
+    try:
+        rows = await metadata.read_metadata()
+    except (RuntimeError, FileNotFoundError):
+        return ""
+    progress = plan_progress(plan, rows, pointing_index=pointing_index, now=now)
+    if any(item["remaining_count"] > 0 for item in progress[group]):
+        return ""
+    return (
+        f" ⚠️ already complete — mode=full re-acquires all {total} frames on "
+        "top of what is already attributed. get_plan_progress will still read "
+        "complete:true afterwards, so verify what actually landed with "
+        "audit_plans and the per-date frame folders."
+    )
 
 
 async def _load_many(requests: list[SequenceRequest]) -> str:
@@ -177,7 +222,10 @@ async def _load_many(requests: list[SequenceRequest]) -> str:
                 "flat": plan.flat_frames,
             }
             frames = frame_groups[group]
-            note = f"{sum(f.total_count for f in frames)} frame(s), mode=full"
+            total = sum(f.total_count for f in frames)
+            note = f"{total} frame(s), mode=full" + await _full_mode_note(
+                plan, group, pointing_index, total, await now()
+            )
         else:
             raise ValueError(
                 f"Unsupported mode: {request.mode} (use 'remaining' or 'full')"

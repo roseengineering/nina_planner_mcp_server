@@ -72,11 +72,12 @@ If a trigger fires, report the numbers and ask; do not stop a sequence unilatera
 
 ## 5. Verifying what actually landed
 
-`get_plan_progress` reports `complete: true` from **attributed** counts, which can mask a shortfall on a `mode=full` re-shoot: M42 reported `acquired_count 137, complete: true` at 17/120 because it summed a prior night's 120 with tonight's 17.
+`get_plan_progress` reports `complete: true` from **attributed** counts, which masks a shortfall on a `mode=full` re-shoot: M42 reported `acquired_count 137, complete: true` at 17/120 because it summed a prior night's 120 with tonight's 17.
 
+- **Read the top-level `overshot` bool and `warning` string first.** `complete: true` with `overshot: true` means this target has been acquired more than once — either a re-shoot or separate nights under the same plan id — and in that case `complete` only means "these frames exist", never "the last run delivered". Light items carry the underlying `surplus_count` (frames beyond `total_count`). Absent on calibration, which is pool-credited and so routinely overshoots.
 - Use `audit_plans` for the true shape (`expected` / `on_disk` / `attributed` / `status`).
-- For definitive proof, count files per date folder on the drive mount — date folders are NINA **observing** days (post-19:01 rollover), so a 02:17 clock-time capture lands in the *previous* date's folder.
-- **Always verify a `mode=full` re-shoot this way; never trust `complete: true`.**
+- For definitive proof, count files per date folder on the drive mount — date folders are NINA **observing** days (post-19:01 rollover), so a 02:17 clock-time capture lands in the *previous* date's folder. M42 read `2026-10-20/: 120` and `2026-10-21/: 17`.
+- **Always verify a `mode=full` re-shoot this way; never trust `complete: true` on its own.** `load_sequence` now warns at load time when a full-mode request targets an already-complete light group, but that warning is absent when metadata is unreadable, so it is a prompt to check, not a guarantee.
 
 Calibration (`flat`/`dark`/`bias`) is pool-credited by type+filter across plans, so a plan can show those complete without its own frames ever having been shot. Trust `audit_plans`'s `POOL_CREDITED` status, not the raw counts.
 

@@ -1109,6 +1109,125 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
             "window_open", result["pointings"][0]["frame_types"]["light"][0]
         )
 
+    async def test_get_plan_progress_flags_overshoot_with_warning(self):
+        """`complete: true` plus `overshot` is how a truncated mode=full
+        re-shoot becomes visible.
+
+        The plan's frames genuinely exist, so complete stays true — but more
+        of them exist than the plan ever asked for, which is the only trace
+        here that a second run happened at all.
+        """
+        from nina_planner.server import get_plan_progress
+
+        plan_dict = {
+            "plan_id": "plan-test123",
+            "target": "M31",
+            "pointings": [{"ra_hours": 5.0, "dec_deg": 10.0}],
+            "light_frames": [
+                {"filter_name": "L", "exposure_time_seconds": 60.0, "total_count": 1}
+            ],
+            "flat_frames": [{"filter_name": "L", "total_count": 1}],
+            "dark_frames": [{"exposure_time_seconds": 60.0, "total_count": 1}],
+            "bias_frames": [{"total_count": 1}],
+        }
+        # Three lights attributed where the plan asks for one, plus enough
+        # calibration to finish the plan outright — so the story below is a
+        # genuinely complete plan that overshot, not a partial one.
+        rows = [
+            {
+                "image_type": "LIGHT",
+                "file_path": f"C:/NINA/LIGHT/M31 _plan-test123__60.00s_{i:04d}.fits",
+                "duration": "60.0",
+                "filter_name": "L",
+                "hfr": "1.50",
+                "detected_stars": "100",
+            }
+            for i in range(3)
+        ] + [
+            {
+                "image_type": "FLAT",
+                "file_path": "C:/NINA/FLAT/M31 _plan-test123__0.10s_0000.fits",
+                "filter_name": "L",
+                "exposure_start_utc": "2026-10-22T05:00:00Z",
+            },
+            {
+                "image_type": "DARK",
+                "file_path": "C:/NINA/DARK/M31 _plan-test123__60.00s_0000.fits",
+                "duration": "60.0",
+                "exposure_start_utc": "2026-10-22T05:00:00Z",
+            },
+            {
+                "image_type": "BIAS",
+                "file_path": "C:/NINA/BIAS/M31 _plan-test123__0.00s_0000.fits",
+                "exposure_start_utc": "2026-10-22T05:00:00Z",
+            },
+        ]
+
+        with tempfile.TemporaryDirectory() as tmp:
+            plan_path = Path(tmp) / "plan.json"
+            plan_path.write_text(json.dumps(plan_dict))
+
+            with patch(
+                "nina_planner.metadata.read_metadata",
+                AsyncMock(return_value=rows),
+            ):
+                result = await get_plan_progress(str(plan_path))
+
+        light = result["pointings"][0]["frame_types"]["light"][0]
+        # The plan is satisfied, and stays reported as such...
+        self.assertTrue(result["complete"])
+        self.assertEqual(light["acquired_count"], 3)
+        self.assertEqual(light["remaining_count"], 0)
+        # ...but the surplus is surfaced rather than silently swallowed.
+        self.assertEqual(light["surplus_count"], 2)
+        self.assertTrue(result["overshot"])
+        self.assertIn("2 light frame(s)", result["warning"])
+        # The warning has to say what to do next, not just that something is
+        # odd — complete:true alone is what an operator sees after a
+        # re-shoot lost frames.
+        self.assertIn("audit_plans", result["warning"])
+        self.assertIn("does NOT", result["warning"])
+
+    async def test_get_plan_progress_no_overshoot_when_within_total(self):
+        from nina_planner.server import get_plan_progress
+
+        plan_dict = {
+            "plan_id": "plan-test123",
+            "target": "M31",
+            "pointings": [{"ra_hours": 5.0, "dec_deg": 10.0}],
+            "light_frames": [
+                {"filter_name": "L", "exposure_time_seconds": 60.0, "total_count": 2}
+            ],
+            "flat_frames": [{"filter_name": "L", "total_count": 1}],
+            "dark_frames": [{"exposure_time_seconds": 60.0, "total_count": 1}],
+            "bias_frames": [{"total_count": 1}],
+        }
+        rows = [
+            {
+                "image_type": "LIGHT",
+                "file_path": "C:/NINA/LIGHT/M31 _plan-test123__60.00s_0000.fits",
+                "duration": "60.0",
+                "filter_name": "L",
+                "hfr": "1.50",
+                "detected_stars": "100",
+            }
+        ]
+
+        with tempfile.TemporaryDirectory() as tmp:
+            plan_path = Path(tmp) / "plan.json"
+            plan_path.write_text(json.dumps(plan_dict))
+
+            with patch(
+                "nina_planner.metadata.read_metadata",
+                AsyncMock(return_value=rows),
+            ):
+                result = await get_plan_progress(str(plan_path))
+
+        light = result["pointings"][0]["frame_types"]["light"][0]
+        self.assertEqual(light["surplus_count"], 0)
+        self.assertFalse(result["overshot"])
+        self.assertIsNone(result["warning"])
+
     def _write_mosaic_source(self, directory: Path, *, pa: float = 0.0, rows: int = 2):
         directory.mkdir(parents=True, exist_ok=True)
         plan_path = directory / "base.json"
@@ -1875,8 +1994,6 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
             api_post.assert_not_awaited()
 
     async def test_load_sequence_full_mode(self):
-        from unittest.mock import MagicMock as _MM
-
         from nina_planner.server import load_sequence
 
         plan_dict = {
@@ -1895,7 +2012,11 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
             plan_path = Path(tmp) / "plan.json"
             plan_path.write_text(json.dumps(plan_dict))
 
-            # In full mode, _read_metadata is NOT called.
+            # Full mode must not *require* metadata. The already-complete
+            # warning below reads it to spot a re-shoot over a finished plan,
+            # but full mode is the mode chosen precisely when remaining
+            # counts are not to be trusted — so an unreadable drive has to
+            # degrade to "no warning", never to a failed load.
             with (
                 patch(
                     "nina_planner.tools.equipment.get_site_profile",
@@ -1907,7 +2028,7 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
                 ),
                 patch(
                     "nina_planner.metadata.read_metadata",
-                    new=_MM(side_effect=AssertionError("should not be called")),
+                    new=AsyncMock(side_effect=FileNotFoundError("no drive")),
                 ),
                 patch(
                     "nina_planner.client.api_post",
@@ -1934,6 +2055,191 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(api_post.await_args.args[0], "/sequence/load")
         # Loading is the only API call: no running-state pre-check, no start.
         api_get.assert_not_awaited()
+
+    async def test_load_sequence_full_mode_warns_when_already_complete(self):
+        """A full-mode re-shoot over an already-complete plan says so at load.
+
+        Nothing downstream can verify the outcome afterwards — get_plan_progress
+        reports `complete: true` whether the re-shoot delivered every frame or
+        a handful — so the load line is the only place the operator is told.
+        """
+        from nina_planner.server import load_sequence
+
+        plan_dict = {
+            "plan_id": "plan-test123",
+            "target": "M31",
+            "pointings": [{"ra_hours": 5.0, "dec_deg": 10.0}],
+            "light_frames": [
+                {"filter_name": "L", "exposure_time_seconds": 60.0, "total_count": 1}
+            ],
+            "flat_frames": [{"filter_name": "L", "total_count": 1}],
+            "dark_frames": [{"exposure_time_seconds": 60.0, "total_count": 1}],
+            "bias_frames": [{"total_count": 1}],
+        }
+        # One already-attributed light, so the group reads complete.
+        rows = [
+            {
+                "image_type": "LIGHT",
+                "file_path": (
+                    r"Z:\landing\M31 _plan-test123_\2026-10-22"
+                    r"\LIGHT\frame_0000.fits.fz"
+                ),
+                "duration": "60.0",
+                "filter_name": "L",
+                "hfr": "1.50",
+                "detected_stars": "100",
+            }
+        ]
+
+        with tempfile.TemporaryDirectory() as tmp:
+            plan_path = Path(tmp) / "plan.json"
+            plan_path.write_text(json.dumps(plan_dict))
+
+            with (
+                patch(
+                    "nina_planner.tools.equipment.get_site_profile",
+                    AsyncMock(return_value=self._full_profile()),
+                ),
+                patch(
+                    "nina_planner.tools.equipment._get_site_equipment_status",
+                    AsyncMock(return_value=ObservatoryEquipment()),
+                ),
+                patch(
+                    "nina_planner.metadata.read_metadata",
+                    AsyncMock(return_value=rows),
+                ),
+                patch("nina_planner.client.api_post", AsyncMock(return_value={})),
+                patch("nina_planner.client.api_get", AsyncMock(return_value={})),
+            ):
+                result = await load_sequence(
+                    [
+                        SequenceRequest(
+                            plan=str(plan_path),
+                            action="light",
+                            pointing_index=1,
+                            mode="full",
+                        )
+                    ]
+                )
+
+        self.assertIn("1 frame(s), mode=full", result)
+        self.assertIn("already complete", result)
+        # The warning must never block the load itself.
+        self.assertIn("Sequence loaded (1 of 1 step(s))", result)
+
+    async def test_load_sequence_full_mode_silent_when_frames_outstanding(self):
+        """No warning when the group still has frames to acquire — that is an
+        ordinary full-mode load, not a re-shoot over a finished plan."""
+        from nina_planner.server import load_sequence
+
+        plan_dict = {
+            "plan_id": "plan-test123",
+            "target": "M31",
+            "pointings": [{"ra_hours": 5.0, "dec_deg": 10.0}],
+            "light_frames": [
+                {"filter_name": "L", "exposure_time_seconds": 60.0, "total_count": 5}
+            ],
+            "flat_frames": [{"filter_name": "L", "total_count": 1}],
+            "dark_frames": [{"exposure_time_seconds": 60.0, "total_count": 1}],
+            "bias_frames": [{"total_count": 1}],
+        }
+
+        with tempfile.TemporaryDirectory() as tmp:
+            plan_path = Path(tmp) / "plan.json"
+            plan_path.write_text(json.dumps(plan_dict))
+
+            with (
+                patch(
+                    "nina_planner.tools.equipment.get_site_profile",
+                    AsyncMock(return_value=self._full_profile()),
+                ),
+                patch(
+                    "nina_planner.tools.equipment._get_site_equipment_status",
+                    AsyncMock(return_value=ObservatoryEquipment()),
+                ),
+                patch(
+                    "nina_planner.metadata.read_metadata",
+                    AsyncMock(return_value=[]),
+                ),
+                patch("nina_planner.client.api_post", AsyncMock(return_value={})),
+                patch("nina_planner.client.api_get", AsyncMock(return_value={})),
+            ):
+                result = await load_sequence(
+                    [
+                        SequenceRequest(
+                            plan=str(plan_path),
+                            action="light",
+                            pointing_index=1,
+                            mode="full",
+                        )
+                    ]
+                )
+
+        self.assertIn("5 frame(s), mode=full", result)
+        self.assertNotIn("already complete", result)
+        self.assertIn("Sequence loaded (1 of 1 step(s))", result)
+
+    async def test_load_sequence_full_mode_calibration_never_warns(self):
+        """Calibration is pool-credited across plans, so a dark group reads
+        "already complete" on nearly every plan — warning there would fire on
+        every routine calibration load and mean nothing."""
+        from nina_planner.server import load_sequence
+
+        plan_dict = {
+            "plan_id": "plan-test123",
+            "target": "M31",
+            "pointings": [{"ra_hours": 5.0, "dec_deg": 10.0}],
+            "light_frames": [
+                {"filter_name": "L", "exposure_time_seconds": 60.0, "total_count": 1}
+            ],
+            "flat_frames": [{"filter_name": "L", "total_count": 1}],
+            "dark_frames": [{"exposure_time_seconds": 60.0, "total_count": 1}],
+            "bias_frames": [{"total_count": 1}],
+        }
+        # Every frame type already present and inside its window, so the dark
+        # group reads complete — the exemption under test is the only reason
+        # no warning appears.
+        rows = [
+            {
+                "image_type": "DARK",
+                "file_path": r"Z:\landing\M31 _plan-test123_\2026-10-22\DARK\d.fits.fz",
+                "duration": "60.0",
+                "exposure_start_utc": "2026-10-22T05:00:00Z",
+            }
+        ]
+
+        with tempfile.TemporaryDirectory() as tmp:
+            plan_path = Path(tmp) / "plan.json"
+            plan_path.write_text(json.dumps(plan_dict))
+
+            with (
+                patch(
+                    "nina_planner.tools.equipment.get_site_profile",
+                    AsyncMock(return_value=self._full_profile()),
+                ),
+                patch(
+                    "nina_planner.tools.equipment._get_site_equipment_status",
+                    AsyncMock(return_value=ObservatoryEquipment()),
+                ),
+                patch(
+                    "nina_planner.metadata.read_metadata",
+                    AsyncMock(return_value=rows),
+                ),
+                patch("nina_planner.client.api_post", AsyncMock(return_value={})),
+                patch("nina_planner.client.api_get", AsyncMock(return_value={})),
+            ):
+                result = await load_sequence(
+                    [
+                        SequenceRequest(
+                            plan=str(plan_path),
+                            action="dark",
+                            mode="full",
+                        )
+                    ]
+                )
+
+        self.assertIn("1 frame(s), mode=full", result)
+        self.assertNotIn("already complete", result)
 
     async def test_start_sequence(self):
         from nina_planner.server import start_sequence

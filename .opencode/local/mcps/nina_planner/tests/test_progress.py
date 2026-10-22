@@ -79,6 +79,69 @@ class PlanProgressTest(unittest.TestCase):
         self.assertEqual(lights["acquired_count"], 3)
         self.assertEqual(lights["remaining_count"], 17)
 
+    def test_light_surplus_counts_frames_beyond_the_plan_total(self):
+        # A mode=full re-shoot asks N.I.N.A. for total_count *more* frames,
+        # but acquired is cumulative across every run, so a re-shoot that
+        # delivered 17 of 120 still reads remaining=0 and complete=true — the
+        # older frames keep satisfying the plan. Surplus is the only count in
+        # this output that a truncated re-shoot can be seen through.
+        plan = _plan(plan_id="plan-abc123")  # 20 lights
+        rows = [_row(target="M31 _plan-abc123_")] * 25
+        lights = plan_progress(plan, rows)["light"][0]
+        self.assertEqual(lights["acquired_count"], 25)
+        self.assertEqual(lights["remaining_count"], 0)
+        self.assertEqual(lights["surplus_count"], 5)
+
+    def test_light_surplus_zero_at_or_below_the_plan_total(self):
+        plan = _plan(plan_id="plan-abc123")  # 20 lights
+        partial = plan_progress(plan, [_row(target="M31 _plan-abc123_")] * 5)["light"][
+            0
+        ]
+        self.assertEqual(partial["remaining_count"], 15)
+        self.assertEqual(partial["surplus_count"], 0)
+
+        exact = plan_progress(plan, [_row(target="M31 _plan-abc123_")] * 20)["light"][0]
+        self.assertEqual(exact["remaining_count"], 0)
+        self.assertEqual(exact["surplus_count"], 0)
+
+    def test_calibration_groups_carry_no_surplus(self):
+        # Calibration is pool-credited by type+filter across plans, so a flat
+        # group routinely reads 103/20 and a surplus field there would be
+        # permanent noise on every plan. Lights only.
+        plan = _plan(plan_id="plan-abc123")
+        rows = (
+            [_row(target="M31 _plan-abc123_")] * 20
+            + [_row(image_type="FLAT", target=None)] * 30
+            + [_row(image_type="DARK", filter_name=None, target=None)] * 30
+            + [_row(image_type="BIAS", filter_name=None, target=None)] * 30
+        )
+        progress = plan_progress(plan, rows)
+        self.assertIn("surplus_count", progress["light"][0])
+        for group in ("flat", "dark", "bias"):
+            for item in progress[group]:
+                self.assertNotIn("surplus_count", item)
+
+    def test_surplus_does_not_rearm_plan_with_remaining(self):
+        # Hard constraint: remaining_count is what plan_with_remaining reads,
+        # and it drops finished groups. If a surplus were allowed to affect
+        # it, an overshot plan would re-enter remaining mode and double-acquire.
+        plan = _plan(plan_id="plan-abc123")  # 20 lights, 25 already attributed
+        rows = (
+            [_row(target="M31 _plan-abc123_")] * 25
+            # Complete the calibration groups too, so the plan really is
+            # finished and the assertion below is about the light surplus
+            # rather than an unrelated calibration deficit.
+            + [_row(image_type="FLAT", target=None)] * 10
+            + [_row(image_type="DARK", filter_name=None, target=None)] * 10
+            + [_row(image_type="BIAS", filter_name=None, target=None)] * 10
+        )
+        progress = plan_progress(plan, rows)
+        self.assertEqual(progress["light"][0]["surplus_count"], 5)
+        self.assertEqual(progress["light"][0]["remaining_count"], 0)
+        rebuilt = plan_with_remaining(plan, progress)
+        self.assertEqual(rebuilt.light_frames, [])
+        self.assertEqual(rebuilt.flat_frames, [])
+
     def test_attribution_token_is_underscore_delimited(self):
         # Underscore-delimited: N.I.N.A. rewrites "[" and "]" to "_" when it
         # substitutes $$TARGETNAME$$ into the file path, so the token is

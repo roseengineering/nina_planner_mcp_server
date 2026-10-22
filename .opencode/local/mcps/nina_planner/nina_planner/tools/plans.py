@@ -124,7 +124,7 @@ async def get_plan_progress(
     min_detected_stars: int | None = None,
     max_guiding_rms_arcsec: float | None = None,
 ) -> dict[str, Any]:
-    """Returns per-frame-type acquisition progress for every pointing of an observation-plan JSON file: for each exposure group, the total_count from the plan, the acquired_count attributed to that plan/pointing from the imaging metadata (ImageMetaData.csv), and the remaining_count. Lights are attributed via the underscore-delimited plan id embedded in the recorded file path (`_{base_plan_id}_` for a single-pointing plan, `_{base_plan_id}-{pointing_index}_` per pane for a mosaic; no target-name fallback); flats/darks/bias are matched by image type (plus filter for flats, plus exposure for darks) and are anchored to the plan's light session: they count only when shot within `calibration_window_days` of the session start (the earliest attributed light), on either side of it. Calibration groups therefore also carry `window_open` (bool) and `window_end` (the window's upper bound, rendered in the host's local time with its UTC offset): while the current time is inside the window, remaining_count is total minus acquired; once it falls outside, no frame shot now could ever be credited, so remaining_count is reported as 0 rather than an unsatisfiable deficit (acquired_count stays truthful either way, and lights carry neither field) — raise `calibration_window_days` or write a new plan to reopen the window. Pass max_hfr, min_detected_stars, and/or max_guiding_rms_arcsec to exclude light frames that fail quality thresholds (frames missing the relevant field are excluded when a threshold is set). Use this before load_sequence to decide what still needs acquiring. Returns `complete` (all panes done) plus a `pointings` list of per-pane progress and per-pane `complete`, so a worker can acquire panes sequentially (finish pane N, then run pane N+1)."""
+    """Returns per-frame-type acquisition progress for every pointing of an observation-plan JSON file: for each exposure group, the total_count from the plan, the acquired_count attributed to that plan/pointing from the imaging metadata (ImageMetaData.csv), and the remaining_count. Lights are attributed via the underscore-delimited plan id embedded in the recorded file path (`_{base_plan_id}_` for a single-pointing plan, `_{base_plan_id}-{pointing_index}_` per pane for a mosaic; no target-name fallback); flats/darks/bias are matched by image type (plus filter for flats, plus exposure for darks) and are anchored to the plan's light session: they count only when shot within `calibration_window_days` of the session start (the earliest attributed light), on either side of it. Calibration groups therefore also carry `window_open` (bool) and `window_end` (the window's upper bound, rendered in the host's local time with its UTC offset): while the current time is inside the window, remaining_count is total minus acquired; once it falls outside, no frame shot now could ever be credited, so remaining_count is reported as 0 rather than an unsatisfiable deficit (acquired_count stays truthful either way, and lights carry neither field) — raise `calibration_window_days` or write a new plan to reopen the window. Pass max_hfr, min_detected_stars, and/or max_guiding_rms_arcsec to exclude light frames that fail quality thresholds (frames missing the relevant field are excluded when a threshold is set). Use this before load_sequence to decide what still needs acquiring. Returns `complete` (all panes done) plus a `pointings` list of per-pane progress and per-pane `complete`, so a worker can acquire panes sequentially (finish pane N, then run pane N+1). Light items also carry `surplus_count` (frames attributed beyond the plan's total_count), and the top level carries `overshot` (bool) and `warning` (string or null). These exist because acquired_count is cumulative across runs while total_count is a per-plan constant, so a mode=full re-shoot that delivered only some of its frames still reports `complete: true, remaining: 0` — the older frames keep satisfying the plan. When `overshot` is true, treat `complete` as "these frames exist", not as "the last run succeeded", and verify the latest run with audit_plans plus the per-date frame folders."""
     plan = await plan_utils.load_plan(file_path)
     rows = await metadata.read_metadata()
     now = datetime.now(UTC).replace(microsecond=0)
@@ -165,8 +165,33 @@ async def get_plan_progress(
         "target": plan.target,
         "pointing_count": len(plan.pointings),
         "complete": complete,
+        "overshot": False,
+        "warning": None,
         "pointings": entries,
     }
+    # A plan can be `complete` and still have lost frames: a mode=full
+    # re-shoot asks for total_count *more* frames, but acquired_count is
+    # cumulative, so the older frames keep the plan complete no matter what
+    # the re-shoot delivered. Surplus is the only trace of that here, and it
+    # is worth shouting about because the default reading — complete:true,
+    # remaining:0 — is exactly what an operator sees after a truncated
+    # re-shoot (M42: 17 of 120 frames landed, plan read complete).
+    surplus = sum(
+        item.get("surplus_count", 0)
+        for entry in entries
+        for item in entry["frame_types"]["light"]
+    )
+    if surplus:
+        res["overshot"] = True
+        res["warning"] = (
+            f"{surplus} light frame(s) attributed beyond the plan total. That "
+            "means this target has been acquired more than once — either a "
+            "mode=full re-shoot or separate nights under the same plan id. "
+            "`complete: true` only means the plan's frames exist; it does NOT "
+            "mean a re-shoot delivered. Confirm what the latest run actually "
+            "landed with audit_plans and the per-date frame folders on the "
+            "imaging drive."
+        )
     client.log_payload("Progress:", json.dumps(res, indent=2))
     return res
 
