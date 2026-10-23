@@ -56,25 +56,19 @@ class SurfaceBrightnessTest(unittest.TestCase):
 
 
 class DifficultyTest(unittest.TestCase):
-    def test_visual_extended_buckets(self):
-        self.assertEqual(sky._difficulty(13.0, False, "visual"), "beginner")
-        self.assertEqual(sky._difficulty(14.0, False, "visual"), "intermediate")
-        self.assertEqual(sky._difficulty(15.0, False, "visual"), "advanced")
-
-    def test_eaa_thresholds_sit_deeper_than_visual(self):
-        # 14.0 mu is intermediate visually but beginner in EAA.
-        self.assertEqual(sky._difficulty(14.0, False, "eaa"), "beginner")
-        self.assertEqual(sky._difficulty(15.0, False, "eaa"), "intermediate")
-        self.assertEqual(sky._difficulty(16.0, False, "eaa"), "advanced")
+    def test_extended_buckets(self):
+        self.assertEqual(sky._difficulty(14.0, False), "beginner")
+        self.assertEqual(sky._difficulty(15.0, False), "intermediate")
+        self.assertEqual(sky._difficulty(16.0, False), "advanced")
 
     def test_compact_objects_use_magnitude_thresholds(self):
-        self.assertEqual(sky._difficulty(9.0, True, "visual"), "beginner")
-        self.assertEqual(sky._difficulty(10.0, True, "visual"), "intermediate")
-        self.assertEqual(sky._difficulty(11.0, True, "visual"), "advanced")
+        self.assertEqual(sky._difficulty(10.5, True), "beginner")
+        self.assertEqual(sky._difficulty(11.5, True), "intermediate")
+        self.assertEqual(sky._difficulty(12.5, True), "advanced")
 
     def test_easiness_clamped_to_unit_interval(self):
-        self.assertEqual(sky._easiness(5.0, False, "visual"), 1.0)
-        self.assertEqual(sky._easiness(20.0, False, "visual"), 0.0)
+        self.assertEqual(sky._easiness(5.0, False), 1.0)
+        self.assertEqual(sky._easiness(20.0, False), 0.0)
 
 
 class RankCatalogTest(unittest.TestCase):
@@ -98,7 +92,6 @@ class RankCatalogTest(unittest.TestCase):
             45.0,
             -75.0,
             100.0,
-            "visual",
             30.0,
             None,
             None,
@@ -126,14 +119,13 @@ class RankCatalogTest(unittest.TestCase):
             lat_deg=45.0,
             lon_deg=-75.0,
             elevation_m=100.0,
-            mode="visual",
             min_altitude=30.0,
             fov_deg=None,
             level=None,
             kinds=None,
             top=10,
         )
-        # "up" is 10x10 arcmin at mag 8: mu ~ 12.34 -> beginner in visual.
+        # "up" is 10x10 arcmin at mag 8: mu ~ 12.7 -> beginner.
         rows = sky._rank_catalog(catalog, **{**base, "level": "advanced"})
         self.assertEqual(rows["visible_now"], [])
         rows = sky._rank_catalog(catalog, **{**base, "kinds": ["galaxy"]})
@@ -143,13 +135,11 @@ class RankCatalogTest(unittest.TestCase):
 
 
 class BestTargetsValidationTest(unittest.TestCase):
-    def test_bad_mode_raises_before_profile_fetch(self):
+    def test_bad_level_raises_before_profile_fetch(self):
         import asyncio
 
         with self.assertRaises(ValueError):
-            asyncio.run(sky.best_targets(mode="bortle9"))
-        with self.assertRaises(ValueError):
-            asyncio.run(sky.best_targets(mode="eaa", level="expert"))
+            asyncio.run(sky.best_targets(level="expert"))
 
 
 if __name__ == "__main__":
