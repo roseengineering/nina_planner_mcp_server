@@ -48,6 +48,8 @@ Powered by [astropy](https://www.astropy.org); no NINA connection is needed for 
 |---|---|
 | `resolve_target(name)` | Resolve a deep-sky object name (e.g. `M31`, `NGC 6960`) to J2000 `ra_hours` / `dec_deg` through a SIMBAD lookup, so plans use verified coordinates. 🌐 Requires internet access. Read-only. |
 | `target_altitudes(targets, hours_ahead=0.0)` | Altitude/azimuth of each target at the active site, sorted highest first, for ranking candidates. Each target is `{"name": ...}` plus optional `ra_hours` / `dec_deg` (otherwise resolved via SIMBAD). Read-only. |
+| `sun_times()` | Next sunrise/sunset plus all four twilight boundaries (civil −6°, nautical −12°, astronomical −18°) and the astronomical-darkness window in effect or next to open, with `night_phase` (`evening`/`dark`/`morning`) and `is_dark_now` for end-of-night decisions. Read-only; reads only the site profile. |
+| `best_targets(min_altitude=30.0, top=10, level, kinds)` | Ranks Messier and bright NGC objects to observe from the active site right now, returning `visible_now` (dark and above the floor now) plus `later_tonight` (peak altitude within astronomical darkness), with `is_dark_now` and surface-brightness-based difficulty filtering. Catalog coordinates are for ranking only — use `resolve_target` for pointing. Read-only. |
 
 ### 🎬 Sequence Management
 

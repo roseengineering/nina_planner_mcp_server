@@ -3,8 +3,9 @@ from datetime import datetime, timezone
 from typing import Any
 
 import anyio
+import numpy as np
 from astropy import units as u
-from astropy.coordinates import AltAz, EarthLocation, SkyCoord
+from astropy.coordinates import AltAz, EarthLocation, SkyCoord, get_sun
 from astropy.time import Time
 
 from .. import dso_catalog
@@ -144,6 +145,156 @@ def _easiness(metric: float, compact: bool) -> float:
     return max(0.0, min(1.0, (ceiling - metric) / (ceiling - floor_)))
 
 
+# --- sun / twilight (see sun_times and best_targets) -------------------------
+
+# Sun altitude at which each event happens. Sunset/sunrise use the standard
+# apparent-altitude value (-0.833 deg = refraction + solar semidiameter);
+# the twilight names are the classic definitions.
+_DARKNESS_SUN_ALT = -18.0  # astronomical darkness -- the night-loop's "dark"
+_SUN_CROSSINGS: tuple[tuple[float, str, str], ...] = (
+    (-0.833, "sunset", "sunrise"),
+    (-6.0, "civil_dusk", "civil_dawn"),
+    (-12.0, "nautical_dusk", "nautical_dawn"),
+    (-18.0, "astronomical_dusk", "astronomical_dawn"),
+)
+
+# _sun_events backfills 24h before `when` so a window that is already open
+# (e.g. checking just before dawn) can still find the dusk that started it,
+# and so "morning" can pair the last dawn with the dusk before it.
+_SUN_BACKFILL_H = 24.0
+_SUN_FORWARD_H = 48.0
+_SUN_STEP_MIN = 5
+
+
+def _sun_altitudes(times: Time, location: EarthLocation) -> list[float]:
+    """Geometric sun altitude in degrees for each time (no refraction).
+
+    Accepts a scalar or vector `Time`; always returns a list.
+    """
+    sun = get_sun(times)
+    altaz = sun.transform_to(AltAz(obstime=times, location=location))
+    alts = np.atleast_1d(altaz.alt.deg)
+    return [float(a) for a in alts]
+
+
+def _interp_time(times: Time, alts: list[float], i: int, threshold: float) -> Time:
+    """Crossing time between samples i and i+1, linearly interpolated."""
+    frac = (threshold - alts[i]) / (alts[i + 1] - alts[i])
+    return times[i] + frac * (times[i + 1] - times[i])
+
+
+def _sun_events(when: Time, location: EarthLocation) -> dict[str, Any]:
+    """Next sunrise/sunset and twilight times for the site, the darkness
+    window associated with `night_phase`, and a coarse `night_phase`
+    ("dark" / "morning" / "evening") for the night-loop's end-of-night test.
+
+    Samples sun altitude every 5 minutes from 24h before `when` to 48h after
+    and interpolates each threshold crossing. Events are the first occurrence
+    after `when`; `None` means no crossing in the window (polar day/night).
+    When not dark, `darkness` pairs with the phase: the just-completed
+    window in "morning", the upcoming one in "evening" -- never a mismatched
+    dusk/dawn pair. Pure helper -- unit-testable without N.I.N.A.
+    """
+    n_samples = int((_SUN_BACKFILL_H + _SUN_FORWARD_H) * 60 / _SUN_STEP_MIN) + 1
+    times = when + (np.arange(n_samples) * _SUN_STEP_MIN - _SUN_BACKFILL_H * 60) * u.min
+    alts = _sun_altitudes(times, location)
+
+    # Collect every crossing of every threshold, labelled dusk/dawn.
+    crosses: dict[str, list[tuple[Time, str]]] = {
+        down_name: [] for _, down_name, _ in _SUN_CROSSINGS
+    }
+    for i in range(len(alts) - 1):
+        for threshold, down_name, _up_name in _SUN_CROSSINGS:
+            if alts[i] >= threshold > alts[i + 1]:
+                crosses[down_name].append(
+                    (_interp_time(times, alts, i, threshold), "dusk")
+                )
+            elif alts[i] < threshold <= alts[i + 1]:
+                crosses[down_name].append(
+                    (_interp_time(times, alts, i, threshold), "dawn")
+                )
+
+    # Map every threshold's down/up events to the requested names, first
+    # occurrence strictly after `when`.
+    events: dict[str, Time | None] = {}
+    for _threshold, down_name, up_name in _SUN_CROSSINGS:
+        pairs = crosses[down_name]
+        events[down_name] = next(
+            (t for t, kind in pairs if kind == "dusk" and t > when), None
+        )
+        events[up_name] = next(
+            (t for t, kind in pairs if kind == "dawn" and t > when), None
+        )
+
+    # Darkness window. If dark now, the window containing now. Otherwise pair
+    # the window with the phase: morning reports the night that just ended
+    # (what a night report documents), evening the one about to open (what a
+    # schedule needs).
+    now_alt = _sun_altitudes(when, location)[0]
+    is_dark_now = now_alt < _DARKNESS_SUN_ALT
+    astro = crosses["astronomical_dusk"]
+    past_dawns = [t for t, kind in astro if kind == "dawn" and t <= when]
+    future_dusks = [t for t, kind in astro if kind == "dusk" and t > when]
+    if is_dark_now:
+        past_dusks = [t for t, kind in astro if kind == "dusk" and t <= when]
+        future_dawns = [t for t, kind in astro if kind == "dawn" and t > when]
+        start = past_dusks[-1] if past_dusks else None
+        end = future_dawns[0] if future_dawns else None
+        night_phase = "dark"
+    else:
+        # Not dark: did the night just end, or is one about to begin? Compare
+        # how long ago astronomical dawn was against how long until the next
+        # dusk -- nearer the end means morning (night over), nearer the start
+        # means evening (darkness still coming).
+        last_dawn = past_dawns[-1] if past_dawns else None
+        next_dusk = future_dusks[0] if future_dusks else None
+        if last_dawn is None and next_dusk is None:
+            night_phase = "evening"  # no crossing in window; don't end a night
+        elif next_dusk is None:
+            night_phase = "morning"
+        elif last_dawn is None:
+            night_phase = "evening"
+        elif (when - last_dawn) < (next_dusk - when):
+            night_phase = "morning"
+        else:
+            night_phase = "evening"
+        if night_phase == "morning":
+            # The completed night: the dusk before the last dawn opened it.
+            past_dusks = [t for t, kind in astro if kind == "dusk" and t <= when]
+            start = past_dusks[-1] if past_dusks else None
+            end = last_dawn
+        else:
+            # The upcoming night: the next dusk opens it, the dawn after
+            # that closes it -- never the previous morning's dawn.
+            start = next_dusk
+            end = next(
+                (
+                    t
+                    for t, kind in astro
+                    if kind == "dawn" and next_dusk and t > next_dusk
+                ),
+                None,
+            )
+
+    return {
+        "time_utc": when.utc.isot,
+        "site": {
+            "latitude_deg": round(float(location.lat.deg), 4),
+            "longitude_deg": round(float(location.lon.deg), 4),
+            "elevation_m": round(float(location.height.to_value(u.m)), 1),
+        },
+        "is_dark_now": is_dark_now,
+        "night_phase": night_phase,
+        "events": {
+            name: (t.utc.isot if t is not None else None) for name, t in events.items()
+        },
+        "darkness": {
+            "start_utc": start.utc.isot if start is not None else None,
+            "end_utc": end.utc.isot if end is not None else None,
+        },
+    }
+
+
 def _rank_catalog(
     catalog: "list[dso_catalog.Dso]",
     when: Time,
@@ -170,12 +321,24 @@ def _rank_catalog(
         [d.dec_deg for d in catalog] * u.deg,
     )
     # Sample now + every 30 minutes for 12 hours to find each object's
-    # peak tonight without a full ephemeris.
+    # peak tonight without a full ephemeris -- but only within astronomical
+    # darkness (sun below -18 deg): a daytime or twilight peak is useless
+    # for observing and must not be reported as "tonight's best".
     samples = 25
+    times = when + np.arange(samples) * 30 * u.min
+    dark = [s < _DARKNESS_SUN_ALT for s in _sun_altitudes(times, location)]
+    if not any(dark):
+        return {
+            "visible_now": [],
+            "later_tonight": [],
+            "sampled_catalog": len(catalog),
+        }
+    dark_idx = [i for i, is_dark in enumerate(dark) if is_dark]
+    is_dark_now = dark[0]
     alts: list[list[float]] = []
     azs: list[list[float]] = []
     for i in range(samples):
-        frame = AltAz(obstime=when + i * 30 * u.min, location=location)
+        frame = AltAz(obstime=times[i], location=location)
         altaz = coords.transform_to(frame)
         alts.append([float(a) for a in altaz.alt.deg])
         azs.append([float(a) for a in altaz.az.deg])
@@ -195,11 +358,13 @@ def _rank_catalog(
         if level is not None and obj_level != level:
             continue
         alt_now = alts[0][idx]
-        obj_alts = [alts[s][idx] for s in range(samples)]
-        peak_alt = max(obj_alts)
-        peak_at = when + obj_alts.index(peak_alt) * 30 * u.min
+        # Peak within astronomical darkness only (dark_idx indexes the
+        # 30-minute samples that fall below the sun-altitude gate).
+        night_alts = [alts[i][idx] for i in dark_idx]
+        peak_alt = max(night_alts)
+        peak_at = times[dark_idx[night_alts.index(peak_alt)]]
         if peak_alt < min_altitude:
-            continue  # never clears the floor tonight
+            continue  # never clears the floor while dark tonight
         easiness = _easiness(metric, compact)
         if fov_deg is not None and not compact:
             large = obj.major_arcmin / 60.0 > max(fov_deg)
@@ -220,7 +385,7 @@ def _rank_catalog(
             "peak_utc": peak_at.utc.isot,
             "large_for_field": large,
         }
-        if alt_now >= min_altitude:
+        if is_dark_now and alt_now >= min_altitude:
             row["score"] = round(
                 100.0 * (0.5 * max(0.0, min(alt_now, 90.0)) / 90.0 + 0.5 * easiness),
                 1,
@@ -236,6 +401,7 @@ def _rank_catalog(
     visible.sort(key=lambda r: -r["score"])
     later.sort(key=lambda r: -r["score"])
     return {
+        "is_dark_now": is_dark_now,
         "visible_now": visible[:top],
         "later_tonight": later[:top],
         "sampled_catalog": len(catalog),
@@ -255,7 +421,7 @@ async def best_targets(
 
     `min_altitude` (default 30, matching the usual PLAN.md floor) gates both now and tonight's peak. `top` caps each returned list (default 10). `level` filters to one difficulty ("beginner" | "intermediate" | "advanced"). `kinds` filters by type: "galaxy", "globular", "open" (cluster), "pn" (planetary nebula), "bn" (bright nebula), "snr" (supernova remnant), "cloud" (star cloud).
 
-    Returns `visible_now` (above the altitude floor at this moment, sorted by a score blending current altitude and easiness, 0-100) and `later_tonight` (below the floor now but climbing above it within 12 hours, with each row's `peak_utc` and `peak_alt_deg` for scheduling). Rows carry `surface_brightness` in mag/arcmin^2 and `large_for_field` (object wider than the profile's field of view -- mosaic or framing care needed). No N.I.N.A. calls beyond reading the site profile; read-only, takes no action. Catalog coordinates are for ranking, not pointing -- use resolve_target for verified plan coordinates."""
+    Returns `visible_now` (dark now, above the altitude floor at this moment, sorted by a score blending current altitude and easiness, 0-100) and `later_tonight` (the next observing opportunity: peak altitude reached WITHIN astronomical darkness -- sun below -18 deg -- over the next 12 hours, with each row's `peak_utc` and `peak_alt_deg` for scheduling; daytime and twilight peaks are never reported, so a midday "peak" in an older version of this output cannot happen). `is_dark_now` reports whether the site is currently in astronomical darkness; when false, `visible_now` is empty and every row lands in `later_tonight`. Rows carry `surface_brightness` in mag/arcmin^2 and `large_for_field` (object wider than the profile's field of view -- mosaic or framing care needed). Twilight boundaries for the site come from `sun_times`. No N.I.N.A. calls beyond reading the site profile; read-only, takes no action. Catalog coordinates are for ranking, not pointing -- use resolve_target for verified plan coordinates."""
     if level is not None and level not in ("beginner", "intermediate", "advanced"):
         raise ValueError(
             f"level must be beginner, intermediate, or advanced, got {level!r}"
@@ -283,3 +449,21 @@ async def best_targets(
             ),
         }
     )
+
+
+@mcp.tool()
+async def sun_times() -> dict[str, Any]:
+    """Returns the site's next sunrise, sunset, and all four twilight boundaries (civil, nautical, astronomical dusk and dawn), plus the astronomical-darkness window currently in effect or next to open -- the source of truth for "is the night over", "when does darkness start", and dusk/dawn scheduling.
+
+    Events use standard definitions against apparent sun altitude: sunrise/sunset at -0.833 deg (refraction + solar semidiameter), civil twilight -6 deg, nautical -12 deg, astronomical -18 deg. Each time is the FIRST occurrence after now (UTC ISO). `darkness` pairs with `night_phase`: while "dark" it is the window containing now (`start_utc` in the past); while "morning" the night that just ended (what a night report documents); while "evening" the window about to open. Either side is `null` only in polar-day/polar-night conditions where the crossing does not occur within the window. `is_dark_now` is sun below -18 deg at this instant -- the same gate `best_targets` uses, so the two tools never disagree.
+
+    `night_phase` classifies the moment for end-of-night decisions: "dark" (inside astronomical darkness), "morning" (darkness just ended / nearest boundary is astronomical dawn -- the night is over), "evening" (darkness begins before the last dawn recedes -- the night is still ahead). Use `night_phase == "morning"` rather than "no targets above the floor" as the signal to end a night: a mid-night gap between targets is not the end of the night. Read-only; takes no action, makes no N.I.N.A. calls beyond reading the site profile."""
+    profile = await equipment_tools.get_site_profile()
+    site = profile.site
+    location = EarthLocation(
+        lat=site.latitude_deg * u.deg,
+        lon=site.longitude_deg * u.deg,
+        height=site.elevation_m * u.m,
+    )
+    when = Time(datetime.now(timezone.utc))
+    return await anyio.to_thread.run_sync(_sun_events, when, location)

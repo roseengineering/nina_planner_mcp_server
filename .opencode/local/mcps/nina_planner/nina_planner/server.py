@@ -26,7 +26,7 @@ from .tools.sequence import (
     start_sequence,
     stop_sequence,
 )
-from .tools.sky import best_targets, resolve_target, target_altitudes
+from .tools.sky import best_targets, resolve_target, sun_times, target_altitudes
 
 __all__ = [
     "audit_plans",
@@ -54,6 +54,7 @@ __all__ = [
     "start_sequence",
     "stop_nina",
     "stop_sequence",
+    "sun_times",
     "switch_site_profile",
     "target_altitudes",
     "write_mosaic_plan",

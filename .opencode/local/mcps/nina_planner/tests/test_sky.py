@@ -71,6 +71,62 @@ class DifficultyTest(unittest.TestCase):
         self.assertEqual(sky._easiness(20.0, False), 0.0)
 
 
+class SunEventsTest(unittest.TestCase):
+    # Mid-latitude site; October gives comfortable twilight spacing.
+    LOCATION = None  # set in setUpClass
+
+    @classmethod
+    def setUpClass(cls):
+        from astropy import units as u
+        from astropy.coordinates import EarthLocation
+
+        cls.LOCATION = EarthLocation(
+            lat=45.0 * u.deg, lon=-75.0 * u.deg, height=100 * u.m
+        )
+
+    def test_twilight_ordering_and_window(self):
+        # 2026-10-18 02:00 UTC = 22:00 local Oct 17: deep in the night.
+        when = Time("2026-10-18T02:00:00")
+        out = sky._sun_events(when, self.LOCATION)
+        ev = out["events"]
+        # Every event found (mid-lat October, no polar weirdness).
+        for name, value in ev.items():
+            self.assertIsNotNone(value, msg=f"{name} missing")
+        # Sun descends through the thresholds in order after now...
+        self.assertLess(ev["sunset"], ev["civil_dusk"])
+        self.assertLess(ev["civil_dusk"], ev["nautical_dusk"])
+        self.assertLess(ev["nautical_dusk"], ev["astronomical_dusk"])
+        # ...and rises through them in reverse the next morning.
+        self.assertLess(ev["astronomical_dawn"], ev["nautical_dawn"])
+        self.assertLess(ev["nautical_dawn"], ev["civil_dawn"])
+        self.assertLess(ev["civil_dawn"], ev["sunrise"])
+        # The darkness window contains now: started in the past, ends at dawn.
+        self.assertIsNotNone(out["darkness"]["start_utc"])
+        self.assertLess(out["darkness"]["start_utc"], out["time_utc"])
+        self.assertLess(out["time_utc"], out["darkness"]["end_utc"])
+        # Astronomical dawn (window end) precedes sunrise.
+        self.assertLess(out["darkness"]["end_utc"], ev["sunrise"])
+
+    def test_night_phase_classification(self):
+        # Night: phase dark, window in progress.
+        night = sky._sun_events(Time("2026-10-18T02:00:00"), self.LOCATION)
+        self.assertTrue(night["is_dark_now"])
+        self.assertEqual(night["night_phase"], "dark")
+        # Morning: 14:00 UTC = 10:00 local, hours past astronomical dawn.
+        morning = sky._sun_events(Time("2026-10-18T14:00:00"), self.LOCATION)
+        self.assertFalse(morning["is_dark_now"])
+        self.assertEqual(morning["night_phase"], "morning")
+        # Evening: 23:00 UTC = 19:00 local, before sunset let alone dusk.
+        evening = sky._sun_events(Time("2026-10-18T23:00:00"), self.LOCATION)
+        self.assertFalse(evening["is_dark_now"])
+        self.assertEqual(evening["night_phase"], "evening")
+
+    def test_sunset_after_noon_and_before_midnight_utc(self):
+        out = sky._sun_events(Time("2026-10-18T14:00:00"), self.LOCATION)
+        # Local solar noon ~17:00 UTC at lon -75; sunset must follow it.
+        self.assertGreater(out["events"]["sunset"], "2026-10-18T17:00")
+
+
 class RankCatalogTest(unittest.TestCase):
     def _catalog(self, when, lat, lon):
         lst = float(when.sidereal_time("apparent", longitude=lon).hour)
@@ -110,6 +166,32 @@ class RankCatalogTest(unittest.TestCase):
         rising = rows["later_tonight"][0]
         self.assertGreaterEqual(rising["peak_alt_deg"], 30.0)
         self.assertIn("T", rising["peak_utc"])
+
+    def test_daytime_yields_no_visible_now(self):
+        # 2026-10-18 14:00 UTC = 10:00 local: sun well up, nothing visible.
+        when = Time("2026-10-18T14:00:00")
+        rows = sky._rank_catalog(
+            self._catalog(when, 45.0, -75.0),
+            when,
+            45.0,
+            -75.0,
+            100.0,
+            30.0,
+            None,
+            None,
+            None,
+            10,
+        )
+        self.assertFalse(rows["is_dark_now"])
+        self.assertEqual(rows["visible_now"], [])
+        # Peaks must still be reported, but only within darkness: the
+        # culminating object ("up" near local noon) may only peak after dusk.
+        for row in rows["later_tonight"]:
+            self.assertGreaterEqual(
+                row["peak_utc"],
+                "2026-10-18T22:00",  # after that evening's dusk
+                msg=f"{row['name']} peak {row['peak_utc']} outside darkness",
+            )
 
     def test_level_and_kind_filters(self):
         when = Time("2026-10-18T02:00:00")
