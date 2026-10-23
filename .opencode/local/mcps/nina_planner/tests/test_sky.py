@@ -216,6 +216,17 @@ class RankCatalogTest(unittest.TestCase):
         self.assertLessEqual(len(rows["visible_now"]), 1)
 
 
+class BuiltinCatalogTest(unittest.TestCase):
+    def test_catalog_is_loaded_from_csv(self):
+        self.assertEqual(len(dso_catalog.CATALOG), 128)
+        self.assertEqual(
+            dso_catalog.CATALOG[0],
+            dso_catalog.Dso(
+                "M6", "Butterfly Cluster", "open", 17.6711, -32.2167, 4.2, 25, 25
+            ),
+        )
+
+
 class BestTargetsValidationTest(unittest.TestCase):
     def test_bad_level_raises_before_profile_fetch(self):
         import asyncio
