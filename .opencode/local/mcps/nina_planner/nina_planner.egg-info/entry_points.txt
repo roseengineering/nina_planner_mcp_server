@@ -1,2 +1,0 @@
-[console_scripts]
-nina_planner = nina_planner.__main__:main
