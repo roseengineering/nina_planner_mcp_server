@@ -16,8 +16,8 @@ sky.
 from __future__ import annotations
 
 import csv
+import logging
 import re
-import sys
 from pathlib import Path
 
 from pydantic import ValidationError
@@ -25,6 +25,8 @@ from pydantic import ValidationError
 from .models.pointing import Pointing
 
 __all__ = ["parse_sexagesimal", "parse_header", "load_pointings", "load_pointings_text"]
+
+logger = logging.getLogger(__name__)
 
 
 # 1-3 numeric components with optional sexagesimal unit suffixes and an optional
@@ -105,7 +107,7 @@ def load_pointings_text(text: str, source: str = "<csv>") -> list[Pointing]:
     out-of-range RA (e.g. a degrees value) rejects the whole file rather
     than being wrapped onto the wrong sky. ``ValueError`` is also raised if
     the text is empty or yields no valid pointings. Individual
-    otherwise-malformed rows are skipped with a warning to stderr.
+    otherwise-malformed rows are skipped with a logged warning.
     """
     rows = [r for r in csv.reader(text.splitlines()) if any(f.strip() for f in r)]
     if not rows:
@@ -123,17 +125,16 @@ def load_pointings_text(text: str, source: str = "<csv>") -> list[Pointing]:
     pointings: list[Pointing] = []
     for line_no, row in enumerate(rows[1:], start=2):
         if len(row) <= i_col:
-            print(
-                f"warning: skipping line {line_no}: expected "
-                f"{len(_TELESCOPIUS_COLUMNS)} columns, got {len(row)}",
-                file=sys.stderr,
+            logger.warning(
+                f"skipping line {line_no}: expected "
+                f"{len(_TELESCOPIUS_COLUMNS)} columns, got {len(row)}"
             )
             continue
         try:
             ra = parse_sexagesimal(_cell(row, i_ra))
             dec = parse_sexagesimal(_cell(row, i_dec))
         except (ValueError, TypeError) as exc:
-            print(f"warning: skipping line {line_no}: {exc}", file=sys.stderr)
+            logger.warning(f"skipping line {line_no}: {exc}")
             continue
 
         # RA is hours by spec; nothing is ever wrapped. An out-of-range value
@@ -153,10 +154,8 @@ def load_pointings_text(text: str, source: str = "<csv>") -> list[Pointing]:
                     float(pa_raw.rstrip("º°")) % 360.0, 3
                 )
             except ValueError as exc:
-                print(
-                    f"warning: skipping line {line_no}: bad position angle "
-                    f"{pa_raw!r}: {exc}",
-                    file=sys.stderr,
+                logger.warning(
+                    f"skipping line {line_no}: bad position angle {pa_raw!r}: {exc}"
                 )
                 continue
 
@@ -176,10 +175,7 @@ def load_pointings_text(text: str, source: str = "<csv>") -> list[Pointing]:
         try:
             pointings.append(Pointing(**data))  # type: ignore[arg-type]
         except ValidationError as exc:
-            print(
-                f"warning: skipping line {line_no}: {exc.errors()[0]['msg']}",
-                file=sys.stderr,
-            )
+            logger.warning(f"skipping line {line_no}: {exc.errors()[0]['msg']}")
             continue
 
     if not pointings:
