@@ -61,6 +61,9 @@ default-groups = ["dev"]
 where = ["."]
 include = ["nina_planner*"]
 
+[tool.setuptools.package-data]
+nina_planner = ["dso_catalog.csv"]
+
 [tool.mypy]
 python_executable = "$VIRTUAL_ENV/bin/python"
 warn_return_any = true
