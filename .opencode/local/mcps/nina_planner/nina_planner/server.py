@@ -26,10 +26,11 @@ from .tools.sequence import (
     start_sequence,
     stop_sequence,
 )
-from .tools.sky import resolve_target, target_altitudes
+from .tools.sky import best_targets, resolve_target, target_altitudes
 
 __all__ = [
     "audit_plans",
+    "best_targets",
     "equipment",
     "get_events",
     "get_imaging_metadata",
