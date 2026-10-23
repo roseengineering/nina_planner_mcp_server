@@ -814,7 +814,10 @@ async def audit_plans(
                 )
             errors.append({"file": None, "plan_id": key, "reason": reason})
 
-    if not audited:
+    # Every branch above resolves root before it can load a plan, so an
+    # audited result always has one; the `root is None` half is unreachable
+    # and exists only to narrow the type for mypy before the disk scan.
+    if not audited or root is None:
         res: dict[str, Any] = {
             "all_saved": not errors,
             "totals": {
@@ -955,7 +958,7 @@ async def audit_plans(
     for row in rows_out:
         status = row["status"]
         if status == "MISSING_FILES":
-            entry = {
+            todo = {
                 "plan_id": row["plan_id"],
                 "target": row["target"],
                 "intent": row["intent"],
@@ -968,8 +971,8 @@ async def audit_plans(
             # Light rows only (same rule as rows): calibration entries are
             # plan-level and have no pointing to label.
             if "label" in row:
-                entry["label"] = row["label"]
-            left_to_do.append(entry)
+                todo["label"] = row["label"]
+            left_to_do.append(todo)
         elif status == "EXPIRED":
             blocked.append(
                 {

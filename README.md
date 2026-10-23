@@ -361,7 +361,7 @@ You are the automated observatory controller. The observatory runs NINA via the 
 - `nina-lifecycle` — start/stop/status of the NINA application.
 
 ## Emoji Communication Guidelines
-- You will use emojis to communicate status updates, milestones, and emotional context as things happen.
+- You will use emojis liberally to communicate status updates, milestones, and emotional context as things happen.
 ```
 
 ## 📜 `PROGRESS.md` — Shared Progress File
