@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import csv
 from dataclasses import dataclass
-from importlib.resources import files
+from importlib.resources import as_file, files
 
 
 @dataclass(frozen=True)
@@ -38,22 +38,21 @@ class Dso:
 
 
 def _load_catalog() -> tuple[Dso, ...]:
-    with files(__package__).joinpath("dso_catalog.csv").open(
-        newline="", encoding="utf-8"
-    ) as source:
-        return tuple(
-            Dso(
-                name=row["name"],
-                common=row["common"],
-                kind=row["kind"],
-                ra_hours=float(row["ra_hours"]),
-                dec_deg=float(row["dec_deg"]),
-                mag=float(row["mag"]),
-                major_arcmin=float(row["major_arcmin"]),
-                minor_arcmin=float(row["minor_arcmin"]),
+    with as_file(files(__package__).joinpath("dso_catalog.csv")) as catalog_path:
+        with catalog_path.open(newline="", encoding="utf-8") as source:
+            return tuple(
+                Dso(
+                    name=row["name"],
+                    common=row["common"],
+                    kind=row["kind"],
+                    ra_hours=float(row["ra_hours"]),
+                    dec_deg=float(row["dec_deg"]),
+                    mag=float(row["mag"]),
+                    major_arcmin=float(row["major_arcmin"]),
+                    minor_arcmin=float(row["minor_arcmin"]),
+                )
+                for row in csv.DictReader(source)
             )
-            for row in csv.DictReader(source)
-        )
 
 
 CATALOG = _load_catalog()
