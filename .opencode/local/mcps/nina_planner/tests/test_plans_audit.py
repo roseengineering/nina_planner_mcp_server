@@ -52,7 +52,8 @@ def _plan(**overrides):
     data = {
         "plan_id": "plan-abc123",
         "target": "M31",
-        "pointings": [{"ra_hours": 0.71, "dec_deg": 41.27}],
+        "intent": "Galaxy portrait",
+        "pointings": [{"ra_hours": 0.71, "dec_deg": 41.27, "label": "M31 core"}],
         "calibration_window_days": 7,
         "light_frames": [
             {"filter_name": "LP", "exposure_time_seconds": 60.0, "total_count": 20}
@@ -201,6 +202,10 @@ class AuditTest(AuditBase):
         self.assertEqual(light["status"], "OK")
         self.assertEqual(light["on_disk"], 20)
         self.assertEqual(light["attributed"], 20)
+        self.assertEqual(light["intent"], "Galaxy portrait")  # plan intent surfaced
+        self.assertEqual(light["label"], "M31 core")  # pointing label on light rows
+        dark = self.row_by(res, "dark")
+        self.assertNotIn("label", dark)  # calib rows are plan-level: no label
         self.assertEqual(res["totals"]["on_disk"], 50)
 
     async def test_missing_files_reported_as_left_to_do(self):
@@ -214,6 +219,8 @@ class AuditTest(AuditBase):
         self.assertEqual(light["remaining"], 5)
         self.assertEqual(len(res["left_to_do"]), 1)
         self.assertEqual(res["left_to_do"][0]["missing"], 5)
+        self.assertEqual(res["left_to_do"][0]["intent"], "Galaxy portrait")
+        self.assertEqual(res["left_to_do"][0]["label"], "M31 core")
         self.assertIn("load_sequence light", res["left_to_do"][0]["action"])
         self.assertFalse(res["all_saved"])
 
@@ -384,7 +391,10 @@ class AuditTest(AuditBase):
     async def test_types_filter_and_mosaic_panes(self):
         plan = _plan(
             plan_id="plan-abc123",
-            pointings=[{"ra_hours": 0.71, "dec_deg": 41.27}] * 2,
+            pointings=[
+                {"ra_hours": 0.71, "dec_deg": 41.27, "label": "Pane 1"},
+                {"ra_hours": 0.72, "dec_deg": 41.28, "label": "Pane 2"},
+            ],
         )
         # Per-pane light rows + pane dirs on disk.
         self.rows = [
@@ -402,7 +412,9 @@ class AuditTest(AuditBase):
         pane2 = self.row_by(res, "light", pointing_index=2)
         self.assertEqual(pane1["on_disk"], 2)
         self.assertEqual(pane1["effective_plan_id"], "plan-abc123-1")
+        self.assertEqual(pane1["label"], "Pane 1")  # mosaic pane label surfaces
         self.assertEqual(pane2["on_disk"], 1)
+        self.assertEqual(pane2["label"], "Pane 2")
         # types filter: only the requested type survives
         filtered = await self.audit(project_dir=str(self.proj), types=["bias"])
         self.assertEqual({r["type"] for r in filtered["rows"]}, {"bias"})
@@ -414,16 +426,139 @@ class AuditTest(AuditBase):
         self.assertTrue(res["all_saved"])  # nothing outstanding
         self.assertIsNone(res["root"])  # root never resolved for an empty set
 
-    async def test_broken_plan_file_is_error_not_abort(self):
+    async def test_unreferenced_broken_file_is_dropped_not_error(self):
+        # Left join: a file the CSV never references is nobody's problem —
+        # junk/unparseable JSON (config files, "{ not json") must not break
+        # the verdict or surface as a plan error. The good plan still audits.
         self.seed_full()
         (self.proj / "broken.json").write_text("{ not json", encoding="utf-8")
 
         res = await self.audit(project_dir=str(self.proj))
 
-        self.assertEqual(len(res["errors"]), 1)
-        self.assertEqual(res["errors"][0]["file"], "broken.json")
-        self.assertEqual(res["totals"]["plans"], 1)  # the good one still audited
-        self.assertFalse(res["all_saved"])  # plan_errors break the verdict
+        self.assertEqual(res["errors"], [])
+        self.assertEqual(res["totals"]["plans"], 1)  # the good one audited
+        self.assertTrue(res["all_saved"])  # unreferenced breakage is not our verdict
+
+    async def test_referenced_broken_plan_file_is_error(self):
+        # Frames in the CSV reference plan-broken1, and its file fails to
+        # load with no loadable twin → those frames cannot be audited.
+        # (Reported ONCE as the load failure, not double-counted as a gap.)
+        self.seed_full()
+        (self.proj / "broken.json").write_text(
+            '{"plan_id": "plan-broken1", "target": "M42"}', encoding="utf-8"
+        )
+        self.rows += [_row(target="M42 _plan-broken1_") for _ in range(2)]
+
+        res = await self.audit(project_dir=str(self.proj))
+
+        broken = [e for e in res["errors"] if e["file"] == "broken.json"]
+        self.assertEqual(len(broken), 1)
+        self.assertEqual(broken[0]["plan_id"], "plan-broken1")
+        # no duplicate gap entry for the same frames
+        self.assertEqual(
+            len([e for e in res["errors"] if e["plan_id"] == "plan-broken1"]), 1
+        )
+        self.assertFalse(res["all_saved"])  # referenced load failure breaks the verdict
+
+    async def test_corrupt_duplicate_with_valid_twin_is_not_error(self):
+        # A corrupt file whose id a valid plan file still serves: the
+        # frames are fully auditable → not an error, verdict unaffected.
+        self.seed_full()
+        (self.proj / "broken.json").write_text(
+            '{"plan_id": "plan-abc123", "target": "M31"}', encoding="utf-8"
+        )
+
+        res = await self.audit(project_dir=str(self.proj))
+
+        self.assertEqual(res["errors"], [])
+        self.assertEqual(res["totals"]["plans"], 1)
+        self.assertTrue(res["all_saved"])
+
+    async def test_light_frames_without_plan_file_are_a_gap_error(self):
+        # Left side of the join: the CSV references plan-deadbeef but no
+        # plan file claims it (deleted plan). Frames exist → error, and no
+        # phantom row can be fabricated for it (expected is unknowable).
+        self.seed_full()
+        self.rows += [_row(target="Ghost _plan-deadbeef_") for _ in range(3)]
+
+        res = await self.audit(project_dir=str(self.proj))
+
+        gaps = [e for e in res["errors"] if e["plan_id"] == "plan-deadbeef"]
+        self.assertEqual(len(gaps), 1)
+        self.assertIn("3 light frames", gaps[0]["reason"])
+        self.assertFalse(res["all_saved"])
+        self.assertEqual(res["totals"]["plans"], 1)  # the good plan still audited
+
+    async def test_never_shot_plan_file_is_dropped(self):
+        # Plan file loads fine but the CSV never mentions it → dropped
+        # silently: not audited, not an error (that's the left join).
+        self.seed_full()
+        self.write_plan(_plan(plan_id="plan-fresh1", target="M99"), name="fresh.json")
+
+        res = await self.audit(project_dir=str(self.proj))
+
+        self.assertEqual(res["errors"], [])
+        self.assertEqual(res["totals"]["plans"], 1)  # fresh.json not audited
+        self.assertNotIn("M99", {r["target"] for r in res["rows"]})
+        self.assertTrue(res["all_saved"])
+
+    async def test_nested_plan_file_is_discovered(self):
+        # Discovery is recursive: a plan in a subfolder joins the audit the
+        # same way a flat one does (CSV references it → audited).
+        (self.proj / "archive").mkdir()
+        self.write_plan(
+            _plan(plan_id="plan-nest1", target="M51"), name="archive/m51.json"
+        )
+        self.rows += [_row(target="M51 _plan-nest1_") for _ in range(3)]
+
+        res = await self.audit(project_dir=str(self.proj))
+
+        self.assertIn("M51", {r["target"] for r in res["rows"]})
+        self.assertEqual(res["totals"]["plans"], 1)
+        self.assertEqual(res["errors"], [])
+
+    async def test_shallowest_duplicate_id_wins(self):
+        # A nested archived copy shares the live plan's id: the top-level
+        # file must define the audit (20 lights), not the archive (99), and
+        # the pair must not be double-audited.
+        self.seed_full()
+        dup = _plan(
+            plan_id="plan-abc123",
+            target="M31",
+            light_frames=[
+                {"filter_name": "LP", "exposure_time_seconds": 60.0, "total_count": 99}
+            ],
+        )
+        (self.proj / "archive").mkdir()
+        self.write_plan(dup, name="archive/m31_copy.json")
+
+        res = await self.audit(project_dir=str(self.proj))
+
+        light = self.row_by(res, "light")
+        self.assertEqual(light["expected"], 20)  # top-level definition wins
+        self.assertEqual(res["totals"]["plans"], 1)  # not double-audited
+
+    async def test_hidden_dirs_never_count_nor_orphan(self):
+        # The landing root and its token dirs are walked with the hidden-dir
+        # prune: a share's .snapshot/.Trashes copies must neither inflate
+        # on_disk nor masquerade as orphaned frames.
+        self.seed_full()  # 20 lights on disk
+        # copy inside the token dir -> must NOT count toward on_disk
+        snap = self.root / _TOKEN / ".snapshot" / "2026-09-20" / "LIGHT"
+        snap.mkdir(parents=True)
+        (snap / "copy_0000.fits.fz").write_bytes(b"")
+        # trash at the landing root -> must NOT surface as an orphan
+        trash = self.root / ".Trashes" / "2026-09-20" / "LIGHT"
+        trash.mkdir(parents=True)
+        (trash / "t_0000.fits.fz").write_bytes(b"")
+
+        res = await self.audit(project_dir=str(self.proj))
+
+        light = self.row_by(res, "light")
+        self.assertEqual(light["on_disk"], 20)  # snapshot copy excluded
+        self.assertEqual(light["bad"], 0)
+        self.assertEqual(res["orphans"], [])  # .Trashes invisible
+        self.assertTrue(res["all_saved"])
 
 
 class ListPlansTest(AuditBase):
@@ -449,6 +584,30 @@ class ListPlansTest(AuditBase):
         self.assertEqual(entry["intent"], "Nebula")
         self.assertEqual(entry["pointing_count"], 1)
         self.assertIsNotNone(entry["written"])
+
+    async def test_pruned_dirs_and_shallowest_order(self):
+        # node_modules / hidden dirs are never searched (the project dir
+        # holds the agent's own installation: hundreds of package JSONs),
+        # nested plans are found, and top-level files come first.
+        self.write_plan(_plan(target="M31", intent="Galaxy"), name="m31.json")
+        (self.proj / "archive").mkdir()
+        self.write_plan(
+            _plan(plan_id="plan-555555", target="M42", intent="Nebula"),
+            name="archive/m42.json",
+        )
+        for junk_dir in ("node_modules", "__pycache__", ".opencode"):
+            d = self.proj / junk_dir
+            d.mkdir()
+            (d / "package.json").write_text('{"name": "junk"}', encoding="utf-8")
+
+        p1, p2 = self.patch_metadata()
+        with p1, p2:
+            res = await _call(plans_mod.list_plans, project_dir=str(self.proj))
+
+        self.assertEqual(
+            [e["file"] for e in res["plans"]], ["m31.json", "m42.json"]
+        )  # shallowest first; pruned junk absent
+        self.assertEqual(res["errors"], [])  # pruned files never load, so never error
 
 
 if __name__ == "__main__":

@@ -4,11 +4,54 @@ import csv
 import math
 import os
 import sys
+from collections.abc import Iterator
 from datetime import UTC, datetime
 from pathlib import Path, PureWindowsPath
 from typing import Any
 
 from .nina_utils import to_snake
+
+# Tool/cache trees that must never be searched for frame or plan data:
+# dependency dirs (npm/uv) and byte-code caches hold hundreds of unrelated
+# files. Hidden dirs (.git, .opencode, .venv — and on SMB mounts .snapshot
+# and .Trashes) are excluded by _walk_visible itself: their copied trees
+# would otherwise duplicate CSV rows (double attribution) and inflate frame
+# counts with snapshot/trash copies.
+_PRUNED_DIR_NAMES = frozenset({"node_modules", "__pycache__"})
+
+
+def _prunable_dir(name: str) -> bool:
+    """True when a directory must be skipped by every tree walk."""
+    return name.startswith(".") or name in _PRUNED_DIR_NAMES
+
+
+def _walk_visible(root: Path) -> Iterator[tuple[Path, list[str]]]:
+    """``os.walk`` over ``root`` that never enters hidden or tool directories.
+
+    Yields ``(directory, sorted file names)`` for every *visible* directory,
+    depth-first. Directories are pruned in place, so a share's snapshot or
+    trash copies (``.snapshot``, ``.Trashes``) can never be mistaken for
+    fresh frames — on SMB mounts those copies would otherwise duplicate CSV
+    rows and double-count attribution. Directory symlinks are not followed
+    (``os.walk`` default), so a symlink cycle cannot hang an unattended
+    audit. Hidden *files* are yielded as-is; only directory descent is
+    restricted.
+    """
+    for dirpath, dirnames, filenames in os.walk(root):
+        dirnames[:] = sorted(d for d in dirnames if not _prunable_dir(d))
+        yield Path(dirpath), sorted(filenames)
+
+
+def visible_rglob(root: Path, name: str) -> list[Path]:
+    """Files named ``name`` anywhere under ``root``, hidden/tool dirs skipped.
+
+    ``root.rglob(name)`` equivalent with the ``_walk_visible`` prune rule —
+    a ``.snapshot``/``.Trashes`` copy of ``ImageMetaData.csv`` must never be
+    read alongside the live one, or every frame in it would be counted twice.
+    """
+    return [
+        directory / name for directory, names in _walk_visible(root) if name in names
+    ]
 
 
 def windows_to_local(windows_path: str, drive_mount: str | None = None) -> Path:
@@ -61,7 +104,9 @@ def _require_root(root: Path) -> None:
 
     A missing root (unmounted drive, wrong NINA_DRIVE_MOUNT, stale profile
     path) must not masquerade as "no frames yet": callers would report an
-    empty plan and re-acquire everything.
+    empty plan and re-acquire everything. Hidden/tool directories are never
+    searched (see ``visible_rglob``), so a snapshot/trash copy of a CSV
+    cannot double-count a session.
     """
     if root.is_dir():
         return
@@ -76,7 +121,7 @@ def read_imaging_csv(root: Path, image_type: str) -> list[dict[str, Any]]:
     _require_root(root)
     rows: list[dict[str, Any]] = []
     image_type_upper = image_type.upper()
-    for meta_path in root.rglob("ImageMetaData.csv"):
+    for meta_path in visible_rglob(root, "ImageMetaData.csv"):
         csv_dir = meta_path.parent
         parent_dir = csv_dir.parent
         bases = (csv_dir, parent_dir, root)
@@ -104,7 +149,7 @@ def read_weather_csv(root: Path) -> list[dict[str, Any]]:
     """
     rows: list[dict[str, Any]] = []
     _require_root(root)
-    for meta_path in root.rglob("WeatherData.csv"):
+    for meta_path in visible_rglob(root, "WeatherData.csv"):
         for row in _read_csv(meta_path):
             enriched = dict(row)
             enriched.update({"frame_type": "WEATHER", "source": "weather"})

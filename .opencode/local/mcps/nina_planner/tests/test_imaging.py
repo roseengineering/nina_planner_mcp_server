@@ -78,6 +78,25 @@ class ReadImagingCsvTest(unittest.TestCase):
         self.assertEqual(rows[0]["duration"], "60.0")
         self.assertEqual(rows[0]["filter_name"], "LP")
 
+    def test_hidden_snapshot_copy_not_read(self):
+        # A share's .snapshot/.Trashes copy of the CSV must never be read
+        # alongside the live one — its rows would double-count the session.
+        self._write_images([["LIGHT", "60.0", "LP"]])
+        _write_csv(
+            self.root / ".snapshot" / "2026-09-21" / "LIGHT" / "ImageMetaData.csv",
+            ["ImageType", "Duration", "FilterName"],
+            [["LIGHT", "60.0", "LP"]],
+        )
+        _write_csv(
+            self.root / "node_modules" / "2026-09-21" / "LIGHT" / "ImageMetaData.csv",
+            ["ImageType", "Duration", "FilterName"],
+            [["LIGHT", "60.0", "LP"]],
+        )
+
+        rows = read_imaging_csv(root=self.root, image_type="light")
+
+        self.assertEqual(len(rows), 1)  # only the visible CSV was read
+
     def test_injects_into_all_image_rows(self):
         self._write_images(
             [
@@ -472,6 +491,27 @@ class ReadWeatherCsvTest(unittest.TestCase):
 
     def test_no_weather_data_returns_empty(self):
         self.assertEqual(read_weather_csv(root=self.root), [])
+
+    def test_hidden_snapshot_copy_not_read(self):
+        # Same rule as read_imaging_csv: a snapshot/trash copy of the
+        # weather log must not be merged alongside the live one.
+        header = [
+            "ExposureNumber",
+            "ExposureStart",
+            "Temperature",
+            "ExposureStartUTC",
+        ]
+        live = ["0", "2026-09-21 21:16", "24.5", "2026-09-22T02:16:25Z"]
+        _write_csv(self.date_dir / "WeatherData.csv", header, [live])
+        _write_csv(
+            self.root / ".snapshot" / "2026-09-21" / "WeatherData.csv",
+            header,
+            [live],
+        )
+
+        rows = read_weather_csv(root=self.root)
+
+        self.assertEqual(len(rows), 1)
 
     def test_missing_root_raises_instead_of_returning_empty(self):
         missing = self.root / "does-not-exist"

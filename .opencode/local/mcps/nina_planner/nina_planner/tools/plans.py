@@ -1,4 +1,5 @@
 import json
+import re
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -7,10 +8,16 @@ import anyio
 
 from .. import client, config, metadata, plan_utils
 from ..app import mcp
-from ..imaging import read_imaging_csv, read_weather_csv, widen_imaging_metadata
+from ..imaging import (
+    _prunable_dir,
+    _walk_visible,
+    read_imaging_csv,
+    read_weather_csv,
+    widen_imaging_metadata,
+)
 from ..models.plan import ObservationPlan
 from ..mosaic import load_pointings
-from ..progress import filter_metadata_rows, plan_progress
+from ..progress import _light_target_matches, filter_metadata_rows, plan_progress
 from . import equipment as equipment_tools
 
 
@@ -207,6 +214,88 @@ _FITS_SUFFIXES = (".fits", ".fits.fz")
 # Statuses that mean "not everything is saved/counted right" — the
 # `all_saved` verdict fails on any of them (see audit_plans' docstring).
 _AUDIT_BROKEN = ("MISSING_FILES", "EXPIRED", "SUSPECT_JUNK")
+# A delimited plan-id-looking token inside a recorded path. CONSERVATIVE on
+# purpose — letter-initial, ≥5 chars, contains "-" — so filename fragments
+# like "60.00s", "2026-10-22" or "L" never read as an id. Used only to name
+# ids that no plan claims (audit's unmatched list); plan↔row matching itself
+# goes through progress._light_target_matches, which needs no such filter.
+_PLAN_ID_CANDIDATE_RE = re.compile(r"[_\[(]([A-Za-z][A-Za-z0-9.\-]{2,})[_\])]")
+
+
+def _probe_plan_id(path: Path) -> str | None:
+    """Best-effort ``plan_id`` from a plan file that failed to validate.
+
+    Used only to decide whether a *load failure* has frames in
+    ImageMetaData.csv: JSON that parses but fails ObservationPlan validation
+    still carries its id, so its frames can be attributed to the failing
+    file instead of being reported as an unidentifiable gap. Returns None
+    for unparseable JSON or a file without an id (never-shot, not a plan).
+    """
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    plan_id = data.get("plan_id") if isinstance(data, dict) else None
+    return plan_id if isinstance(plan_id, str) and plan_id else None
+
+
+def _plan_ids_in_path(path: str) -> list[str]:
+    """Conservative plan-id candidates in a recorded path, in path order
+    (see regex) — the directory's token comes first, filename junk never
+    survives the letter/dash/length filter."""
+    out: list[str] = []
+    for match in _PLAN_ID_CANDIDATE_RE.finditer(path):
+        token = match.group(1)
+        if "-" in token and len(token) >= 5 and token not in out:
+            out.append(token)
+    return out
+
+
+def _path_has_id(path: str, plan_id: str) -> bool:
+    """True when any path segment carries ``plan_id`` in a delimited form.
+
+    Covers the bare and pointing-suffixed shapes (``_{id}_`` / ``[{id}]`` /
+    ``({id})`` and ``_{id}-N_``); the trailing "-" keeps ``plan-x`` out of
+    ``plan-xy`` exactly as progress._light_target_matches requires.
+    """
+    for component in path.replace("\\", "/").split("/"):
+        if not component:
+            continue
+        for form in (
+            f"_{plan_id}_",
+            f"[{plan_id}]",
+            f"({plan_id})",
+            f"_{plan_id}-",
+            f"[{plan_id}-",
+            f"({plan_id}-",
+        ):
+            if form in component:
+                return True
+    return False
+
+
+def _plan_files(plan_dir: Path) -> list[Path]:
+    """All ``*.json`` files under ``plan_dir``, recursively, shallowest first.
+
+    Plans may live in subfolders (``plans/``, ``archive/``, per-month dirs),
+    so discovery recurses — but only through visible, ordinary directories
+    (the ``_walk_visible`` prune: hidden dirs like ``.opencode``/``.venv``
+    and ``node_modules``/``__pycache__`` are never entered; on this project
+    that prunes 476 of 500 JSON files, leaving exactly the observation
+    plans). Directory symlinks are NOT followed (os.walk default), so a
+    symlink cycle can never hang an unattended audit.
+
+    Results are sorted (depth, name): if two files carry the same plan id —
+    an archived copy next to the live plan — the top-level canonical file
+    wins the claiming pass deterministically instead of whatever plain
+    ``sorted()`` would pick alphabetically (where ``archive/`` sorts before
+    ``m47.json``).
+    """
+    found: list[Path] = []
+    for directory, filenames in _walk_visible(plan_dir):
+        found.extend(directory / name for name in filenames if name.endswith(".json"))
+    found.sort(key=lambda p: (len(p.relative_to(plan_dir).parts), p.name))
+    return found
 
 
 async def _load_project_plans(
@@ -218,7 +307,8 @@ async def _load_project_plans(
     the file behind each plan. A broken/unparseable plan must not abort a
     whole-project sweep, so every failure is collected into ``errors`` as
     ``{file, reason}`` and the rest keep going — the audit reports partial
-    truth rather than none.
+    truth rather than none. Default discovery walks ``plan_dir`` recursively
+    through unpruned directories only (see ``_plan_files``).
     """
     if selected:
         files = []
@@ -228,7 +318,7 @@ async def _load_project_plans(
                 path = plan_dir / path
             files.append(path)
     else:
-        files = sorted(plan_dir.glob("*.json"))
+        files = _plan_files(plan_dir)
     plans: list[tuple[Path, ObservationPlan]] = []
     errors: list[dict[str, str]] = []
     for file in files:
@@ -277,20 +367,22 @@ def _count_fits(token_dir: Path) -> dict[str, int]:
     ``on_disk`` too, which is what stops it skewing the disk-vs-CSV picture.
     """
     counts: dict[str, int] = {}
-    for path in token_dir.rglob("*"):
-        if not path.is_file():
+    for directory, filenames in _walk_visible(token_dir):
+        # The immediate parent of the frames IS the directory — same test
+        # as before, but now hidden dirs (a share's .snapshot/.Trashes
+        # copies) are never walked, so copies can't inflate the count.
+        image_type = directory.name.upper()
+        if image_type not in _AUDIT_TYPES_UPPER:
             continue
-        name = path.name.lower()
-        if not name.endswith(_FITS_SUFFIXES):
-            continue
-        image_type = path.parent.name.upper()
-        if image_type in _AUDIT_TYPES_UPPER:
-            # Compare in uppercase, store in lowercase: every consumer
-            # (rows, orphans, disk buckets) speaks the lowercase type names.
-            key = image_type.lower()
-            if name.startswith("bad_"):
-                key = f"bad_{key}"
-            counts[key] = counts.get(key, 0) + 1
+        # Compare in uppercase, store in lowercase: every consumer
+        # (rows, orphans, disk buckets) speaks the lowercase type names.
+        key = image_type.lower()
+        for name in filenames:
+            lower = name.lower()
+            if not lower.endswith(_FITS_SUFFIXES):
+                continue
+            bucket = f"bad_{key}" if lower.startswith("bad_") else key
+            counts[bucket] = counts.get(bucket, 0) + 1
     return counts
 
 
@@ -452,6 +544,7 @@ def _audit_row(
         "plan_id": plan._base_plan_id(),
         "effective_plan_id": effective,
         "target": plan.target,
+        "intent": plan.intent,
         "pointing_index": pointing_index,
         "type": image_type,
         "expected": expected,
@@ -462,6 +555,14 @@ def _audit_row(
         "status": status,
     }
     if image_type == "light":
+        # The pointing's label — mosaic pane name ("r2_c3", "Pane 2") or a
+        # single-pointing subtitle ("M47 center") — is the human handle for
+        # what pointing_index/effective_plan_id express only numerically,
+        # and it is the middle segment of the landing dir name
+        # ("<target> - <label> _<token>_"). Light-only, like `bad`:  calib
+        # rows are plan-level and have no pointing to label. Normalized to
+        # "" when unset, the same contract as `intent`.
+        row["label"] = plan.pointings[(pointing_index or 1) - 1].label or ""
         # Frames deliberately rejected via N.I.N.A.'s BAD_ filename prefix.
         # Excluded from on_disk above; reported so an operator can see how
         # many were rejected, which explains a remaining deficit without
@@ -491,9 +592,20 @@ async def audit_plans(
 ) -> dict[str, Any]:
     """Audits every observation plan at once: are all captures saved to disk, and what is left to do?
 
-    One call replaces per-plan get_plan_progress sweeps. For each plan (all
-    ``*.json`` plan files in the project directory by default, or exactly the
-    ``plans`` paths/names given) and each requested frame type it reconciles
+    One call replaces per-plan get_plan_progress sweeps. Discovery is a LEFT
+    JOIN of ImageMetaData.csv onto the project's plan files: every plan id
+    recorded in a frame's file path drives the audit, and the plan files in
+    ``project_dir`` (or exactly the ``plans`` paths/names given) supply the
+    definitions. Plan-file discovery is recursive but pruned — directories
+    starting with "." or named ``node_modules``/``__pycache__`` are never
+    searched (see ``_plan_files``), and files order shallowest-first so a
+    top-level plan wins any id tie against an archived copy. A plan file
+    the CSV never references — a never-shot plan,
+    or unrelated JSON such as config files — is ignored entirely and never
+    becomes an error (use list_plans to enumerate plan files themselves).
+    Conversely, frames whose recorded plan id no loadable plan file claims
+    are reported under ``errors`` (a plan file was deleted or is corrupt).
+    For each joined plan and each requested frame type it reconciles
     THREE truth sources and reports them side by side per row:
 
     - ``expected`` — the plan's total_count (per pointing for lights,
@@ -503,6 +615,9 @@ async def audit_plans(
       token = ``_{base_plan_id}_`` for single-pointing plans and
       calibration, ``_{base_plan_id}-{n}_`` per mosaic pane; counted by the
       TYPE-named parent directory at any depth, sidecar CSV/JSON excluded).
+      Hidden directories are never walked anywhere in this tool — neither
+      the CSV reads nor the disk scans — so a share's ``.snapshot``/
+      ``.Trashes`` copies can neither double-count rows nor inflate counts.
       Frames N.I.N.A. rejected via its ``BAD_`` filename prefix
       (``2026-10-22_04-46-37_L_...fits.fz`` ->
       ``BAD_2026-10-22_04-46-37_L_...fits.fz``) are excluded
@@ -537,22 +652,39 @@ async def audit_plans(
     above expected from full-mode re-runs; harmless) → OK.
 
     Top level: ``all_saved`` (true iff no row is MISSING_FILES,
-    EXPIRED or SUSPECT_JUNK and no plan file failed to
-    load), ``totals``, ``left_to_do`` (ONLY rows a sequence run can fix,
+    EXPIRED or SUSPECT_JUNK and no error was recorded), ``totals``,
+    ``left_to_do`` (ONLY rows a sequence run can fix,
     with missing = remaining),
     ``blocked`` (EXPIRED — needs plan/window changes), ``rows`` (every
     plan × type, plus per-pointing light rows for mosaics; single-pointing
     plans carry pointing_index null), ``orphans`` (landing token directories
-    matching no current plan — from deleted plans), ``errors`` (per-file
-    load failures, never fatal to the sweep), and ``root`` (the imaging
-    directory actually scanned).
+    matching no current plan — from deleted plans), ``errors`` (light
+    frames whose recorded plan id no loadable plan file claims, plus plan
+    files that fail to load *while the CSV references their id*; a load
+    failure nothing references is not an error — never fatal to the sweep),
+    and ``root`` (the imaging directory actually scanned).
+
+    Every row, ``left_to_do``, and ``blocked`` entry carries the plan's
+    ``target`` and ``intent`` (the plan's 2–3 word observation goal), so a
+    consumer can tell two plans for the same target apart — or distinguish
+    an acquisition from, say, a calibration session — without loading the
+    plan files itself. Empty string when a plan leaves ``intent`` unset.
+    Light rows (and light ``left_to_do`` entries) additionally carry the
+    pointing's ``label`` — a mosaic pane name like ``r2_c3``/``Pane 2``, or
+    a single-pointing subtitle like ``M47 center`` — the human handle for
+    what ``pointing_index``/``effective_plan_id`` express numerically, and
+    the middle segment of the landing directory name. Calibration rows
+    carry no ``label`` (plan-level, like their null pointing_index); it is
+    the empty string when a pointing's label is unset.
 
     A missing/unmounted imaging root RAISES (check the site profile's image
     save path and, on non-Windows hosts, NINA_DRIVE_MOUNT) rather than
     reporting empty counts — "no frames" and "no mount" must never look
     alike. ``types`` (case-insensitive) subsets the output rows; ``plans``
     entries resolve against ``project_dir`` (default: the server's project
-    directory). Read-only; makes no N.I.N.A. calls beyond the site profile.
+    directory) and bypass CSV discovery — exactly those files are audited
+    even if the CSV never mentions them, and any load failure among them is
+    an error. Read-only; makes no N.I.N.A. calls beyond the site profile.
     """
     plan_dir = Path(project_dir) if project_dir else config.PROJECT_DIR
     if not plan_dir.is_absolute():
@@ -565,8 +697,124 @@ async def audit_plans(
             f"unknown types {unknown}: valid types are {', '.join(_AUDIT_TYPES)}"
         )
 
-    loaded, errors = await _load_project_plans(plan_dir, plans)
-    if not loaded:
+    now = datetime.now(UTC).replace(microsecond=0)
+    explicit = bool(plans)
+    # all_loaded: every loadable plan file (drives disk/orphan accounting —
+    # a plan file's landing dirs are not orphans just because the plan was
+    # never shot). audited: the plans rows are built for. errors: load
+    # failures that matter + light frames no plan claims (see below).
+    all_loaded: list[tuple[Path, ObservationPlan]] = []
+    audited: list[tuple[Path, ObservationPlan]] = []
+    errors: list[dict[str, Any]] = []
+    root: Path | None = None
+    rows: list[dict[str, Any]] = []
+
+    if explicit:
+        # Caller named exact files: audit exactly those (even never-shot —
+        # that is the point of naming one) and every load failure is an
+        # error — no discovery pass gets to soften an explicit request.
+        all_loaded, errors = await _load_project_plans(plan_dir, plans)
+        audited = all_loaded
+        if audited:
+            # read_metadata validates the imaging root (_require_root)
+            # before any counting: a dead mount must raise here, not
+            # surface as zero frames.
+            root = await metadata.resolve_imaging_root()
+            rows = await metadata.read_metadata()
+    elif not _plan_files(plan_dir):
+        # Nothing to join against: report before touching the imaging root,
+        # so an empty project dir stays NINA-free (root: null below).
+        pass
+    else:
+        # LEFT JOIN — ImageMetaData.csv's recorded plan ids drive, plan
+        # files are the joined side:
+        #   * CSV references a plan id + plan file loads   -> audited;
+        #   * CSV references a plan id + no loadable file  -> error (gap);
+        #   * plan file loads + CSV never mentions it      -> dropped
+        #     silently (never-shot plan, or unrelated JSON such as config
+        #     files — list_plans still reports unparseable files).
+        root = await metadata.resolve_imaging_root()
+        rows = await metadata.read_metadata()
+        path_rows = [r for r in rows if (r.get("file_path") or "").strip()]
+        all_loaded, load_errors = await _load_project_plans(plan_dir)
+
+        # One pass: which plan (if any) claims each recorded row. Matching
+        # reuses progress._light_target_matches, so every token form the
+        # attribution logic accepts (underscore/bracket/paren, per-pointing,
+        # single-pointing legacy) counts as a reference here too.
+        claimed_by: list[int | None] = []
+        for row in path_rows:
+            hit: int | None = None
+            for idx, (_path, plan) in enumerate(all_loaded):
+                if any(
+                    _light_target_matches(plan, row, pointing_index=i)
+                    for i in range(1, len(plan.pointings) + 1)
+                ):
+                    hit = idx
+                    break
+            claimed_by.append(hit)
+        audited = [
+            pair
+            for idx, pair in enumerate(all_loaded)
+            if idx in set(i for i in claimed_by if i is not None)
+        ]
+
+        # A load failure is an error only when recorded frames reference
+        # its plan id AND no loadable file provides that id — an
+        # unreadable, never-shot file is nobody's problem yet (junk JSON
+        # rarely carries an id at all), and a corrupt duplicate whose id a
+        # valid twin still serves needs no verdict either.
+        failed_ids: set[str] = set()
+        loadable_ids = {plan._base_plan_id() for _f, plan in all_loaded}
+        for err in load_errors:
+            plan_id = _probe_plan_id(plan_dir / err["file"])
+            if (
+                plan_id
+                and plan_id not in loadable_ids
+                and any(
+                    _path_has_id((r.get("file_path") or ""), plan_id) for r in path_rows
+                )
+            ):
+                failed_ids.add(plan_id)
+                errors.append(
+                    {
+                        "file": err["file"],
+                        "plan_id": plan_id,
+                        "reason": err["reason"],
+                    }
+                )
+
+        # The left side of the join: light frames whose plan id no
+        # loadable file claims. Light only — calibration pools across
+        # plans regardless of whose dir it was shot in, so unowned
+        # calibration rows are normal, not a gap.
+        gaps: dict[str | None, int] = {}
+        for i, row in enumerate(path_rows):
+            if claimed_by[i] is not None:
+                continue
+            if (row.get("image_type") or "").upper() != "LIGHT":
+                continue
+            path = row.get("file_path") or ""
+            if any(_path_has_id(path, fid) for fid in failed_ids):
+                continue  # already reported as that file's load failure
+            candidates = _plan_ids_in_path(path)
+            key = candidates[0] if candidates else None
+            gaps[key] = gaps.get(key, 0) + 1
+        for key, count in gaps.items():
+            if key:
+                reason = (
+                    f"{count} light frames in ImageMetaData.csv reference "
+                    f"plan-id {key!r}, but no loadable plan file in "
+                    f"{plan_dir} claims them (deleted or corrupt plan file?)"
+                )
+            else:
+                reason = (
+                    f"{count} light frames in ImageMetaData.csv carry no "
+                    f"plan id and match no plan file in {plan_dir}"
+                )
+            errors.append({"file": None, "plan_id": key, "reason": reason})
+
+    if not audited:
         res: dict[str, Any] = {
             "all_saved": not errors,
             "totals": {
@@ -581,25 +829,24 @@ async def audit_plans(
             "rows": [],
             "orphans": [],
             "errors": errors,
-            "root": None,
+            "root": str(root) if root is not None else None,
         }
         if errors:
             res["warning"] = f"no plan could be loaded from {plan_dir}"
-        else:
+        elif explicit or not all_loaded:
             res["warning"] = f"no plan files in {plan_dir}"
+        else:
+            res["warning"] = (
+                "no captured frames in ImageMetaData.csv reference any "
+                f"plan file in {plan_dir} (never-shot plans are not audited)"
+            )
         client.log_payload("Audit:", json.dumps(res, indent=2))
         return res
-
-    # read_metadata validates the imaging root (_require_root) before any
-    # counting: a dead mount must raise here, not surface as zero frames.
-    root = await metadata.resolve_imaging_root()
-    rows = await metadata.read_metadata()
-    now = datetime.now(UTC).replace(microsecond=0)
 
     # One filesystem pass: bucket each landing token directory by its
     # trailing token, longest-first so pane tokens (base-N) win over base.
     known: dict[str, tuple[str, int | None]] = {}
-    for _path, plan in loaded:
+    for _path, plan in all_loaded:
         base = plan._base_plan_id()
         multi = len(plan.pointings) > 1
         for i in range(1, len(plan.pointings) + 1):
@@ -616,7 +863,7 @@ async def audit_plans(
     disk: dict[tuple[str, int | None], dict[str, int]] = {}
     unclaimed: list[Path] = []
     for entry in sorted(root.iterdir(), key=lambda p: p.name):
-        if not entry.is_dir():
+        if not entry.is_dir() or _prunable_dir(entry.name):
             continue
         matched_key = None
         for token in tokens_longest_first:
@@ -624,9 +871,12 @@ async def audit_plans(
                 matched_key = known[token]
                 break
         if matched_key is None:
+            # Pruned walk: a share's .snapshot/.Trashes copy is never an
+            # orphan candidate — it is a copy, not frames nobody claims.
             if any(
-                p.is_file() and p.name.lower().endswith(_FITS_SUFFIXES)
-                for p in entry.rglob("*")
+                name.lower().endswith(_FITS_SUFFIXES)
+                for _dir, names in _walk_visible(entry)
+                for name in names
             ):
                 unclaimed.append(entry)
             continue
@@ -647,7 +897,7 @@ async def audit_plans(
     left_to_do: list[dict[str, Any]] = []
     blocked: list[dict[str, Any]] = []
 
-    for _path, plan in loaded:
+    for _path, plan in audited:
         base = plan._base_plan_id()
         multi = len(plan.pointings) > 1
         for i in range(1, len(plan.pointings) + 1):
@@ -705,22 +955,27 @@ async def audit_plans(
     for row in rows_out:
         status = row["status"]
         if status == "MISSING_FILES":
-            left_to_do.append(
-                {
-                    "plan_id": row["plan_id"],
-                    "target": row["target"],
-                    "pointing_index": row["pointing_index"],
-                    "type": row["type"],
-                    "missing": row["remaining"],
-                    "reason": status,
-                    "action": _action_for(row["type"]),
-                }
-            )
+            entry = {
+                "plan_id": row["plan_id"],
+                "target": row["target"],
+                "intent": row["intent"],
+                "pointing_index": row["pointing_index"],
+                "type": row["type"],
+                "missing": row["remaining"],
+                "reason": status,
+                "action": _action_for(row["type"]),
+            }
+            # Light rows only (same rule as rows): calibration entries are
+            # plan-level and have no pointing to label.
+            if "label" in row:
+                entry["label"] = row["label"]
+            left_to_do.append(entry)
         elif status == "EXPIRED":
             blocked.append(
                 {
                     "plan_id": row["plan_id"],
                     "target": row["target"],
+                    "intent": row["intent"],
                     "type": row["type"],
                     "expected": row["expected"],
                     "attributed": row["attributed"],
@@ -753,7 +1008,7 @@ async def audit_plans(
             "expected": sum(r["expected"] for r in rows_out),
             "on_disk": sum(r["on_disk"] for r in rows_out),
             "attributed": sum(r["attributed"] for r in rows_out),
-            "plans": len(loaded),
+            "plans": len(audited),
             "plan_errors": len(errors),
         },
         "left_to_do": left_to_do,
@@ -769,12 +1024,17 @@ async def audit_plans(
 
 @mcp.tool()
 async def list_plans(project_dir: str | None = None) -> dict[str, Any]:
-    """Returns every observation plan file in the project directory with its identity, so an agent can enumerate plans without globbing.
+    """Returns every observation plan file under the project directory with its identity, so an agent can enumerate plans without globbing.
 
-    Each entry carries ``file``, absolute ``path``, ``plan_id``, ``target``,
-    ``intent``, ``pointing_count``, and ``written`` (file mtime, ISO-8601
-    local with offset). Unparseable JSON files are reported per file under
-    ``errors`` instead of failing the call. Read-only."""
+    Discovery is recursive but pruned: any directory starting with "." or
+    named ``node_modules``/``__pycache__`` is skipped (the project dir also
+    holds the agent's own installation and its hundreds of package JSONs),
+    and files are ordered shallowest-first so a top-level plan precedes an
+    archived copy. Each entry carries ``file``, absolute ``path``,
+    ``plan_id``, ``target``, ``intent``, ``pointing_count``, and ``written``
+    (file mtime, ISO-8601 local with offset). Unparseable JSON files are
+    reported per file under ``errors`` instead of failing the call.
+    Read-only."""
     plan_dir = Path(project_dir) if project_dir else config.PROJECT_DIR
     if not plan_dir.is_absolute():
         plan_dir = config.PROJECT_DIR / plan_dir
