@@ -38,9 +38,11 @@ class Dso:
 
 
 def _load_catalog() -> tuple[Dso, ...]:
-    with files(__package__).joinpath("dso_catalog.csv").open(
-        newline="", encoding="utf-8"
-    ) as source:
+    with (
+        files(__package__)
+        .joinpath("dso_catalog.csv")
+        .open(newline="", encoding="utf-8") as source
+    ):
         return tuple(
             Dso(
                 name=row["name"],
