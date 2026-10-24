@@ -77,6 +77,7 @@ ignore_missing_imports = true
 
 [tool.ruff]
 line-length = 88
+extend-exclude = ["build"]
 
 [tool.ruff.lint]
 # E/F = Basic errors, I = Auto-sorting imports, B = Common code bugs

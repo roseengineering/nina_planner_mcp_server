@@ -218,7 +218,7 @@ class RankCatalogTest(unittest.TestCase):
 
 class BuiltinCatalogTest(unittest.TestCase):
     def test_catalog_is_loaded_from_csv(self):
-        self.assertEqual(len(dso_catalog.CATALOG), 496)
+        self.assertEqual(len(dso_catalog.CATALOG), 497)
         self.assertEqual(
             dso_catalog.CATALOG[0],
             dso_catalog.Dso(
