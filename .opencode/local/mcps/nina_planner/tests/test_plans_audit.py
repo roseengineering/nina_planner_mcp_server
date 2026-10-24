@@ -423,7 +423,8 @@ class AuditTest(AuditBase):
         res = await self.audit(project_dir=str(self.proj))
         self.assertIn("warning", res)
         self.assertEqual(res["rows"], [])
-        self.assertTrue(res["all_saved"])  # nothing outstanding
+        self.assertEqual(res["never_shot"], [])
+        self.assertTrue(res["all_saved"])  # nothing exists, so nothing is owed
         self.assertIsNone(res["root"])  # root never resolved for an empty set
 
     async def test_unreferenced_broken_file_is_dropped_not_error(self):
@@ -436,6 +437,7 @@ class AuditTest(AuditBase):
         res = await self.audit(project_dir=str(self.proj))
 
         self.assertEqual(res["errors"], [])
+        self.assertEqual(res["never_shot"], [])  # junk JSON never loads as a plan
         self.assertEqual(res["totals"]["plans"], 1)  # the good one audited
         self.assertTrue(res["all_saved"])  # unreferenced breakage is not our verdict
 
@@ -489,18 +491,123 @@ class AuditTest(AuditBase):
         self.assertFalse(res["all_saved"])
         self.assertEqual(res["totals"]["plans"], 1)  # the good plan still audited
 
-    async def test_never_shot_plan_file_is_dropped(self):
-        # Plan file loads fine but the CSV never mentions it → dropped
-        # silently: not audited, not an error (that's the left join).
+    async def test_never_shot_plan_reported_not_audited(self):
+        # Plan file loads fine but the CSV never mentions it → NOT audited
+        # (no rows: expected/on_disk/attributed means nothing for frames
+        # never attempted) and not an error — but it must surface. Hiding it
+        # is the Oct-24 blind spot: the audit showed two 1-frame deficits
+        # while six whole unshot plans (240 frames) waited, found only by
+        # diffing list_plans by hand.
         self.seed_full()
-        self.write_plan(_plan(plan_id="plan-fresh1", target="M99"), name="fresh.json")
+        self.write_plan(
+            _plan(
+                plan_id="plan-fresh1",
+                target="M99",
+                pointings=[{"ra_hours": 12.3, "dec_deg": 17.8, "label": "M99 center"}],
+            ),
+            name="fresh.json",
+        )
 
         res = await self.audit(project_dir=str(self.proj))
 
         self.assertEqual(res["errors"], [])
         self.assertEqual(res["totals"]["plans"], 1)  # fresh.json not audited
         self.assertNotIn("M99", {r["target"] for r in res["rows"]})
-        self.assertTrue(res["all_saved"])
+        self.assertFalse(res["all_saved"])  # 20 frames of it do not exist
+        self.assertEqual(res["totals"]["never_shot"], 1)
+        entry = res["never_shot"][0]
+        self.assertEqual(entry["plan_id"], "plan-fresh1")
+        self.assertEqual(entry["target"], "M99")
+        self.assertEqual(entry["intent"], "Galaxy portrait")
+        self.assertEqual(entry["file"], "fresh.json")
+        self.assertEqual(entry["pointing_count"], 1)
+        self.assertEqual(entry["light_expected"], 20)
+        self.assertIsNotNone(entry["written"])
+        # ...and it is in the work list, as the whole light ask.
+        todo = [t for t in res["left_to_do"] if t["reason"] == "NEVER_SHOT"]
+        self.assertEqual(len(todo), 1)
+        self.assertEqual(todo[0]["missing"], 20)
+        self.assertEqual(todo[0]["label"], "M99 center")
+        self.assertIn("load_sequence light", todo[0]["action"])
+
+    async def test_never_shot_mosaic_reports_each_pane(self):
+        # A mosaic is acquired pane by pane, so its NEVER_SHOT work list is
+        # per-pane (missing = that pane's ask) while never_shot stays one
+        # plan-level entry carrying the total.
+        self.seed_full()
+        self.write_plan(
+            _plan(
+                plan_id="plan-mosaic1",
+                target="M33",
+                pointings=[
+                    {"ra_hours": 1.0, "dec_deg": 30.6, "label": "r1_c1"},
+                    {"ra_hours": 1.1, "dec_deg": 30.7, "label": "r1_c2"},
+                ],
+            ),
+            name="m33_mosaic.json",
+        )
+
+        res = await self.audit(project_dir=str(self.proj))
+
+        self.assertEqual(len(res["never_shot"]), 1)
+        entry = res["never_shot"][0]
+        self.assertEqual(entry["pointing_count"], 2)
+        self.assertEqual(entry["light_expected"], 40)
+        panes = [t for t in res["left_to_do"] if t["reason"] == "NEVER_SHOT"]
+        self.assertEqual([p["pointing_index"] for p in panes], [1, 2])
+        self.assertEqual([p["missing"] for p in panes], [20, 20])
+        self.assertEqual([p["label"] for p in panes], ["r1_c1", "r1_c2"])
+
+    async def test_never_shot_deduped_by_plan_id(self):
+        # Two files carry the same plan id (live plan + archived copy),
+        # neither shot: one report, from the shallowest file — not two.
+        self.seed_full()
+        self.write_plan(_plan(plan_id="plan-fresh1", target="M99"), name="fresh.json")
+        (self.proj / "archive").mkdir()
+        self.write_plan(
+            _plan(plan_id="plan-fresh1", target="M99"),
+            name="archive/fresh_copy.json",
+        )
+
+        res = await self.audit(project_dir=str(self.proj))
+
+        self.assertEqual([e["plan_id"] for e in res["never_shot"]], ["plan-fresh1"])
+        self.assertEqual(res["never_shot"][0]["file"], "fresh.json")
+        self.assertEqual(
+            len([t for t in res["left_to_do"] if t["reason"] == "NEVER_SHOT"]), 1
+        )
+
+    async def test_all_plans_unshot_still_reported(self):
+        # Nothing referenced at all: no rows, but the early-return branch
+        # reports the same never_shot/left_to_do — an all-unshot project is
+        # 100% outstanding work, not an empty audit.
+        self.write_plan(_plan(target="M31"), name="m31.json")
+
+        res = await self.audit(project_dir=str(self.proj))
+
+        self.assertEqual(res["rows"], [])
+        self.assertEqual(len(res["never_shot"]), 1)
+        self.assertEqual(len(res["left_to_do"]), 1)
+        self.assertEqual(res["left_to_do"][0]["reason"], "NEVER_SHOT")
+        self.assertEqual(res["left_to_do"][0]["missing"], 20)
+        self.assertFalse(res["all_saved"])
+        self.assertIn("unshot", res["warning"])
+
+    async def test_explicit_unshot_plan_audits_as_missing_files(self):
+        # Naming a file IS the request to audit it: an unshot plan named
+        # explicitly becomes an ordinary MISSING_FILES row, never a
+        # never_shot entry (which would be the same work, reported twice).
+        self.seed_full()
+        self.write_plan(_plan(plan_id="plan-fresh1", target="M99"), name="fresh.json")
+
+        res = await self.audit(plans=["fresh.json"], project_dir=str(self.proj))
+
+        self.assertEqual(res["never_shot"], [])
+        light = self.row_by(res, "light")
+        self.assertEqual(light["target"], "M99")
+        self.assertEqual(light["status"], "MISSING_FILES")
+        self.assertEqual(light["remaining"], 20)
+        self.assertEqual({t["reason"] for t in res["left_to_do"]}, {"MISSING_FILES"})
 
     async def test_nested_plan_file_is_discovered(self):
         # Discovery is recursive: a plan in a subfolder joins the audit the
@@ -537,6 +644,37 @@ class AuditTest(AuditBase):
         light = self.row_by(res, "light")
         self.assertEqual(light["expected"], 20)  # top-level definition wins
         self.assertEqual(res["totals"]["plans"], 1)  # not double-audited
+
+    async def test_duplicate_id_twin_is_not_never_shot(self):
+        # The mirror of the test above: a rewritten plan beside its
+        # original shares the id, and only the shallowest file claims the
+        # rows — but the frames DO exist under that shared id, so the twin
+        # must not surface as an unshot 20-frame plan (one target's work,
+        # counted twice). Live case: NGC 1931's Oct-24 drift-threshold
+        # rewrite beside its Oct-23 original.
+        self.seed_full()
+        self.write_plan(
+            _plan(
+                plan_id="plan-abc123",
+                target="M31",
+                light_frames=[
+                    {
+                        "filter_name": "LP",
+                        "exposure_time_seconds": 60.0,
+                        "total_count": 60,
+                    }
+                ],
+            ),
+            name="m31_rewrite.json",
+        )
+
+        res = await self.audit(project_dir=str(self.proj))
+
+        self.assertEqual(res["never_shot"], [])
+        self.assertEqual(
+            [t for t in res["left_to_do"] if t["reason"] == "NEVER_SHOT"], []
+        )
+        self.assertTrue(res["all_saved"])
 
     async def test_hidden_dirs_never_count_nor_orphan(self):
         # The landing root and its token dirs are walked with the hidden-dir

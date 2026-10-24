@@ -583,6 +583,104 @@ def _action_for(image_type: str) -> str:
     }[image_type]
 
 
+def _written_iso(path: Path) -> str | None:
+    """File mtime as ISO-8601 local with offset — same shape as list_plans."""
+    try:
+        return (
+            datetime.fromtimestamp(path.stat().st_mtime)
+            .astimezone()
+            .isoformat(timespec="seconds")
+        )
+    except OSError:
+        return None
+
+
+def _light_expected_per_pointing(plan: ObservationPlan) -> int:
+    """Light frames ONE pointing asks for: the sum of its groups' total_count.
+
+    A mosaic's light groups are plan-level but each pointing acquires them
+    independently, so the plan's whole light ask is this times the pointing
+    count (what a `load_sequence light` per pointing resolves to).
+    """
+
+    def _count_of(group: Any) -> int:
+        value = (
+            group.get("total_count")
+            if isinstance(group, dict)
+            else getattr(group, "total_count", 0)
+        )
+        return int(value or 0)
+
+    return sum(_count_of(group) for group in (plan.light_frames or []))
+
+
+def _never_shot_report(
+    pairs: list[tuple[Path, ObservationPlan]],
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Report the loadable plans no recorded frame references.
+
+    Discovery is a LEFT JOIN driven by ImageMetaData.csv, so a plan that was
+    written but never shot has nothing to join on: it gets no rows, and by
+    construction it used to vanish from the audit entirely. That is a real
+    blind spot for the work-list question this tool answers — on Oct 24 the
+    audit showed two 1-frame deficits while six whole unshot plans (240
+    frames) were only found by manually diffing list_plans against the
+    audited id set. The frames are as missing as any MISSING_FILES deficit;
+    they are just missing all of them.
+
+    So these plans are reported here (plan-level, and matched on the base
+    plan id: a twin file of an already-shot plan is NOT never-shot, and two
+    unshot copies of one plan report once, from the shallowest file) and as
+    ``left_to_do`` entries with ``reason="NEVER_SHOT"`` and ``missing`` = the
+    full light ask — nothing else in the audit can cover that work. They
+    still get no ``rows``: expected-vs-on_disk-vs_attributed is meaningless
+    for frames that were never attempted, and a row would read as "0 of 40
+    captured, 40 missing", drowning the real per-plan deficits.
+
+    Returns ``(never_shot, left_to_do)``; the todo entries carry one
+    pointing each (mosaic panes load one at a time, exactly like the light
+    rows they mirror).
+    """
+    entries: list[dict[str, Any]] = []
+    todos: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for path, plan in pairs:
+        base = plan._base_plan_id()
+        if base in seen:
+            continue
+        seen.add(base)
+        per_pointing = _light_expected_per_pointing(plan)
+        multi = len(plan.pointings) > 1
+        entries.append(
+            {
+                "plan_id": base,
+                "file": path.name,
+                "target": plan.target,
+                "intent": plan.intent,
+                "pointing_count": len(plan.pointings),
+                "light_expected": per_pointing * len(plan.pointings),
+                "written": _written_iso(path),
+            }
+        )
+        for i in range(1, len(plan.pointings) + 1):
+            todos.append(
+                {
+                    "plan_id": base,
+                    "target": plan.target,
+                    "intent": plan.intent,
+                    "pointing_index": i if multi else None,
+                    "type": "light",
+                    "missing": per_pointing,
+                    "reason": "NEVER_SHOT",
+                    "action": _action_for("light"),
+                    # Same normalization as the light rows: the pointing's
+                    # label is the human handle, "" when unset.
+                    "label": plan.pointings[i - 1].label or "",
+                }
+            )
+    return entries, todos
+
+
 @mcp.tool()
 async def audit_plans(
     plans: list[str] | None = None,
@@ -599,11 +697,12 @@ async def audit_plans(
     definitions. Plan-file discovery is recursive but pruned — directories
     starting with "." or named ``node_modules``/``__pycache__`` are never
     searched (see ``_plan_files``), and files order shallowest-first so a
-    top-level plan wins any id tie against an archived copy. A plan file
-    the CSV never references — a never-shot plan,
-    or unrelated JSON such as config files — is ignored entirely and never
-    becomes an error (use list_plans to enumerate plan files themselves).
-    Conversely, frames whose recorded plan id no loadable plan file claims
+    top-level plan wins any id tie against an archived copy. Unrelated JSON
+    such as config files is ignored entirely and never becomes an error
+    (use list_plans to enumerate plan files themselves). A plan whose id no
+    recorded frame references — a never-shot plan — is NOT audited (no
+    ``rows``) but is reported: see ``never_shot`` below. Conversely,
+    frames whose recorded plan id no loadable plan file claims
     are reported under ``errors`` (a plan file was deleted or is corrupt).
     For each joined plan and each requested frame type it reconciles
     THREE truth sources and reports them side by side per row:
@@ -652,10 +751,23 @@ async def audit_plans(
     above expected from full-mode re-runs; harmless) → OK.
 
     Top level: ``all_saved`` (true iff no row is MISSING_FILES,
-    EXPIRED or SUSPECT_JUNK and no error was recorded), ``totals``,
-    ``left_to_do`` (ONLY rows a sequence run can fix,
-    with missing = remaining),
-    ``blocked`` (EXPIRED — needs plan/window changes), ``rows`` (every
+    EXPIRED or SUSPECT_JUNK, no error was recorded, and ``never_shot`` is
+    empty), ``totals`` (including ``never_shot``, the number of unshot plan
+    files),
+    ``left_to_do`` (ONLY what a sequence run can fix: MISSING_FILES rows
+    with missing = remaining, plus one NEVER_SHOT entry per unshot pointing
+    with missing = that pointing's whole light ask),
+    ``blocked`` (EXPIRED — needs plan/window changes),
+    ``never_shot`` (loadable plan files no recorded frame references —
+    matched on plan id, so a rewritten/archived twin of an already-shot
+    plan is not never-shot: its frames exist under the shared id. Written
+    but never imaged, and the audit's dual of ``orphans``, which is frames
+    with no plan file. Plan-level entries carrying ``plan_id``,
+    ``file``, ``target``, ``intent``, ``pointing_count``, ``light_expected``
+    and ``written``; deduped by plan id, shallowest-first. Without these an
+    operator reading only ``left_to_do`` sees a 2-frame deficit where 240
+    frames of never-shot targets also wait — the join's blind spot, since a
+    plan with zero frames has no CSV row to join on), ``rows`` (every
     plan × type, plus per-pointing light rows for mosaics; single-pointing
     plans carry pointing_index null), ``orphans`` (landing token directories
     matching no current plan — from deleted plans), ``errors`` (light
@@ -669,7 +781,9 @@ async def audit_plans(
     consumer can tell two plans for the same target apart — or distinguish
     an acquisition from, say, a calibration session — without loading the
     plan files itself. Empty string when a plan leaves ``intent`` unset.
-    Light rows (and light ``left_to_do`` entries) additionally carry the
+    (``never_shot`` entries carry both fields too.)
+    Light rows (and light ``left_to_do`` entries, MISSING_FILES and
+    NEVER_SHOT alike) additionally carry the
     pointing's ``label`` — a mosaic pane name like ``r2_c3``/``Pane 2``, or
     a single-pointing subtitle like ``M47 center`` — the human handle for
     what ``pointing_index``/``effective_plan_id`` express numerically, and
@@ -684,7 +798,9 @@ async def audit_plans(
     entries resolve against ``project_dir`` (default: the server's project
     directory) and bypass CSV discovery — exactly those files are audited
     even if the CSV never mentions them, and any load failure among them is
-    an error. Read-only; makes no N.I.N.A. calls beyond the site profile.
+    an error. Naming a file IS the request to audit it, so explicit mode
+    never populates ``never_shot``: an unshot plan named there audits as an
+    ordinary MISSING_FILES row instead. Read-only; makes no N.I.N.A. calls beyond the site profile.
     """
     plan_dir = Path(project_dir) if project_dir else config.PROJECT_DIR
     if not plan_dir.is_absolute():
@@ -705,6 +821,11 @@ async def audit_plans(
     # failures that matter + light frames no plan claims (see below).
     all_loaded: list[tuple[Path, ObservationPlan]] = []
     audited: list[tuple[Path, ObservationPlan]] = []
+    # Loadable plan files no recorded frame references — the join's blind
+    # spot, reported under `never_shot` + `left_to_do` (see
+    # _never_shot_report). Empty in explicit mode, where naming a file IS
+    # the request to audit it.
+    unreferenced: list[tuple[Path, ObservationPlan]] = []
     errors: list[dict[str, Any]] = []
     root: Path | None = None
     rows: list[dict[str, Any]] = []
@@ -730,9 +851,10 @@ async def audit_plans(
         # files are the joined side:
         #   * CSV references a plan id + plan file loads   -> audited;
         #   * CSV references a plan id + no loadable file  -> error (gap);
-        #   * plan file loads + CSV never mentions it      -> dropped
-        #     silently (never-shot plan, or unrelated JSON such as config
-        #     files — list_plans still reports unparseable files).
+        #   * plan file loads + CSV never mentions it      -> not audited
+        #     (never-shot plan, reported under `never_shot`/`left_to_do`;
+        #     or unrelated JSON such as config files — list_plans still
+        #     reports unparseable files).
         root = await metadata.resolve_imaging_root()
         rows = await metadata.read_metadata()
         path_rows = [r for r in rows if (r.get("file_path") or "").strip()]
@@ -753,10 +875,18 @@ async def audit_plans(
                     hit = idx
                     break
             claimed_by.append(hit)
-        audited = [
-            pair
-            for idx, pair in enumerate(all_loaded)
-            if idx in set(i for i in claimed_by if i is not None)
+        referenced = {i for i in claimed_by if i is not None}
+        audited = [pair for idx, pair in enumerate(all_loaded) if idx in referenced]
+        # The same pass's other side: plans no row claims — a real plan with
+        # zero frames (see _never_shot_report). ID-level, not file-level:
+        # two files may share one plan id (a rewritten plan, an archived
+        # copy) and only the shallowest claims the rows, but their frames DO
+        # exist — reporting the twin as never-shot would double-count one
+        # target's work (live: NGC 1931's Oct-24 rewrite beside its
+        # Oct-23 original).
+        claimed_ids = {all_loaded[i][1]._base_plan_id() for i in referenced}
+        unreferenced = [
+            pair for pair in all_loaded if pair[1]._base_plan_id() not in claimed_ids
         ]
 
         # A load failure is an error only when recorded frames reference
@@ -814,18 +944,22 @@ async def audit_plans(
                 )
             errors.append({"file": None, "plan_id": key, "reason": reason})
 
+    never_shot, never_shot_todos = _never_shot_report(unreferenced)
+
     if not audited:
         res: dict[str, Any] = {
-            "all_saved": not errors,
+            "all_saved": not errors and not never_shot,
             "totals": {
                 "expected": 0,
                 "on_disk": 0,
                 "attributed": 0,
                 "plans": 0,
                 "plan_errors": len(errors),
+                "never_shot": len(never_shot),
             },
-            "left_to_do": [],
+            "left_to_do": never_shot_todos,
             "blocked": [],
+            "never_shot": never_shot,
             "rows": [],
             "orphans": [],
             "errors": errors,
@@ -838,7 +972,8 @@ async def audit_plans(
         else:
             res["warning"] = (
                 "no captured frames in ImageMetaData.csv reference any "
-                f"plan file in {plan_dir} (never-shot plans are not audited)"
+                f"plan file in {plan_dir} — every plan file is unshot; "
+                "they are listed under never_shot / left_to_do"
             )
         client.log_payload("Audit:", json.dumps(res, indent=2))
         return res
@@ -1007,17 +1142,29 @@ async def audit_plans(
             )
 
     broken = [r for r in rows_out if r["status"] in _AUDIT_BROKEN]
+    # Per-plan deficits first (the shape callers have always seen), then the
+    # plans nothing could ever have counted: a NEVER_SHOT entry's `missing`
+    # is the whole light ask, and it is work a sequence run fixes exactly
+    # like a MISSING_FILES row.
+    left_to_do.extend(never_shot_todos)
     res = {
-        "all_saved": not broken and not errors,
+        # never_shot breaks the verdict on purpose: "are all captures saved"
+        # is answered by the frames that exist, and these plans have none.
+        # A plan file you never intend to shoot pins this false — delete it
+        # or move it out of the project dir (unrelated JSON is already
+        # ignored: it never loads as a plan).
+        "all_saved": not broken and not errors and not never_shot,
         "totals": {
             "expected": sum(r["expected"] for r in rows_out),
             "on_disk": sum(r["on_disk"] for r in rows_out),
             "attributed": sum(r["attributed"] for r in rows_out),
             "plans": len(audited),
             "plan_errors": len(errors),
+            "never_shot": len(never_shot),
         },
         "left_to_do": left_to_do,
         "blocked": blocked,
+        "never_shot": never_shot,
         "rows": rows_out,
         "orphans": orphans,
         "errors": errors,
