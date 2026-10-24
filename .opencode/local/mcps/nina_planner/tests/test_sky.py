@@ -218,11 +218,11 @@ class RankCatalogTest(unittest.TestCase):
 
 class BuiltinCatalogTest(unittest.TestCase):
     def test_catalog_is_loaded_from_csv(self):
-        self.assertEqual(len(dso_catalog.CATALOG), 128)
+        self.assertEqual(len(dso_catalog.CATALOG), 496)
         self.assertEqual(
             dso_catalog.CATALOG[0],
             dso_catalog.Dso(
-                "M6", "Butterfly Cluster", "open", 17.6711, -32.2167, 4.2, 25, 25
+                "Berkeley 68", "Berkeley 68", "open", 4.7369, 42.1339, 9.8, 12, 12
             ),
         )
 
