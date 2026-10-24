@@ -28,14 +28,15 @@ function toJSONL(value: unknown): string {
 }
 
 // Events that must reach the controller with NO batching delay: safety state,
-// sequence lifecycle, mount/stow, and anything that looks like a failure.
-// Everything else — per-frame IMAGE-* saves, autofocus, guider chatter, and any
-// event we don't explicitly recognize — is treated as telemetry and batched on
+// sequence lifecycle, per-target transitions, mount/stow, and anything that
+// looks like a failure. Everything else — per-frame IMAGE-* saves, autofocus,
+// guider chatter (GUIDER-START/GUIDER-STOP cycle routinely, 11–103×/night),
+// and any event we don't explicitly recognize — is treated as telemetry and batched on
 // a slower lane. Per-frame telemetry dominated the old prompt volume (~1 prompt
 // per frame ≈ 1100/night); batching it cuts prompt count by ~80% while safety
 // and target transitions still arrive instantly.
 const IMMEDIATE_EVENT =
-  /SAFETY|SAFE|UNSAFE|WEATHER|DOME|ROOF|RUN-(STARTING|FINISHED)|SEQUENCE-(STARTING|FINISHED)|STOW|MOUNT|OFFLINE|DISCONNECT|LOST|EMERGENCY|ERROR|FAIL|EXCEPTION|ABORT|INTERRUPT|CRITICAL/i;
+  /SAFETY|SAFE|UNSAFE|WEATHER|DOME|ROOF|RUN-(STARTING|FINISHED)|SEQUENCE-(STARTING|FINISHED)|TS-NEWTARGETSTART|STOW|MOUNT|OFFLINE|DISCONNECT|LOST|EMERGENCY|ERROR|FAIL|EXCEPTION|ABORT|INTERRUPT|CRITICAL|TIMEOUT/i;
 
 function eventText(value: unknown): string {
   if (typeof value === "string") return value;
