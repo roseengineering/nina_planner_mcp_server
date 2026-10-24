@@ -313,11 +313,18 @@ Each row becomes a `Pointing`: RA/DEC are parsed server-side (sexagesimal like `
 
 `nina-notify` is an [opencode](https://opencode.ai) v2 plugin (not compatible with Claude Code or other coding agents).  Registered in `.opencode/opencode.json`, it runs as a background server inside opencode and does two things:
 
-1. **Websocket event monitoring** — Connects to the N.I.N.A. event socket (`ws://<host:port>/v2/socket`), subscribes to all events, and forwards them to the active agent as intervention prompts. Events are batched with a 1-second debounce to avoid flooding the conversation.
+1. **Websocket event monitoring** — Connects to the N.I.N.A. event socket (`ws://<host:port>/v2/socket`), subscribes to all events, and forwards them to the active agent as intervention prompts.
+
+   Events are split into two lanes so the agent isn't flooded by per-frame traffic (~1 prompt per frame ≈ 1,100/night) while still reacting instantly to what matters:
+
+   - **Immediate** — safety state (`SAFE`/`UNSAFE`/`SAFETY`/`WEATHER`/`DOME`/`ROOF`), sequence lifecycle (`RUN-STARTING`/`RUN-FINISHED`/`SEQUENCE-STARTING`/`SEQUENCE-FINISHED`), mount/stow (`MOUNT*`/`STOW*`/`PRESTOW-*`), link loss (`OFFLINE`/`DISCONNECT`/`LOST`/`EMERGENCY`), and failures (`ERROR`/`FAIL`/`EXCEPTION`/`ABORT`/`INTERRUPT`/`CRITICAL`). These bypass the batch window entirely and flush immediately — an `is_safe` flip or a `RUN-FINISHED` reaches the agent with no delay, so the safety and night-loop skills stay responsive. An immediate flush also drains any telemetry already queued behind it, so the agent still sees the frames leading up to a transition. Note the tokens are matched as substrings, so `PRESTOW-DELAY` is caught by `STOW` and is therefore immediate, not telemetry.
+   - **Telemetry** — everything else: all per-frame `IMAGE-PREPARED`/`IMAGE-SAVE` events, plus `GUIDER-*`, `ACQUISITION-*`, `EXPOSING-FINISHED`, and any unrecognized event. These are batched on a quiet-gap debounce (`telemetryDebounceMs`) with a hard cap (`telemetryMaxWaitMs`) so a steady stream still delivers. Under steady imaging a frame lands roughly every 14s — faster than the debounce — so the cap governs and the agent gets one batch per `telemetryMaxWaitMs` instead of one prompt per frame. All per-frame detail (HFR, star counts, ADU) is also written to `ImageMetaData.csv` on disk, so batching costs no data.
+
+   Net effect: roughly **200 prompts per night instead of ~1,100**, with safety and target transitions unaffected. Tune the two telemetry knobs in `opencode.json` without touching the plugin source; raising `telemetryMaxWaitMs` quiets it further, lowering it makes telemetry more live.
 
 2. **Interval check** — Every option `intervalCheckMinutes` (default -1, disabled) it prompts the agent to query observatory status (`get_sequence_state`, `get_site_equipment_status`) and decide what to do next, even when no N.I.N.A. events are firing.
 
-The plugin auto-reconnects on websocket disconnection with a 5-second retry. On server dispose, it cleans up all timers and the socket.
+The plugin auto-reconnects on websocket disconnection with a 5-second retry. This 5s delay is **connection recovery only** — it fires solely on `onclose` and waits before re-establishing the socket; it never delays event delivery. Immediate events flush with no timer at all, and telemetry is governed only by `telemetryDebounceMs` / `telemetryMaxWaitMs`. On server dispose, it cleans up all timers and the socket.
 
 ### 💫 `PLAN.md` — the living wishlist
 
@@ -414,6 +421,8 @@ Configured in the plugin's options configuration. (see [`opencode.json`](#-openc
 |---|---|---|---|
 | `ninaEndpoint` | string | `127.0.0.1:1888` | N.I.N.A. host and port (no scheme) for the websocket event stream, e.g. `192.168.0.24:1888`. The plugin connects to `ws://<ninaEndpoint>/v2/socket`. |
 | `intervalCheckMinutes` | number | `-1` | Minutes between autonomous status-check triggers. Accepts a float; converted to milliseconds (×60,000) only when greater than 0; with 0 or less (the default `-1`) no timer is scheduled. |
+| `telemetryDebounceMs` | number | `30000` | Quiet-gap debounce, in milliseconds, before a batch of **telemetry** events (per-frame `IMAGE-*`, guider, autofocus chatter) is flushed to the agent. Each new telemetry event resets the timer. Immediate events (safety, lifecycle, errors) are never delayed by this. Lower = more live telemetry, higher = fewer prompts. |
+| `telemetryMaxWaitMs` | number | `120000` | Hard cap, in milliseconds, on how long a batch of telemetry events may accumulate before being flushed, even if events keep arriving faster than `telemetryDebounceMs` (the steady-imaging case, where a frame lands every ~14s and the debounce never fires). This is the knob that sets the real prompt rate during a run. Lower = more live telemetry, higher = fewer prompts. |
 | `pluginLogs` | string | _(none)_ | File path appended on each plugin event (websocket open/message/close/error, batched flush, interval trigger failures). Set to a writable path (e.g. `/tmp/nina-plugins.log`) to capture diagnostic output. Omit or leave empty to disable file logging. |
 
 ---

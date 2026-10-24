@@ -27,6 +27,26 @@ function toJSONL(value: unknown): string {
   return items.map((item) => JSON.stringify(item)).join("\n");
 }
 
+// Events that must reach the controller with NO batching delay: safety state,
+// sequence lifecycle, mount/stow, and anything that looks like a failure.
+// Everything else — per-frame IMAGE-* saves, autofocus, guider chatter, and any
+// event we don't explicitly recognize — is treated as telemetry and batched on
+// a slower lane. Per-frame telemetry dominated the old prompt volume (~1 prompt
+// per frame ≈ 1100/night); batching it cuts prompt count by ~80% while safety
+// and target transitions still arrive instantly.
+const IMMEDIATE_EVENT =
+  /SAFETY|SAFE|UNSAFE|WEATHER|DOME|ROOF|RUN-(STARTING|FINISHED)|SEQUENCE-(STARTING|FINISHED)|STOW|MOUNT|OFFLINE|DISCONNECT|LOST|EMERGENCY|ERROR|FAIL|EXCEPTION|ABORT|INTERRUPT|CRITICAL/i;
+
+function eventText(value: unknown): string {
+  if (typeof value === "string") return value;
+  const ev = (value as { Event?: unknown } | null)?.Event;
+  return typeof ev === "string" ? ev : "";
+}
+
+function isImmediate(value: unknown): boolean {
+  return IMMEDIATE_EVENT.test(eventText(value));
+}
+
 // Module-level handle to ensure only one instance is active per process
 let activeCleanup: (() => Promise<void>) | null = null;
 
@@ -61,9 +81,20 @@ export default Plugin.define({
       typeof options.intervalCheckMinutes === "number"
         ? options.intervalCheckMinutes
         : -1;
+    // Telemetry (non-immediate) batching. Debounce is the quiet gap before a
+    // flush; maxWait is the hard cap so a steady stream still delivers. Safety
+    // and lifecycle events bypass both and flush immediately.
+    const telemetryDebounceMs =
+      typeof options.telemetryDebounceMs === "number"
+        ? options.telemetryDebounceMs
+        : 30_000;
+    const telemetryMaxWaitMs =
+      typeof options.telemetryMaxWaitMs === "number"
+        ? options.telemetryMaxWaitMs
+        : 120_000;
 
     log(
-      `[${instanceId}] initializing (endpoint=${ninaEndpoint}, interval=${intervalCheckMinutes})`,
+      `[${instanceId}] initializing (endpoint=${ninaEndpoint}, interval=${intervalCheckMinutes}, debounce=${telemetryDebounceMs}ms, maxWait=${telemetryMaxWaitMs}ms)`,
     );
 
     const savedSessionID = await ctx.storage.get("targetSessionID");
@@ -87,8 +118,8 @@ export default Plugin.define({
     async function triggerIntervention(events: unknown = null) {
       const text =
         events == null
-          ? "Trigger: Routine interval check. No new N.I.N.A. events."
-          : `Trigger: New N.I.N.A. events follow:\n\n\`\`\`jsonl\n${toJSONL(events)}\n\`\`\``;
+          ? "Routine interval check. No new N.I.N.A. events."
+          : `New N.I.N.A. events.\n\n\`\`\`jsonl\n${toJSONL(events)}\n\`\`\``;
 
       if (!targetSessionID) {
         log(`[${instanceId}] no target session yet; skipping injection`);
@@ -137,6 +168,7 @@ export default Plugin.define({
     }
 
     let eventBatch: unknown[] = [];
+    let batchHasImmediate = false;
     let debounceTimer: ReturnType<typeof setTimeout> | null = null;
     let maxWaitTimer: ReturnType<typeof setTimeout> | null = null;
     let isFlushing = false;
@@ -153,39 +185,61 @@ export default Plugin.define({
       if (eventBatch.length === 0 || isFlushing) return;
 
       isFlushing = true;
+      batchHasImmediate = false;
       try {
         const batch = eventBatch;
         eventBatch = [];
         await triggerIntervention(batch);
       } finally {
         isFlushing = false;
-        // If more events arrived while flushing, schedule another debounce pass
+        // If more events arrived while flushing, schedule another pass —
+        // immediately if one of them was a safety/lifecycle event.
         if (eventBatch.length > 0 && !debounceTimer) {
-          debounceTimer = setTimeout(() => {
-            flushBatch().catch((err) =>
-              log(`[${instanceId}] flushBatch retry failed: ${err}`),
-            );
-          }, 5_000);
+          debounceTimer = setTimeout(
+            () => {
+              flushBatch().catch((err) =>
+                log(`[${instanceId}] flushBatch retry failed: ${err}`),
+              );
+            },
+            batchHasImmediate ? 0 : telemetryDebounceMs,
+          );
         }
       }
     }
 
-    function pushEvent(response: unknown) {
-      eventBatch.push(response);
+    function scheduleTelemetryFlush() {
       if (debounceTimer) clearTimeout(debounceTimer);
       debounceTimer = setTimeout(() => {
         flushBatch().catch((err) =>
           log(`[${instanceId}] flushBatch failed: ${err}`),
         );
-      }, 5_000);
+      }, telemetryDebounceMs);
 
       if (!maxWaitTimer) {
         maxWaitTimer = setTimeout(() => {
           flushBatch().catch((err) =>
             log(`[${instanceId}] maxWait flushBatch failed: ${err}`),
           );
-        }, 30_000);
+        }, telemetryMaxWaitMs);
       }
+    }
+
+    function pushEvent(response: unknown) {
+      // Append in order so an early flush never reorders ahead of prior frames.
+      eventBatch.push(response);
+
+      // Safety, sequence lifecycle, and errors bypass the batch window: deliver
+      // now (including anything already queued). This keeps is_safe flips and
+      // RUN-FINISHED transitions instant while per-frame telemetry batches up.
+      if (isImmediate(response)) {
+        batchHasImmediate = true;
+        flushBatch().catch((err) =>
+          log(`[${instanceId}] immediate flush failed: ${err}`),
+        );
+        return;
+      }
+
+      scheduleTelemetryFlush();
     }
 
     let ws: WebSocket | null = null;
