@@ -20,7 +20,7 @@
           "NINA_PLANNER_LOG": "/tmp/nina-planner-debug.log"
         },
         "command": [
-          "uv", "run", "--project", ".opencode/local/mcps/nina_planner", "-m", "nina_planner"
+          "uv", "run", "--no-sync", "--project", ".opencode/local/mcps/nina_planner", "-m", "nina_planner"
         ]
       }
     }
