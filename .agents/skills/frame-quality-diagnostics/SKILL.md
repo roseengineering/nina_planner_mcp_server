@@ -7,7 +7,7 @@ description: Diagnose autofocus failures and read per-frame quality telemetry (H
 
 Reads NINA's per-frame telemetry to separate a real fault from a measurement artifact, and to tell a harmless autofocus failure from one that costs focus. Derived from the 2026-10-21→22 night (11 targets, 10 AF runs, 457 frames); every claim below was verified against that run's logs and the on-disk frame metadata.
 
-Per-frame fields come from the `IMAGE-SAVE` event's `ImageStatistics`: `HFR`, `HFRStDev` (σ), `Stars`, `Mean`, `StDev`, plus `Temperature`. AF points arrive as `AUTOFOCUS-POINT-ADDED` with `Position` and `HFR`; `Detected Stars` and σ per point are only in `get_logs`.
+Per-frame fields are `HFR`, `HFRStDev` (σ), `Stars`, `Mean`, `StDev`, plus `Temperature`. **They are not pushed to you** — routine telemetry no longer wakes the agent, and the event socket carries event names only — so read them on demand: `get_imaging_metadata(file_path)` for the `ImageMetaData.csv` rows, `get_events(since=…)` for the event timeline, and `get_logs(since=…)` for whatever only NINA's log records. AF points arrive as `AUTOFOCUS-POINT-ADDED` with `Position` and `HFR`; `Detected Stars` and σ per point are only in `get_logs`.
 
 ## 1. Autofocus failures: sweep width first, star count second
 
@@ -67,6 +67,10 @@ Standing thresholds. Any one sustained (not a single frame) means stop and ask t
 - **HFR > 3″ sustained** (clean baseline is ~1.5″)
 - **detected stars < 10 sustained** — note this is field-dependent, so compare against the target's own early frames, not an absolute
 - **hard Mean ADU drift** — a monotonic climb across a target, with star counts falling alongside it
+
+**The quality watchdog fires triggers 1 and 2 for you.** While `light` frames are acquiring, `nina-notify` polls capture statistics and wakes you as a `QUALITY-WATCHDOG` operational fault once a threshold has held for **3 consecutive frames**. A wake therefore means *sustained* — never a one-frame settle — and darks, biases and flats (no stars at all) can never cause one; it fires once per degradation and re-arms only when the metric recovers. **Trigger 3 has no watchdog**: Mean ADU drift is a multi-frame trend, so only you catch it, on an interval check or while reading frame data. Either way the response is the same as below.
+
+⚠️ **No wake is not proof of good frames.** The watchdog reads N.I.N.A.'s image history, and only accepts a sample whose `Date` is newer than the last one — so a record that has not advanced, or a session with nothing recorded yet, costs one deferred re-check and then stays silent rather than invent samples. Confirm quality yourself with `get_imaging_metadata` on any wake or interval check; a quiet plugin may mean good frames or may mean it had nothing fresh to read.
 
 If a trigger fires, report the numbers and ask; do not stop a sequence unilaterally. When HFR recovers, say so explicitly — the M39 decision was "continue" precisely because HFR fell from ~6.0 to 1.5–2.6 even though star counts stayed depressed.
 
