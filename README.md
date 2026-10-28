@@ -193,8 +193,8 @@ A plan is a JSON document that describes one complete imaging session. It encode
 
 An example json plan:
 
-[m15_globular-cluster_20261003T112008.json](./m15_globular-cluster_20261003T112008.json)
-```json m15_globular-cluster_20261003T112008.json
+[plans/m15_globular-cluster_20261003T112008.json](./plans/m15_globular-cluster_20261003T112008.json)
+```json plans/m15_globular-cluster_20261003T112008.json
 {
   "target": "M15",
   "intent": "Globular cluster",
@@ -400,7 +400,7 @@ You are the automated observatory controller. The observatory runs NINA via the 
           "NINA_PLANNER_LOG": "C:/Windows/Temp/nina-planner-debug.log"
         },
         "command": [
-          "uv", "run", "--project", ".opencode/local/mcps/nina_planner", "-m", "nina_planner"
+          "uv", "run", "--no-sync", "--project", ".opencode/local/mcps/nina_planner", "-m", "nina_planner"
         ]
       }
     }
