@@ -273,9 +273,6 @@ async def get_plan_progress(
 
 
 _AUDIT_TYPES = ("light", "flat", "dark", "bias")
-# Landing TYPE folders are uppercase (LIGHT/DARK/BIAS/FLAT); compare in that
-# casing at the filesystem boundary — mixing cases silently counts zero.
-_AUDIT_TYPES_UPPER = tuple(t.upper() for t in _AUDIT_TYPES)
 _FITS_SUFFIXES = (".fits", ".fits.fz")
 # Statuses that mean "not everything is saved/counted right" — the
 # `all_saved` verdict fails on any of them (see audit_plans' docstring).
@@ -416,33 +413,39 @@ def _plan_type_totals(
 
 
 def _count_fits(token_dir: Path) -> dict[str, int]:
-    """Count frame files under ``token_dir`` by their TYPE parent directory.
+    """Count frame files under ``token_dir``, bucketed by parent directory name.
 
     Layout (verified): ``<token_dir>/<YYYY-MM-DD>/<TYPE>/<file>.fits.fz`` —
-    the immediate parent directory name is the image type. Counting by parent
-    name at any depth tolerates N.I.N.A. writing extra date folders or
-    skipping them, and the ``.fits.fz``/``.fits`` suffix filter keeps the
-    ImageMetaData/AcquisitionDetails sidecars out.
+    the immediate parent directory name is the image type in the normal case.
+    Counting by parent name at any depth tolerates N.I.N.A. writing extra
+    date folders or skipping them, and the ``.fits.fz``/``.fits`` suffix
+    filter keeps the ImageMetaData/AcquisitionDetails sidecars out.
+
+    The parent name is **not** gated on the LIGHT/DARK/BIAS/FLAT list. A
+    frame whose folder is called anything else is still a frame, and
+    silently dropping it is what made ``orphans[].frames`` read ``0`` for a
+    directory that plainly held fits files (an "unclassified, no fits
+    images" reading of a real disk). Every fits file under ``token_dir``
+    lands in *some* bucket, keyed by its parent directory lowercased, so the
+    sum is always the truth about what is on disk. Hidden dirs
+    (a share's ``.snapshot``/``.Trashes`` copies) are never walked, so
+    copies can't inflate the count.
 
     N.I.N.A. marks a rejected frame by prefixing its filename with ``BAD_``
     (verified against the live landing dir: ``2026-10-22_04-46-37_L_...fits.fz``
     -> ``BAD_2026-10-22_04-46-37_L_...fits.fz``). Those count under
-    ``bad_<type>`` instead of ``<type>`` so a deliberate reject never inflates
-    a type's on-disk total. The CSV row still points at the pre-rename name,
-    so the frame is dropped from attribution anyway; this keeps it out of
-    ``on_disk`` too, which is what stops it skewing the disk-vs-CSV picture.
+    ``bad_<parent>`` instead of ``<parent>``, so the light row's ``bad``
+    (which reads ``bad_light``) still reports rejects without a rejected
+    frame ever landing in the plain ``light`` bucket. The CSV row points at
+    the pre-rename name, so the frame is dropped from attribution anyway —
+    ``bad`` is what names the cause of that ``remaining`` deficit.
     """
     counts: dict[str, int] = {}
     for directory, filenames in _walk_visible(token_dir):
-        # The immediate parent of the frames IS the directory — same test
-        # as before, but now hidden dirs (a share's .snapshot/.Trashes
-        # copies) are never walked, so copies can't inflate the count.
-        image_type = directory.name.upper()
-        if image_type not in _AUDIT_TYPES_UPPER:
-            continue
-        # Compare in uppercase, store in lowercase: every consumer
-        # (rows, orphans, disk buckets) speaks the lowercase type names.
-        key = image_type.lower()
+        # The immediate parent of the frames IS the directory. No TYPE
+        # allow-list here: an unexpected folder name must be counted and
+        # reported under its own name, never skipped.
+        key = directory.name.lower()
         for name in filenames:
             lower = name.lower()
             if not lower.endswith(_FITS_SUFFIXES):
@@ -548,7 +551,7 @@ def _status_for(
     *,
     image_type: str,
     expected: int,
-    on_disk: int,
+    own_rows: int,
     attributed: int,
     remaining: int,
     window_open: bool | None,
@@ -558,6 +561,12 @@ def _status_for(
 
     Order matters: the window-closed deficit (EXPIRED) must win over the
     ``remaining == 0`` contract that would otherwise read it as done.
+
+    ``own_rows`` is the count of *this* type's ImageMetaData.csv rows whose
+    recorded path carries this plan's token — the CSV-side replacement for
+    the old on-disk count (see ``_own_token_rows``). It is consulted only
+    for calibration, where it separates "this plan shot its own frames" from
+    "the plan-wide pool satisfied this plan".
     """
     is_calibration = image_type != "light"
     if is_calibration and window_open is False and attributed < expected:
@@ -566,9 +575,10 @@ def _status_for(
         return "MISSING_FILES"
     if junk > 0:
         return "SUSPECT_JUNK"
-    if is_calibration and attributed >= expected and on_disk < expected:
-        # Satisfied by the plan-wide calibration pool, but this plan's own
-        # landing dir holds fewer frames than the plan wants.
+    if is_calibration and attributed >= expected and own_rows < expected:
+        # Satisfied by the plan-wide calibration pool: enough frames exist
+        # plan-wide, but this plan's own recorded frames fall short of what
+        # it asks for — they were shot under a different plan's token.
         return "POOL_CREDITED"
     if not is_calibration and attributed > expected:
         return "OVERSHOT"  # full-mode re-acquisition extras; harmless
@@ -580,7 +590,7 @@ def _audit_row(
     plan: ObservationPlan,
     image_type: str,
     expected: int,
-    on_disk: int,
+    own_rows: int,
     attributed: int,
     remaining: int,
     window_open: bool | None,
@@ -592,7 +602,7 @@ def _audit_row(
     status = _status_for(
         image_type=image_type,
         expected=expected,
-        on_disk=on_disk,
+        own_rows=own_rows,
         attributed=attributed,
         remaining=remaining,
         window_open=window_open,
@@ -614,7 +624,6 @@ def _audit_row(
         "pointing_index": pointing_index,
         "type": image_type,
         "expected": expected,
-        "on_disk": on_disk,
         "attributed": attributed,
         "remaining": remaining,
         "junk": junk,
@@ -630,13 +639,18 @@ def _audit_row(
         # "" when unset, the same contract as `intent`.
         row["label"] = plan.pointings[(pointing_index or 1) - 1].label or ""
         # Frames deliberately rejected via N.I.N.A.'s BAD_ filename prefix.
-        # Excluded from on_disk above; reported so an operator can see how
-        # many were rejected, which explains a remaining deficit without
-        # implying a gap.
+        # The CSV row still names the pre-rename file, so a rejected frame
+        # never reaches `attributed`; `bad` reports how many were rejected,
+        # which explains a remaining deficit without implying a lost frame.
         row["bad"] = bad
     if image_type != "light":
         row["window_open"] = window_open
         row["window_end"] = window_end
+        # Rows of this type recorded under THIS plan's own token — the
+        # evidence behind a POOL_CREDITED verdict, and the CSV-side stand-in
+        # for the removed on-disk count. Calibration-only, like the window
+        # fields: for lights, `attributed` already requires the token.
+        row["own_rows"] = own_rows
     return row
 
 
@@ -699,7 +713,7 @@ def _never_shot_report(
     unshot copies of one plan report once, from the shallowest file) and as
     ``left_to_do`` entries with ``reason="NEVER_SHOT"`` and ``missing`` = the
     full light ask — nothing else in the audit can cover that work. They
-    still get no ``rows``: expected-vs-on_disk-vs_attributed is meaningless
+    still get no ``rows``: expected-vs-attributed is meaningless
     for frames that were never attempted, and a row would read as "0 of 40
     captured, 40 missing", drowning the real per-plan deficits.
 
@@ -771,22 +785,10 @@ async def audit_plans(
     frames whose recorded plan id no loadable plan file claims
     are reported under ``errors`` (a plan file was deleted or is corrupt).
     For each joined plan and each requested frame type it reconciles
-    THREE truth sources and reports them side by side per row:
+    TWO truth sources and reports them side by side per row:
 
     - ``expected`` — the plan's total_count (per pointing for lights,
       plan-level for calibration, summed over the type's exposure groups).
-    - ``on_disk`` — frame files physically inside THIS plan's own landing
-      directories (``<root>/<label> _<token>_/<date>/<TYPE>/*.fits.fz``,
-      token = ``_{base_plan_id}_`` for single-pointing plans and
-      calibration, ``_{base_plan_id}-{n}_`` per mosaic pane; counted by the
-      TYPE-named parent directory at any depth, sidecar CSV/JSON excluded).
-      Hidden directories are never walked anywhere in this tool — neither
-      the CSV reads nor the disk scans — so a share's ``.snapshot``/
-      ``.Trashes`` copies can neither double-count rows nor inflate counts.
-      Frames N.I.N.A. rejected via its ``BAD_`` filename prefix
-      (``2026-10-22_04-46-37_L_...fits.fz`` ->
-      ``BAD_2026-10-22_04-46-37_L_...fits.fz``) are excluded
-      here and reported separately as the light row's ``bad`` count.
     - ``attributed`` / ``remaining`` — exactly what get_plan_progress
       reports: lights match the underscore token in the recorded path AND the
       exposure duration (±0.05s, so degenerate 0s frames never count);
@@ -796,14 +798,25 @@ async def audit_plans(
       remaining is reported as 0 even when a true deficit exists, so this
       audit surfaces that case explicitly as EXPIRED.
 
+    Both come from ImageMetaData.csv. The filesystem is consulted for exactly
+    one thing the CSV cannot know — frames N.I.N.A. rejected via its ``BAD_``
+    filename prefix (``2026-10-22_04-46-37_L_...fits.fz`` ->
+    ``BAD_2026-10-22_04-46-37_L_...fits.fz``): the CSV row still names the
+    pre-rename file, so a reject never reaches ``attributed``, and the light
+    row's ``bad`` count reports how many were rejected. Calibration rows carry
+    ``own_rows`` — how many of this type's recorded frames sit under THIS
+    plan's own token rather than the shared pool. Hidden directories are
+    never walked anywhere in this tool — neither the CSV reads nor the disk
+    scans — so a share's ``.snapshot``/``.Trashes`` copies can neither
+    double-count rows nor inflate counts.
+
     Because calibration is pooled, ``attributed`` can legitimately exceed a
-    plan's own ``on_disk`` (one bias set credits every plan) — that is
-    POOL_CREDITED, informational, not a gap. The reverse, ``on_disk >
-    attributed`` with ``remaining > 0``, means frames exist that the CSV does
-    not count: either the Session Metadata plugin crashed before appending
-    their rows, or they were rejected via a ``BAD_`` filename prefix. Both are
-    rare and both are safe to re-shoot, so this audit reports them as the plain
-    MISSING_FILES deficit they are and does not attempt to distinguish them.
+    plan's own ``own_rows`` (one bias set credits every plan) — that is
+    POOL_CREDITED, informational, not a gap. There is deliberately no
+    disk-vs-CSV cross-check any more: a frame the Session Metadata plugin
+    never recorded simply does not appear in either source, so it surfaces
+    as an ordinary ``remaining`` deficit. Re-shooting is safe in that case,
+    which is all this audit ever advised.
 
     ``status`` per row (first match wins): EXPIRED (window closed with an
     uncredited deficit — needs a new plan/window, shooting cannot fix it) →
@@ -813,8 +826,8 @@ async def audit_plans(
     riding alongside a set whose attribution is otherwise complete; bias and
     flats exempt; when junk instead leaves a deficit the status is
     MISSING_FILES with the junk count as the cause) → POOL_CREDITED (calibration satisfied from the
-    pool while this plan's own dir is short) → OVERSHOT (light attributed
-    above expected from full-mode re-runs; harmless) → OK.
+    pool while this plan's own recorded frames fall short) → OVERSHOT (light
+    attributed above expected from full-mode re-runs; harmless) → OK.
 
     Top level: ``all_saved`` (true iff no row is MISSING_FILES,
     EXPIRED or SUSPECT_JUNK, no error was recorded, and ``never_shot`` is
@@ -1017,7 +1030,6 @@ async def audit_plans(
             "all_saved": not errors and not never_shot,
             "totals": {
                 "expected": 0,
-                "on_disk": 0,
                 "attributed": 0,
                 "plans": 0,
                 "plan_errors": len(errors),
@@ -1051,6 +1063,10 @@ async def audit_plans(
 
     # One filesystem pass: bucket each landing token directory by its
     # trailing token, longest-first so pane tokens (base-N) win over base.
+    # What remains of this pass is the `bad` reject count (a filesystem
+    # fact: N.I.N.A. renames the file, the CSV keeps the old name) and
+    # orphan detection — everything else about a row now comes from the
+    # plan and ImageMetaData.csv, not from how the folders are named.
     known: dict[str, tuple[str, int | None]] = {}
     for _path, plan in all_loaded:
         base = plan._base_plan_id()
@@ -1066,7 +1082,7 @@ async def audit_plans(
         known.setdefault(f"_{base}_", (base, None))
     tokens_longest_first = sorted(known, key=len, reverse=True)
 
-    disk: dict[tuple[str, int | None], dict[str, int]] = {}
+    bad_files: dict[tuple[str, int | None], int] = {}
     unclaimed: list[Path] = []
     for entry in sorted(root.iterdir(), key=lambda p: p.name):
         if not entry.is_dir() or _prunable_dir(entry.name):
@@ -1086,18 +1102,14 @@ async def audit_plans(
             ):
                 unclaimed.append(entry)
             continue
-        counts = _count_fits(entry)
-        bucket = disk.setdefault(matched_key, {})
-        for image_type, count in counts.items():
-            bucket[image_type] = bucket.get(image_type, 0) + count
-
-    def disk_total(image_type: str, *, plan: ObservationPlan) -> int:
-        base = plan._base_plan_id()
-        return sum(
-            counts.get(image_type, 0)
-            for (key_base, _pointing), counts in disk.items()
-            if key_base == base
-        )
+        # Only the `bad_light` bucket is read below: `bad` is a light-row
+        # field, and it is the one fact about this plan's own files that
+        # ImageMetaData.csv cannot carry — the row still points at the
+        # pre-rename name. Calibration rejects are not reported anywhere
+        # (no field asks for them), so they are deliberately not summed in.
+        count = _count_fits(entry).get("bad_light", 0)
+        if count:
+            bad_files[matched_key] = bad_files.get(matched_key, 0) + count
 
     rows_out: list[dict[str, Any]] = []
     left_to_do: list[dict[str, Any]] = []
@@ -1111,15 +1123,15 @@ async def audit_plans(
             pointing = i if multi else None
 
             totals = _plan_type_totals(progress, "light")
-            light_bucket = disk.get((base, pointing), {})
-            light_disk = light_bucket.get("light", 0)
-            light_bad = light_bucket.get("bad_light", 0)
+            light_bad = bad_files.get((base, pointing), 0)
             junk = _junk_count(plan, rows, "light", pointing_index=i)
             row = _audit_row(
                 plan=plan,
                 image_type="light",
                 expected=totals["expected"],
-                on_disk=light_disk,
+                # Unused for lights: `_status_for` consults own_rows only for
+                # calibration, and `_audit_row` emits it only there.
+                own_rows=0,
                 attributed=totals["attributed"],
                 remaining=totals["remaining"],
                 window_open=totals["window_open"],
@@ -1131,20 +1143,24 @@ async def audit_plans(
             rows_out.append(row)
 
         # Calibration is plan-level: derive it once (pointing 1 anchors the
-        # session window) and count disk frames across every dir of the plan.
+        # session window). `own_rows` counts this plan's own recorded frames
+        # of that type, which is what separates a pool credit from a plan
+        # that shot its own calibration.
         if len(plan.pointings) >= 1:
             progress = plan_progress(plan, rows, pointing_index=1, now=now)
             for image_type in ("flat", "dark", "bias"):
                 if image_type not in wanted:
                     continue
                 totals = _plan_type_totals(progress, image_type)
-                type_disk = disk_total(image_type, plan=plan)
+                own_rows = len(
+                    _own_token_rows(plan, rows, image_type, pointing_index=1)
+                )
                 junk = _junk_count(plan, rows, image_type, pointing_index=1)
                 row = _audit_row(
                     plan=plan,
                     image_type=image_type,
                     expected=totals["expected"],
-                    on_disk=type_disk,
+                    own_rows=own_rows,
                     attributed=totals["attributed"],
                     remaining=totals["remaining"],
                     window_open=totals["window_open"],
@@ -1222,7 +1238,6 @@ async def audit_plans(
         "all_saved": not broken and not errors and not never_shot,
         "totals": {
             "expected": sum(r["expected"] for r in rows_out),
-            "on_disk": sum(r["on_disk"] for r in rows_out),
             "attributed": sum(r["attributed"] for r in rows_out),
             "plans": len(audited),
             "plan_errors": len(errors),

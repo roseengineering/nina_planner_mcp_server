@@ -709,6 +709,143 @@ class FilterMetadataRowsTest(unittest.TestCase):
         self.assertEqual(filter_metadata_rows(plan, [], "dark"), [])
 
 
+class FrameGroupConstraintsTest(unittest.TestCase):
+    """The per-type matching rule lives in ONE place; both call paths read it.
+
+    ``filter_metadata_rows`` and ``plan_progress`` each used to derive these
+    constraints independently — a ``specs`` table in one, ``data.get(...)`` in
+    the other, each comment claiming to mirror the other. Nothing enforced
+    that: mutating the dark exposure gate in ``filter_metadata_rows`` left
+    ``audit_plans`` (which reads ``plan_progress``) completely unaffected, so
+    a fix could land in one copy and silently never reach the other.
+    """
+
+    def _ref(self):
+        return datetime.now(UTC)
+
+    def test_constraints_stated_per_type(self):
+        from nina_planner.progress import frame_group_constraints
+
+        plan = _plan()
+        # Flat: filter only (SkyFlat picks its own exposure, so none is asked).
+        self.assertEqual(
+            frame_group_constraints("FLAT", plan.flat_frames[0]), ("LP", None)
+        )
+        # Dark: exposure only (dark current scales with duration; no filter).
+        self.assertEqual(
+            frame_group_constraints("DARK", plan.dark_frames[0]), (None, 60.0)
+        )
+        # Bias: neither — every bias frame is equivalent.
+        self.assertEqual(
+            frame_group_constraints("BIAS", plan.bias_frames[0]), (None, None)
+        )
+        # Light: both.
+        self.assertEqual(
+            frame_group_constraints("LIGHT", plan.light_frames[0]), ("LP", 60.0)
+        )
+
+    def test_dict_groups_are_narrowed_by_type_not_by_stray_keys(self):
+        # Frame groups can surface as plain dicts (see `_junk_count`). The
+        # type must still narrow the match even when the dict carries a key
+        # the type is supposed to ignore — otherwise a stray key silently
+        # widens a rule both call sites promised.
+        from nina_planner.progress import frame_group_constraints
+
+        self.assertEqual(
+            frame_group_constraints(
+                "FLAT",
+                {"filter_name": "LP", "exposure_time_seconds": 3.0, "total_count": 1},
+            ),
+            ("LP", None),
+        )
+        self.assertEqual(
+            frame_group_constraints(
+                "DARK",
+                {"filter_name": "LP", "exposure_time_seconds": 60.0, "total_count": 1},
+            ),
+            (None, 60.0),
+        )
+        self.assertEqual(
+            frame_group_constraints("BIAS", {"total_count": 1, "filter_name": "LP"}),
+            (None, None),
+        )
+
+    def test_both_callers_agree_on_calibration(self):
+        # The drift detector itself: for every calibration type, the number
+        # of rows `filter_metadata_rows` returns must equal the
+        # `acquired_count` that `plan_progress` derives from the same rows.
+        # If either call site stops reading the shared rule, these diverge.
+        plan = _plan()
+        ref = self._ref()
+        stamp = ref.strftime("%Y-%m-%d %H:%M:%S")
+        rows = [
+            # matching
+            _row(image_type="DARK", duration="60.0", target=None, exposure_start=stamp),
+            _row(
+                image_type="FLAT",
+                filter_name="LP",
+                duration="5.0",
+                target=None,
+                exposure_start=stamp,
+            ),
+            _row(image_type="BIAS", target=None, exposure_start=stamp),
+            # non-matching: wrong exposure / wrong filter
+            _row(
+                image_type="DARK", duration="300.0", target=None, exposure_start=stamp
+            ),
+            _row(
+                image_type="FLAT",
+                filter_name="SII",
+                duration="5.0",
+                target=None,
+                exposure_start=stamp,
+            ),
+        ]
+        for image_type in ("flat", "dark", "bias"):
+            with self.subTest(image_type=image_type):
+                filtered = filter_metadata_rows(
+                    plan,
+                    rows,
+                    image_type,
+                    max_age_days=plan.calibration_window_days,
+                    now=ref,
+                )
+                progress = plan_progress(plan, rows, now=ref)[image_type]
+                acquired = sum(group["acquired_count"] for group in progress)
+                self.assertEqual(
+                    len(filtered),
+                    acquired,
+                    f"{image_type}: filter_metadata_rows returned {len(filtered)}, "
+                    f"plan_progress counted {acquired} — the two no longer agree",
+                )
+
+    def test_lights_differ_between_the_two_by_design(self):
+        # The one place the callers intentionally do NOT share the rule.
+        # `filter_metadata_rows` answers "every frame attributable to this
+        # pointing" (what get_imaging_metadata reports) so it applies no
+        # filter/exposure constraint; `plan_progress` counts per group, so a
+        # light must match its own group's filter and exposure. A light on
+        # the right token but the wrong filter counts in one and not the
+        # other — pin it so a future unification is a deliberate choice.
+        plan = _plan()
+        ref = self._ref()
+        stamp = ref.strftime("%Y-%m-%d %H:%M:%S")
+        rows = [
+            _row(
+                target="M31 _plan-abc123_",
+                filter_name="R",
+                duration="60.0",
+                exposure_start=stamp,
+            ),
+        ]
+        filtered = filter_metadata_rows(plan, rows, "light", now=ref)
+        acquired = sum(
+            g["acquired_count"] for g in plan_progress(plan, rows, now=ref)["light"]
+        )
+        self.assertEqual(len(filtered), 1)  # token matches: attributable
+        self.assertEqual(acquired, 0)  # wrong filter: no group counts it
+
+
 class PointingIndexTest(unittest.TestCase):
     def test_effective_plan_id_shape_depends_on_pointing_count(self):
         # A lone pointing is not a pane: the id stays plan-level.

@@ -261,6 +261,54 @@ def _row_matches(
     return _within_age(row, max_age_days, session_start)
 
 
+def frame_group_constraints(
+    image_type: str, group: Any
+) -> tuple[str | None, float | None]:
+    """The ``(filter_name, exposure)`` one frame group asks ``_row_matches`` for.
+
+    The single place the per-type matching rule is stated:
+
+    - ``LIGHT`` — **both**: a light must match its group's filter *and*
+      exposure, alongside the attribution token.
+    - ``FLAT`` — ``filter_name`` only. N.I.N.A.'s SkyFlat picks the exposure
+      itself to hit a target signal level, so any flat through the right
+      filter counts, whatever its duration.
+    - ``DARK`` — ``exposure_time_seconds`` only: dark current scales with
+      exposure time, so duration is part of what makes a dark usable.
+    - ``BIAS`` — neither: every bias frame is equivalent.
+
+    The frame models already agree with this table by *absence* —
+    ``FlatExposurePlan`` carries no ``exposure_time_seconds``,
+    ``DarkExposurePlan`` no ``filter_name``, ``BiasExposurePlan`` neither — so
+    reading field presence alone would usually reproduce these values. The
+    branches are kept anyway because that absence is a property of the
+    pydantic models, not of the ``dict`` groups can also surface as
+    (``_junk_count``), where a stray key would otherwise widen a match that
+    two call sites had each promised to narrow.
+
+    Both callers used to spell this rule out independently —
+    ``filter_metadata_rows`` as its own ``specs`` table, ``plan_progress`` as
+    ``data.get(...)`` plus an explicit ``exposure=None if image_type ==
+    "FLAT"`` — each carrying a comment claiming to mirror the other. Nothing
+    enforced the claim: a mutation removing the dark exposure gate from one
+    copy left the audit verdict untouched, because the audit reads the other.
+    """
+
+    # Frame groups are pydantic models on both call paths, but `_junk_count`
+    # shows they can surface as plain dicts too — attribute access on a dict
+    # would raise, so resolve the field both ways.
+    def field(name: str) -> Any:
+        return group.get(name) if isinstance(group, dict) else getattr(group, name)
+
+    if image_type == "FLAT":
+        return (field("filter_name"), None)
+    if image_type == "DARK":
+        return (None, field("exposure_time_seconds"))
+    if image_type == "BIAS":
+        return (None, None)
+    return (field("filter_name"), field("exposure_time_seconds"))
+
+
 def _count_matching(
     rows: list[dict[str, Any]],
     image_type: str,
@@ -319,26 +367,29 @@ def filter_metadata_rows(
     """
     image_type_upper = image_type.upper()
     if image_type_upper == "LIGHT":
+        # Deliberately NO filter/exposure constraints, unlike plan_progress
+        # (which passes frame_group_constraints' LIGHT result, so each light
+        # *group* counts only its own filter+exposure). This function answers
+        # a different question — every frame attributable to this pointing,
+        # across all its groups — so narrowing here would drop frames the
+        # caller came to see. frame_group_constraints is therefore not
+        # consulted for lights; that asymmetry is intentional, not drift.
         return [
             r
             for r in rows
             if _row_matches(r, "LIGHT", plan=plan, pointing_index=pointing_index)
         ]
-    specs: list[tuple[str | None, float | None]]
+    groups: list[Any]
     if image_type_upper == "FLAT":
-        # Flats match by filter only: a flat's exposure is chosen by N.I.N.A.
-        # to hit a signal level, not to make it a different kind of
-        # calibration, so any flat through the right filter inside the window
-        # counts. (The plan's flat specs carry no exposure at all.)
-        # Darks keep matching on exposure — their dark current scales with
-        # exposure time, so duration is part of what makes a dark usable.
-        specs = [(g.filter_name, None) for g in plan.flat_frames]
+        groups = plan.flat_frames
     elif image_type_upper == "DARK":
-        specs = [(None, g.exposure_time_seconds) for g in plan.dark_frames]
+        groups = plan.dark_frames
     elif image_type_upper == "BIAS":
-        specs = [(None, None)]
+        groups = plan.bias_frames
     else:
         return []
+    # Which constraints apply is NOT decided here: see frame_group_constraints.
+    specs = [frame_group_constraints(image_type_upper, g) for g in groups]
     session_start = (
         _session_start(plan, rows, pointing_index) or now or datetime.now(UTC)
     )
@@ -417,17 +468,17 @@ def plan_progress(
         out: list[dict[str, Any]] = []
         for g in groups:
             data = g.model_dump()
-            filter_name = data.get("filter_name")
-            exposure = data.get("exposure_time_seconds")
+            # Which constraints apply is decided in ONE place — see
+            # frame_group_constraints. Flats carry no exposure and darks no
+            # filter, so this is exactly (filter, None) / (None, exposure)
+            # / (None, None) as before, without restating it here.
+            filter_name, exposure = frame_group_constraints(image_type, g)
             total = data["total_count"]
             acquired = _count_matching(
                 rows,
                 image_type,
                 filter_name=filter_name,
-                # Flats are matched by filter only — and a flat spec carries
-                # no exposure_time_seconds at all — mirroring
-                # filter_metadata_rows above.
-                exposure=None if image_type == "FLAT" else exposure,
+                exposure=exposure,
                 plan=plan if image_type == "LIGHT" else None,
                 pointing_index=pointing_index,
                 max_hfr=max_hfr,

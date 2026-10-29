@@ -143,10 +143,16 @@ class AuditBase(unittest.IsolatedAsyncioTestCase):
             if image_type in skip:
                 continue
             for i in range(10):
+                # Every calibration row carries the plan token, including
+                # bias: a real ImageMetaData.csv always has a FilePath, and
+                # `load_sequence` stamps $$TARGETNAME$$ = "_{base}_" onto
+                # calibration, so frames a plan shot itself are recorded
+                # under its own token. Without a path `own_rows` would be 0
+                # and every happy-path bias row would read POOL_CREDITED.
                 self.rows.append(
                     _row(
                         image_type=csv_type,
-                        target=(None if image_type == "bias" else _TOKEN),
+                        target=_TOKEN,
                         duration=duration,
                         exposure_start=exposure_start,
                     )
@@ -200,13 +206,14 @@ class AuditTest(AuditBase):
         self.assertEqual(res["root"], str(self.root))
         light = self.row_by(res, "light")
         self.assertEqual(light["status"], "OK")
-        self.assertEqual(light["on_disk"], 20)
         self.assertEqual(light["attributed"], 20)
         self.assertEqual(light["intent"], "Galaxy portrait")  # plan intent surfaced
         self.assertEqual(light["label"], "M31 core")  # pointing label on light rows
+        self.assertNotIn("own_rows", light)  # calibration-only field
         dark = self.row_by(res, "dark")
         self.assertNotIn("label", dark)  # calib rows are plan-level: no label
-        self.assertEqual(res["totals"]["on_disk"], 50)
+        self.assertEqual(dark["own_rows"], 10)  # this plan shot its own darks
+        self.assertEqual(res["totals"]["attributed"], 50)
 
     async def test_missing_files_reported_as_left_to_do(self):
         # CSV and disk agree on 15 of 20 — frames are genuinely absent.
@@ -224,36 +231,34 @@ class AuditTest(AuditBase):
         self.assertIn("load_sequence light", res["left_to_do"][0]["action"])
         self.assertFalse(res["all_saved"])
 
-    async def test_unattributed_disk_frames_are_missing_files(self):
-        # 20 frames on disk but the CSV only knows 15 — the Session Metadata
-        # plugin crashed before appending their rows. Disk and CSV disagree
-        # and nothing in the data says which frame is unrecorded, so the
-        # deficit falls through to the safe, self-correcting MISSING_FILES
-        # (re-shoot) rather than a verdict that could advise against it.
-        # BAD_-rejected frames do not land here: they are excluded from
-        # on_disk and attributed alike, and surface via `bad` instead.
+    async def test_unrecorded_disk_frames_are_missing_files(self):
+        # 20 frames exist but the CSV only knows 15 — the Session Metadata
+        # plugin crashed before appending five rows. The audit is driven by
+        # the CSV now, so it cannot name the divergence; what matters is that
+        # it never calls the plan done. The deficit falls through to the
+        # safe, self-correcting MISSING_FILES (re-shoot) rather than a
+        # verdict that could advise against re-shooting.
+        # BAD_-rejected frames do not land here: their CSV row is dropped by
+        # the file-exists gate once renamed, and they surface via `bad`.
         self.seed_full(light_rows=15, light_files=20)
 
         res = await self.audit(project_dir=str(self.proj))
 
         light = self.row_by(res, "light")
         self.assertEqual(light["status"], "MISSING_FILES")
-        self.assertEqual(light["on_disk"], 20)
         self.assertEqual(light["attributed"], 15)
         self.assertEqual(light["remaining"], 5)
         self.assertEqual(len(res["left_to_do"]), 1)
         self.assertEqual(res["left_to_do"][0]["missing"], 5)
         self.assertFalse(res["all_saved"])
 
-    async def test_bad_rename_is_counted_not_on_disk(self):
+    async def test_bad_rename_reported_as_bad_not_attributed(self):
         # N.I.N.A. rejects a frame by prefixing its filename with BAD_
-        # (verified against the live landing dir). The CSV row still points at
-        # the pre-rename name (so it is not attributed), and the file must NOT
-        # count toward on_disk either — otherwise the reject masquerades as a
-        # disk-vs-CSV divergence. It is surfaced as the light row's `bad`
-        # count instead.
-        # 19 good + 1 BAD_-prefixed file, but only 19 CSV rows (the bad
-        # frame's row is dropped by the file-exists gate once renamed).
+        # (verified against the live landing dir). The CSV row still points
+        # at the pre-rename name, so the file-exists gate drops it and the
+        # frame never reaches `attributed`. The light row's `bad` count is
+        # the only place that names why: 19 good + 1 rejected file, 19 CSV
+        # rows, one genuine gap.
         self.seed_full(light_rows=19, light_files=19)
         self.frame(_TOKEN, "LIGHT", "BAD_l_0019.fits.fz")
 
@@ -261,17 +266,23 @@ class AuditTest(AuditBase):
 
         light = self.row_by(res, "light")
         self.assertEqual(light["bad"], 1)
-        self.assertEqual(light["on_disk"], 19)  # the BAD_ file is excluded
         self.assertEqual(light["attributed"], 19)
         self.assertEqual(light["remaining"], 1)  # the rejected frame is a gap
         self.assertEqual(light["status"], "MISSING_FILES")
         self.assertFalse(res["all_saved"])
 
     async def test_pooled_bias_credits_from_another_dir(self):
-        # Bias shot under a DIFFERENT plan's token dir, credited plan-wide.
+        # Bias shot under a DIFFERENT plan's token dir, credited plan-wide:
+        # attributed reaches expected from the pool while this plan's own
+        # recorded bias frames (own_rows) stay at zero.
         self.seed_full(skip={"bias"})
         self.rows += [
-            _row(image_type="BIAS", target=None, duration="0.00001") for _ in range(10)
+            _row(
+                image_type="BIAS",
+                target="Other _plan-999999_",
+                duration="0.00001",
+            )
+            for _ in range(10)
         ]
         # ...and it lives in the pool dir on disk, not ours:
         for i in range(10):
@@ -281,10 +292,85 @@ class AuditTest(AuditBase):
 
         bias = self.row_by(res, "bias")
         self.assertEqual(bias["status"], "POOL_CREDITED")
-        self.assertEqual(bias["on_disk"], 0)  # not in OUR dirs
-        self.assertEqual(bias["attributed"], 10)  # but counted
+        self.assertEqual(bias["own_rows"], 0)  # not recorded under OUR token
+        self.assertEqual(bias["attributed"], 10)  # but credited plan-wide
         self.assertEqual(res["left_to_do"], [])
         self.assertTrue(res["all_saved"])  # pool is legitimate, not a gap
+
+    async def test_pooled_dark_credits_from_another_plan(self):
+        # Darks pool plan-wide by type + EXPOSURE + window, never by token —
+        # this is the case bias cannot cover, since bias matches on type
+        # alone and so cannot fail on exposure. The plan asks for 60.0s
+        # darks; another plan's 60.0s darks satisfy it, and OUR token then
+        # holds no dark rows at all, which is what POOL_CREDITED says.
+        self.seed_full(skip={"dark"})
+        self.rows += [
+            _row(image_type="DARK", target="Other _plan-999999_", duration="60.0")
+            for _ in range(10)
+        ]
+        for i in range(10):
+            self.frame("Other _plan-999999_", "DARK", f"d_{i:04d}.fits.fz")
+
+        res = await self.audit(project_dir=str(self.proj))
+
+        dark = self.row_by(res, "dark")
+        self.assertEqual(dark["status"], "POOL_CREDITED")
+        self.assertEqual(dark["own_rows"], 0)  # not recorded under OUR token
+        self.assertEqual(dark["attributed"], 10)  # credited from the pool
+        self.assertEqual(dark["remaining"], 0)
+        self.assertEqual(res["left_to_do"], [])
+        self.assertTrue(res["all_saved"])
+
+    async def test_pooled_dark_wrong_exposure_does_not_credit(self):
+        # The exposure gate that bias cannot exercise: the same 10 pooled
+        # darks at 300.0s against a plan asking for 60.0s are a different
+        # calibration, so nothing is credited and the deficit is real.
+        # own_rows stays 0 either way — it is the absence of OUR rows, not
+        # the presence of someone else's, that POOL_CREDITED keys on.
+        self.seed_full(skip={"dark"})
+        self.rows += [
+            _row(image_type="DARK", target="Other _plan-999999_", duration="300.0")
+            for _ in range(10)
+        ]
+        for i in range(10):
+            self.frame("Other _plan-999999_", "DARK", f"d_{i:04d}.fits.fz")
+
+        res = await self.audit(project_dir=str(self.proj))
+
+        dark = self.row_by(res, "dark")
+        self.assertEqual(dark["status"], "MISSING_FILES")
+        self.assertEqual(dark["attributed"], 0)  # exposure mismatch: no credit
+        self.assertEqual(dark["remaining"], 10)
+        self.assertEqual(dark["own_rows"], 0)
+        self.assertEqual(len(res["left_to_do"]), 1)
+        self.assertIn("load_sequence dark", res["left_to_do"][0]["action"])
+        self.assertFalse(res["all_saved"])
+
+    async def test_own_dark_rows_counted_separately_from_pooled(self):
+        # The middle case the two tests above leave open: 4 of our own darks
+        # recorded under our own token, 6 pooled from another plan. own_rows
+        # must count ONLY ours (4, not 10) — token containment plus the
+        # row's own image_type, with no pooled matcher involved — and since
+        # 4 < expected the row stays POOL_CREDITED: the pool is still what
+        # carries the plan to 10/10.
+        self.seed_full(skip={"dark"})
+        for i in range(6):
+            self.rows.append(
+                _row(image_type="DARK", target="Other _plan-999999_", duration="60.0")
+            )
+            self.frame("Other _plan-999999_", "DARK", f"d_{i:04d}.fits.fz")
+        for i in range(4):
+            self.rows.append(_row(image_type="DARK", target=_TOKEN, duration="60.0"))
+            self.frame(_TOKEN, "DARK", f"own_{i:04d}.fits.fz")
+
+        res = await self.audit(project_dir=str(self.proj))
+
+        dark = self.row_by(res, "dark")
+        self.assertEqual(dark["own_rows"], 4)  # only ours count as ours
+        self.assertEqual(dark["attributed"], 10)  # 6 pooled + 4 own
+        self.assertEqual(dark["remaining"], 0)
+        self.assertEqual(dark["status"], "POOL_CREDITED")  # 4 < 10 still short
+        self.assertTrue(res["all_saved"])
 
     async def test_expired_window_surfaced_despite_remaining_zero(self):
         # Session anchored 10 days ago (lights set the anchor) → the 7-day
@@ -367,6 +453,36 @@ class AuditTest(AuditBase):
         self.assertEqual(res["orphans"][0]["frames"], 3)
         self.assertTrue(res["all_saved"])  # orphans are informational
 
+    async def test_frames_in_non_type_dir_still_count(self):
+        # Regression: `_count_fits` used to skip any file whose parent
+        # directory was not literally LIGHT/DARK/BIAS/FLAT, so frames landing
+        # under any other folder name vanished from the count and the audit
+        # read as "no fits images" for a directory that plainly held them.
+        # The parent name is now only a bucket label, never a gate.
+        self.seed_full()
+        # Orphan frames in a folder named after a frame type nobody asks for:
+        odd = self.root / "Ghost _plan-deadbeef_" / "2026-09-20" / "LIGHTS"
+        odd.mkdir(parents=True)
+        for i in range(3):
+            (odd / f"o_{i}.fits.fz").write_bytes(b"")
+        # ...and the same shape inside a claimed token dir: sidecar files are
+        # still excluded by suffix, real frames are not.
+        stray = self.root / _TOKEN / "unsorted"
+        stray.mkdir(parents=True)
+        (stray / "stray_0000.fits.fz").write_bytes(b"")
+        (stray / "ImageMetaData.csv").write_text("FilePath\n", encoding="utf-8")
+
+        res = await self.audit(project_dir=str(self.proj))
+
+        self.assertEqual(len(res["orphans"]), 1)
+        self.assertEqual(res["orphans"][0]["frames"], 3)
+        self.assertEqual(res["orphans"][0]["types"], {"lights": 3})
+        # The stray frame is counted somewhere, but never as an attributed
+        # light — bucket labels alone must not manufacture attribution.
+        light = self.row_by(res, "light")
+        self.assertEqual(light["attributed"], 20)
+        self.assertTrue(res["all_saved"])
+
     async def test_dead_mount_raises_never_empty_counts(self):
         self.seed_full()
 
@@ -410,10 +526,11 @@ class AuditTest(AuditBase):
         res = await self.audit(project_dir=str(self.proj))
         pane1 = self.row_by(res, "light", pointing_index=1)
         pane2 = self.row_by(res, "light", pointing_index=2)
-        self.assertEqual(pane1["on_disk"], 2)
+        # Per-pane attribution: each pane's frames carry their own -N token.
+        self.assertEqual(pane1["attributed"], 2)
         self.assertEqual(pane1["effective_plan_id"], "plan-abc123-1")
         self.assertEqual(pane1["label"], "Pane 1")  # mosaic pane label surfaces
-        self.assertEqual(pane2["on_disk"], 1)
+        self.assertEqual(pane2["attributed"], 1)
         self.assertEqual(pane2["label"], "Pane 2")
         # types filter: only the requested type survives
         filtered = await self.audit(project_dir=str(self.proj), types=["bias"])
@@ -493,7 +610,7 @@ class AuditTest(AuditBase):
 
     async def test_never_shot_plan_reported_not_audited(self):
         # Plan file loads fine but the CSV never mentions it → NOT audited
-        # (no rows: expected/on_disk/attributed means nothing for frames
+        # (no rows: expected/attributed means nothing for frames
         # never attempted) and not an error — but it must surface. Hiding it
         # is the Oct-24 blind spot: the audit showed two 1-frame deficits
         # while six whole unshot plans (240 frames) waited, found only by
@@ -678,13 +795,16 @@ class AuditTest(AuditBase):
 
     async def test_hidden_dirs_never_count_nor_orphan(self):
         # The landing root and its token dirs are walked with the hidden-dir
-        # prune: a share's .snapshot/.Trashes copies must neither inflate
-        # on_disk nor masquerade as orphaned frames.
+        # prune: a share's .snapshot/.Trashes copies must neither reach the
+        # counts nor masquerade as orphaned frames. The copies are BAD_
+        # prefixed so `bad` is what proves the token-dir prune — with the
+        # disk-vs-CSV cross-check gone, `bad` is the only field fed by the
+        # walk of this plan's own files.
         self.seed_full()  # 20 lights on disk
-        # copy inside the token dir -> must NOT count toward on_disk
+        # BAD_-prefixed copy inside the token dir -> must NOT reach `bad`
         snap = self.root / _TOKEN / ".snapshot" / "2026-09-20" / "LIGHT"
         snap.mkdir(parents=True)
-        (snap / "copy_0000.fits.fz").write_bytes(b"")
+        (snap / "BAD_copy_0000.fits.fz").write_bytes(b"")
         # trash at the landing root -> must NOT surface as an orphan
         trash = self.root / ".Trashes" / "2026-09-20" / "LIGHT"
         trash.mkdir(parents=True)
@@ -693,8 +813,8 @@ class AuditTest(AuditBase):
         res = await self.audit(project_dir=str(self.proj))
 
         light = self.row_by(res, "light")
-        self.assertEqual(light["on_disk"], 20)  # snapshot copy excluded
-        self.assertEqual(light["bad"], 0)
+        self.assertEqual(light["attributed"], 20)  # snapshot copy unattributed
+        self.assertEqual(light["bad"], 0)  # BAD_ copy inside .snapshot pruned
         self.assertEqual(res["orphans"], [])  # .Trashes invisible
         self.assertTrue(res["all_saved"])
 
