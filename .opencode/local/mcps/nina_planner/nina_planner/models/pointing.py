@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from pydantic import BaseModel, Field
 
+from .strict import StrictModel
+
 
 class PointingInfo(BaseModel):
     ra_hours: float | None = Field(
@@ -21,7 +23,7 @@ class PointingInfo(BaseModel):
     altitude_deg: float | None = None
 
 
-class Pointing(BaseModel):
+class Pointing(StrictModel):
     label: str | None = None
     ra_hours: float = Field(
         ge=0.0,

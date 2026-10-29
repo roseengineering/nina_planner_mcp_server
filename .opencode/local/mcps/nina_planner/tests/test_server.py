@@ -1231,6 +1231,13 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
         # Three lights attributed where the plan asks for one, plus enough
         # calibration to finish the plan outright — so the story below is a
         # genuinely complete plan that overshot, not a partial one.
+        #
+        # Stamps are relative to the host clock, not hardcoded: the
+        # calibration window is 7 days wide, so a fixed date silently ages
+        # out of it and the calibration stops counting (the plan then reads
+        # incomplete and this test fails for a reason that has nothing to do
+        # with what it checks).
+        stamp = (datetime.now(UTC) - timedelta(hours=1)).strftime("%Y-%m-%dT%H:%M:%SZ")
         rows = [
             {
                 "image_type": "LIGHT",
@@ -1239,6 +1246,7 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
                 "filter_name": "L",
                 "hfr": "1.50",
                 "detected_stars": "100",
+                "exposure_start_utc": stamp,
             }
             for i in range(3)
         ] + [
@@ -1246,18 +1254,18 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
                 "image_type": "FLAT",
                 "file_path": "C:/NINA/FLAT/M31 _plan-test123__0.10s_0000.fits",
                 "filter_name": "L",
-                "exposure_start_utc": "2026-10-22T05:00:00Z",
+                "exposure_start_utc": stamp,
             },
             {
                 "image_type": "DARK",
                 "file_path": "C:/NINA/DARK/M31 _plan-test123__60.00s_0000.fits",
                 "duration": "60.0",
-                "exposure_start_utc": "2026-10-22T05:00:00Z",
+                "exposure_start_utc": stamp,
             },
             {
                 "image_type": "BIAS",
                 "file_path": "C:/NINA/BIAS/M31 _plan-test123__0.00s_0000.fits",
-                "exposure_start_utc": "2026-10-22T05:00:00Z",
+                "exposure_start_utc": stamp,
             },
         ]
 
@@ -2296,13 +2304,18 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
         }
         # Every frame type already present and inside its window, so the dark
         # group reads complete — the exemption under test is the only reason
-        # no warning appears.
+        # no warning appears. The stamp is relative to the host clock: the
+        # calibration window is 7 days wide, so a hardcoded date ages out of
+        # it and the dark stops counting (the exemption would then never be
+        # exercised, and this test would pass for the wrong reason).
         rows = [
             {
                 "image_type": "DARK",
                 "file_path": r"Z:\landing\M31 _plan-test123_\2026-10-22\DARK\d.fits.fz",
                 "duration": "60.0",
-                "exposure_start_utc": "2026-10-22T05:00:00Z",
+                "exposure_start_utc": (datetime.now(UTC) - timedelta(hours=1)).strftime(
+                    "%Y-%m-%dT%H:%M:%SZ"
+                ),
             }
         ]
 

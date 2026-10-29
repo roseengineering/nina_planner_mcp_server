@@ -285,16 +285,16 @@ An example json plan:
 | `autofocus` | no | `reference_filter_name` defaults to `"L"`; `hfr_increase_sample_size` to `3`; `hfr_increase_threshold_percent` to `15`; `every_n_exposures` to `10`; and `threshold_celsius` to `1`. Numeric values must be greater than zero. |
 | `guiding` | no | `dither_every_n_exposures` defaults to `2`; `check_drift_every_n_exposures` to `6`; and `max_drift_arcmin` to `1.5`. Numeric values must be greater than zero. |
 | `light_frames` | **yes** | Nonempty list of light exposure specs, each with `filter_name`, `exposure_time_seconds` (greater than zero), and `total_count` (at least `1`). |
-| `flat_frames` | **yes** | Nonempty list of flat exposure specs, each with `filter_name` and `total_count` (at least `1`). No exposure time: N.I.N.A.'s SkyFlat item chooses it automatically to hit the right signal level, so none is specified (and any stale `exposure_time_seconds` in an older plan is ignored). |
+| `flat_frames` | **yes** | Nonempty list of flat exposure specs, each with `filter_name` and `total_count` (at least `1`). No exposure time: N.I.N.A.'s SkyFlat item chooses it automatically to hit the right signal level. |
 | `dark_frames` | **yes** | Nonempty list of dark exposure specs, each with `exposure_time_seconds` (greater than zero) and `total_count` (at least `1`). |
 | `bias_frames` | **yes** | Nonempty list of bias exposure specs, each with `total_count` (at least `1`). |
 
 ### 📊 Mosaic CSV format
 
 For `write_mosaic_plan`, use a Telescopius-formatted CSV with these nine columns in this order:
-See [mosaic.csv](./mosaic.csv) for an example:
-[mosaic.csv](./mosaic.csv)
-```csv mosaic.csv
+
+[plans/mosaic.csv](./plans/mosaic.csv)
+```csv plans/mosaic.csv
 Pane, RA, DEC, Position Angle (East), Pane width (arcmins), Pane height (arcmins), Overlap, Row, Column
 Pane 1, 0hr 56' 01", 45º 51' 18", 0.00, 309.00, 205.80, 10%, 1, 1
 Pane 2, 0hr 29' 28", 45º 51' 18", 0.00, 309.00, 205.80, 10%, 1, 2
@@ -422,7 +422,7 @@ You are the automated observatory controller. The observatory runs NINA via the 
           "NINA_PLANNER_LOG": "C:/Windows/Temp/nina-planner-debug.log"
         },
         "command": [
-          "uv", "run", "--no-sync", "--project", ".opencode/local/mcps/nina_planner", "-m", "nina_planner"
+          "uv", "run", "--project", ".opencode/local/mcps/nina_planner", "-m", "nina_planner"
         ]
       }
     }

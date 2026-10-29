@@ -40,7 +40,6 @@
   "flat_frames": [
     {
       "filter_name": "Clear",
-      "exposure_time_seconds": 5.0,
       "total_count": 30
     }
   ],

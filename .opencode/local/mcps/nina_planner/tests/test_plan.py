@@ -91,16 +91,45 @@ class FlatExposurePlanTest(unittest.TestCase):
         self.assertEqual(flat.filter_name, "L")
         self.assertEqual(flat.total_count, 1)
 
-    def test_stale_exposure_time_in_a_flat_entry_is_ignored(self):
-        # Older plan files still carry one; it is dropped rather than
-        # refused, so every recorded plan keeps loading.
-        plan = _plan(
-            flat_frames=[
-                {"filter_name": "L", "exposure_time_seconds": 5.0, "total_count": 1}
-            ]
-        )
-        data = plan.flat_frames[0].model_dump()
-        self.assertNotIn("exposure_time_seconds", data)
+    def test_stale_exposure_time_in_a_flat_entry_is_refused(self):
+        # A flat entry is filter + count only, so an exposure time on one is
+        # a nonconforming plan: it is refused at load rather than dropped,
+        # which would let a plan mean something other than what it says.
+        with self.assertRaises(ValidationError) as ctx:
+            _plan(
+                flat_frames=[
+                    {"filter_name": "L", "exposure_time_seconds": 5.0, "total_count": 1}
+                ]
+            )
+        msg = str(ctx.exception)
+        self.assertIn("flat_frames", msg)
+        self.assertIn("exposure_time_seconds", msg)
+        self.assertIn("Extra inputs are not permitted", msg)
+
+
+class UnknownFieldTest(unittest.TestCase):
+    """Every part of a plan file is strict: a key outside the schema is a
+    nonconforming plan (typo or removed field), not something to drop."""
+
+    def test_unknown_top_level_field_refused(self):
+        with self.assertRaises(ValidationError) as ctx:
+            _plan(expossure_window_days=7)
+        self.assertIn("expossure_window_days", str(ctx.exception))
+
+    def test_unknown_field_in_a_nested_config_refused(self):
+        with self.assertRaises(ValidationError) as ctx:
+            _plan(guiding={"dither_every_n_exposures": 2, "nax_drift_arcmin": 3.0})
+        self.assertIn("nax_drift_arcmin", str(ctx.exception))
+
+    def test_unknown_field_in_a_frame_spec_refused(self):
+        with self.assertRaises(ValidationError) as ctx:
+            _plan(dark_frames=[{"exposure_time_seconds": 60.0, "count": 5}])
+        self.assertIn("count", str(ctx.exception))
+
+    def test_unknown_field_in_a_pointing_refused(self):
+        with self.assertRaises(ValidationError) as ctx:
+            _plan(pointings=[{"ra_hours": 0.71, "dec_deg": 41.27, "ra_deg": 10.65}])
+        self.assertIn("ra_deg", str(ctx.exception))
 
 
 class LoadPlanPlanIdTest(unittest.IsolatedAsyncioTestCase):

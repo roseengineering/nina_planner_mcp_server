@@ -2,9 +2,10 @@ import hashlib
 import json
 import re
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import Field, field_validator
 
 from .pointing import Pointing
+from .strict import StrictModel
 
 # A plan id is stamped into the target name, which N.I.N.A. rewrites on its way
 # into the file path — it turned "[" and "]" into "_" even though NTFS allows
@@ -17,31 +18,31 @@ from .pointing import Pointing
 _PLAN_ID_ALLOWED = re.compile(r"[A-Za-z0-9.-]+")
 
 
-class LightExposurePlan(BaseModel):
+class LightExposurePlan(StrictModel):
     filter_name: str
     exposure_time_seconds: float = Field(gt=0)
     total_count: int = Field(ge=1)
 
 
-class FlatExposurePlan(BaseModel):
+class FlatExposurePlan(StrictModel):
     # No exposure_time_seconds: N.I.N.A.'s SkyFlat item picks the exposure
     # itself to hit a target signal level, so a plan-specified duration is
-    # never sent. Stale plans carrying one still load (extra fields are
-    # ignored) — the value is simply dropped.
+    # never sent. A plan that still carries one is refused at load rather
+    # than silently reinterpreted — see StrictModel.
     filter_name: str
     total_count: int = Field(ge=1)
 
 
-class DarkExposurePlan(BaseModel):
+class DarkExposurePlan(StrictModel):
     exposure_time_seconds: float = Field(gt=0)
     total_count: int = Field(ge=1)
 
 
-class BiasExposurePlan(BaseModel):
+class BiasExposurePlan(StrictModel):
     total_count: int = Field(ge=1)
 
 
-class AutofocusConfig(BaseModel):
+class AutofocusConfig(StrictModel):
     reference_filter_name: str = Field(default="L")
     hfr_increase_sample_size: int = Field(default=3, ge=1)
     hfr_increase_threshold_percent: float = Field(default=15.0, gt=0)
@@ -49,13 +50,13 @@ class AutofocusConfig(BaseModel):
     threshold_celsius: float = Field(default=1.0, gt=0)
 
 
-class GuidingConfig(BaseModel):
+class GuidingConfig(StrictModel):
     dither_every_n_exposures: int = Field(default=2, ge=1)
     check_drift_every_n_exposures: int = Field(default=6, ge=1)
     max_drift_arcmin: float = Field(default=1.5, gt=0)
 
 
-class CoolerConfig(BaseModel):
+class CoolerConfig(StrictModel):
     on: bool = True
     setpoint_celsius: float = Field(
         default=-10.0,
@@ -65,7 +66,7 @@ class CoolerConfig(BaseModel):
     )
 
 
-class ConstraintsConfig(BaseModel):
+class ConstraintsConfig(StrictModel):
     min_altitude: float = Field(
         default=30.0,
         ge=0.0,
@@ -83,7 +84,7 @@ class ConstraintsConfig(BaseModel):
 # --- Root Plan ---
 
 
-class ObservationPlan(BaseModel):
+class ObservationPlan(StrictModel):
     target: str = Field(default="", description="catalog designation")
     intent: str = Field(
         default="", description="2 to 3 words describing the primary observation goal"
