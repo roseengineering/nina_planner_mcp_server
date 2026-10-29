@@ -15,6 +15,7 @@ from ..imaging import (
     read_weather_csv,
     widen_imaging_metadata,
 )
+from ..models.frame import FrameStats
 from ..models.plan import ObservationPlan
 from ..mosaic import load_pointings
 from ..progress import _light_target_matches, filter_metadata_rows, plan_progress
@@ -62,6 +63,71 @@ async def get_imaging_metadata(
     res["pointing_index"] = pointing_index
     res["target"] = plan.target
     client.log_payload("Metadata:", json.dumps(res, indent=2))
+    return res
+
+
+@mcp.tool()
+async def get_frame_stats(image_type: str | None = None) -> dict[str, Any]:
+    """Returns N.I.N.A.'s live per-frame statistics for the current (most recently captured) frame, read from the image-history API.
+
+    This is the on-demand mirror of the quality watchdog's own data source, so on a QUALITY-WATCHDOG wake you can read exactly the numbers it saw instead of waiting for ImageMetaData.csv to be written. Returns the full record: HFR, HFR standard deviation (`hfr_st_dev`), detected star count (`stars`), background ADU statistics (`mean`, `median`, `st_dev`, `min`, `max`), guiding RMS text (`rms_text`), camera temperature, gain, offset, filter, exposure time, target name, and filename. `date` is the frame's capture timestamp.
+
+    Scope: despite its name, image-history serves only the current frame (a single record; there is no paging and no count parameter). For a multi-frame trend use get_imaging_metadata, which reads the on-disk ImageMetaData.csv for the whole session — this tool is the live view, that one is the historical view. A genuine `0` (e.g. `stars: 0`) is a real reading, not a missing value.
+
+    `image_type` (optional, e.g. "light", "dark") is passed through as the API's imageType filter to assert the current frame's type; when the current frame is not of that type the tool reports `count: 0` rather than erroring. This tool is read-only and takes no action.
+
+    Returns a dict: `count` (1 when a frame is present, else 0), `image_type` (the frame's type, or the requested filter when empty), `frame` (the full statistics record as snake_case fields, or null), and `note` (present only when count is 0)."""
+    path = "/image-history"
+    if image_type:
+        path += f"?imageType={image_type.upper()}"
+    try:
+        payload = await client.api_get(path)
+    except RuntimeError as e:
+        # The API reports an unmatchable/absent image as a failed envelope:
+        # HTTP 200 with Success=false and Error="Index out of range", which
+        # unwrap_response surfaces as a RuntimeError carrying that text. That
+        # is an expected empty state (no frame yet, or none of this type), not
+        # a fault — so it degrades to count 0 instead of raising.
+        if "Index out of range" in str(e):
+            note = (
+                f"no {image_type.upper()} frame recorded yet"
+                if image_type
+                else "no frame recorded yet"
+            )
+            return {
+                "count": 0,
+                "image_type": image_type.upper() if image_type else None,
+                "frame": None,
+                "note": note,
+            }
+        raise
+
+    # image-history returns a list whose single element is the current frame;
+    # be tolerant of a bare object too, in case a future version changes shape.
+    record: Any
+    if isinstance(payload, list):
+        record = payload[0] if payload else None
+    elif isinstance(payload, dict):
+        record = payload
+    else:
+        record = None
+
+    if not isinstance(record, dict) or not record:
+        return {
+            "count": 0,
+            "image_type": image_type.upper() if image_type else None,
+            "frame": None,
+            "note": "image-history returned no frame record",
+        }
+
+    frame = FrameStats.model_validate(record)
+    res = {
+        "count": 1,
+        "image_type": frame.image_type or (image_type.upper() if image_type else None),
+        "frame": frame.model_dump(mode="json"),
+        "note": None,
+    }
+    client.log_payload("FrameStats:", json.dumps(res, indent=2))
     return res
 
 

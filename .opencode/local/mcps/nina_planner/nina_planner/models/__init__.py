@@ -12,6 +12,7 @@ from .dome import DomeDevice, compute_dome_status
 from .filter_wheel import FilterWheelDevice
 from .flat_device import FlatDevice
 from .focuser import FocuserDevice
+from .frame import FrameStats
 from .guider import GuiderDevice, GuiderMetric
 from .meridian import MeridianInfo
 from .mount import MountDevice
@@ -38,6 +39,7 @@ __all__ = [
     "FilterWheelDevice",
     "FlatDevice",
     "FocuserDevice",
+    "FrameStats",
     "GainInfo",
     "GuiderDevice",
     "GuiderMetric",

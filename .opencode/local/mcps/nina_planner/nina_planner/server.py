@@ -14,6 +14,7 @@ from .tools.equipment import (
 from .tools.lifecycle import get_nina_status, start_nina, stop_nina
 from .tools.plans import (
     audit_plans,
+    get_frame_stats,
     get_imaging_metadata,
     get_plan_progress,
     list_plans,
@@ -33,6 +34,7 @@ __all__ = [
     "best_targets",
     "equipment",
     "get_events",
+    "get_frame_stats",
     "get_imaging_metadata",
     "get_logs",
     "get_nina_status",

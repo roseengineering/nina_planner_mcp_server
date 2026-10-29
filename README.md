@@ -39,6 +39,7 @@ Each table gives a one-line summary; details for the larger tools are in [Tool D
 | `get_plan_progress(file_path, max_hfr?, min_detected_stars?, max_guiding_rms_arcsec?)` | Per-frame-type acquired/remaining counts for every pointing of a plan. Use before `load_sequence` to see what still needs acquiring. Read-only. |
 | `audit_plans(plans?, project_dir?, types?, include_orphans=true)` | **Whole-project capture audit in one call**: reconcile plan expectations, frames on disk, and CSV attribution for every plan into an `all_saved` verdict plus `left_to_do` (including never-shot plans) and `blocked` work lists, and a `never_shot` list of plans with no frames at all. Read-only. |
 | `get_imaging_metadata(file_path, pointing_index=1, image_type="light")` | Per-exposure quality, guiding, pointing, and weather metrics for one pointing of a plan. Read-only. |
+| `get_frame_stats(image_type?)` | Live per-frame statistics for the current (most recent) frame, straight from the `image-history` API — the watchdog's own data source (HFR, HFR σ, stars, ADU, guiding RMS, temp, filter, filename). Single-frame; for a trend use `get_imaging_metadata`. Read-only. |
 
 ### 🌌 Sky Calculations
 
@@ -102,6 +103,15 @@ Returns per-exposure imaging metadata for one pointing of an observation plan, p
 - **Output:** a wide table with one row per exposure: identity fields (`file_path`, `exposure_number`, `exposure_start`, `duration`, `filter_name`) plus metrics as columns namespaced by group (`quality.hfr`, `guiding.rms`, `background.adu_mean`, `pointing.airmass`, `weather.temperature`, ...). Weather samples are joined by exposure number and UTC exposure start. The result also carries `plan_id`, `pointing_index`, and `target`.
 - **Timestamps:** come from the CSV's `ExposureStartUTC` column and are **displayed in the host's local time with its UTC offset** (e.g. `2026-09-21T21:16:25.123-05:00`); calibration-window arithmetic runs on UTC instants.
 - **Summary:** columns constant across the returned frames are listed once under `summary.constants`; columns with no real values (NaN/-1, empty, `n/a`, or the `0` sentinel N.I.N.A. writes for unmeasured metrics) are listed under `summary.unpopulated`.
+
+### `get_frame_stats`
+
+Returns N.I.N.A.'s live per-frame statistics for the **current (most recently captured) frame**, read from the `GET /v2/api/image-history` API — the same source the `nina_notify` quality watchdog polls, exposed on demand so a `QUALITY-WATCHDOG` wake can be verified against the exact numbers that fired it.
+
+- **Full record:** `hfr`, `hfr_st_dev`, `stars`, background ADU (`mean`, `median`, `st_dev`, `min`, `max`), guiding RMS text (`rms_text`), `temperature`, `gain`, `offset`, `filter`, `exposure_time`, `target_name`, `filename`, and `date` (the capture timestamp). A genuine `0` (e.g. `stars: 0`, a star-count failure) is preserved as `0` — unlike the CSV path, `0` here is a real reading, not a "not measured" sentinel.
+- **Single frame only:** despite its name, `image-history` serves only the current frame — one record, no paging, no count parameter. For a multi-frame trend use `get_imaging_metadata`, which reads the on-disk `ImageMetaData.csv` for the whole session. This tool is the live view; that one is the historical view.
+- **`image_type`:** optionally passed through as the API's `imageType` filter to assert the current frame's type (e.g. `"light"`, `"dark"`). When the current frame isn't of that type the tool reports `count: 0` with a note rather than erroring.
+- **Output:** `{count, image_type, frame, note}` — `count` is `1` when a frame is present (else `0`, with `frame: null` and `note` explaining why). This tool is read-only.
 
 ### `write_plan_file`
 

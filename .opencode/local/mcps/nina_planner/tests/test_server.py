@@ -1008,6 +1008,104 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("member", result[0])
         self.assertNotIn("source", result[0])
 
+    # The live image-history record N.I.N.A. serves for its current frame.
+    _FRAME_RECORD = {
+        "ExposureTime": 10,
+        "ImageType": "LIGHT",
+        "Filter": "LP",
+        "RmsText": 'Tot: 0.42 (0.31")',
+        "Temperature": 25.375,
+        "CameraName": "Seestar Alpaca Camera",
+        "TargetName": "NGC 1931",
+        "Gain": 200,
+        "Offset": -1,
+        "Date": "2026-10-27T23:56:32.1190029-05:00",
+        "TelescopeName": "seestar s30",
+        "FocalLength": 150,
+        "StDev": 250.64,
+        "Mean": 1880.75,
+        "Median": 1888,
+        "Min": 1008,
+        "Max": 65520,
+        "Stars": 50,
+        "HFR": 1.45,
+        "HFRStDev": 0.1297,
+        "IsBayered": True,
+        "Filename": "x.fits.fz",
+    }
+
+    async def test_get_frame_stats_returns_full_record(self):
+        from nina_planner.server import get_frame_stats
+
+        with patch(
+            "nina_planner.client.api_get",
+            AsyncMock(return_value=[self._FRAME_RECORD]),
+        ) as api_get:
+            result = await get_frame_stats()
+        # No image_type -> no imageType query parameter.
+        api_get.assert_awaited_once_with("/image-history")
+        self.assertEqual(result["count"], 1)
+        self.assertEqual(result["image_type"], "LIGHT")
+        self.assertIsNone(result["note"])
+        frame = result["frame"]
+        self.assertEqual(frame["stars"], 50)
+        self.assertAlmostEqual(frame["hfr"], 1.45)
+        self.assertAlmostEqual(frame["hfr_st_dev"], 0.1297)
+        self.assertEqual(frame["rms_text"], 'Tot: 0.42 (0.31")')
+        self.assertEqual(frame["median"], 1888)
+        # The capture timestamp is parsed to a datetime, then dumped as ISO.
+        self.assertEqual(frame["date"], "2026-10-27T23:56:32.119002-05:00")
+
+    async def test_get_frame_stats_passes_image_type_filter(self):
+        from nina_planner.server import get_frame_stats
+
+        with patch(
+            "nina_planner.client.api_get",
+            AsyncMock(return_value=[self._FRAME_RECORD]),
+        ) as api_get:
+            result = await get_frame_stats("light")
+        api_get.assert_awaited_once_with("/image-history?imageType=LIGHT")
+        self.assertEqual(result["count"], 1)
+
+    async def test_get_frame_stats_no_matching_type_is_empty_not_raised(self):
+        from nina_planner.server import get_frame_stats
+
+        # NINA answers an unmatchable imageType with a failed envelope that
+        # unwrap_response turns into RuntimeError("Index out of range").
+        with patch(
+            "nina_planner.client.api_get",
+            AsyncMock(side_effect=RuntimeError("Index out of range")),
+        ):
+            result = await get_frame_stats("dark")
+        self.assertEqual(result["count"], 0)
+        self.assertEqual(result["image_type"], "DARK")
+        self.assertIsNone(result["frame"])
+        self.assertIn("no DARK frame", result["note"])
+
+    async def test_get_frame_stats_zero_stars_is_a_real_reading(self):
+        from nina_planner.server import get_frame_stats
+
+        record = dict(self._FRAME_RECORD, Stars=0)
+        with patch(
+            "nina_planner.client.api_get",
+            AsyncMock(return_value=[record]),
+        ):
+            result = await get_frame_stats()
+        # A star-count failure is Stars=0, which must survive as 0, not None.
+        self.assertEqual(result["frame"]["stars"], 0)
+
+    async def test_get_frame_stats_empty_history_is_empty(self):
+        from nina_planner.server import get_frame_stats
+
+        with patch(
+            "nina_planner.client.api_get",
+            AsyncMock(return_value=[]),
+        ):
+            result = await get_frame_stats()
+        self.assertEqual(result["count"], 0)
+        self.assertIsNone(result["frame"])
+        self.assertIn("no frame record", result["note"])
+
     async def test_write_plan_file_creates_file(self):
         from nina_planner.server import write_plan_file
 

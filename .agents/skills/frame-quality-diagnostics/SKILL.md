@@ -7,7 +7,7 @@ description: Diagnose autofocus failures and read per-frame quality telemetry (H
 
 Reads NINA's per-frame telemetry to separate a real fault from a measurement artifact, and to tell a harmless autofocus failure from one that costs focus. Derived from the 2026-10-21→22 night (11 targets, 10 AF runs, 457 frames); every claim below was verified against that run's logs and the on-disk frame metadata.
 
-Per-frame fields are `HFR`, `HFRStDev` (σ), `Stars`, `Mean`, `StDev`, plus `Temperature`. **They are not pushed to you** — routine telemetry no longer wakes the agent, and the event socket carries event names only — so read them on demand: `get_imaging_metadata(file_path)` for the `ImageMetaData.csv` rows, `get_events(since=…)` for the event timeline, and `get_logs(since=…)` for whatever only NINA's log records. AF points arrive as `AUTOFOCUS-POINT-ADDED` with `Position` and `HFR`; `Detected Stars` and σ per point are only in `get_logs`.
+Per-frame fields are `HFR`, `HFRStDev` (σ), `Stars`, `Mean`, `StDev`, plus `Temperature`. **They are not pushed to you** — routine telemetry no longer wakes the agent, and the event socket carries event names only — so read them on demand: `get_frame_stats()` for the **live current-frame** reading (the watchdog's own source — HFR, σ, stars, ADU, guiding RMS, temp), `get_imaging_metadata(file_path)` for the `ImageMetaData.csv` rows across the whole session, `get_events(since=…)` for the event timeline, and `get_logs(since=…)` for whatever only NINA's log records. AF points arrive as `AUTOFOCUS-POINT-ADDED` with `Position` and `HFR`; `Detected Stars` and σ per point are only in `get_logs`.
 
 ## 1. Autofocus failures: sweep width first, star count second
 
