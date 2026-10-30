@@ -315,6 +315,45 @@ def frame_group_constraints(
     return (field("filter_name"), field("exposure_time_seconds"))
 
 
+def _select_matching(
+    rows: list[dict[str, Any]],
+    image_type: str,
+    *,
+    filter_name: str | None = None,
+    exposure: float | None = None,
+    plan: ObservationPlan | None = None,
+    pointing_index: int = 1,
+    max_hfr: float | None = None,
+    min_detected_stars: int | None = None,
+    max_guiding_rms_arcsec: float | None = None,
+    max_age_days: int | None = None,
+    session_start: datetime | None = None,
+) -> list[dict[str, Any]]:
+    """The rows ``_row_matches`` accepts, in input order — ONE row pass.
+
+    Counting (``_count_matching``) and row-returning callers are this
+    function and ``len()`` of it, so a predicate change can never land on
+    one side only.
+    """
+    return [
+        row
+        for row in rows
+        if _row_matches(
+            row,
+            image_type,
+            filter_name=filter_name,
+            exposure=exposure,
+            plan=plan,
+            pointing_index=pointing_index,
+            max_hfr=max_hfr,
+            min_detected_stars=min_detected_stars,
+            max_guiding_rms_arcsec=max_guiding_rms_arcsec,
+            max_age_days=max_age_days,
+            session_start=session_start,
+        )
+    ]
+
+
 def _count_matching(
     rows: list[dict[str, Any]],
     image_type: str,
@@ -329,10 +368,9 @@ def _count_matching(
     max_age_days: int | None = None,
     session_start: datetime | None = None,
 ) -> int:
-    count = 0
-    for row in rows:
-        if _row_matches(
-            row,
+    return len(
+        _select_matching(
+            rows,
             image_type,
             filter_name=filter_name,
             exposure=exposure,
@@ -343,9 +381,8 @@ def _count_matching(
             max_guiding_rms_arcsec=max_guiding_rms_arcsec,
             max_age_days=max_age_days,
             session_start=session_start,
-        ):
-            count += 1
-    return count
+        )
+    )
 
 
 def filter_metadata_rows(
@@ -380,11 +417,8 @@ def filter_metadata_rows(
         # across all its groups — so narrowing here would drop frames the
         # caller came to see. frame_group_constraints is therefore not
         # consulted for lights; that asymmetry is intentional, not drift.
-        return [
-            r
-            for r in rows
-            if _row_matches(r, "LIGHT", plan=plan, pointing_index=pointing_index)
-        ]
+        # The row pass itself is still the shared selector.
+        return _select_matching(rows, "LIGHT", plan=plan, pointing_index=pointing_index)
     groups: list[Any]
     if image_type_upper == "FLAT":
         groups = plan.flat_frames
@@ -401,6 +435,10 @@ def filter_metadata_rows(
     )
     out: list[dict[str, Any]] = []
     for row in rows:
+        # Any spec matches ⇒ the row is in, appended ONCE (the break is the
+        # dedup) — a multi-spec union, which is why this is one _row_matches
+        # loop and not one _select_matching pass per spec (that would append
+        # a row once per matching spec).
         for filter_name, exposure in specs:
             if _row_matches(
                 row,
