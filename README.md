@@ -313,6 +313,36 @@ Each row becomes a `Pointing`: RA/DEC are parsed server-side (sexagesimal like `
 - 🚫 **No rotator:** every pane's `position_angle_deg` must be `0`. Any nonzero PA fails loudly, since PA can't be enforced without a rotator.
 - **Acquiring panes:** query `get_plan_progress(file_path)` to see which panes still need frames, then load the first incomplete pane with `load_sequence(request=[{"plan": file_path, "action": "light", "pointing_index": N, "mode": "remaining"}])` and `start_sequence()`. Repeat pane by pane across the night; when the top-level `complete` is true, the mosaic is done — and if `expired_with_deficit` is true instead, the lights may well be fine and only the calibration window needs raising or a new plan (see [`get_plan_progress`](#get_plan_progress)).
 
+## 🗄️ `nina-archive` — Archive Completed Plans
+
+A CLI (installed with the package as `nina-archive`, runnable as `python -m nina_planner.archive`) that copies each **completed** plan's frames and its plan JSON into one self-contained folder, ready to be moved into cloud storage and pulled down to a workstation for calibration subtraction and stacking:
+
+```
+nina-archive --dest ~/cloud/nina-archive          # everything completed
+nina-archive --dry-run                            # report only, write nothing
+nina-archive plans/m15_globular-cluster_20261003T112008.json
+nina-archive --imaging-root /mnt/c/Users/me/Documents/N.I.N.A   # NINA down
+```
+
+```
+<dest>/
+  archive-index.jsonl                                 append-only log of runs
+  m15_globular-cluster_20261003T112008__plan-a745.../
+    plan.json                                         verbatim plan file
+    manifest.json                                     identity, per-type counts, file list, warnings
+    LIGHT/*.fits.fz  + LIGHT/ImageMetaData.csv        attributed light frames + their metadata rows
+    FLAT/  DARK/  BIAS/                               matched calibration frames + sidecars
+```
+
+- ✅ **Completion gate:** a plan is archived only when every frame group's `remaining_count` is 0 — the same test `get_plan_progress` reports as `complete`. Incomplete plans are reported and skipped (pass `--all` to archive them anyway; the manifest then carries an `incomplete` warning). Never-shot plans archive nothing.
+- 🎯 **Attribution is the plan's own:** frame selection reuses `filter_metadata_rows`, so exactly the frames credited to the plan are copied — lights by the `_{plan_id}_` token in the recorded path (every pane of a mosaic), flats by type+filter, darks by type+exposure, bias by type, all within `calibration_window_days` of the earliest attributed light. Surplus frames beyond the plan total are included (they belong to the session); frames outside the credited set (another plan's token, an expired calibration window) are not.
+- 📋 **Copies, never moves:** the observatory's imaging directory is untouched — its own `audit_plans`/`get_plan_progress` views keep working. Every file is size-verified after copying (`--checksum` adds sha256), each folder is staged in a hidden `.<name>.partial` sibling and renamed into place atomically (an interrupted run never leaves a folder that looks complete), and `<dest>/archive-index.jsonl` logs every archive.
+- ♻️ **Idempotent:** a folder that already exists in `--dest` is skipped (exit 0) unless `--force` rebuilds it. Plan files inside `--dest` are never re-discovered, so the default `--dest ./archive` inside the project is safe.
+- 🚧 **`--dest` must be outside the imaging root:** archived folders carry `ImageMetaData.csv` copies, and a later attribution pass reading them from inside the root would double-count every frame — the tool refuses with an explanatory error.
+- 📡 **Works with NINA down:** pass `--imaging-root` to bypass the site-profile lookup; otherwise the root comes from `get_site_profile` (with `NINA_DRIVE_MOUNT` mapping on non-Windows hosts), and a missing root raises rather than archiving nothing.
+- 🚪 **Exit codes:** `0` archived (or already archived), `1` nothing archivable or an error occurred (also printed per plan to stderr), `2` bad arguments — chainable, e.g. `nina-archive --dest ./archive && rclone sync ./archive remote:nina-archive`.
+- Unrelated project JSON (opencode configs etc.) is ignored silently during discovery; naming a file explicitly makes any load failure an error.
+
 ## 📌 Notes
 
 - 🔌 **Required N.I.N.A. plugins:** the MCP server requires the following three plugins to be installed in N.I.N.A.: **Advanced API**, **Sequencer+**, and **Session Metadata**.

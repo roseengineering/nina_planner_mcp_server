@@ -52,6 +52,7 @@ dev = [
 
 [project.scripts]
 nina_planner = "nina_planner.__main__:main"
+nina-archive = "nina_planner.archive:main"
 
 [tool.uv]
 # Install the dev group (pytest, ruff, mypy, pytest-cov) by default on `uv sync`.
