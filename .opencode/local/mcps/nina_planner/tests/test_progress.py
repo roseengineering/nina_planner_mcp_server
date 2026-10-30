@@ -579,6 +579,24 @@ class CalibrationAgeTest(unittest.TestCase):
         self.assertFalse(prog["dark"][0]["window_open"])
         self.assertEqual(prog["dark"][0]["acquired_count"], 1)
         self.assertEqual(prog["dark"][0]["remaining_count"], 0)
+        # The shortfall survives the window closure as deficit_count — the
+        # field completion checks read, since remaining_count is 0 here
+        # whether the plan finished or the window expired mid-deficit.
+        self.assertEqual(prog["dark"][0]["deficit_count"], 9)
+
+    def test_deficit_count_matches_remaining_while_window_open(self):
+        # Inside the window there is no adjustment to hide: the raw
+        # shortfall and the demand are the same number, and both readings
+        # agree on lights too (which have no window at all).
+        plan = _plan()
+        session = datetime(2026, 9, 1, 22, 0, 0)
+        light = _row(exposure_start=session.strftime("%Y-%m-%d %H:%M:%S"))
+        prog = plan_progress(plan, [light], now=session)
+        self.assertEqual(
+            prog["dark"][0]["deficit_count"], prog["dark"][0]["remaining_count"]
+        )
+        self.assertEqual(prog["light"][0]["deficit_count"], 19)
+        self.assertEqual(prog["light"][0]["remaining_count"], 19)
 
     def test_window_end_is_anchor_plus_window(self):
         plan = _plan(calibration_window_days=3)

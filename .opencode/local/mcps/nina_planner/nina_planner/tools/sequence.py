@@ -33,7 +33,7 @@ async def load_sequence(
     Every entry is one `request` object: `action`, plus `variant` (how the action runs), `plan` (path to the observation-plan JSON file), `pointing_index`, `mode`, and the optional quality thresholds.
 
     `action` decides WHAT gets built from `request.plan`, which every action requires:
-    - `light` / `dark` / `bias` / `flat` build that frame sequence. `pointing_index` (1-based, optional, default 1 when omitted) selects which pointing of the plan to load; it applies to lights only. Calibration (dark/bias/flat) is plan-level: its remaining is computed for the whole plan, not per pointing, so a calibration request must omit `pointing_index` — passing one is rejected. Lights embed the attribution token in the target name so each pointing's frames are attributed independently: `_{base_plan_id}_` for a single-pointing plan (shared with the plan's calibration), `_{base_plan_id}-{pointing_index}_` per pane for a mosaic. Light loads require `$$TARGETNAME$$` in the active profile's FilePattern for attribution. In the default `remaining` mode the sequence only acquires frames still needed (total minus frames already attributed to this plan/pointing in the imaging metadata); if nothing remains it reports the plan as complete and loads nothing. max_hfr and/or min_detected_stars exclude light frames failing quality thresholds from the acquired count. Pass `mode="full"` to acquire the entire plan again. A full-mode load of a group that is already complete appends a warning naming the frame count, because nothing downstream can verify the outcome afterwards: `get_plan_progress` reports the plan `complete: true` whether the re-shoot delivered every frame or a handful, since its acquired counts are cumulative across runs. Check what actually landed with `audit_plans` and the per-date frame folders after a full-mode run.
+    - `light` / `dark` / `bias` / `flat` build that frame sequence. `pointing_index` (1-based, optional, default 1 when omitted) selects which pointing of the plan to load; it applies to lights only. Calibration (dark/bias/flat) is plan-level: its remaining is computed for the whole plan, not per pointing, so a calibration request must omit `pointing_index` — passing one is rejected. Lights embed the attribution token in the target name so each pointing's frames are attributed independently: `_{base_plan_id}_` for a single-pointing plan (shared with the plan's calibration), `_{base_plan_id}-{pointing_index}_` per pane for a mosaic. Light loads require `$$TARGETNAME$$` in the active profile's FilePattern for attribution. In the default `remaining` mode the sequence only acquires frames still needed (total minus frames already attributed to this plan/pointing in the imaging metadata); if nothing remains it reports the plan as complete and loads nothing — except when a calibration window has expired with frames still missing, where it reports the expired deficit (and still loads nothing, since no frame shot now could be credited) rather than "complete". max_hfr and/or min_detected_stars exclude light frames failing quality thresholds from the acquired count. Pass `mode="full"` to acquire the entire plan again. A full-mode load of a group that is already complete appends a warning naming the frame count, because nothing downstream can verify the outcome afterwards: `get_plan_progress` reports the plan `complete: true` whether the re-shoot delivered every frame or a handful, since its acquired counts are cumulative across runs. Check what actually landed with `audit_plans` and the per-date frame folders after a full-mode run.
 
     `variant` decides HOW an action runs and is scoped to it — it is validated against the action, and a bad pairing fails naming the entry:
     - `flat` REQUIRES `dawn` (morning twilight — waits for dawn) or `dusk` (evening twilight — waits for sunset).
@@ -206,6 +206,27 @@ async def _load_many(requests: list[SequenceRequest]) -> str:
             items = progress[group]
             if all(item["remaining_count"] == 0 for item in items):
                 total = sum(item["total_count"] for item in items)
+                # remaining_count == 0 is not proof of completion:
+                # plan_progress zeroes a calibration group's remaining once
+                # its window closes, so an expired window with frames still
+                # missing reads 0 remaining. Nothing to load either way (a
+                # frame shot now could not be credited), but say which case
+                # this is — calling an expired deficit "complete" invites a
+                # pointless re-shoot when the real fix is a new plan or a
+                # raised calibration_window_days.
+                expired_deficit = sum(
+                    item.get("deficit_count", 0)
+                    for item in items
+                    if item.get("window_open") is False
+                )
+                if expired_deficit:
+                    return [], (
+                        f"{label}{where} — calibration window EXPIRED with "
+                        f"{expired_deficit} frame(s) short of {total} "
+                        "total. Nothing to load: no frame shot now could be "
+                        "credited. Raise the plan's calibration_window_days "
+                        "or write a new plan to reopen the window."
+                    )
                 return [], (
                     f"{label}{where} is complete — {total} "
                     f"of {total} frames already acquired; nothing to load."

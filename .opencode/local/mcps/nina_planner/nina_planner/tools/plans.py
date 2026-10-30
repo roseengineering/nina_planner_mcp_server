@@ -197,7 +197,7 @@ async def get_plan_progress(
     min_detected_stars: int | None = None,
     max_guiding_rms_arcsec: float | None = None,
 ) -> dict[str, Any]:
-    """Returns per-frame-type acquisition progress for every pointing of an observation-plan JSON file: for each exposure group, the total_count from the plan, the acquired_count attributed to that plan/pointing from the imaging metadata (ImageMetaData.csv), and the remaining_count. Lights are attributed via the underscore-delimited plan id embedded in the recorded file path (`_{base_plan_id}_` for a single-pointing plan, `_{base_plan_id}-{pointing_index}_` per pane for a mosaic; no target-name fallback); flats/darks/bias are matched by image type (plus filter for flats, plus exposure for darks) and are anchored to the plan's light session: they count only when shot within `calibration_window_days` of the session start (the earliest attributed light), on either side of it. Calibration groups therefore also carry `window_open` (bool) and `window_end` (the window's upper bound, rendered in the host's local time with its UTC offset): while the current time is inside the window, remaining_count is total minus acquired; once it falls outside, no frame shot now could ever be credited, so remaining_count is reported as 0 rather than an unsatisfiable deficit (acquired_count stays truthful either way, and lights carry neither field) — raise `calibration_window_days` or write a new plan to reopen the window. Pass max_hfr, min_detected_stars, and/or max_guiding_rms_arcsec to exclude light frames that fail quality thresholds (frames missing the relevant field are excluded when a threshold is set). Use this before load_sequence to decide what still needs acquiring. Returns `complete` (all panes done) plus a `pointings` list of per-pane progress and per-pane `complete`, so a worker can acquire panes sequentially (finish pane N, then run pane N+1). Light items also carry `surplus_count` (frames attributed beyond the plan's total_count), and the top level carries `overshot` (bool) and `warning` (string or null). These exist because acquired_count is cumulative across runs while total_count is a per-plan constant, so a mode=full re-shoot that delivered only some of its frames still reports `complete: true, remaining: 0` — the older frames keep satisfying the plan. When `overshot` is true, treat `complete` as "these frames exist", not as "the last run succeeded", and verify the latest run with audit_plans plus the per-date frame folders."""
+    """Returns per-frame-type acquisition progress for every pointing of an observation-plan JSON file: for each exposure group, the total_count from the plan, the acquired_count attributed to that plan/pointing from the imaging metadata (ImageMetaData.csv), and the remaining_count. Lights are attributed via the underscore-delimited plan id embedded in the recorded file path (`_{base_plan_id}_` for a single-pointing plan, `_{base_plan_id}-{pointing_index}_` per pane for a mosaic; no target-name fallback); flats/darks/bias are matched by image type (plus filter for flats, plus exposure for darks) and are anchored to the plan's light session: they count only when shot within `calibration_window_days` of the session start (the earliest attributed light), on either side of it. Calibration groups therefore also carry `window_open` (bool) and `window_end` (the window's upper bound, rendered in the host's local time with its UTC offset): while the current time is inside the window, remaining_count is total minus acquired; once it falls outside, no frame shot now could ever be credited, so remaining_count is reported as 0 rather than an unsatisfiable deficit (acquired_count stays truthful either way, and lights carry neither field) — raise `calibration_window_days` or write a new plan to reopen the window. Pass max_hfr, min_detected_stars, and/or max_guiding_rms_arcsec to exclude light frames that fail quality thresholds (frames missing the relevant field are excluded when a threshold is set). Use this before load_sequence to decide what still needs acquiring. Every exposure group also carries `deficit_count` (the raw total minus acquired, floored at zero, never adjusted for the window). Returns `complete` (all panes done — decided from acquired counts and window state, NOT from `remaining_count == 0`, because a closed calibration window reports remaining 0 even when frames are missing) plus a `pointings` list of per-pane progress, per-pane `complete`, and per-pane `status` (`complete` / `incomplete` / `expired_with_deficit`), so a worker can acquire panes sequentially (finish pane N, then run pane N+1). The top level also carries `expired_with_deficit` (bool): true when any pane's calibration window closed with frames still missing — `complete` is then false, but the fix is a raised `calibration_window_days` or a new plan, never more shooting, and `warning` says so. Light items also carry `surplus_count` (frames attributed beyond the plan's total_count), and the top level carries `overshot` (bool) and `warning` (string or null). These exist because acquired_count is cumulative across runs while total_count is a per-plan constant, so a mode=full re-shoot that delivered only some of its frames still reports `complete: true, remaining: 0` — the older frames keep satisfying the plan. When `overshot` is true, treat `complete` as "these frames exist", not as "the last run succeeded", and verify the latest run with audit_plans plus the per-date frame folders."""
     plan = await plan_utils.load_plan(file_path)
     rows = await metadata.read_metadata()
     now = datetime.now(UTC).replace(microsecond=0)
@@ -215,13 +215,30 @@ async def get_plan_progress(
 
     entries: list[dict[str, Any]] = []
     complete = True
+    expired_any = False
     for index in range(1, len(plan.pointings) + 1):
         pointings_progress = progress_for(index)
-        pane_done = all(
-            item["remaining_count"] == 0
-            for items in pointings_progress.values()
-            for item in items
-        )
+        # Completion is decided from ACQUIRED COUNTS and WINDOW STATE, never
+        # from `remaining_count == 0` alone: plan_progress zeroes a
+        # calibration group's remaining once its window closes, so a window
+        # that expired at 8/10 darks reads remaining 0 while the deficit is
+        # still very real. A group is satisfied when its frames exist
+        # (acquired >= total); a closed window with frames missing is NOT
+        # satisfied — it is expired, and shooting cannot fix it (only a
+        # raised calibration_window_days or a new plan can).
+        pane_status = "complete"
+        for items in pointings_progress.values():
+            for item in items:
+                acquired = int(item.get("acquired_count", 0))
+                total = int(item.get("total_count", 0))
+                if acquired >= total:
+                    continue
+                if item.get("window_open") is False:
+                    pane_status = "expired_with_deficit"
+                elif pane_status != "expired_with_deficit":
+                    pane_status = "incomplete"
+        pane_done = pane_status == "complete"
+        expired_any = expired_any or pane_status == "expired_with_deficit"
         complete = complete and pane_done
         pointing = plan.pointings[index - 1]
         entries.append(
@@ -230,6 +247,11 @@ async def get_plan_progress(
                 "label": pointing.label,
                 "plan_id": plan.effective_plan_id(index),
                 "complete": pane_done,
+                # Named separately from `incomplete`: an expired deficit is
+                # not something a sequence run can fix, so a caller must be
+                # able to tell "shoot more frames" apart from "write a new
+                # plan / raise calibration_window_days".
+                "status": pane_status,
                 "frame_types": pointings_progress,
             }
         )
@@ -238,6 +260,7 @@ async def get_plan_progress(
         "target": plan.target,
         "pointing_count": len(plan.pointings),
         "complete": complete,
+        "expired_with_deficit": expired_any,
         "overshot": False,
         "warning": None,
         "pointings": entries,
@@ -265,6 +288,36 @@ async def get_plan_progress(
             "landed with audit_plans and the per-date frame folders on the "
             "imaging drive."
         )
+    if expired_any:
+        # Reported apart from `complete` because the fix differs: no sequence
+        # run can close an expired calibration deficit (the window would have
+        # to be open for a frame shot now to be credited), so an operator who
+        # only reads "not complete" would re-shoot lights that are already
+        # fine. Name the two remedies instead.
+        expired_types = sorted(
+            {
+                image_type
+                for entry in entries
+                for image_type in ("flat", "dark", "bias")
+                if any(
+                    g.get("window_open") is False and int(g.get("deficit_count", 0)) > 0
+                    for g in entry["frame_types"][image_type]
+                )
+            }
+        )
+        warning = (
+            "Calibration window(s) expired with deficits: "
+            f"{', '.join(expired_types) or 'calibration'} still short of the "
+            "plan's total when the window closed. `complete: false` here does "
+            "NOT mean shoot more frames — no frame shot now could be credited. "
+            "Raise `calibration_window_days` or write a new plan to reopen "
+            "the window; confirm the per-type counts with audit_plans "
+            "(EXPIRED rows)."
+        )
+        if res["warning"]:
+            res["warning"] = res["warning"] + " ALSO: " + warning
+        else:
+            res["warning"] = warning
     client.log_payload("Progress:", json.dumps(res, indent=2))
     return res
 
@@ -276,7 +329,9 @@ _AUDIT_TYPES = ("light", "flat", "dark", "bias")
 _FITS_SUFFIXES = (".fits", ".fits.fz")
 # Statuses that mean "not everything is saved/counted right" — the
 # `all_saved` verdict fails on any of them (see audit_plans' docstring).
-_AUDIT_BROKEN = ("MISSING_FILES", "EXPIRED", "SUSPECT_JUNK")
+# NEVER_SHOT belongs here: a pointing no light row references is as
+# un-acquired as a partial MISSING_FILES deficit, just wholly so.
+_AUDIT_BROKEN = ("MISSING_FILES", "EXPIRED", "SUSPECT_JUNK", "NEVER_SHOT")
 # A delimited plan-id-looking token inside a recorded path. CONSERVATIVE on
 # purpose — letter-initial, ≥5 chars, contains "-" — so filename fragments
 # like "60.00s", "2026-10-22" or "L" never read as an id. Used only to name
@@ -560,7 +615,10 @@ def _status_for(
     """First-match-wins audit verdict (see audit_plans' docstring, §3 table).
 
     Order matters: the window-closed deficit (EXPIRED) must win over the
-    ``remaining == 0`` contract that would otherwise read it as done.
+    ``remaining == 0`` contract that would otherwise read it as done, and
+    NEVER_SHOT (zero light attributions) precedes MISSING_FILES so an
+    unattempted pointing is named as such rather than as an ordinary
+    deficit.
 
     ``own_rows`` is the count of *this* type's ImageMetaData.csv rows whose
     recorded path carries this plan's token — the CSV-side replacement for
@@ -571,6 +629,16 @@ def _status_for(
     is_calibration = image_type != "light"
     if is_calibration and window_open is False and attributed < expected:
         return "EXPIRED"
+    if not is_calibration and expected > 0 and attributed == 0:
+        # Never attempted, which is a different fact from a partial
+        # deficit: MISSING_FILES means frames were shot and some did not
+        # count (rejects, truncation, junk), while here NOTHING was ever
+        # attributed to this pointing — no run ever delivered a frame, so
+        # the whole ask is untried work, exactly like a whole never-shot
+        # plan. Identified from the light attribution count itself, never
+        # from remaining_count (which is just expected - attributed and
+        # cannot tell the two cases apart).
+        return "NEVER_SHOT"
     if remaining > 0:
         return "MISSING_FILES"
     if junk > 0:
@@ -772,9 +840,14 @@ async def audit_plans(
 
     One call replaces per-plan get_plan_progress sweeps. Discovery is a LEFT
     JOIN of ImageMetaData.csv onto the project's plan files: every plan id
-    recorded in a frame's file path drives the audit, and the plan files in
-    ``project_dir`` (or exactly the ``plans`` paths/names given) supply the
-    definitions. Plan-file discovery is recursive but pruned — directories
+    recorded in a **light** frame's file path drives the audit, and the plan
+    files in ``project_dir`` (or exactly the ``plans`` paths/names given)
+    supply the definitions. Calibration rows deliberately do NOT join:
+    calibration is pool-credited and lands under the shared base token, so
+    letting a dark/flat/bias row reference a plan would hide plans that shot
+    calibration but never a single light — never-shot means no light was
+    ever attributed, judged from light attributions themselves, not from
+    remaining counts. Plan-file discovery is recursive but pruned — directories
     starting with "." or named ``node_modules``/``__pycache__`` are never
     searched (see ``_plan_files``), and files order shallowest-first so a
     top-level plan wins any id tie against an archived copy. Unrelated JSON
@@ -820,8 +893,11 @@ async def audit_plans(
 
     ``status`` per row (first match wins): EXPIRED (window closed with an
     uncredited deficit — needs a new plan/window, shooting cannot fix it) →
-    MISSING_FILES (remaining > 0 — shoot more; ``missing`` equals
-    ``remaining``) → SUSPECT_JUNK (light/dark rows whose duration is under
+    NEVER_SHOT (a light row with zero attributed frames — no run ever
+    delivered a frame for this pointing, so the whole ask is untried work;
+    like a whole never-shot plan it is listed in ``left_to_do`` with
+    ``reason: "NEVER_SHOT"``) → MISSING_FILES (remaining > 0 — shoot more;
+    ``missing`` equals ``remaining``) → SUSPECT_JUNK (light/dark rows whose duration is under
     half the plan's exposure or 0.01s — e.g. 0.00003s Smart Exposure junk —
     riding alongside a set whose attribution is otherwise complete; bias and
     flats exempt; when junk instead leaves a deficit the status is
@@ -830,12 +906,13 @@ async def audit_plans(
     attributed above expected from full-mode re-runs; harmless) → OK.
 
     Top level: ``all_saved`` (true iff no row is MISSING_FILES,
-    EXPIRED or SUSPECT_JUNK, no error was recorded, and ``never_shot`` is
-    empty), ``totals`` (including ``never_shot``, the number of unshot plan
-    files),
-    ``left_to_do`` (ONLY what a sequence run can fix: MISSING_FILES rows
-    with missing = remaining, plus one NEVER_SHOT entry per unshot pointing
-    with missing = that pointing's whole light ask),
+    EXPIRED, NEVER_SHOT or SUSPECT_JUNK, no error was recorded, and
+    ``never_shot`` is empty), ``totals`` (including ``never_shot``, the
+    number of unshot plan files),
+    ``left_to_do`` (ONLY what a sequence run can fix: MISSING_FILES and
+    row-level NEVER_SHOT rows with missing = remaining, plus one NEVER_SHOT
+    entry per unshot pointing of a wholly unshot plan with missing = that
+    pointing's whole light ask),
     ``blocked`` (EXPIRED — needs plan/window changes),
     ``never_shot`` (loadable plan files no recorded frame references —
     matched on plan id, so a rewritten/archived twin of an already-shot
@@ -879,7 +956,8 @@ async def audit_plans(
     even if the CSV never mentions them, and any load failure among them is
     an error. Naming a file IS the request to audit it, so explicit mode
     never populates ``never_shot``: an unshot plan named there audits as an
-    ordinary MISSING_FILES row instead. Read-only; makes no N.I.N.A. calls beyond the site profile.
+    ordinary row instead — status NEVER_SHOT, listed in ``left_to_do``.
+    Read-only; makes no N.I.N.A. calls beyond the site profile.
     """
     plan_dir = Path(project_dir) if project_dir else config.PROJECT_DIR
     if not plan_dir.is_absolute():
@@ -943,26 +1021,37 @@ async def audit_plans(
         # reuses progress._light_target_matches, so every token form the
         # attribution logic accepts (underscore/bracket/paren, per-pointing,
         # single-pointing legacy) counts as a reference here too.
+        #
+        # LIGHT rows only decide whether a plan was referenced. Calibration
+        # is pool-credited and lands under the shared `_{base}_` token, so a
+        # plan whose id appears only on flat/dark/bias rows has never had a
+        # single light acquired — it IS never-shot, and letting calibration
+        # rows join it into `audited` hid exactly the blind spot this report
+        # exists to expose (written but never imaged, discovered only by
+        # manually diffing list_plans against the audited id set).
         claimed_by: list[int | None] = []
         for row in path_rows:
             hit: int | None = None
-            for idx, (_path, plan) in enumerate(all_loaded):
-                if any(
-                    _light_target_matches(plan, row, pointing_index=i)
-                    for i in range(1, len(plan.pointings) + 1)
-                ):
-                    hit = idx
-                    break
+            if (
+                row.get("image_type") or row.get("frame_type") or ""
+            ).upper() == "LIGHT":
+                for idx, (_path, plan) in enumerate(all_loaded):
+                    if any(
+                        _light_target_matches(plan, row, pointing_index=i)
+                        for i in range(1, len(plan.pointings) + 1)
+                    ):
+                        hit = idx
+                        break
             claimed_by.append(hit)
         referenced = {i for i in claimed_by if i is not None}
         audited = [pair for idx, pair in enumerate(all_loaded) if idx in referenced]
-        # The same pass's other side: plans no row claims — a real plan with
-        # zero frames (see _never_shot_report). ID-level, not file-level:
-        # two files may share one plan id (a rewritten plan, an archived
-        # copy) and only the shallowest claims the rows, but their frames DO
-        # exist — reporting the twin as never-shot would double-count one
-        # target's work (live: NGC 1931's Oct-24 rewrite beside its
-        # Oct-23 original).
+        # The same pass's other side: plans no LIGHT row claims — a real
+        # plan with zero lights (see _never_shot_report). ID-level, not
+        # file-level: two files may share one plan id (a rewritten plan, an
+        # archived copy) and only the shallowest claims the rows, but their
+        # frames DO exist — reporting the twin as never-shot would
+        # double-count one target's work (live: NGC 1931's Oct-24 rewrite
+        # beside its Oct-23 original).
         claimed_ids = {all_loaded[i][1]._base_plan_id() for i in referenced}
         unreferenced = [
             pair for pair in all_loaded if pair[1]._base_plan_id() not in claimed_ids
@@ -1176,7 +1265,7 @@ async def audit_plans(
 
     for row in rows_out:
         status = row["status"]
-        if status == "MISSING_FILES":
+        if status in ("MISSING_FILES", "NEVER_SHOT"):
             todo = {
                 "plan_id": row["plan_id"],
                 "target": row["target"],
@@ -1184,6 +1273,10 @@ async def audit_plans(
                 "pointing_index": row["pointing_index"],
                 "type": row["type"],
                 "missing": row["remaining"],
+                # Distinguished so a consumer can tell an untried pointing
+                # (nothing ever attributed) from a partial one (frames shot,
+                # some uncounted) — the fix is the same sequence run either
+                # way, but the operator's expectation differs.
                 "reason": status,
                 "action": _action_for(row["type"]),
             }

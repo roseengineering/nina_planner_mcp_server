@@ -433,6 +433,12 @@ def plan_progress(
       outside it, no frame shot now could ever be credited, so remaining is
       reported as ``0`` rather than an unsatisfiable deficit (which would
       otherwise re-trigger acquisition on every later run).
+    * ``deficit_count`` — the raw ``total - acquired`` (floored at 0), on
+      lights and calibration alike, *never* adjusted for the window. This is
+      the field completion checks must read: a window that closed with
+      frames still missing leaves ``remaining_count`` 0 but ``deficit_count``
+      positive, and only the latter separates "finished" from "window
+      expired with deficits".
 
     Calibration group items therefore also carry ``window_open`` (bool) and
     ``window_end`` (the window's upper bound, ``anchor + window``, rendered in
@@ -491,6 +497,16 @@ def plan_progress(
                 **data,
                 "acquired_count": acquired,
                 "remaining_count": max(total - acquired, 0),
+                # The RAW shortfall, never window-adjusted. `remaining_count`
+                # below is an *acquisition* answer — it deliberately reads 0
+                # once the calibration window closes, so no later run wastes
+                # twilight on frames no window could credit. But 0 there is
+                # NOT a completion answer: a window that expired at 8/10
+                # darks must not let completion logic (get_plan_progress's
+                # `complete`, load_sequence's "nothing to load") declare the
+                # plan done. Anything asking "is this finished?" must read
+                # deficit_count and window_open, not remaining_count alone.
+                "deficit_count": max(total - acquired, 0),
             }
             if image_type == "LIGHT":
                 # Frames beyond what the plan asked for. Deliberately

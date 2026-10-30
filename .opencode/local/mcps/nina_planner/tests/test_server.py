@@ -1334,6 +1334,148 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(result["overshot"])
         self.assertIsNone(result["warning"])
 
+    async def test_get_plan_progress_expired_window_is_not_complete(self):
+        """A calibration window that closed with frames missing must not
+        read `complete: true`.
+
+        `remaining_count` is deliberately 0 once the window closes (no frame
+        shot now could be credited), so completion is decided from
+        acquired-vs-total and window state instead. The expired deficit is
+        reported apart from `incomplete` because its fix — a raised
+        calibration_window_days or a new plan — is not "shoot more frames".
+        """
+        from nina_planner.server import get_plan_progress
+
+        plan_dict = {
+            "plan_id": "plan-test123",
+            "target": "M31",
+            "pointings": [{"ra_hours": 5.0, "dec_deg": 10.0}],
+            "light_frames": [
+                {"filter_name": "L", "exposure_time_seconds": 60.0, "total_count": 1}
+            ],
+            "flat_frames": [{"filter_name": "L", "total_count": 1}],
+            "dark_frames": [{"exposure_time_seconds": 60.0, "total_count": 2}],
+            "bias_frames": [{"total_count": 1}],
+        }
+        # Lights complete, bias present, one of two darks present — and the
+        # whole session a month old, so the default 7-day calibration
+        # window has closed around a real 1-dark deficit.
+        old = (datetime.now(UTC) - timedelta(days=30)).strftime("%Y-%m-%dT%H:%M:%SZ")
+        rows = [
+            {
+                "image_type": "LIGHT",
+                "file_path": "C:/NINA/LIGHT/M31 _plan-test123__60.00s_0000.fits",
+                "duration": "60.0",
+                "filter_name": "L",
+                "hfr": "1.50",
+                "detected_stars": "100",
+                "exposure_start_utc": old,
+            },
+            {
+                "image_type": "FLAT",
+                "file_path": "C:/NINA/FLAT/M31 _plan-test123__0.10s_0000.fits",
+                "filter_name": "L",
+                "exposure_start_utc": old,
+            },
+            {
+                "image_type": "DARK",
+                "file_path": "C:/NINA/DARK/M31 _plan-test123__60.00s_0000.fits",
+                "duration": "60.0",
+                "exposure_start_utc": old,
+            },
+            {
+                "image_type": "BIAS",
+                "file_path": "C:/NINA/BIAS/M31 _plan-test123__0.00s_0000.fits",
+                "duration": "0.00",
+                "exposure_start_utc": old,
+            },
+        ]
+
+        with tempfile.TemporaryDirectory() as tmp:
+            plan_path = Path(tmp) / "plan.json"
+            plan_path.write_text(json.dumps(plan_dict))
+
+            with patch(
+                "nina_planner.metadata.read_metadata",
+                AsyncMock(return_value=rows),
+            ):
+                result = await get_plan_progress(str(plan_path))
+
+        pane = result["pointings"][0]
+        dark = pane["frame_types"]["dark"][0]
+        # The window-closed contract still holds: nothing to re-acquire...
+        self.assertFalse(dark["window_open"])
+        self.assertEqual(dark["remaining_count"], 0)
+        # ...but the shortfall is not laundered into completion.
+        self.assertEqual(dark["deficit_count"], 1)
+        self.assertFalse(result["complete"])
+        self.assertEqual(pane["status"], "expired_with_deficit")
+        self.assertFalse(pane["complete"])
+        self.assertTrue(result["expired_with_deficit"])
+        # The warning names the remedy, since shooting cannot fix this.
+        self.assertIn("dark", result["warning"])
+        self.assertIn("calibration_window_days", result["warning"])
+        # Lights were never in doubt: their status signal is unchanged.
+        self.assertNotIn("window_open", pane["frame_types"]["light"][0])
+        self.assertEqual(pane["frame_types"]["light"][0]["deficit_count"], 0)
+
+    async def test_get_plan_progress_open_window_deficit_stays_incomplete(self):
+        """Same counts as the expired test, but inside the window: the pane
+        is `incomplete` (shoot more), not `expired_with_deficit`, and
+        deficit_count agrees with remaining_count because no window
+        adjustment applies."""
+        from nina_planner.server import get_plan_progress
+
+        plan_dict = {
+            "plan_id": "plan-test123",
+            "target": "M31",
+            "pointings": [{"ra_hours": 5.0, "dec_deg": 10.0}],
+            "light_frames": [
+                {"filter_name": "L", "exposure_time_seconds": 60.0, "total_count": 1}
+            ],
+            "flat_frames": [{"filter_name": "L", "total_count": 1}],
+            "dark_frames": [{"exposure_time_seconds": 60.0, "total_count": 2}],
+            "bias_frames": [{"total_count": 1}],
+        }
+        stamp = (datetime.now(UTC) - timedelta(hours=1)).strftime("%Y-%m-%dT%H:%M:%SZ")
+        rows = [
+            {
+                "image_type": "LIGHT",
+                "file_path": "C:/NINA/LIGHT/M31 _plan-test123__60.00s_0000.fits",
+                "duration": "60.0",
+                "filter_name": "L",
+                "hfr": "1.50",
+                "detected_stars": "100",
+                "exposure_start_utc": stamp,
+            },
+            {
+                "image_type": "DARK",
+                "file_path": "C:/NINA/DARK/M31 _plan-test123__60.00s_0000.fits",
+                "duration": "60.0",
+                "exposure_start_utc": stamp,
+            },
+        ]
+
+        with tempfile.TemporaryDirectory() as tmp:
+            plan_path = Path(tmp) / "plan.json"
+            plan_path.write_text(json.dumps(plan_dict))
+
+            with patch(
+                "nina_planner.metadata.read_metadata",
+                AsyncMock(return_value=rows),
+            ):
+                result = await get_plan_progress(str(plan_path))
+
+        pane = result["pointings"][0]
+        dark = pane["frame_types"]["dark"][0]
+        self.assertTrue(dark["window_open"])
+        self.assertEqual(dark["remaining_count"], 1)
+        self.assertEqual(dark["deficit_count"], 1)
+        self.assertFalse(result["complete"])
+        self.assertEqual(pane["status"], "incomplete")
+        self.assertFalse(result["expired_with_deficit"])
+        self.assertIsNone(result["warning"])
+
     def _write_mosaic_source(self, directory: Path, *, pa: float = 0.0, rows: int = 2):
         directory.mkdir(parents=True, exist_ok=True)
         plan_path = directory / "base.json"
@@ -1783,7 +1925,11 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
                     [SequenceRequest(plan=str(plan_path), action="dark")]
                 )
 
-        self.assertIn("nothing to load", result)
+        # The window closed with the dark still missing: nothing loads (a
+        # frame shot now could not be credited), and the report names the
+        # expired deficit instead of calling the plan complete.
+        self.assertIn("EXPIRED", result)
+        self.assertIn("nothing to load", result.lower())
         darks_step.assert_not_called()
 
     async def test_load_sequence_bias_frame(self):

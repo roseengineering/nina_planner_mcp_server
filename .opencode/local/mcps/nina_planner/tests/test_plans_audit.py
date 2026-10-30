@@ -710,10 +710,14 @@ class AuditTest(AuditBase):
         self.assertFalse(res["all_saved"])
         self.assertIn("unshot", res["warning"])
 
-    async def test_explicit_unshot_plan_audits_as_missing_files(self):
+    async def test_explicit_unshot_plan_audits_as_never_shot(self):
         # Naming a file IS the request to audit it: an unshot plan named
-        # explicitly becomes an ordinary MISSING_FILES row, never a
-        # never_shot entry (which would be the same work, reported twice).
+        # explicitly becomes an ordinary row, never a never_shot entry
+        # (which would be the same work, reported twice). With zero light
+        # attributions that row is NEVER_SHOT — identified from the
+        # attribution count itself, not from remaining, which is simply
+        # expected - attributed and cannot tell untried work from a
+        # partial deficit.
         self.seed_full()
         self.write_plan(_plan(plan_id="plan-fresh1", target="M99"), name="fresh.json")
 
@@ -722,9 +726,67 @@ class AuditTest(AuditBase):
         self.assertEqual(res["never_shot"], [])
         light = self.row_by(res, "light")
         self.assertEqual(light["target"], "M99")
-        self.assertEqual(light["status"], "MISSING_FILES")
+        self.assertEqual(light["status"], "NEVER_SHOT")
         self.assertEqual(light["remaining"], 20)
-        self.assertEqual({t["reason"] for t in res["left_to_do"]}, {"MISSING_FILES"})
+        self.assertEqual({t["reason"] for t in res["left_to_do"]}, {"NEVER_SHOT"})
+        self.assertFalse(res["all_saved"])
+
+    async def test_calibration_token_alone_is_never_shot(self):
+        # The join that decides "was this plan ever shot?" reads LIGHT
+        # attributions only. Calibration is pool-credited and lands under
+        # the shared base token, so a plan whose id appears solely on
+        # flat/dark/bias rows has never had a light acquired — it must
+        # report as never-shot, not get joined into `audited` by its own
+        # darks and vanish into per-type deficits.
+        self.seed_full(skip={"light"})
+        # seed_full(skip=light) left 10 darks + 10 flats + 10 bias rows,
+        # all carrying _plan-abc123_: enough to reference the plan under
+        # the old any-type join.
+
+        res = await self.audit(project_dir=str(self.proj))
+
+        self.assertEqual(len(res["never_shot"]), 1)
+        self.assertEqual(res["never_shot"][0]["plan_id"], "plan-abc123")
+        self.assertNotIn("M31", {r["target"] for r in res["rows"]})
+        todo = [t for t in res["left_to_do"] if t["reason"] == "NEVER_SHOT"]
+        self.assertEqual(len(todo), 1)
+        self.assertEqual(todo[0]["missing"], 20)  # the whole light ask
+        self.assertFalse(res["all_saved"])
+
+    async def test_unshot_pane_among_shot_panes_is_never_shot_row(self):
+        # A mosaic whose pane 1 was acquired but pane 2 never attempted:
+        # the plan is referenced (pane 1's lights), so it is audited, and
+        # pane 2's light row must read NEVER_SHOT — zero attributions,
+        # named as untried work — while pane 1 reads OK. Judged from the
+        # per-pointing attribution counts, not from remaining (which both
+        # panes could satisfy with different histories).
+        plan = _plan(
+            plan_id="plan-mosaic2",
+            target="M33",
+            pointings=[
+                {"ra_hours": 1.0, "dec_deg": 30.6, "label": "r1_c1"},
+                {"ra_hours": 1.1, "dec_deg": 30.7, "label": "r1_c2"},
+            ],
+        )
+        self.seed_full(plan=plan, light_rows=0, light_files=0, skip={"light"})
+        self.rows += [_row(target="M33 _plan-mosaic2-1_") for _ in range(20)]
+        for i in range(20):
+            self.frame("M33 _plan-mosaic2-1_", "LIGHT", f"l_{i:04d}.fits.fz")
+        # Calibration seeded under the base token keeps the non-light
+        # rows satisfied so only the pane verdicts are in question.
+
+        res = await self.audit(project_dir=str(self.proj))
+
+        pane1 = self.row_by(res, "light", pointing_index=1)
+        pane2 = self.row_by(res, "light", pointing_index=2)
+        self.assertEqual(pane1["status"], "OK")
+        self.assertEqual(pane2["status"], "NEVER_SHOT")
+        self.assertEqual(pane2["attributed"], 0)
+        self.assertEqual(pane2["remaining"], 20)
+        todos = [t for t in res["left_to_do"] if t["reason"] == "NEVER_SHOT"]
+        self.assertEqual([t["pointing_index"] for t in todos], [2])
+        self.assertEqual(todos[0]["label"], "r1_c2")
+        self.assertFalse(res["all_saved"])
 
     async def test_nested_plan_file_is_discovered(self):
         # Discovery is recursive: a plan in a subfolder joins the audit the
