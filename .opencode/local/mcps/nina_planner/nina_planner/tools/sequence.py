@@ -7,7 +7,7 @@ from ..models.observatory import ObservatoryEquipment
 from ..models.plan import ObservationPlan
 from ..models.profile import ObservatoryProfile
 from ..models.request import SequenceRequest
-from ..progress import plan_progress, plan_with_remaining
+from ..progress import group_verdict, plan_progress, plan_with_remaining
 from ..sequence import (
     build_sequence_many,
     target_payload_darks,
@@ -206,20 +206,24 @@ async def _load_many(requests: list[SequenceRequest]) -> str:
             items = progress[group]
             if all(item["remaining_count"] == 0 for item in items):
                 total = sum(item["total_count"] for item in items)
-                # remaining_count == 0 is not proof of completion:
+                # remaining_count == 0 is not proof of completion — the
+                # decision reads the shared rule (progress.group_verdict):
                 # plan_progress zeroes a calibration group's remaining once
                 # its window closes, so an expired window with frames still
-                # missing reads 0 remaining. Nothing to load either way (a
-                # frame shot now could not be credited), but say which case
-                # this is — calling an expired deficit "complete" invites a
-                # pointless re-shoot when the real fix is a new plan or a
-                # raised calibration_window_days.
-                expired_deficit = sum(
-                    item.get("deficit_count", 0)
-                    for item in items
-                    if item.get("window_open") is False
-                )
-                if expired_deficit:
+                # missing must read expired_with_deficit here, not complete.
+                # Nothing to load either way (a frame shot now could not be
+                # credited), but say which case this is — calling an expired
+                # deficit "complete" invites a pointless re-shoot when the
+                # real fix is a new plan or a raised calibration_window_days.
+                verdicts = [group_verdict(item) for item in items]
+                if "expired_with_deficit" in verdicts:
+                    # An expired verdict means acquired < total for that
+                    # group, so the summed deficit below is always >= 1.
+                    expired_deficit = sum(
+                        int(item.get("deficit_count", 0))
+                        for item, verdict in zip(items, verdicts, strict=True)
+                        if verdict == "expired_with_deficit"
+                    )
                     return [], (
                         f"{label}{where} — calibration window EXPIRED with "
                         f"{expired_deficit} frame(s) short of {total} "

@@ -6,8 +6,10 @@ from pydantic import ValidationError
 from nina_planner.models.plan import ObservationPlan
 from nina_planner.progress import (
     filter_metadata_rows,
+    group_verdict,
     plan_progress,
     plan_with_remaining,
+    progress_verdict,
 )
 
 
@@ -1205,6 +1207,104 @@ class PrivateHelperDefensivePathsTest(unittest.TestCase):
         self.assertEqual(filter_metadata_rows(plan, rows, "UNKNOWN"), [])
         # Case-insensitive: lowercase form of an unrecognized type.
         self.assertEqual(filter_metadata_rows(plan, rows, "unrecognized"), [])
+
+
+class GroupVerdictTest(unittest.TestCase):
+    """The completion rule exists ONCE: progress.group_verdict.
+
+    ``get_plan_progress``, ``load_sequence``, and ``audit_plans`` each used
+    to re-derive it (and a naive ``remaining_count == 0`` copy called a
+    closed window "complete"), so these tests pin the shared rule itself.
+    """
+
+    def test_satisfied_group_is_complete_even_with_a_closed_window(self):
+        # Acquired >= total means the frames exist; a closed window changes
+        # nothing about that.
+        item = {
+            "acquired_count": 10,
+            "total_count": 10,
+            "remaining_count": 0,
+            "window_open": False,
+        }
+        self.assertEqual(group_verdict(item), "complete")
+
+    def test_remaining_zero_deficit_and_closed_window_is_expired(self):
+        # THE trap: plan_progress zeroes remaining_count once the window
+        # closes, so the acquisition answer reads 0 while the plan is 2
+        # short — remaining alone would call this done.
+        item = {
+            "acquired_count": 8,
+            "total_count": 10,
+            "remaining_count": 0,
+            "deficit_count": 2,
+            "window_open": False,
+        }
+        self.assertEqual(group_verdict(item), "expired_with_deficit")
+
+    def test_open_window_deficit_is_incomplete(self):
+        item = {
+            "acquired_count": 8,
+            "total_count": 10,
+            "remaining_count": 2,
+            "window_open": True,
+        }
+        self.assertEqual(group_verdict(item), "incomplete")
+
+    def test_light_item_without_window_never_expires(self):
+        # Light items carry no window_open at all: a light deficit is
+        # always ordinary "shoot more".
+        item = {"acquired_count": 3, "total_count": 20, "remaining_count": 17}
+        self.assertEqual(group_verdict(item), "incomplete")
+
+    def test_progress_verdict_precedence_and_vacuous_truth(self):
+        ok = {"acquired_count": 20, "total_count": 20, "remaining_count": 0}
+        short = {
+            "acquired_count": 1,
+            "total_count": 20,
+            "remaining_count": 19,
+            "window_open": True,
+        }
+        expired = {
+            "acquired_count": 1,
+            "total_count": 20,
+            "remaining_count": 0,
+            "deficit_count": 19,
+            "window_open": False,
+        }
+        verdict = progress_verdict({"dark": [ok], "flat": [ok]})
+        self.assertEqual(verdict["status"], "complete")
+        self.assertTrue(verdict["complete"])
+
+        verdict = progress_verdict({"dark": [ok], "flat": [short]})
+        self.assertEqual(verdict["status"], "incomplete")
+        self.assertFalse(verdict["complete"])
+
+        # expired outranks incomplete: the two need opposite fixes.
+        verdict = progress_verdict({"dark": [expired], "flat": [short]})
+        self.assertEqual(verdict["status"], "expired_with_deficit")
+        self.assertTrue(verdict["expired_with_deficit"])
+        self.assertFalse(verdict["complete"])
+
+        # No groups at all is vacuously complete.
+        self.assertEqual(
+            progress_verdict({"light": [], "dark": []})["status"], "complete"
+        )
+
+    def test_expired_window_rolls_up_from_real_plan_progress(self):
+        # Integrated: the verdict must come out of the REAL plan_progress
+        # output for a session whose window has closed with darks missing.
+        plan = _plan()  # asks 10 darks at 60s; window default is well < 30d
+        old = (datetime.now(UTC) - timedelta(days=30)).strftime("%Y-%m-%dT%H:%M:%SZ")
+        rows = [_row(exposure_start=old)]  # attributed light, 30 days ago
+        progress = plan_progress(plan, rows)
+        dark = progress["dark"][0]
+        self.assertEqual(dark["remaining_count"], 0)  # acquisition answer
+        self.assertFalse(dark["window_open"])  # window closed
+        self.assertEqual(group_verdict(dark), "expired_with_deficit")
+        # Rolled up over all four types (the light is merely incomplete,
+        # which expired outranks).
+        verdict = progress_verdict(progress)
+        self.assertEqual(verdict["status"], "expired_with_deficit")
 
 
 if __name__ == "__main__":

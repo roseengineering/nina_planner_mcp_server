@@ -18,7 +18,13 @@ from ..imaging import (
 from ..models.frame import FrameStats
 from ..models.plan import ObservationPlan
 from ..mosaic import load_pointings
-from ..progress import _light_target_matches, filter_metadata_rows, plan_progress
+from ..progress import (
+    _light_target_matches,
+    filter_metadata_rows,
+    group_verdict,
+    plan_progress,
+    progress_verdict,
+)
 from . import equipment as equipment_tools
 
 
@@ -218,26 +224,17 @@ async def get_plan_progress(
     expired_any = False
     for index in range(1, len(plan.pointings) + 1):
         pointings_progress = progress_for(index)
-        # Completion is decided from ACQUIRED COUNTS and WINDOW STATE, never
-        # from `remaining_count == 0` alone: plan_progress zeroes a
-        # calibration group's remaining once its window closes, so a window
-        # that expired at 8/10 darks reads remaining 0 while the deficit is
-        # still very real. A group is satisfied when its frames exist
-        # (acquired >= total); a closed window with frames missing is NOT
-        # satisfied — it is expired, and shooting cannot fix it (only a
-        # raised calibration_window_days or a new plan can).
-        pane_status = "complete"
-        for items in pointings_progress.values():
-            for item in items:
-                acquired = int(item.get("acquired_count", 0))
-                total = int(item.get("total_count", 0))
-                if acquired >= total:
-                    continue
-                if item.get("window_open") is False:
-                    pane_status = "expired_with_deficit"
-                elif pane_status != "expired_with_deficit":
-                    pane_status = "incomplete"
-        pane_done = pane_status == "complete"
+        # Completion is decided from ACQUIRED COUNTS and WINDOW STATE — the
+        # rule now lives in ONE place (progress.group_verdict, rolled up by
+        # progress_verdict) instead of being re-derived here: plan_progress
+        # zeroes a calibration group's remaining once its window closes, so
+        # `remaining_count == 0` alone would call a window that expired at
+        # 8/10 darks complete. A closed window with frames missing is
+        # expired_with_deficit, and shooting cannot fix it (only a raised
+        # calibration_window_days or a new plan can).
+        verdict = progress_verdict(pointings_progress)
+        pane_status = str(verdict["status"])
+        pane_done = bool(verdict["complete"])
         expired_any = expired_any or pane_status == "expired_with_deficit"
         complete = complete and pane_done
         pointing = plan.pointings[index - 1]
@@ -315,7 +312,7 @@ async def get_plan_progress(
             "(EXPIRED rows)."
         )
         if res["warning"]:
-            res["warning"] = res["warning"] + " ALSO: " + warning
+            res["warning"] = f"{res['warning']} ALSO: {warning}"
         else:
             res["warning"] = warning
     client.log_payload("Progress:", json.dumps(res, indent=2))
@@ -627,7 +624,22 @@ def _status_for(
     "the plan-wide pool satisfied this plan".
     """
     is_calibration = image_type != "light"
-    if is_calibration and window_open is False and attributed < expected:
+    # EXPIRED is progress.group_verdict's rule ("a closed window with frames
+    # still missing"), read off this row's summed numbers: one shared rule
+    # for "expired", never a second spelling of it. Synthesizing the item
+    # keeps audit's own aggregation (summed expected/attributed per type)
+    # exactly as it was.
+    if (
+        is_calibration
+        and group_verdict(
+            {
+                "acquired_count": attributed,
+                "total_count": expected,
+                "window_open": window_open,
+            }
+        )
+        == "expired_with_deficit"
+    ):
         return "EXPIRED"
     if not is_calibration and expected > 0 and attributed == 0:
         # Never attempted, which is a different fact from a partial

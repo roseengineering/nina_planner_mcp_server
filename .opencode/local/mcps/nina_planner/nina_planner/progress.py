@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import math
 from datetime import UTC, datetime, timedelta
-from typing import Any
+from typing import Any, Literal
 
 import anyio
 
@@ -12,10 +12,16 @@ from .nina_utils import to_local_display
 
 __all__ = [
     "filter_metadata_rows",
+    "group_verdict",
     "plan_progress",
     "plan_with_remaining",
+    "progress_verdict",
     "append_progress_entry",
 ]
+
+# The three answers to "is this exposure group / pointing satisfied?", see
+# group_verdict.
+Verdict = Literal["complete", "incomplete", "expired_with_deficit"]
 
 
 async def append_progress_entry(text: str) -> None:
@@ -538,6 +544,65 @@ def plan_progress(
         "flat": group("FLAT", plan.flat_frames),
         "dark": group("DARK", plan.dark_frames),
         "bias": group("BIAS", plan.bias_frames),
+    }
+
+
+def group_verdict(item: dict[str, Any]) -> Verdict:
+    """The one answer to "is this exposure group satisfied?".
+
+    Every consumer that must separate *finished* from *expired with frames
+    still missing* reads this rule instead of re-deriving it — it used to be
+    spelled independently in ``get_plan_progress``, ``load_sequence``, and
+    ``audit_plans`` (and a fourth, naive ``remaining_count == 0`` copy in the
+    archive CLI, which called a window closed at 8/10 darks "complete"):
+
+    - ``acquired_count >= total_count`` → ``complete``. Satisfied means the
+      frames EXIST, cumulative across runs.
+    - Otherwise a closed calibration window (``window_open is False``) →
+      ``expired_with_deficit``: no frame shot now could ever be credited, so
+      the deficit is permanent until ``calibration_window_days`` is raised
+      or a new plan is written — a sequence run cannot fix it.
+    - Otherwise → ``incomplete``: shoot more.
+
+    ``remaining_count`` is deliberately NOT consulted: ``plan_progress``
+    zeroes it once a calibration window closes precisely so no later run
+    wastes twilight on uncreditable frames, which makes it an acquisition
+    answer, never a completion answer. A light item carries no
+    ``window_open`` at all, so lights can only be complete or incomplete.
+    """
+    acquired = int(item.get("acquired_count", 0))
+    total = int(item.get("total_count", 0))
+    if acquired >= total:
+        return "complete"
+    if item.get("window_open") is False:
+        return "expired_with_deficit"
+    return "incomplete"
+
+
+def progress_verdict(progress: dict[str, list[dict[str, Any]]]) -> dict[str, Any]:
+    """Roll one pointing's ``plan_progress`` groups into a pane verdict.
+
+    ``status`` is the worst group verdict with precedence
+    ``expired_with_deficit`` > ``incomplete`` > ``complete`` — a pointing is
+    done only when *every* group of *every* type is satisfied, and an
+    expired deficit outranks ordinary incompleteness because the two need
+    opposite fixes (write a new plan / raise the window vs. shoot more).
+
+    Returns ``status``, plus the derived booleans ``complete`` and
+    ``expired_with_deficit`` (the fields ``get_plan_progress`` reports per
+    pointing). A progress dict with no groups at all is vacuously complete.
+    """
+    statuses = [group_verdict(item) for items in progress.values() for item in items]
+    if "expired_with_deficit" in statuses:
+        status: Verdict = "expired_with_deficit"
+    elif "incomplete" in statuses:
+        status = "incomplete"
+    else:
+        status = "complete"
+    return {
+        "status": status,
+        "complete": status == "complete",
+        "expired_with_deficit": status == "expired_with_deficit",
     }
 
 
