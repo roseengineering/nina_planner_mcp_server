@@ -119,7 +119,7 @@ export default Plugin.define({
     const intervalCheckMinutes =
       typeof options.intervalCheckMinutes === "number"
         ? options.intervalCheckMinutes
-        : 45;
+        : -1;
     // Routine telemetry never wakes the agent, so without this a sustained
     // degradation (climbing HFR, collapsing star count) would stay invisible
     // until the next milestone. See the watchdog below.
