@@ -53,7 +53,7 @@ from typing import Any
 from . import config, metadata, plan_utils
 from .imaging import read_imaging_csv
 from .models.plan import ObservationPlan
-from .progress import filter_metadata_rows, plan_progress
+from .progress import filter_metadata_rows, plan_progress, progress_verdict
 from .tools.plans import _plan_files
 
 _ARCHIVE_TYPES = ("LIGHT", "FLAT", "DARK", "BIAS")
@@ -157,12 +157,18 @@ def _progress_facts(
 ) -> tuple[bool, dict[str, dict[str, int]]]:
     """Completeness + expected/credited counts per frame type.
 
-    Mirrors ``get_plan_progress``: a plan is complete when no group of any
-    pointing has a nonzero ``remaining_count``.  Light counts sum across
+    Mirrors ``get_plan_progress``: a plan is complete when the SHARED
+    completion verdict (``progress.progress_verdict``) says every pointing
+    is complete — acquired vs total plus window state, NEVER
+    ``remaining_count``, which ``plan_progress`` deliberately zeroes once a
+    calibration window closes.  The old ``remaining_count == 0`` test here
+    archived a window that expired short of its calibration as "complete";
+    it now reads expired_with_deficit as incomplete (``--all`` still
+    overrides, flagged in the manifest).  Light counts sum across
     pointings (each pane asks its own set); calibration is plan-level and
     read from pointing 1 exactly as ``audit_plans`` does — the manifest's
-    separate ``archived`` count (added by the caller from the selection)
-    carries the union actually copied.
+    separate ``archived`` count (set by the copy loop from what actually
+    shipped) carries the union actually copied.
     """
     complete = True
     light_expected = 0
@@ -172,10 +178,8 @@ def _progress_facts(
         progress = plan_progress(plan, rows, pointing_index=index, now=now)
         if index == 1:
             plan_level = progress
-        for items in progress.values():
-            for item in items:
-                if item["remaining_count"]:
-                    complete = False
+        if not progress_verdict(progress)["complete"]:
+            complete = False
         light_expected += sum(g["total_count"] for g in progress["light"])
         light_acquired += sum(g["acquired_count"] for g in progress["light"])
     assert plan_level is not None  # plans always have >= 1 pointing

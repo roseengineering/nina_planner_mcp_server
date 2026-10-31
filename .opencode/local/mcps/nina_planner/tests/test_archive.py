@@ -353,6 +353,32 @@ class ArchiveGateTest(ArchiveBase):
         self.assertIn("no frames on disk match this plan", err)
         self.assertEqual(self.folders(), [])
 
+    def test_expired_window_plan_is_not_complete(self):
+        # Lights are complete, but the plan's calibration window closed
+        # (lights dated well outside calibration_window_days=7) with NO
+        # calibration frames ever shot. plan_progress zeroes remaining_count
+        # for a closed window, so every group reads remaining 0 — the old
+        # `remaining_count == 0` gate archived this as complete. The shared
+        # verdict reads acquired vs total + window_open: expired_with_deficit
+        # → not archivable without --all.
+        self.seed_full(light_count=20, flat_count=0, dark_count=0, bias_count=0)
+
+        code, out, err = self.run_cli()
+
+        self.assertEqual(code, 1, err)  # nothing archivable
+        self.assertEqual(self.folders(), [])
+        self.assertIn("incomplete", out)
+        self.assertIn("DARK 0/10", out)  # the expired deficit, named
+
+        # --all still archives it, honestly flagged.
+        code, out, err = self.run_cli("--all")
+        self.assertEqual(code, 0, err)
+        manifest = json.loads(
+            (self.dest / self.folders()[0] / archive_mod._MANIFEST_NAME).read_text()
+        )
+        self.assertFalse(manifest["complete"])
+        self.assertTrue(any("incomplete" in w for w in manifest["warnings"]))
+
     def test_dry_run_writes_nothing(self):
         self.seed_full()
 
@@ -412,6 +438,15 @@ class ArchiveAttributionTest(ArchiveBase):
         # A light row whose path lacks the plan token: recorded on disk but
         # never attributed -> must not be archived.
         plan = self.seed_full(
+            # The gate now reads the shared verdict: calibration must be
+            # SATISFIED (5/5 here) for the plan to archive by default —
+            # a partial set under the long-closed fixture window reads
+            # expired_with_deficit, not complete.
+            plan=_plan(
+                flat_frames=[{"filter_name": "L", "total_count": 5}],
+                dark_frames=[{"exposure_time_seconds": 60.0, "total_count": 5}],
+                bias_frames=[{"total_count": 5}],
+            ),
             light_count=20,
             write_light_files=20,
             flat_count=5,
