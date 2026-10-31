@@ -13,17 +13,22 @@ down to a workstation for calibration and stacking::
 
 Frame selection reuses the exact attribution matchers behind
 ``get_plan_progress`` / ``audit_plans`` (``progress.filter_metadata_rows``),
-so "archived" means "credited to this plan": lights by the underscore- or
-bracket-delimited plan-id token in their recorded path (every pointing of a
-mosaic), calibration pooled by type+filter / type+exposure / type alone
-inside ``calibration_window_days`` of the earliest attributed light —
+so "archived" means "attributed to this plan" — a deliberate superset of
+what progress *credits* for lights: attribution is token-only, so every
+light carrying the underscore- or bracket-delimited plan-id token ships
+(every pointing of a mosaic, any filter/exposure the plan shot, surplus
+included), while progress credits each light group against its own
+filter+exposure. Calibration pools by type+filter / type+exposure / type
+alone inside ``calibration_window_days`` of the earliest attributed light —
 unioned across pointings so a mosaic shot over several nights carries each
 night's calibration.
 
 Decisions encoded here (see PROGRESS.md): originals are always COPIED, never
-moved; a plan is archivable when every frame group's ``remaining_count`` is 0
-(the same test ``get_plan_progress`` reports as ``complete``); frames outside
-the credited set are never archived.  ``--all`` overrides the completeness
+moved; a plan is archivable when the shared completion verdict
+(``progress.progress_verdict`` — acquired vs total plus window state, the
+same rule ``get_plan_progress`` reports as ``complete``) says every pointing
+is done; frames attributed to another plan's token, or outside the
+calibration window, are never archived.  ``--all`` overrides the completeness
 gate, ``--force`` rebuilds an existing folder, ``--dry-run`` writes nothing.
 
 Copy semantics: each folder is assembled in a hidden ``.<name>.partial``
@@ -205,10 +210,12 @@ def _progress_facts(
 def _select_frames(
     plan: ObservationPlan, rows: list[dict[str, Any]], now: datetime
 ) -> dict[str, list[dict[str, Any]]]:
-    """Rows to archive per frame type: exactly what the plan is credited.
+    """Rows to archive per frame type: everything ATTRIBUTED to the plan.
 
-    Lights: every row attributed to any pointing (any filter/exposure the
-    plan shot, surplus included).  Calibration: the pooled matchers,
+    For lights that is a deliberate superset of per-group *credited*
+    frames: attribution is token-only (see ``filter_metadata_rows``), so
+    any filter/exposure the plan shot ships — credited counts answer a
+    narrower, per-group question.  Calibration: the pooled matchers,
     unioned across pointings' session windows and deduped by path.  Rows
     with no recorded file path are dropped — they can never be copied.
     """
