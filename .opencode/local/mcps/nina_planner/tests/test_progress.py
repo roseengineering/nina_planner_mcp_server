@@ -1307,5 +1307,94 @@ class GroupVerdictTest(unittest.TestCase):
         self.assertEqual(verdict["status"], "expired_with_deficit")
 
 
+class FirstFitCreditTest(unittest.TestCase):
+    """Each frame is credited toward at most ONE group of its type.
+
+    Before first-fit credit, overlapping groups counted the same rows
+    twice: a plan with duplicate groups read complete at half its ask.
+    """
+
+    def test_duplicate_light_groups_do_not_double_count(self):
+        plan = _plan(
+            light_frames=[
+                {"filter_name": "LP", "exposure_time_seconds": 60.0, "total_count": 20},
+                {"filter_name": "LP", "exposure_time_seconds": 60.0, "total_count": 20},
+            ]
+        )
+        rows = [_row(target="M31 _plan-abc123_") for _ in range(20)]
+        progress = plan_progress(plan, rows)
+        first, second = progress["light"]
+        self.assertEqual(first["acquired_count"], 20)
+        # The 20 frames are ALL claimed by group 1; group 2 still wants 20.
+        self.assertEqual(second["acquired_count"], 0)
+        self.assertEqual(second["remaining_count"], 20)
+        # Sum of remaining == total (40) - unique frames (20).
+        self.assertEqual(sum(g["remaining_count"] for g in progress["light"]), 20)
+        self.assertEqual(progress_verdict(progress)["status"], "incomplete")
+        # Remaining mode rebuild keeps the unsatisfied group.
+        rebuilt = plan_with_remaining(plan, progress)
+        self.assertEqual(len(rebuilt.light_frames), 1)
+        self.assertEqual(rebuilt.light_frames[0].total_count, 20)
+
+    def test_same_filter_flat_groups_share_one_pool(self):
+        # Flat matching deliberately ignores exposure, so two flat groups
+        # on one filter overlap completely: 15 LP flats must not read 30.
+        plan = _plan(
+            flat_frames=[
+                {"filter_name": "LP", "total_count": 10},
+                {"filter_name": "LP", "total_count": 10},
+            ]
+        )
+        rows = [
+            _row(image_type="FLAT", filter_name="LP", duration="5.0", target=None)
+        ] * 15
+        progress = plan_progress(plan, rows)
+        first, second = progress["flat"]
+        # Group 1 sees all 15 (claiming 10 — its ask); group 2 sees the
+        # other 5. Single-group reads are unaffected (see the surplus
+        # tests above).
+        self.assertEqual(first["acquired_count"], 15)
+        self.assertEqual(first["remaining_count"], 0)
+        self.assertEqual(second["acquired_count"], 5)
+        self.assertEqual(second["remaining_count"], 5)
+        # Truth: 15 frames exist, 20 wanted → short 5 (was 15+15 "acquired"
+        # and complete before).
+        self.assertEqual(sum(g["remaining_count"] for g in progress["flat"]), 5)
+
+    def test_bias_groups_split_a_short_pool(self):
+        # Two bias groups ask 10 + 10; 15 frames exist. The old counting
+        # credited all 15 to BOTH groups (complete at 15/20).
+        plan = _plan(bias_frames=[{"total_count": 10}, {"total_count": 10}])
+        rows = [_row(image_type="BIAS", target=None)] * 15
+        progress = plan_progress(plan, rows)
+        first, second = progress["bias"]
+        self.assertEqual(first["acquired_count"], 15)
+        self.assertEqual(first["remaining_count"], 0)
+        self.assertEqual(second["acquired_count"], 5)
+        self.assertEqual(second["remaining_count"], 5)
+        self.assertEqual(sum(g["remaining_count"] for g in progress["bias"]), 5)
+
+    def test_distinct_constraint_groups_are_untouched(self):
+        # The normal case: groups with disjoint constraints each see all
+        # their own rows — first-fit changes nothing.
+        plan = _plan(
+            light_frames=[
+                {"filter_name": "LP", "exposure_time_seconds": 60.0, "total_count": 2},
+                {"filter_name": "R", "exposure_time_seconds": 120.0, "total_count": 2},
+            ]
+        )
+        rows = [
+            _row(),  # LP 60s
+            _row(),  # LP 60s
+            _row(filter_name="R", duration="120.0"),  # R 120s
+        ]
+        progress = plan_progress(plan, rows)
+        first, second = progress["light"]
+        self.assertEqual(first["acquired_count"], 2)
+        self.assertEqual(first["remaining_count"], 0)
+        self.assertEqual(second["acquired_count"], 1)
+        self.assertEqual(second["remaining_count"], 1)
+
+
 if __name__ == "__main__":
     unittest.main()

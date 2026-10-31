@@ -331,9 +331,10 @@ def _select_matching(
 ) -> list[dict[str, Any]]:
     """The rows ``_row_matches`` accepts, in input order — ONE row pass.
 
-    Counting (``_count_matching``) and row-returning callers are this
-    function and ``len()`` of it, so a predicate change can never land on
-    one side only.
+    The shared selector behind every row-returning caller
+    (``filter_metadata_rows``) and behind ``plan_progress``'s per-group
+    counting (which credits ``len()`` of this, first-fit across a type's
+    groups), so a predicate change can never land on one side only.
     """
     return [
         row
@@ -352,37 +353,6 @@ def _select_matching(
             session_start=session_start,
         )
     ]
-
-
-def _count_matching(
-    rows: list[dict[str, Any]],
-    image_type: str,
-    *,
-    filter_name: str | None = None,
-    exposure: float | None = None,
-    plan: ObservationPlan | None = None,
-    pointing_index: int = 1,
-    max_hfr: float | None = None,
-    min_detected_stars: int | None = None,
-    max_guiding_rms_arcsec: float | None = None,
-    max_age_days: int | None = None,
-    session_start: datetime | None = None,
-) -> int:
-    return len(
-        _select_matching(
-            rows,
-            image_type,
-            filter_name=filter_name,
-            exposure=exposure,
-            plan=plan,
-            pointing_index=pointing_index,
-            max_hfr=max_hfr,
-            min_detected_stars=min_detected_stars,
-            max_guiding_rms_arcsec=max_guiding_rms_arcsec,
-            max_age_days=max_age_days,
-            session_start=session_start,
-        )
-    )
 
 
 def filter_metadata_rows(
@@ -472,6 +442,15 @@ def plan_progress(
     * ``acquired_count`` — frames shot inside ``calibration_window_days`` of
       that anchor, on either side of it. Always truthful, whether or not the
       window is still open.
+
+    Each frame is credited toward at most ONE group of its type: ``acquired``
+    counts the rows no earlier group claimed, and each group then claims up
+    to ``total_count`` of its matches (first-fit, plan order). Overlapping
+    groups — duplicate light groups sharing filter+exposure, or two flat
+    groups on one filter, where flat matching deliberately ignores exposure —
+    used to count the same rows twice, reporting a plan complete at half its
+    ask; the sum of a type's remaining counts now always equals
+    ``total − unique matching frames``.
     * ``remaining_count`` — what the plan still demands. While ``now`` sits
       inside the window this is ``total - acquired``; once ``now`` falls
       outside it, no frame shot now could ever be credited, so remaining is
@@ -516,6 +495,24 @@ def plan_progress(
 
     def group(image_type: str, groups: list[Any]) -> list[dict[str, Any]]:
         out: list[dict[str, Any]] = []
+        # First-fit credit across THIS type's groups: `acquired_count` is the
+        # rows this group matches that no EARLIER group claimed, and each
+        # group then removes `total_count` of its matches from the pool (its
+        # claim), so a frame is never credited toward two groups' totals.
+        # Without this, overlapping groups counted the same rows twice:
+        # duplicate light groups (same filter+exposure) read each frame
+        # twice, and two flat groups on one filter — flat matching
+        # deliberately ignores exposure — made 20 LP flats report 40/40 and
+        # the plan complete at half its ask. The claim is capped at
+        # `total_count` so an abundance of pool frames fills group 1 only up
+        # to what it asked for and leaves the rest visible to group 2 (a
+        # claim of ALL matches would starve every later group and invent a
+        # deficit). The sum of a type's `remaining_count`s still equals
+        # `total − unique-matched rows` exactly. The pool is rebuilt as new
+        # lists; `rows` itself is never mutated. Single-group types (the
+        # normal case) see every matching row, exactly as before — surplus
+        # rows beyond `total_count` included.
+        unclaimed = rows
         for g in groups:
             data = g.model_dump()
             # Which constraints apply is decided in ONE place — see
@@ -524,8 +521,8 @@ def plan_progress(
             # / (None, None) as before, without restating it here.
             filter_name, exposure = frame_group_constraints(image_type, g)
             total = data["total_count"]
-            acquired = _count_matching(
-                rows,
+            matched = _select_matching(
+                unclaimed,
                 image_type,
                 filter_name=filter_name,
                 exposure=exposure,
@@ -537,6 +534,24 @@ def plan_progress(
                 max_age_days=plan.calibration_window_days,
                 session_start=session_start,
             )
+            acquired = len(matched)
+            if matched:
+                # Remove the claim OCCURRENCE-wise (a counter, not a set):
+                # tests pass [row] * n, and with repeated references a set
+                # keyed on id() would drop every copy while the claim covers
+                # only the first `total` of them.
+                claim: dict[int, int] = {}
+                for row in matched[:total]:
+                    key = id(row)
+                    claim[key] = claim.get(key, 0) + 1
+                keep: list[dict[str, Any]] = []
+                for row in unclaimed:
+                    key = id(row)
+                    if claim.get(key, 0):
+                        claim[key] -= 1
+                    else:
+                        keep.append(row)
+                unclaimed = keep
             item: dict[str, Any] = {
                 **data,
                 "acquired_count": acquired,
@@ -546,10 +561,10 @@ def plan_progress(
                 # once the calibration window closes, so no later run wastes
                 # twilight on frames no window could credit. But 0 there is
                 # NOT a completion answer: a window that expired at 8/10
-                # darks must not let completion logic (get_plan_progress's
-                # `complete`, load_sequence's "nothing to load") declare the
-                # plan done. Anything asking "is this finished?" must read
-                # deficit_count and window_open, not remaining_count alone.
+                # darks must not let completion logic declare the plan done.
+                # Anything asking "is this finished?" must read the shared
+                # rule — group_verdict — which consults deficit_count and
+                # window_open, never remaining_count alone.
                 "deficit_count": max(total - acquired, 0),
             }
             if image_type == "LIGHT":
