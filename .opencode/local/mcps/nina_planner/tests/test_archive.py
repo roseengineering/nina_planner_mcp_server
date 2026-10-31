@@ -522,11 +522,16 @@ class ArchiveAttributionTest(ArchiveBase):
 
 
 class ArchiveErrorPathTest(ArchiveBase):
-    def test_frame_deleted_after_csv_record_aborts_plan_and_cleans_staging(self):
-        # read_imaging_csv drops rows whose files are gone, so the
-        # "recorded frame missing on disk" branch is only reachable when a
-        # file disappears between metadata read and copy (TOCTOU) — drive
-        # _archive_one directly with a stale row to pin the cleanup.
+    def test_all_selected_frames_missing_refuses_empty_archive_and_cleans_staging(
+        self,
+    ):
+        # read_imaging_csv drops rows whose files are already gone, so a
+        # selected row pointing at a vanished file is only reachable when
+        # the file disappears between the metadata read and the copy
+        # (TOCTOU) — drive _archive_one directly with a stale row to pin it.
+        # Individual misses are skipped (next test), but a selection where
+        # NOTHING could be copied must not commit an empty archive, and
+        # staging must not survive the refusal.
         plan = self.seed_full()
         plan_file = self.proj / "m31.json"
         stale = {
@@ -541,7 +546,7 @@ class ArchiveErrorPathTest(ArchiveBase):
             "dark": [],
             "bias": [],
         }
-        with self.assertRaisesRegex(archive_mod.ArchiveError, "missing on disk"):
+        with self.assertRaisesRegex(archive_mod.ArchiveError, "could be copied"):
             archive_mod._archive_one(
                 plan_file,
                 plan,
@@ -562,6 +567,87 @@ class ArchiveErrorPathTest(ArchiveBase):
         self.assertEqual(self.folders(), [])
         self.assertFalse(any(p.name.startswith(".") for p in self.dest.iterdir()))
         self.assertEqual(self.index_lines(), [])
+
+    def test_frame_vanishing_before_copy_is_skipped_and_reported(self):
+        # A file that disappears between the metadata read and the copy is
+        # SKIPPED: the rest of the archive commits, the manifest records the
+        # miss with a warning, counts reflect what shipped, and the run says
+        # so — losing one frame must not lose the archive.  (Rows already
+        # missing at read time never reach here: read_imaging_csv drops
+        # them, which is also how BAD_ rejects stay out of selection.)
+        plan = _plan(
+            light_frames=[
+                {"filter_name": "L", "exposure_time_seconds": 60.0, "total_count": 3}
+            ],
+            flat_frames=[{"filter_name": "L", "total_count": 2}],
+            dark_frames=[{"exposure_time_seconds": 60.0, "total_count": 2}],
+            bias_frames=[{"total_count": 2}],
+        )
+        self.seed_full(
+            plan=plan, light_count=3, flat_count=2, dark_count=2, bias_count=2
+        )
+        vanished = str(
+            self.root / "M31_plan-abc123_" / "2026-09-20" / "LIGHT" / "vanished.fits"
+        )
+        original = archive_mod._select_frames
+
+        def inject(plan_arg, rows_arg, now_arg):
+            selected = original(plan_arg, rows_arg, now_arg)
+            selected["light"].append({"file_path": vanished})
+            return selected
+
+        with mock.patch.object(archive_mod, "_select_frames", side_effect=inject):
+            code, out, err = self.run_cli()
+
+        self.assertEqual(code, 0, err)
+        self.assertIn("missing on disk", out)  # the ⚠ line
+        base = self.dest / self.folders()[0]
+        manifest = json.loads((base / archive_mod._MANIFEST_NAME).read_text())
+        self.assertEqual(manifest["missing"], [{"type": "LIGHT", "source": vanished}])
+        self.assertTrue(any("missing on disk" in w for w in manifest["warnings"]))
+        # counts.archived is what SHIPPED (3), not what was selected (4),
+        # and the sidecar lists only shipped rows.
+        self.assertEqual(manifest["counts"]["light"]["archived"], 3)
+        self.assertEqual(manifest["file_count"], 9)  # 3 + 2 + 2 + 2
+        lights = [p for p in (base / "LIGHT").iterdir() if p.suffix == ".fits"]
+        self.assertEqual(len(lights), 3)
+        with (base / "LIGHT" / "ImageMetaData.csv").open(newline="") as handle:
+            self.assertEqual(len(list(csv.DictReader(handle))), 3)
+        self.assertEqual(json.loads(self.index_lines()[0])["missing"], 1)
+
+    def test_bad_renamed_reject_never_aborts_credits_or_ships(self):
+        # NINA rejects a frame by renaming it BAD_<name> while the CSV row
+        # keeps the pre-rename name. read_imaging_csv drops that row (the
+        # recorded file no longer exists), so the reject is never credited
+        # and never selected — which is what keeps it out of the copy loop
+        # entirely: no "recorded frame missing on disk" abort, no BAD_ file
+        # in the archive.
+        self.seed_full()
+        light_dir = self.root / "M31_plan-abc123_" / "2026-09-20" / "LIGHT"
+        victim = sorted(light_dir.glob("*.fits"))[0]
+        rejected = light_dir / f"BAD_{victim.name}"
+        victim.rename(rejected)
+
+        # Gate: 19 of 20 lights credited -> incomplete -> skipped, no abort.
+        code, out, err = self.run_cli()
+        self.assertEqual(code, 1, err)
+        self.assertIn("LIGHT 19/20", out)
+        self.assertEqual(self.folders(), [])
+
+        # --all ships the 19 good frames; the reject stays behind.
+        code, _out, err = self.run_cli("--all")
+        self.assertEqual(code, 0, err)
+        base = self.dest / self.folders()[0]
+        manifest = json.loads((base / archive_mod._MANIFEST_NAME).read_text())
+        self.assertFalse(manifest["complete"])
+        # Never selected, so it is not a "missing" entry either.
+        self.assertEqual(manifest["missing"], [])
+        shipped = [p.name for p in (base / "LIGHT").iterdir() if p.suffix == ".fits"]
+        self.assertEqual(len(shipped), 19)
+        self.assertTrue(all(not name.startswith("BAD_") for name in shipped))
+        self.assertEqual(manifest["counts"]["light"]["archived"], 19)
+        # Copy, never move: even the rejected original is untouched.
+        self.assertTrue(rejected.is_file())
 
     def test_copy_failure_is_wrapped_as_archive_error(self):
         # An OSError mid-copy must not crash the whole run: it surfaces as

@@ -30,7 +30,14 @@ Copy semantics: each folder is assembled in a hidden ``.<name>.partial``
 sibling and atomically renamed into place, so an interrupted run can never
 leave a folder that looks complete.  Every file's size is verified after
 copying (``--checksum`` adds sha256).  ``<dest>/archive-index.jsonl`` is an
-append-only log of archived plans.
+append-only log of archived plans.  A selected file that vanishes between
+the metadata read and the copy is skipped and listed under the manifest's
+``missing`` with a warning (the run still succeeds; a run in which NO
+selected frame could be copied is refused rather than committed empty).
+N.I.N.A. ``BAD_`` rejects never reach the copy loop at all —
+``read_imaging_csv`` drops their rows at read time (the CSV still names the
+pre-rename file), so rejects are reported by ``audit_plans``' ``bad`` disk
+count, and staying out of the archive is exactly what rejecting means.
 
 The destination must live OUTSIDE the imaging root: archived folders carry
 their own ``ImageMetaData.csv`` copies, and a later attribution pass reading
@@ -262,8 +269,12 @@ def _archive_one(
     """Copy one plan's frames + JSON into ``dest`` (atomic per folder).
 
     Builds in ``dest/.<folder>.partial`` then renames, so an interrupted run
-    never leaves a folder that looks complete.  Raises ``ArchiveError`` on
-    any copy/verify failure, with the staging dir cleaned up first.
+    never leaves a folder that looks complete.  ``counts[..]["archived"]`` is
+    set HERE from what actually shipped (not from what was selected).
+    Raises ``ArchiveError`` when the copy/verify itself fails — or when no
+    selected frame at all could be copied — with the staging dir cleaned up
+    first; an individual file that can't be found is skipped and recorded
+    under the manifest's ``missing`` instead.
     """
     folder = _folder_name(plan_file, plan)
     final = dest / folder
@@ -274,6 +285,9 @@ def _archive_one(
     staging.mkdir()
 
     manifest_files: list[dict[str, Any]] = []
+    missing: list[dict[str, str]] = []
+    copied_by_type: dict[str, int] = {t.lower(): 0 for t in _ARCHIVE_TYPES}
+    selected_count = sum(len(v) for v in selected.values())
     total_bytes = 0
     copied = 0
     try:
@@ -281,14 +295,21 @@ def _archive_one(
             rows_for_type = selected.get(image_type.lower(), [])
             type_dir = staging / image_type
             rel_map: dict[str, str] = {}
+            kept_rows: list[dict[str, Any]] = []
             used_names: set[str] = set()
             for row in rows_for_type:
                 src = Path(str(row.get("file_path") or ""))
                 if not src.is_file():
-                    raise ArchiveError(
-                        f"recorded frame missing on disk: {src} "
-                        "(deleted, or the imaging root moved?)"
-                    )
+                    # Vanished BETWEEN the metadata read and this copy.
+                    # read_imaging_csv already drops rows whose recorded
+                    # path was gone at read time — that is also how N.I.N.A.
+                    # BAD_ rejects never reach selection (the CSV names the
+                    # pre-rename file), so rejects are not this branch's
+                    # business; this is a genuine mid-run change.  Skip the
+                    # file and record it: one vanished frame must not throw
+                    # away an otherwise-complete archive.
+                    missing.append({"type": image_type, "source": str(src)})
+                    continue
                 name = src.name
                 if name in used_names:
                     # Same filename from two date folders: keep both.
@@ -303,6 +324,7 @@ def _archive_one(
                 size = _copy_file(src, dst, checksum=checksum)
                 rel_path = f"{image_type}/{name}"
                 rel_map[str(row["file_path"])] = rel_path
+                kept_rows.append(row)
                 manifest_files.append(
                     {
                         "type": image_type,
@@ -313,10 +335,27 @@ def _archive_one(
                 )
                 total_bytes += size
                 copied += 1
-            if write_metadata and rows_for_type:
+            copied_by_type[image_type.lower()] = len(kept_rows)
+            if write_metadata and kept_rows:
+                # Only rows whose file actually SHIPPED: the sidecar's
+                # archive_path column must never point at a skipped file.
                 _write_image_metadata_csv(
-                    type_dir / "ImageMetaData.csv", rows_for_type, rel_map
+                    type_dir / "ImageMetaData.csv", kept_rows, rel_map
                 )
+
+        if copied == 0:
+            # Selection was non-empty (the CLI checks that earlier), but not
+            # one selected file could be copied — committing a folder with a
+            # manifest and zero frames would masquerade as an archive.
+            raise ArchiveError(
+                f"none of the {selected_count} selected frame(s) could be "
+                f"copied ({len(missing)} missing on disk) — nothing to archive"
+            )
+        # archived = what actually SHIPPED, not what was selected: skipped
+        # files adjust it, and the manifest's warnings below compare these
+        # numbers against expected.
+        for image_type in _ARCHIVE_TYPES:
+            counts[image_type.lower()]["archived"] = copied_by_type[image_type.lower()]
 
         # plan.json verbatim, then manifest.json.
         shutil.copy2(plan_file, staging / "plan.json")
@@ -338,6 +377,11 @@ def _archive_one(
                     f"{image_type.upper()}: {numbers['archived']} archived "
                     f"of {numbers['expected']} expected{window_note}"
                 )
+        if missing:
+            warnings.append(
+                f"{len(missing)} selected frame(s) missing on disk — "
+                "archived without them (see the manifest's missing list)"
+            )
         manifest = {
             "tool": "nina-archive",
             "version": 1,
@@ -353,6 +397,7 @@ def _archive_one(
             "files": manifest_files,
             "file_count": copied,
             "total_bytes": total_bytes,
+            "missing": missing,
             "warnings": warnings,
         }
         (staging / _MANIFEST_NAME).write_text(
@@ -383,6 +428,7 @@ def _archive_one(
         "counts": counts,
         "file_count": copied,
         "total_bytes": total_bytes,
+        "missing": len(missing),
     }
     with (dest / _INDEX_NAME).open("a", encoding="utf-8") as handle:
         handle.write(json.dumps(record, ensure_ascii=False) + "\n")
@@ -571,8 +617,8 @@ async def run(args: argparse.Namespace) -> int:
             continue
 
         selected = _select_frames(plan, rows, now)
-        for image_type, frames in selected.items():
-            counts[image_type]["archived"] = len(frames)
+        # counts[..]["archived"] is set inside _archive_one from what
+        # actually shipped — skipped files must not count as archived.
         file_count = sum(len(v) for v in selected.values())
         folder = _folder_name(plan_file, plan)
 
@@ -627,6 +673,11 @@ async def run(args: argparse.Namespace) -> int:
             f"({record['file_count']} files, "
             f"{_human_bytes(record['total_bytes'])})"
         )
+        if record.get("missing"):
+            print(
+                f"  ⚠ {plan_file.name}: {record['missing']} selected "
+                "frame(s) missing on disk — skipped, see the manifest"
+            )
 
     # ---------------------------------------------------------- summary
     already = sum(1 for _, r in skipped if r.startswith("already archived"))
