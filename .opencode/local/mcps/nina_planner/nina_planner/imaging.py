@@ -7,7 +7,7 @@ import sys
 from collections.abc import Iterator
 from datetime import UTC, datetime
 from pathlib import Path, PureWindowsPath
-from typing import Any
+from typing import Any, Literal, overload
 
 from .nina_utils import to_snake
 
@@ -117,9 +117,43 @@ def _require_root(root: Path) -> None:
     )
 
 
-def read_imaging_csv(root: Path, image_type: str) -> list[dict[str, Any]]:
+@overload
+def read_imaging_csv(
+    root: Path, image_type: str, *, report_dropped: Literal[False] = False
+) -> list[dict[str, Any]]: ...
+
+
+@overload
+def read_imaging_csv(
+    root: Path, image_type: str, *, report_dropped: Literal[True]
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]: ...
+
+
+def read_imaging_csv(
+    root: Path,
+    image_type: str,
+    *,
+    report_dropped: bool = False,
+) -> list[dict[str, Any]] | tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Rows of ``image_type`` from every visible ImageMetaData.csv under root.
+
+    Rows whose recorded ``file_path`` no longer exists on disk are DROPPED:
+    the view must never credit a frame nobody can open. That includes N.I.N.A.
+    rejects — it renames the file to ``BAD_<name>`` while the CSV keeps the
+    pre-rename name, so a rejected frame disappears from this view entirely
+    (the rejection itself is only visible on disk; ``audit_plans`` reports it
+    as ``bad``).
+
+    ``report_dropped=True`` returns ``(rows, dropped)`` instead: each dropped
+    row keeps its raw fields plus a best-effort ``file_path`` (Windows→local
+    mapping applied, existence NOT required), so the caller can classify the
+    loss — probe for a ``BAD_`` twin, or report the record as gone. Default
+    is the plain list every existing caller expects; only opted-in callers
+    see the tuple.
+    """
     _require_root(root)
     rows: list[dict[str, Any]] = []
+    dropped: list[dict[str, Any]] = []
     image_type_upper = image_type.upper()
     for meta_path in visible_rglob(root, "ImageMetaData.csv"):
         csv_dir = meta_path.parent
@@ -132,12 +166,18 @@ def read_imaging_csv(root: Path, image_type: str) -> list[dict[str, Any]]:
             raw_path = row.get("file_path")
             resolved = _resolve_existing_file(raw_path, bases=bases)
             if raw_path and resolved is None:
+                if report_dropped:
+                    record = dict(row)
+                    record["file_path"] = _resolve_image_path(raw_path, bases)
+                    dropped.append(record)
                 continue
             if resolved:
                 row["file_path"] = resolved
             enriched = dict(row)
             enriched.update({"frame_type": row_image_type, "source": "image_metadata"})
             rows.append(enriched)
+    if report_dropped:
+        return rows, dropped
     return rows
 
 

@@ -130,6 +130,46 @@ class ReadImagingCsvTest(unittest.TestCase):
         self.assertEqual(rows[0]["duration"], "60.0")
         self.assertTrue(rows[0]["file_path"].startswith(str(mount)))
 
+    def test_report_dropped_returns_dropped_rows_for_classification(self):
+        # Default contract unchanged (plain list); report_dropped adds the
+        # dropped rows with a best-effort path so a caller can classify WHY
+        # the file is gone — e.g. probe for N.I.N.A.'s BAD_ reject rename,
+        # which the CSV record itself can no longer reveal (it names the
+        # pre-rename file).
+        img_dir = self.root / "NINA" / "2026-09-21" / "LIGHT"
+        img_dir.mkdir(parents=True)
+        present = img_dir / "2026-09-21_00-00-00_L__60.00s_0000.fits"
+        present.write_text("fits")
+        missing = img_dir / "2026-09-21_00-01-00_L__60.00s_0001.fits"
+        (img_dir / f"BAD_{missing.name}").write_text("fits")  # rejected twin
+        _write_csv(
+            img_dir / "ImageMetaData.csv",
+            ["ImageType", "Duration", "FilterName", "FilePath"],
+            [
+                ["LIGHT", "60.0", "LP", str(present)],
+                ["LIGHT", "60.0", "LP", str(missing)],
+            ],
+        )
+
+        rows, dropped = read_imaging_csv(
+            root=self.root, image_type="light", report_dropped=True
+        )
+
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(len(dropped), 1)
+        # The returned path is the raw record's path, usable as-is for the
+        # BAD_ probe even though the file itself is gone.
+        dropped_path = Path(dropped[0]["file_path"])
+        self.assertEqual(dropped_path, missing)
+        self.assertTrue(dropped_path.with_name(f"BAD_{dropped_path.name}").is_file())
+        self.assertEqual(dropped[0]["image_type"], "LIGHT")
+        self.assertEqual(dropped[0]["duration"], "60.0")
+
+        # Default call still returns the plain list callers expect.
+        default = read_imaging_csv(root=self.root, image_type="light")
+        self.assertIsInstance(default, list)
+        self.assertEqual(len(default), 1)
+
     def test_row_kept_when_path_absent(self):
         _write_csv(
             self.light_dir / "ImageMetaData.csv",
