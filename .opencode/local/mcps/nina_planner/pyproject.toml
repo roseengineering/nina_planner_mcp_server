@@ -51,7 +51,7 @@ dev = [
 ]
 
 [project.scripts]
-nina_planner = "nina_planner.__main__:main"
+nina-planner = "nina_planner.__main__:main"
 nina-archive = "nina_planner.archive:main"
 
 [tool.uv]
