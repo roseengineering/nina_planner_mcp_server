@@ -262,6 +262,11 @@ class ArchiveHappyPathTest(ArchiveBase):
         self.assertEqual(manifest["counts"]["flat"]["archived"], 10)
         self.assertEqual(manifest["file_count"], 50)
         self.assertEqual(manifest["warnings"], [])
+        # Disk report: nothing anomalous, nothing deliberately skipped.
+        self.assertEqual(
+            manifest["disk"],
+            {"rejected": [], "gone": [], "not_selected": []},
+        )
         # archive_path column joins CSV rows to archived files.
         with (base / "LIGHT" / "ImageMetaData.csv").open(newline="") as handle:
             rows = list(csv.DictReader(handle))
@@ -519,6 +524,16 @@ class ArchiveAttributionTest(ArchiveBase):
         dark_names = {p.name for p in (base / "DARK").iterdir()}
         self.assertNotIn(late_file.name, dark_names)
         self.assertEqual(len([n for n in dark_names if n.endswith(".fits")]), 10)
+        # ...and the disk section names where it went: recorded under this
+        # plan's own token, live, and deliberately not selected — exactly
+        # the plan-dir-vs-folder gap the section exists to explain.
+        manifest = json.loads((base / archive_mod._MANIFEST_NAME).read_text())
+        self.assertEqual(
+            [d["source"] for d in manifest["disk"]["not_selected"]],
+            [str(late_file)],
+        )
+        self.assertEqual(manifest["disk"]["rejected"], [])
+        self.assertEqual(manifest["disk"]["gone"], [])
 
 
 class ArchiveErrorPathTest(ArchiveBase):
@@ -559,6 +574,7 @@ class ArchiveErrorPathTest(ArchiveBase):
                     "dark": {"expected": 10, "acquired": 10, "archived": 0},
                     "bias": {"expected": 10, "acquired": 10, "archived": 0},
                 },
+                disk={"rejected": [], "gone": [], "not_selected": []},
                 imaging_root=self.root,
                 write_metadata=True,
                 checksum=False,
@@ -646,8 +662,49 @@ class ArchiveErrorPathTest(ArchiveBase):
         self.assertEqual(len(shipped), 19)
         self.assertTrue(all(not name.startswith("BAD_") for name in shipped))
         self.assertEqual(manifest["counts"]["light"]["archived"], 19)
+        # The disk section classifies the dropped row as a reject: its
+        # pre-rename source, the BAD_ twin that proved it, nothing gone,
+        # nothing else skipped. (And the console says so — 💽 line.)
+        self.assertIn("rejected (BAD_)", _out)
+        disk = manifest["disk"]
+        self.assertEqual(len(disk["rejected"]), 1)
+        self.assertEqual(disk["rejected"][0]["type"], "LIGHT")
+        self.assertEqual(disk["rejected"][0]["source"], str(victim))
+        self.assertEqual(disk["rejected"][0]["found"], f"BAD_{victim.name}")
+        self.assertEqual(disk["gone"], [])
+        self.assertEqual(disk["not_selected"], [])
         # Copy, never move: even the rejected original is untouched.
         self.assertTrue(rejected.is_file())
+
+    def test_recorded_but_gone_file_reported_with_warning(self):
+        # A recorded frame whose file simply vanished (no BAD_ twin) is
+        # dropped by the reader exactly like a reject, but classified
+        # differently: disk.gone + a manifest warning + the 💽 console line.
+        # The gate still reads the shortfall honestly (19/20).
+        self.seed_full()
+        light_dir = self.root / "M31_plan-abc123_" / "2026-09-20" / "LIGHT"
+        victim = sorted(light_dir.glob("*.fits"))[0]
+        victim.unlink()
+
+        code, out, err = self.run_cli()
+        self.assertEqual(code, 1, err)
+        self.assertIn("LIGHT 19/20", out)
+        self.assertEqual(self.folders(), [])
+
+        code, out, err = self.run_cli("--all")
+        self.assertEqual(code, 0, err)
+        self.assertIn("recorded-but-gone", out)  # the 💽 line
+        base = self.dest / self.folders()[0]
+        manifest = json.loads((base / archive_mod._MANIFEST_NAME).read_text())
+        self.assertEqual(
+            manifest["disk"]["gone"],
+            [{"type": "LIGHT", "source": str(victim)}],
+        )
+        self.assertEqual(manifest["disk"]["rejected"], [])
+        self.assertTrue(any("gone" in w for w in manifest["warnings"]))
+        # Distinct from copy-time `missing`: nothing failed DURING the copy —
+        # this file was already gone when the CSV was read.
+        self.assertEqual(manifest["missing"], [])
 
     def test_copy_failure_is_wrapped_as_archive_error(self):
         # An OSError mid-copy must not crash the whole run: it surfaces as
@@ -680,6 +737,7 @@ class ArchiveErrorPathTest(ArchiveBase):
                         "dark": {"expected": 1, "acquired": 1, "archived": 0},
                         "bias": {"expected": 1, "acquired": 1, "archived": 0},
                     },
+                    disk={"rejected": [], "gone": [], "not_selected": []},
                     imaging_root=self.root,
                     write_metadata=False,
                     checksum=False,

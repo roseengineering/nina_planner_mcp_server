@@ -6,7 +6,8 @@ down to a workstation for calibration and stacking::
 
     <dest>/<plan-file-stem>__<plan-id>/
         plan.json              verbatim copy of the plan file
-        manifest.json          identity, per-type counts, file list, warnings
+        manifest.json          identity, per-type counts, file list, disk
+                               report (rejected/gone/not_selected), warnings
         LIGHT/ImageMetaData.csv   the archived light frames' metadata rows
         LIGHT/*.fits.fz        attributed light frames
         FLAT/  DARK/  BIAS/    matched calibration frames (+ sidecar CSVs)
@@ -42,7 +43,11 @@ selected frame could be copied is refused rather than committed empty).
 N.I.N.A. ``BAD_`` rejects never reach the copy loop at all —
 ``read_imaging_csv`` drops their rows at read time (the CSV still names the
 pre-rename file), so rejects are reported by ``audit_plans``' ``bad`` disk
-count, and staying out of the archive is exactly what rejecting means.
+count — and mirrored for offline readers as the manifest's
+``disk.rejected``.  The rest of that row-driven classification (``disk.gone``
+= recorded once but now nowhere; ``disk.not_selected`` = this plan's token,
+deliberately skipped, usually calibration outside the window) comes from
+``disk_report``: existence probes over CSV records, never a directory walk.
 
 The destination must live OUTSIDE the imaging root: archived folders carry
 their own ``ImageMetaData.csv`` copies, and a later attribution pass reading
@@ -66,7 +71,7 @@ from . import config, metadata, plan_utils
 from .imaging import read_imaging_csv
 from .models.plan import ObservationPlan
 from .progress import filter_metadata_rows, plan_progress, progress_verdict
-from .tools.plans import _plan_files
+from .tools.plans import _path_has_id, _plan_files
 
 _ARCHIVE_TYPES = ("LIGHT", "FLAT", "DARK", "BIAS")
 _INDEX_NAME = "archive-index.jsonl"
@@ -247,6 +252,74 @@ def _select_frames(
     }
 
 
+def disk_report(
+    plan: ObservationPlan,
+    rows: list[dict[str, Any]],
+    dropped: list[dict[str, Any]],
+    selected: dict[str, list[dict[str, Any]]],
+) -> dict[str, list[dict[str, Any]]]:
+    """The manifest's ``disk`` section — CSV-row-driven, NO directory walk.
+
+    Every entry starts as a CSV record and is classified by an existence
+    probe, answering the three "why isn't it in the folder" questions:
+
+    - ``rejected`` — a dropped row whose ``BAD_<name>`` twin exists: N.I.N.A.
+      discarded the frame.  Correctly excluded everywhere (not credited, not
+      selected, not shipped); listed so an OFFLINE reader can explain
+      expected-vs-shipped without observatory access.  A live agent reads
+      ``audit_plans``' ``bad`` instead — this is the archive's offline mirror
+      of that fact, not a replacement for it.
+    - ``gone`` — a dropped row with no ``BAD_`` twin: recorded once, now
+      nowhere on disk (deleted, moved, renamed outside N.I.N.A).  An anomaly,
+      so it earns a manifest warning and a console line.
+    - ``not_selected`` — a LIVE row carrying this plan's token that selection
+      deliberately skipped: own-token calibration outside the window, most
+      often.  Informational — it explains "the plan's landing dir holds 15
+      darks, the folder has 10".
+
+    Scope: rows only.  A file no CSV row ever recorded is invisible by
+    construction — deliberate, since the Session Metadata plugin is trusted
+    (a directory walk would do little beyond re-checking that assumption).
+    Own-token scoping is ``_path_has_id`` on the base id, which covers the
+    bare, pointing-suffixed, and bracketed/parenthesised token forms, so
+    other plans' pooled rows never leak into ``not_selected``.
+    """
+    selected_paths = {
+        str(row.get("file_path") or "")
+        for frames in selected.values()
+        for row in frames
+    }
+    rejected: list[dict[str, Any]] = []
+    gone: list[dict[str, Any]] = []
+    for row in dropped:
+        path = str(row.get("file_path") or "")
+        entry: dict[str, Any] = {
+            "type": str(row.get("image_type") or "").upper(),
+            "source": path,
+        }
+        twin = Path(path).with_name(f"BAD_{Path(path).name}") if path else None
+        if twin is not None and twin.is_file():
+            entry["found"] = twin.name
+            rejected.append(entry)
+        else:
+            gone.append(entry)
+
+    not_selected: list[dict[str, Any]] = []
+    base_id = plan._base_plan_id()
+    for row in rows:
+        path = str(row.get("file_path") or "")
+        if not path or path in selected_paths:
+            continue
+        if _path_has_id(path, base_id):
+            not_selected.append(
+                {
+                    "type": str(row.get("image_type") or "").upper(),
+                    "source": path,
+                }
+            )
+    return {"rejected": rejected, "gone": gone, "not_selected": not_selected}
+
+
 # -------------------------------------------------------------- copying
 
 
@@ -269,6 +342,7 @@ def _archive_one(
     dest: Path,
     complete: bool,
     counts: dict[str, dict[str, int]],
+    disk: dict[str, list[dict[str, Any]]],
     imaging_root: Path,
     write_metadata: bool,
     checksum: bool,
@@ -277,11 +351,13 @@ def _archive_one(
 
     Builds in ``dest/.<folder>.partial`` then renames, so an interrupted run
     never leaves a folder that looks complete.  ``counts[..]["archived"]`` is
-    set HERE from what actually shipped (not from what was selected).
-    Raises ``ArchiveError`` when the copy/verify itself fails — or when no
-    selected frame at all could be copied — with the staging dir cleaned up
-    first; an individual file that can't be found is skipped and recorded
-    under the manifest's ``missing`` instead.
+    set HERE from what actually shipped (not from what was selected), and
+    ``disk`` (the row-driven rejected/gone/not_selected classification — see
+    ``disk_report``) lands in the manifest verbatim.  Raises ``ArchiveError``
+    when the copy/verify itself fails — or when no selected frame at all
+    could be copied — with the staging dir cleaned up first; an individual
+    file that can't be found is skipped and recorded under the manifest's
+    ``missing`` instead.
     """
     folder = _folder_name(plan_file, plan)
     final = dest / folder
@@ -389,6 +465,13 @@ def _archive_one(
                 f"{len(missing)} selected frame(s) missing on disk — "
                 "archived without them (see the manifest's missing list)"
             )
+        if disk["gone"]:
+            warnings.append(
+                f"{len(disk['gone'])} recorded frame(s) were already gone "
+                "before the archive ran — see disk.gone (deleted or renamed "
+                "outside N.I.N.A? N.I.N.A. rejects appear under "
+                "disk.rejected instead)"
+            )
         manifest = {
             "tool": "nina-archive",
             "version": 1,
@@ -405,6 +488,7 @@ def _archive_one(
             "file_count": copied,
             "total_bytes": total_bytes,
             "missing": missing,
+            "disk": disk,
             "warnings": warnings,
         }
         (staging / _MANIFEST_NAME).write_text(
@@ -436,6 +520,7 @@ def _archive_one(
         "file_count": copied,
         "total_bytes": total_bytes,
         "missing": len(missing),
+        "disk": {k: len(v) for k, v in disk.items()},
     }
     with (dest / _INDEX_NAME).open("a", encoding="utf-8") as handle:
         handle.write(json.dumps(record, ensure_ascii=False) + "\n")
@@ -587,8 +672,13 @@ async def run(args: argparse.Namespace) -> int:
 
     try:
         rows: list[dict[str, Any]] = []
+        dropped_rows: list[dict[str, Any]] = []
         for image_type in ("light", "dark", "bias", "flat"):
-            rows.extend(read_imaging_csv(root=imaging_root, image_type=image_type))
+            kept, dropped = read_imaging_csv(
+                root=imaging_root, image_type=image_type, report_dropped=True
+            )
+            rows.extend(kept)
+            dropped_rows.extend(dropped)
     except FileNotFoundError as exc:
         print(f"✗ {exc}", file=sys.stderr)
         return 1
@@ -626,6 +716,7 @@ async def run(args: argparse.Namespace) -> int:
         selected = _select_frames(plan, rows, now)
         # counts[..]["archived"] is set inside _archive_one from what
         # actually shipped — skipped files must not count as archived.
+        disk = disk_report(plan, rows, dropped_rows, selected)
         file_count = sum(len(v) for v in selected.values())
         folder = _folder_name(plan_file, plan)
 
@@ -636,10 +727,17 @@ async def run(args: argparse.Namespace) -> int:
                     src = Path(str(row["file_path"]))
                     if src.is_file():
                         total += src.stat().st_size
+            anomalies = ""
+            if disk["rejected"] or disk["gone"]:
+                anomalies = (
+                    f" [{len(disk['rejected'])} rejected, "
+                    f"{len(disk['gone'])} gone on disk]"
+                )
             print(
                 f"🔍 would archive {plan_file.name} → {folder}/ "
                 f"({file_count} files, {_human_bytes(total)}, "
-                f"{'complete' if complete else 'incomplete, --all'})"
+                f"{'complete' if complete else 'incomplete, --all'}"
+                f"{anomalies})"
             )
             archived.append(
                 {
@@ -667,6 +765,7 @@ async def run(args: argparse.Namespace) -> int:
                 dest=dest,
                 complete=complete,
                 counts=counts,
+                disk=disk,
                 imaging_root=imaging_root,
                 write_metadata=not args.no_image_metadata,
                 checksum=args.checksum,
@@ -684,6 +783,12 @@ async def run(args: argparse.Namespace) -> int:
             print(
                 f"  ⚠ {plan_file.name}: {record['missing']} selected "
                 "frame(s) missing on disk — skipped, see the manifest"
+            )
+        if disk["rejected"] or disk["gone"]:
+            print(
+                f"  💽 {plan_file.name}: {len(disk['rejected'])} rejected "
+                f"(BAD_), {len(disk['gone'])} recorded-but-gone — see the "
+                "manifest's disk section"
             )
 
     # ---------------------------------------------------------- summary
