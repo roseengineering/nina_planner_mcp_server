@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import tempfile
 import unittest
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from unittest import mock
 
@@ -375,8 +375,10 @@ class AuditTest(AuditBase):
     async def test_expired_window_surfaced_despite_remaining_zero(self):
         # Session anchored 10 days ago (lights set the anchor) → the 7-day
         # window closed 3 days ago; darks shot TODAY fall outside it, so the
-        # deficit can never be credited again.
-        old = datetime.now(UTC).replace(day=1).strftime("%Y-%m-%dT%H:%M:%SZ")
+        # deficit can never be credited again. Anchored by offset, not by
+        # `replace(day=1)`: on the 1st–7th of a month day#1 is inside the
+        # window and the fixture stops meaning "expired".
+        old = (datetime.now(UTC) - timedelta(days=10)).strftime("%Y-%m-%dT%H:%M:%SZ")
         now = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
         self.seed_full(exposure_start=old, skip={"dark"})
         self.rows += [
