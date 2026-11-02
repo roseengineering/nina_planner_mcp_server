@@ -91,7 +91,7 @@ class PurgeBase(ArchiveBase):
 
     @property
     def purge_index(self) -> Path:
-        return self.root / "prune-index.jsonl"
+        return self.root / "purge-index.jsonl"
 
     def index_records(self) -> list[dict]:
         if not self.purge_index.exists():
@@ -733,7 +733,7 @@ class PurgeDestTest(PurgeBase):
         self.assertFalse((self.dest / ".cloud-verified.json").exists())
 
     def _dest_index_records(self) -> list[dict]:
-        index = self.dest / "prune-index.jsonl"
+        index = self.dest / "purge-index.jsonl"
         if not index.exists():
             return []
         return [

@@ -50,7 +50,7 @@ directory into ``<imaging-root>/.prune-quarantine/<dir>`` — a dot
 directory every attribution walk prunes (``imaging._prunable_dir``), so
 quarantined frames and their ImageMetaData.csv behave exactly as if
 gone, while one ``mv`` restores them — and only ``--purge`` unlinks.
-``<imaging-root>/prune-index.jsonl`` (and ``<dest>/prune-index.jsonl``
+``<imaging-root>/purge-index.jsonl`` (and ``<dest>/purge-index.jsonl``
 for the staging leg) append one JSON record per action — including one
 per plan file under ``--purge``, carrying ``plan_file_deleted``. A run
 refuses to touch the root while a sequence is RUNNING (N.I.N.A. may be
@@ -124,7 +124,7 @@ from .models.plan import ObservationPlan
 from .tools.plans import _plan_files
 
 _QUARANTINE_DIR = ".prune-quarantine"
-_INDEX_NAME = "prune-index.jsonl"
+_INDEX_NAME = "purge-index.jsonl"
 _RECEIPT_NAME = ".cloud-verified.json"
 _FRAME_TYPES = ("light", "dark", "bias", "flat")
 # Plugin-written metadata that legitimately lives beside frames: it rides
@@ -574,7 +574,7 @@ def _quarantine_gates(
 
     Returns ``(quarantine dir, child → claimants, purgeable children, skip
     reasons)``. Claimants come from the ``quarantine`` records this tool
-    itself appended to ``<root>/prune-index.jsonl`` (each carries the moved
+    itself appended to ``<root>/purge-index.jsonl`` (each carries the moved
     path and the claiming plan ids). A quarantined directory is purgable
     only when EVERY plan whose frames it carries still passes its gates —
     a stale archive (gate 2) or a vanished archive folder (gate 1) after
@@ -658,7 +658,7 @@ def _sweep_plan_files(
     directory the gates kept (``held_claimants``). Under ``purge`` the file
     is actually unlinked — only after its frames are gone — and every
     evaluated file appends a ``plan_file_deleted`` record to the root's
-    prune index; a report run writes nothing. Returns
+    purge index; a report run writes nothing. Returns
     ``(removed, kept, failed)``.
     """
     verdict_by_dir = {entry["dir"]: entry["verdict"] for entry in dirs}
