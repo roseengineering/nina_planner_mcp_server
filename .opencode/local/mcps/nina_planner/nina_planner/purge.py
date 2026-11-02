@@ -51,11 +51,12 @@ directory every attribution walk prunes (``imaging._prunable_dir``), so
 quarantined frames and their ImageMetaData.csv behave exactly as if
 gone, while one ``mv`` restores them — and only ``--purge`` unlinks.
 ``<imaging-root>/prune-index.jsonl`` (and ``<dest>/prune-index.jsonl``
-for the staging leg) append one JSON record per action. A run refuses to
-touch the root while a sequence is RUNNING (N.I.N.A. may be appending
-CSV rows); an unreachable N.I.N.A. is treated as idle — the same posture
-``nina-archive`` takes — and ``--imaging-root`` bypasses the profile
-lookup entirely.
+for the staging leg) append one JSON record per action — including one
+per plan file under ``--purge``, carrying ``plan_file_deleted``. A run
+refuses to touch the root while a sequence is RUNNING (N.I.N.A. may be
+appending CSV rows); an unreachable N.I.N.A. is treated as idle — the
+same posture ``nina-archive`` takes — and ``--imaging-root`` bypasses
+the profile lookup entirely.
 
 The staging leg retires LOCAL archive folders once the cloud holds them:
 ``--verify-remote REMOTE`` runs ``rclone check`` (the receipt
@@ -67,17 +68,32 @@ reported. Prune the imaging root BEFORE the dest: once a folder's
 manifest is gone, its frames no longer read as preserved and can never
 be quarantined from the root.
 
-Plan files are never touched — but a quarantined plan's file, left in
-the project directory, now has zero attributed rows and reads as
-NEVER_SHOT to ``audit_plans``/``get_plan_progress``; the console names
-each such file (the archive folder already holds the verbatim
-``plan.json``). A plan-shaped JSON that fails to load ABORTS the run:
-its claims are unknown, and unknown claims make deletions unsafe —
-unrelated project JSON is still ignored silently.
+Plan files are removed as the LAST step of ``--purge``, once the
+plan's frames are gone: the archive already holds the verbatim
+``plan.json`` (the copy to restore from), while a leftover plan whose
+rows went with its frames reads as NEVER_SHOT to
+``audit_plans``/``get_plan_progress`` and could be re-shot. Three
+gates run BEFORE any frame is deleted, so a refusal leaves everything
+intact: the archive folder ``<dest>/<stem>__<plan-id>/`` must exist
+with its ``plan.json``; that copy must be BYTE-IDENTICAL to the plan
+file (a difference means the plan was edited after archiving — the
+whole plan is refused with "archive is stale, re-run nina-archive
+--force first": nothing is deleted for it, the run continues with the
+other plans, exit 1); and the plan file must never live inside
+``--dest`` (never delete the archived copy). Per plan the order is
+fixed — gates, frames, then the file — so a failed frame deletion (or
+frames still held back by another plan's claims) KEEPS the plan file
+for a re-run; a file already gone is simply skipped, and a
+``--purge`` run with nothing left is an idempotent success. A
+plan-shaped JSON that fails to load ABORTS the run: its claims are
+unknown, and unknown claims make deletions unsafe — unrelated project
+JSON is still ignored silently.
 
 Exit codes: 0 — something was (or, in a dry run, would be) quarantined,
-purged, verified, or pruned from the dest; 1 — nothing to do or an
-error; 2 — bad arguments.
+purged, verified, or pruned from the dest, and any ``--purge`` run
+without an error (purging is idempotent); 1 — nothing to do (report,
+``--apply``, or dest legs) or an error, including a stale-archive
+refusal; 2 — bad arguments.
 """
 
 from __future__ import annotations
@@ -95,6 +111,7 @@ from typing import Any
 from . import config, metadata, plan_utils
 from .archive import (
     _MANIFEST_NAME,
+    _folder_name,
     _human_bytes,
     _inside,
     _looks_like_plan_file,
@@ -170,6 +187,55 @@ def _unique_join(reasons: list[str], limit: int = 3) -> str:
     if len(seen) > limit:
         return "; ".join(seen[:limit]) + f"; +{len(seen) - limit} more"
     return "; ".join(seen)
+
+
+def _plan_file_gate(
+    plan_file: Path, plan: ObservationPlan, dest: Path
+) -> tuple[str, bool, bool, str]:
+    """Archive gates for one plan file: ``(folder, archive_ok, stale, reason)``.
+
+    Checked BEFORE any frame is deleted, so a refusal leaves everything
+    intact:
+
+    - Gate 1 — the archive folder ``dest / _folder_name(plan_file, plan)``
+      must exist and hold its ``plan.json``: the durable copy is what makes
+      removing the project's copy safe at all.
+    - Gate 2 — that ``plan.json`` must be BYTE-IDENTICAL to the plan file.
+      A difference means the plan was edited after archiving; the whole plan
+      is refused with ``archive is stale, re-run nina-archive --force
+      first`` (``stale=True``) — ``nina-archive --force`` rebuilds the
+      folder from the current file and the refusal clears.
+    - Gate 3 — the plan file must not live inside ``--dest`` (never delete
+      the archived copy); discovery already excludes those, kept here as a
+      belt-and-braces check.
+
+    ``archive_ok`` is gate 1 alone; a stale comparison still means the
+    folder exists (gate 2 only runs when gate 1 passed).
+    """
+    folder_path = dest / _folder_name(plan_file, plan)
+    folder = str(folder_path)
+    if _inside(plan_file, dest):
+        return folder, False, False, "plan file is inside --dest (never deleted)"
+    archived = folder_path / "plan.json"
+    if not archived.is_file():
+        reason = (
+            f"no archive folder at {folder_path}"
+            if not folder_path.is_dir()
+            else f"no plan.json in archive folder {folder_path}"
+        )
+        return folder, False, False, reason
+    try:
+        identical = plan_file.read_bytes() == archived.read_bytes()
+    except OSError as exc:
+        return folder, False, False, f"cannot compare against the archive ({exc})"
+    if not identical:
+        return (
+            folder,
+            True,
+            True,
+            "archive is stale, re-run nina-archive --force first",
+        )
+    return folder, True, False, ""
 
 
 async def _resolve_root(args: argparse.Namespace) -> Path:
@@ -439,14 +505,29 @@ def _quarantine(
     return moved
 
 
-def _purge_quarantine(root: Path) -> int:
-    """Actually delete the quarantine. Returns how many items removed."""
+def _purge_quarantine(
+    root: Path, purgeable: set[str], skips: dict[str, str]
+) -> tuple[int, int, int]:
+    """Actually delete the quarantine. Returns ``(removed, skipped, failed)``.
+
+    Only children the plan-file gates released (``purgeable``) are unlinked:
+    a kept child is reported with its reason (``skips``), so a gate refusal
+    after ``--apply`` leaves the quarantine — the frames — intact. Loose
+    files (never created by this tool, never claimed) always ride along.
+    """
     quarantine = root / _QUARANTINE_DIR
     if not quarantine.is_dir():
         print(f"nothing to purge — no quarantine at {quarantine}")
-        return 0
-    removed = files = total = 0
+        return 0, 0, 0
+    removed = files = total = skipped = failed = 0
     for child in sorted(quarantine.iterdir()):
+        if child.is_dir() and child.name not in purgeable:
+            skipped += 1
+            print(
+                f"  ⏭ {child.name}: kept in quarantine — "
+                f"{skips.get(child.name, 'not released')}"
+            )
+            continue
         try:
             if child.is_dir():
                 count, size = _tree_size(child)
@@ -456,6 +537,7 @@ def _purge_quarantine(root: Path) -> int:
                 child.unlink()
         except OSError as exc:
             print(f"  ✗ {child.name}: {exc}", file=sys.stderr)
+            failed += 1
             continue
         removed += 1
         files += count
@@ -479,7 +561,186 @@ def _purge_quarantine(root: Path) -> int:
         quarantine.rmdir()  # tidy the (now empty) container
     except OSError:
         pass
-    return removed
+    return removed, skipped, failed
+
+
+def _quarantine_gates(
+    root: Path,
+    plan_records: list[dict[str, Any]],
+    by_plan: dict[str, dict[str, Any]],
+    plan_names: dict[str, str],
+) -> tuple[Path | None, dict[str, set[str]], set[str], dict[str, str]]:
+    """Gate the quarantine against the plan-file gates before unlinking.
+
+    Returns ``(quarantine dir, child → claimants, purgeable children, skip
+    reasons)``. Claimants come from the ``quarantine`` records this tool
+    itself appended to ``<root>/prune-index.jsonl`` (each carries the moved
+    path and the claiming plan ids). A quarantined directory is purgable
+    only when EVERY plan whose frames it carries still passes its gates —
+    a stale archive (gate 2) or a vanished archive folder (gate 1) after
+    ``--apply`` must leave those frames intact. A claimant whose plan file
+    is already gone is vouched for by a surviving manifest (the old
+    move-the-file-out workflow); with neither, the directory's claims are
+    unverifiable and it is kept. A directory with no record at all (moved
+    in by hand) is never purged automatically.
+    """
+    quarantine = root / _QUARANTINE_DIR
+    if not quarantine.is_dir():
+        return None, {}, set(), {}
+    claimants: dict[str, set[str]] = {}
+    index = root / _INDEX_NAME
+    if index.is_file():
+        for line in index.read_text(encoding="utf-8").splitlines():
+            try:
+                record = json.loads(line)
+            except ValueError:
+                continue
+            if record.get("action") == "quarantine" and record.get("quarantine"):
+                claimants[Path(str(record["quarantine"])).name] = set(
+                    record.get("claimants") or []
+                )
+    stale_ids = {r["plan_id"] for r in plan_records if r["stale"]}
+    gate1_ids = {r["plan_id"] for r in plan_records if r["archive_ok"]}
+    gate1_reason = {
+        r["plan_id"]: r["gate_reason"] for r in plan_records if not r["archive_ok"]
+    }
+    file_ids = {r["plan_id"] for r in plan_records}
+    purgeable: set[str] = set()
+    skips: dict[str, str] = {}
+    for child in sorted(quarantine.iterdir()):
+        if not child.is_dir():
+            purgeable.add(child.name)  # loose files: never claimed
+            continue
+        ids = claimants.get(child.name)
+        if ids is None:
+            skips[child.name] = "no quarantine record — inspect manually"
+            continue
+        bad = ""
+        for plan_id in sorted(ids):
+            if plan_id in stale_ids:
+                bad = (
+                    f"{plan_names.get(plan_id, plan_id)} [{plan_id}: archive is stale]"
+                )
+                break
+            if plan_id in file_ids:
+                if plan_id not in gate1_ids:
+                    bad = (
+                        f"{plan_names.get(plan_id, plan_id)} "
+                        f"[{plan_id}: {gate1_reason.get(plan_id, 'no archive folder')}]"
+                    )
+                    break
+            elif plan_id not in by_plan:
+                bad = (
+                    f"{plan_names.get(plan_id, plan_id)} "
+                    f"[{plan_id}: no plan file and no manifest]"
+                )
+                break
+        if bad:
+            skips[child.name] = bad
+        else:
+            purgeable.add(child.name)
+    return quarantine, claimants, purgeable, skips
+
+
+def _sweep_plan_files(
+    records: list[dict[str, Any]],
+    *,
+    root: Path,
+    dirs: list[dict[str, Any]],
+    held_claimants: set[str],
+    purge: bool,
+) -> tuple[int, int, int]:
+    """Print each plan file's final status — the LAST step per plan.
+
+    A file is removable only when its gates pass AND no frame of its plan
+    remains: still on disk in a directory this run would not prune (report)
+    or still present after the purge (``purge``), or inside a quarantine
+    directory the gates kept (``held_claimants``). Under ``purge`` the file
+    is actually unlinked — only after its frames are gone — and every
+    evaluated file appends a ``plan_file_deleted`` record to the root's
+    prune index; a report run writes nothing. Returns
+    ``(removed, kept, failed)``.
+    """
+    verdict_by_dir = {entry["dir"]: entry["verdict"] for entry in dirs}
+    root_resolved = root.resolve()
+    removed = kept = failed = 0
+    for record in records:
+        plan_file = record["file"]
+        if not plan_file.is_file():
+            continue  # already gone: nothing to do for this plan
+        reason = ""
+        if record["stale"] or not record["archive_ok"]:
+            reason = record["gate_reason"]
+        elif record["plan_id"] in held_claimants:
+            reason = "frames still in quarantine"
+        else:
+            for path in record["selected"]:
+                frame = Path(path)
+                if not frame.is_file():
+                    continue  # gone — the state this step waits for
+                if purge:
+                    reason = "frames still present"
+                    break
+                try:
+                    top = frame.resolve().relative_to(root_resolved).parts[0]
+                except (ValueError, IndexError):
+                    reason = "frames still present"  # outside the root
+                    break
+                if verdict_by_dir.get(top) != "prune":
+                    reason = "frames still present"
+                    break
+        if reason:
+            kept += 1
+            print(f"  ⏭ kept plan file {plan_file} ({reason})")
+            if purge:
+                _append_index(
+                    root,
+                    {
+                        "at": _now().isoformat(timespec="seconds"),
+                        "action": "plan-file",
+                        "plan_id": record["plan_id"],
+                        "plan_file": str(plan_file),
+                        "folder": record["folder"],
+                        "plan_file_deleted": False,
+                        "reason": reason,
+                    },
+                )
+            continue
+        if not purge:
+            print(f"  🗄 would remove plan file {plan_file}")
+            continue
+        try:
+            plan_file.unlink()
+        except OSError as exc:
+            print(f"  ✗ cannot remove plan file {plan_file}: {exc}", file=sys.stderr)
+            failed += 1
+            _append_index(
+                root,
+                {
+                    "at": _now().isoformat(timespec="seconds"),
+                    "action": "plan-file",
+                    "plan_id": record["plan_id"],
+                    "plan_file": str(plan_file),
+                    "folder": record["folder"],
+                    "plan_file_deleted": False,
+                    "reason": str(exc),
+                },
+            )
+            continue
+        removed += 1
+        print(f"  🗄 removed plan file {plan_file}")
+        _append_index(
+            root,
+            {
+                "at": _now().isoformat(timespec="seconds"),
+                "action": "plan-file",
+                "plan_id": record["plan_id"],
+                "plan_file": str(plan_file),
+                "folder": record["folder"],
+                "plan_file_deleted": True,
+            },
+        )
+    return removed, kept, failed
 
 
 def _verify_remote(dest: Path, remote: str, *, apply: bool) -> int:
@@ -615,9 +876,10 @@ def _build_parser() -> argparse.ArgumentParser:
         prog="nina-purge",
         description=(
             "Retire archived frames from the N.I.N.A. imaging root "
-            "(quarantine first, delete only on request) and prune local "
-            "archive folders a verified cloud copy holds. Dry-run by "
-            "default; --apply executes, --purge really deletes."
+            "(quarantine first, delete only on request) — including each "
+            "purged plan's original plan JSON — and prune local archive "
+            "folders a verified cloud copy holds. Dry-run by default; "
+            "--apply executes, --purge really deletes."
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=(
@@ -657,7 +919,10 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--purge",
         action="store_true",
-        help="delete the quarantine for real (independent of --apply)",
+        help=(
+            "delete the quarantine for real and remove each purged plan's "
+            "original plan JSON (independent of --apply; idempotent)"
+        ),
     )
     parser.add_argument(
         "--prune-dest",
@@ -720,15 +985,16 @@ async def run(args: argparse.Namespace) -> int:
 
     # Claims: invert the archive's own selection. A plan-shaped file that
     # fails to load aborts — its claims are unknown, and a deletion made
-    # on unknown claims is unsafe. Release = archived AND (complete now
-    # OR archived under --all): the manifest answers "archived", the
-    # shared verdict answers "still finished", and the waiver covers a
-    # deliberately shipped incomplete plan.
+    # on unknown claims is unsafe. Every file also runs its archive gates
+    # (see _plan_file_gate) BEFORE anything is deleted; a stale archive
+    # refuses the whole plan id.
     claims: dict[str, set[str]] = {}
     plan_names: dict[str, str] = {}
     released: set[str] = set()
     notes: dict[str, str] = {}
     errors: list[tuple[Path, str]] = []
+    plan_records: list[dict[str, Any]] = []
+    refusals: list[tuple[Path, str]] = []
     ignored = 0
     for plan_file in [p for p in _plan_files(project_dir) if not _inside(p, dest)]:
         try:
@@ -741,24 +1007,28 @@ async def run(args: argparse.Namespace) -> int:
             continue
         plan_id = plan._base_plan_id()
         plan_names.setdefault(plan_id, plan_file.name)
-        manifest = by_plan.get(plan_id)
-        if manifest is None:
-            # Not archived: nothing else can release it, so skip the
-            # (expensive) completeness recomputation.
-            notes[plan_id] = "not archived"
-        else:
-            waived = manifest.get("complete") is False  # only an explicit --all
-            complete_now, counts = _progress_facts(plan, rows, now)
-            if waived or complete_now:
-                released.add(plan_id)
-            else:
-                deficit = ", ".join(
-                    f"{t.upper()} {n['acquired']}/{n['expected']}"
-                    for t, n in counts.items()
-                    if n["acquired"] < n["expected"]
-                )
-                notes[plan_id] = f"archived, incomplete now ({deficit})"
-        for frames in _select_frames(plan, rows, now).values():
+        folder, archive_ok, stale, gate_reason = _plan_file_gate(plan_file, plan, dest)
+        if stale:
+            refusals.append((plan_file, gate_reason))
+        selected = _select_frames(plan, rows, now)
+        plan_records.append(
+            {
+                "file": plan_file,
+                "plan": plan,
+                "plan_id": plan_id,
+                "folder": folder,
+                "archive_ok": archive_ok,
+                "stale": stale,
+                "gate_reason": gate_reason,
+                "selected": [
+                    str(row["file_path"])
+                    for frames in selected.values()
+                    for row in frames
+                    if row.get("file_path")
+                ],
+            }
+        )
+        for frames in selected.values():
             for row in frames:
                 file_path = row.get("file_path")
                 if file_path:
@@ -774,6 +1044,50 @@ async def run(args: argparse.Namespace) -> int:
             "✗ fix or move out the file(s) above; nothing was purged", file=sys.stderr
         )
         return 1
+
+    if refusals:
+        # Gate 2: the plan file and its archive disagree — refuse the whole
+        # plan (frames held, file kept), keep sweeping the other plans.
+        for plan_file, reason in refusals:
+            print(
+                f"✗ {plan_file.name}: {reason} — refusing to release or "
+                "remove this plan's frames or file",
+                file=sys.stderr,
+            )
+
+    # Release: archived AND gates pass AND (complete now OR archived under
+    # --all). The manifest answers "archived", the shared verdict answers
+    # "still finished", the waiver covers a deliberately shipped incomplete
+    # plan, and the gates keep a stale or vanished archive from releasing
+    # anything. Computed per plan id after the loop: any file carrying a
+    # stale copy refuses the whole id, while an id archived through at least
+    # one gate-passing file stays eligible.
+    for plan_id in sorted({r["plan_id"] for r in plan_records}):
+        records = [r for r in plan_records if r["plan_id"] == plan_id]
+        if any(r["stale"] for r in records):
+            notes[plan_id] = "archive is stale, re-run nina-archive --force first"
+            continue
+        manifest = by_plan.get(plan_id)
+        if manifest is None:
+            # Not archived: nothing else can release it, so skip the
+            # (expensive) completeness recomputation.
+            notes[plan_id] = "not archived"
+            continue
+        passing = [r for r in records if r["archive_ok"]]
+        if not passing:
+            notes[plan_id] = records[0]["gate_reason"]
+            continue
+        waived = manifest.get("complete") is False  # only an explicit --all
+        complete_now, counts = _progress_facts(passing[0]["plan"], rows, now)
+        if waived or complete_now:
+            released.add(plan_id)
+        else:
+            deficit = ", ".join(
+                f"{t.upper()} {n['acquired']}/{n['expected']}"
+                for t, n in counts.items()
+                if n["acquired"] < n["expected"]
+            )
+            notes[plan_id] = f"archived, incomplete now ({deficit})"
 
     # BAD_ twins: the CSV names the pre-rename file, so read_imaging_csv
     # dropped the row; the twin on disk is N.I.N.A.'s reject — garbage
@@ -855,9 +1169,9 @@ async def run(args: argparse.Namespace) -> int:
             )
             if hinted:
                 print(
-                    "📌 move the quarantined plan(s)' files out of the "
-                    "project directory (their rows went with the frames; "
-                    "they now read as NEVER_SHOT):"
+                    "📌 the quarantined plan(s)' files read as NEVER_SHOT "
+                    "until nina-purge --purge removes them automatically "
+                    "(their verbatim plan.json is in the archive):"
                 )
                 for name in hinted:
                     print(f"     {name}")
@@ -865,7 +1179,33 @@ async def run(args: argparse.Namespace) -> int:
         print("\n🔍 nothing to quarantine")
 
     if args.purge and not errors_occurred:
-        actionable += _purge_quarantine(root)
+        # Gates first (they were checked before any deletion above): only
+        # directories whose claiming plans still pass them are unlinked.
+        quarantine_dir, claimants, purgeable, skip_reasons = _quarantine_gates(
+            root, plan_records, by_plan, plan_names
+        )
+        purged, kept_dirs, failed = _purge_quarantine(root, purgeable, skip_reasons)
+        actionable += purged
+        if kept_dirs or failed:
+            print(
+                f"  ⚠ {kept_dirs + failed} quarantined item(s) kept — fix "
+                "the reason(s) above, then re-run nina-purge --purge",
+                file=sys.stderr,
+            )
+            errors_occurred = True
+        # Plan files: the FINAL step per plan — only once its frames are
+        # actually gone. Anything still on disk (or still quarantined in a
+        # kept directory) keeps its file for the re-run.
+        held_ids: set[str] = set()
+        if quarantine_dir is not None and quarantine_dir.is_dir():
+            for child in quarantine_dir.iterdir():
+                held_ids |= claimants.get(child.name, set())
+        swept, _kept, sweep_failed = _sweep_plan_files(
+            plan_records, root=root, dirs=dirs, held_claimants=held_ids, purge=True
+        )
+        actionable += swept
+        if sweep_failed:
+            errors_occurred = True
 
     if args.verify_remote:
         try:
@@ -887,19 +1227,37 @@ async def run(args: argparse.Namespace) -> int:
 
     # A pure verdict-table run (no action flags) is actionable when it
     # FOUND work: exit 0 means "something would be quarantined" per the
-    # documented contract. Explicit legs count only their own results, so
-    # e.g. `--purge` on an empty quarantine honestly exits 1.
+    # documented contract. Explicit legs count only their own results.
     if not (args.apply or args.purge or args.verify_remote or args.prune_dest):
         actionable += len(prunable)
+        # Plan-file preview: what the --apply → --purge chain would remove.
+        # Not counted as actionable — only --purge ever removes a file.
+        _qdir, q_claimants, q_purgeable, q_skips = _quarantine_gates(
+            root, plan_records, by_plan, plan_names
+        )
+        for dirname, why in sorted(q_skips.items()):
+            print(f"  ⏭ {dirname}: would keep in quarantine — {why}")
+        held_ids = {
+            plan_id
+            for dirname, ids in q_claimants.items()
+            if dirname not in q_purgeable
+            for plan_id in ids
+        }
+        _sweep_plan_files(
+            plan_records, root=root, dirs=dirs, held_claimants=held_ids, purge=False
+        )
 
-    if errors_occurred:
+    if errors_occurred or refusals:
         return 1
     if actionable == 0:
         pure_report = not (
             args.apply or args.purge or args.verify_remote or args.prune_dest
         )
         print("\n🔍 nothing to do" + (" (dry run)" if pure_report else ""))
-        return 1
+        # --purge is idempotent: an already-purged state is success, not
+        # "nothing to do". Report/--apply/dest legs keep the chainable
+        # contract: 1 means nothing was found to act on.
+        return 0 if args.purge else 1
     return 0
 
 

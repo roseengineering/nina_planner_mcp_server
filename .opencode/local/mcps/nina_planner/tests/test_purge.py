@@ -14,14 +14,19 @@ unarchived frames held, --all waiver releases, re-opened (archived but
 incomplete-now) plans held until their plan file moves out, pooled
 calibration held by an unarchived plan, BAD_ twins ride, orphans behave,
 the quarantine hides frames from attribution, and the rclone receipt
-gates the dest leg.
+gates the dest leg. PurgePlanFileTest covers the plan-file leg: the
+archive gates (folder + byte-identical plan.json) run before any frame
+is deleted, ``--purge`` removes the original plan JSON only after its
+frames are gone, and every refusal keeps frames and file intact.
 """
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import io
 import json
+import shutil
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -29,8 +34,10 @@ from unittest import mock
 from test_archive import ArchiveBase, _plan
 
 from nina_planner import archive as archive_mod
+from nina_planner import metadata as metadata_mod
 from nina_planner import purge as purge_mod
 from nina_planner.models.plan import ObservationPlan
+from nina_planner.tools import plans as plans_mod
 
 
 class PurgeBase(ArchiveBase):
@@ -318,17 +325,20 @@ class PurgeApplyTest(PurgeBase):
         self.assertEqual(code, 0, out)
         self.assertIn("purged", out)
         self.assertFalse(self.quarantine.exists())
+        self.assertIn("removed plan file", out)  # plan JSON rides out last
+        self.assertFalse((self.proj / "m31.json").exists())
         actions = [r["action"] for r in self.index_records()]
-        self.assertEqual(actions, ["quarantine", "purge"])
+        self.assertEqual(actions, ["quarantine", "purge", "plan-file"])
+        self.assertTrue(self.index_records()[-1]["plan_file_deleted"])
 
         code, out, _err = self.run_purge("--purge")
-        self.assertEqual(code, 1)
+        self.assertEqual(code, 0)  # idempotent: nothing left is success
         self.assertIn("nothing to purge", out)
 
-    def test_purge_without_quarantine_exits_one(self):
+    def test_purge_without_quarantine_is_idempotent(self):
         code, out, _err = self.run_purge("--purge")
 
-        self.assertEqual(code, 1)
+        self.assertEqual(code, 0)
         self.assertIn("nothing to purge", out)
         self.assertIn("nothing to do", out)
 
@@ -456,6 +466,220 @@ class PurgeReleaseTest(PurgeBase):
         self.assertIn("never pruned", out)
         # Inside-root frames still prunable → overall verdict unaffected.
         self.assertEqual(code, 0, out)
+
+
+# ------------------------------------------ plan-file removal (--purge)
+
+
+class PurgePlanFileTest(PurgeBase):
+    """The plan-file leg: gates first, frames, then the original JSON.
+
+    Mirrors the feature contract: ``--purge`` removes a completed plan's
+    original plan JSON only AFTER its frames are gone and the archive
+    folder ``<dest>/<stem>__<plan-id>/plan.json`` is byte-identical to
+    it (the durable copy); any refusal leaves frames and file intact and
+    exits 1, while a re-run finishes the job.
+    """
+
+    def archive_plan_path(self) -> Path:
+        return self.dest / "m31__plan-abc123" / "plan.json"
+
+    def plan_file_records(self) -> list[dict]:
+        return [r for r in self.index_records() if r["action"] == "plan-file"]
+
+    def audit(self) -> dict:
+        async def _resolve():
+            return self.root
+
+        with mock.patch.object(metadata_mod, "resolve_imaging_root", _resolve):
+            return asyncio.run(plans_mod.audit_plans(project_dir=str(self.proj)))
+
+    # ----------------------------------------------------------- happy path
+
+    def test_purge_removes_plan_file_after_frames(self):
+        self.seed_full()
+        self.assertEqual(self.run_archive(), 0)
+        archived_bytes = self.archive_plan_path().read_bytes()
+        self.assertEqual(self.run_purge("--apply")[0], 0)
+
+        code, out, _err = self.run_purge("--purge")
+
+        self.assertEqual(code, 0, out)
+        self.assertIn("removed plan file", out)
+        self.assertIn(str(self.proj / "m31.json"), out)
+        self.assertFalse((self.proj / "m31.json").exists())  # original gone
+        self.assertEqual(self.root_dirs(), [])  # frames gone
+        self.assertFalse(self.quarantine.exists())
+        # The archived plan.json — the copy to restore from — is untouched.
+        self.assertEqual(self.archive_plan_path().read_bytes(), archived_bytes)
+        records = self.plan_file_records()
+        self.assertEqual(len(records), 1)
+        self.assertTrue(records[0]["plan_file_deleted"])
+        self.assertEqual(records[0]["plan_id"], "plan-abc123")
+
+    def test_dry_run_reports_would_remove_plan_file(self):
+        self.seed_full()
+        self.assertEqual(self.run_archive(), 0)
+
+        code, out, _err = self.run_purge()
+
+        self.assertEqual(code, 0, out)
+        self.assertIn("would remove plan file", out)
+        self.assertIn(str(self.proj / "m31.json"), out)
+        self.assertTrue((self.proj / "m31.json").is_file())  # nothing deleted
+        self.assertEqual(self.root_dirs(), ["M31_plan-abc123_"])
+        self.assertFalse(self.purge_index.exists())  # a dry run writes nothing
+
+    def test_report_keeps_unarchived_plan_file(self):
+        self.seed_full()
+
+        code, out, _err = self.run_purge()
+
+        self.assertEqual(code, 1)
+        self.assertIn("kept plan file", out)
+        self.assertIn("no archive folder", out)
+        self.assertTrue((self.proj / "m31.json").is_file())
+
+    def test_re_run_after_full_purge_is_clean_success(self):
+        self.seed_full()
+        self.assertEqual(self.run_archive(), 0)
+        self.assertEqual(self.run_purge("--apply")[0], 0)
+        self.assertEqual(self.run_purge("--purge")[0], 0)
+
+        code, out, err = self.run_purge("--purge")
+
+        self.assertEqual(code, 0)
+        self.assertIn("nothing to purge", out)
+        self.assertNotIn("✗", out + err)
+        self.assertNotIn("⚠", err)
+
+    # ------------------------------------------------------------- refusals
+
+    def test_plan_edited_after_archive_refused(self):
+        self.seed_full()
+        self.assertEqual(self.run_archive(), 0)
+        self.assertEqual(self.run_purge("--apply")[0], 0)
+        plan_path = self.proj / "m31.json"
+        data = json.loads(plan_path.read_text(encoding="utf-8"))
+        data["light_frames"][0]["total_count"] = 21
+        plan_path.write_text(json.dumps(data, indent=2), encoding="utf-8")
+
+        code, out, err = self.run_purge("--purge")
+
+        self.assertEqual(code, 1)
+        self.assertIn("archive is stale, re-run nina-archive --force first", out + err)
+        self.assertIn("kept in quarantine", out)  # frames intact
+        self.assertIn("kept plan file", out)  # plan file intact
+        self.assertTrue((self.proj / "m31.json").is_file())
+        self.assertTrue((self.quarantine / "M31_plan-abc123_").is_dir())
+        self.assertFalse((self.root / "M31_plan-abc123_").exists())
+        self.assertFalse(self.plan_file_records()[-1]["plan_file_deleted"])
+
+    def test_archive_folder_missing_refused(self):
+        self.seed_full()
+        self.assertEqual(self.run_archive(), 0)
+        self.assertEqual(self.run_purge("--apply")[0], 0)
+        shutil.rmtree(self.dest / "m31__plan-abc123")
+
+        code, out, _err = self.run_purge("--purge")
+
+        self.assertEqual(code, 1)
+        self.assertIn("kept in quarantine", out)
+        self.assertIn("no archive folder", out)
+        self.assertIn("kept plan file", out)
+        self.assertTrue((self.quarantine / "M31_plan-abc123_").is_dir())
+        self.assertTrue((self.proj / "m31.json").is_file())
+
+    def test_archive_plan_json_missing_refused(self):
+        self.seed_full()
+        self.assertEqual(self.run_archive(), 0)
+        self.assertEqual(self.run_purge("--apply")[0], 0)
+        self.archive_plan_path().unlink()
+
+        code, out, _err = self.run_purge("--purge")
+
+        self.assertEqual(code, 1)
+        self.assertIn("kept in quarantine", out)
+        self.assertIn("no plan.json in archive folder", out)
+        self.assertIn("kept plan file", out)
+        self.assertTrue((self.quarantine / "M31_plan-abc123_").is_dir())
+        self.assertTrue((self.proj / "m31.json").is_file())
+
+    def test_frame_deletion_failure_keeps_plan_file(self):
+        self.seed_full()
+        self.assertEqual(self.run_archive(), 0)
+        self.assertEqual(self.run_purge("--apply")[0], 0)
+
+        def _boom(path, *args, **kwargs):
+            raise OSError("disk said no")
+
+        with mock.patch.object(purge_mod.shutil, "rmtree", side_effect=_boom):
+            code, out, err = self.run_purge("--purge")
+
+        self.assertEqual(code, 1)
+        self.assertIn("kept plan file", out)  # kept so a re-run can finish
+        self.assertIn("re-run nina-purge --purge", err)
+        self.assertTrue((self.proj / "m31.json").is_file())
+        self.assertTrue((self.quarantine / "M31_plan-abc123_").is_dir())
+
+        code, out, _err = self.run_purge("--purge")  # re-run finishes the job
+        self.assertEqual(code, 0, out)
+        self.assertIn("removed plan file", out)
+        self.assertFalse((self.proj / "m31.json").exists())
+        self.assertFalse(self.quarantine.exists())
+
+    # ------------------------------------------------------- same-folder edge
+
+    def test_only_byte_identical_plan_files_are_removed(self):
+        """Two plan files map to one archive folder: only matching ones go."""
+        self.seed_full()
+        self.assertEqual(self.run_archive(), 0)
+        self.assertEqual(self.run_purge("--apply")[0], 0)
+        self.assertEqual(self.run_purge("--purge")[0], 0)  # m31.json removed
+        archived = self.archive_plan_path().read_bytes()
+        # Back to two files in the project: one byte-identical to the
+        # archive, one edited after it — both map to m31__plan-abc123/.
+        (self.proj / "m31.json").write_bytes(archived)
+        stale = json.loads(archived)
+        stale["light_frames"][0]["total_count"] = 99
+        (self.proj / "m31__plan-abc123.json").write_text(
+            json.dumps(stale, indent=2), encoding="utf-8"
+        )
+
+        code, out, err = self.run_purge("--purge")
+
+        self.assertEqual(code, 1)
+        self.assertFalse((self.proj / "m31.json").exists())  # identical → removed
+        self.assertTrue((self.proj / "m31__plan-abc123.json").is_file())  # stale → kept
+        self.assertIn("removed plan file", out)
+        self.assertIn("kept plan file", out)
+        self.assertIn("archive is stale, re-run nina-archive --force first", out + err)
+        by_file = {
+            r["plan_file"]: r["plan_file_deleted"] for r in self.plan_file_records()
+        }
+        self.assertTrue(by_file[str(self.proj / "m31.json")])
+        self.assertFalse(by_file[str(self.proj / "m31__plan-abc123.json")])
+
+    # ------------------------------------------------------------- audit
+
+    def test_audit_plans_does_not_list_purged_plan(self):
+        self.seed_full()
+        self.assertEqual(self.run_archive(), 0)
+        self.assertEqual(self.run_purge("--apply")[0], 0)
+
+        # The bug this feature fixes: after --apply the leftover plan file
+        # reads as never-shot / left-to-do — its rows went with the frames.
+        mid = self.audit()
+        self.assertEqual([e["plan_id"] for e in mid["never_shot"]], ["plan-abc123"])
+        self.assertTrue(any(e["reason"] == "NEVER_SHOT" for e in mid["left_to_do"]))
+        self.assertFalse(mid["all_saved"])
+
+        self.assertEqual(self.run_purge("--purge")[0], 0)
+
+        after = self.audit()
+        self.assertEqual(after["never_shot"], [])
+        self.assertEqual(after["left_to_do"], [])
+        self.assertTrue(after["all_saved"])
 
 
 # ------------------------------------------------- the staging (dest) leg
