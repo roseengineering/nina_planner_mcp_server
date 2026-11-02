@@ -18,6 +18,7 @@ from .tools.plans import (
     get_imaging_metadata,
     get_plan_progress,
     list_plans,
+    pin_plan_id,
     write_mosaic_plan,
     write_plan_file,
 )
@@ -47,6 +48,7 @@ __all__ = [
     "list_site_profiles",
     "load_sequence",
     "mcp",
+    "pin_plan_id",
     "plans",
     "resolve_target",
     "screenshot_dashboard",

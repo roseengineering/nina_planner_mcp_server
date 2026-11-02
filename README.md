@@ -36,6 +36,7 @@ Each table gives a one-line summary; details for the larger tools are in [Tool D
 | `list_plans(project_dir?)` | List every observation plan file in the project directory with its `file`, absolute `path`, `plan_id`, `target`, `intent`, `pointing_count`, and mtime — enumerate plans without globbing. Read-only. |
 | `write_plan_file(plan)` | Validate and write an observation plan JSON file for later use by `load_sequence`. Creates the file only; loads and starts nothing. |
 | `write_mosaic_plan(plan_path, mosaic_csv, output_path?)` | Expand a base plan into a multi-pointing mosaic plan from a Telescopius CSV. Creates the file only. |
+| `pin_plan_id(plan_path)` | Freeze a blank-id plan's current derived `plan_id` into the file before editing it, so already-shot frames keep attributing. No-op when already pinned. |
 | `get_plan_progress(file_path, max_hfr?, min_detected_stars?, max_guiding_rms_arcsec?)` | Per-frame-type acquired/remaining counts for every pointing of a plan. Use before `load_sequence` to see what still needs acquiring. Read-only. |
 | `audit_plans(plans?, project_dir?, types?, include_orphans=true)` | **Whole-project capture audit in one call**: reconcile plan expectations with CSV attribution (plus the one filesystem fact the CSV cannot hold — `bad` rejects) for every plan into an `all_saved` verdict plus `left_to_do` (including never-shot plans) and `blocked` work lists, and a `never_shot` list of plans with no frames at all. Read-only. |
 | `get_imaging_metadata(file_path, pointing_index=1, image_type="light")` | Per-exposure quality, guiding, pointing, and weather metrics for one pointing of a plan. Read-only. |
@@ -344,6 +345,22 @@ nina-archive --imaging-root /mnt/c/Users/me/Documents/N.I.N.A   # NINA down
 - 🚪 **Exit codes:** `0` archived (or already archived), `1` nothing archivable or an error occurred (also printed per plan to stderr), `2` bad arguments — chainable, e.g. `nina-archive --dest ./archive && rclone sync ./archive remote:nina-archive`.
 - Unrelated project JSON (opencode configs etc.) is ignored silently during discovery; naming a file explicitly makes any load failure an error.
 
+## 📌 `nina-pin-id` — Freeze a Plan's Derived Id
+
+A plan file with a blank `plan_id` derives its id from a content hash, so **any edit changes the id** — and the frames already shot carry the old id as the `_{plan_id}_` token in their recorded paths, so after an edit they attribute to no live plan (`get_plan_progress` counts zero acquired, `nina-archive` builds a different folder name). Run `nina-pin-id` **before** editing a completed plan:
+
+```
+nina-pin-id plans/m15_globular-cluster_20261003T112008.json   # freeze the current id
+nina-pin-id --dry-run plan1.json plan2.json                   # report only, write nothing
+```
+
+- 🎯 **Only `plan_id` changes:** the plan's current derived id (`_base_plan_id()`) is stamped into the blank `plan_id` field and the file is rewritten with the same serializer `write_plan_file` uses — atomically (temp file in the plan's own folder, then `os.replace`), preserving file permissions. Nothing else about the plan is touched, so the pin happens *before* the edit it protects.
+- ⏭️ **Idempotent:** a plan that already carries an id (pinned or hand-written) prints `already pinned: <id>` and is left byte-for-byte untouched — an explicit id is never overwritten.
+- ♻️ **Edit freely afterwards:** raise a group's `total_count`, add more lights, reword the intent — the id stays put, so frames attributed before the pin stay attributed after it and `nina-archive --force` rebuilds the same `<stem>__<plan-id>` folder.
+- ⚠️ **Pin BEFORE editing:** once a blank-id plan is edited its old hash cannot be recomputed; it survives only in an archive folder name or in frame paths (they contain `_<plan_id>_`).
+- 📡 **MCP tool:** `pin_plan_id(plan_path)` does the same for one plan from the server.
+- 🚪 **Exit codes:** `0` pinned (or already pinned / dry run), `1` a plan could not be loaded or written, `2` bad arguments — chainable, e.g. `nina-pin-id plan.json && <edit>`.
+
 ## 🧹 `nina-purge` — Retire Archived Frames
 
 The counterpart to `nina-archive`: once frames are safely archived (and, for the staging leg, verified on the cloud), `nina-purge` frees the disk they occupy — **quarantine first, delete only on request.** Dry-run by default; `--apply` executes, `--purge` really deletes.
@@ -372,7 +389,7 @@ nina-purge --prune-dest --apply               # retire local folders the receipt
 - 📁 **Image file pattern:** for **light frames only**, the N.I.N.A. profile's `ImageFileSettings.FilePattern` must put `$$TARGETNAME$$` in a path segment so frames can be attributed to a plan (e.g. `$$TARGETNAME$$\$$IMAGETYPE$$\...`). Attribution accepts the token in **any** segment — directory or filename — but put it in a **directory**, and let that directory be a direct child of the image-save path (the usual `<target> _<plan-id>_` landing folder): `audit_plans` claims landing directories by the names of the top-level directories under the image-save path, so a filename-only token (or a token nested one level deeper) attributes fine on the CSV side yet still lands the folder in `orphans`, flagged as belonging to no plan. Its frames are counted correctly under that entry — the disk and CSV views no longer disagree about how many there are — but the folder will keep reading as unclaimed until the pattern puts the token in that directory. Calibration frames (dark, bias, and flat) do not require this token; they are matched by frame type and exposure settings within the calibration window (darks by exposure time, flats by filter alone).
 - ✅ **Quality thresholds:** `max_hfr`, `min_detected_stars`, and `max_guiding_rms_arcsec` (all optional) exclude light frames that fail the thresholds from the acquired count. Frames missing the quality fields are excluded whenever a threshold is set (fail-closed). Thresholds are applied only to light frames — calibration frames have no star quality.
 - 👎 **Manually failing a frame:** delete (or move using thumbs down icon) the image file on disk — e.g. a bad `.fits`/`.tif`. The metadata row stays in the CSV (the plugin only appends), but it is omitted when the metadata is read, so progress no longer counts that frame as acquired and the next `mode="remaining"` load re-acquires it.
-- 💾 **The plan file is persistent.** You can inspect, edit, and reuse it across sessions. Changing the file will, however, alter its derived `plan_id`, which is calculated when `plan_id` is missing. A hand-written `plan_id` must satisfy the same charset rule (empty, or ASCII letters, digits, `.` and `-`) — anything else, `_` included, is refused when the plan is loaded.
+- 💾 **The plan file is persistent.** You can inspect, edit, and reuse it across sessions. Changing the file will, however, alter its derived `plan_id`, which is calculated when `plan_id` is missing — run [`nina-pin-id`](#-nina-pin-id--freeze-a-plans-derived-id) first to freeze the id so already-shot frames keep attributing. A hand-written `plan_id` must satisfy the same charset rule (empty, or ASCII letters, digits, `.` and `-`) — anything else, `_` included, is refused when the plan is loaded.
 - 🧩 **opencode.json variants:** the repo contains example opencode.json variants: `win_opencode.json` for Windows, `wsl_opencode.json` for WSL, and `smb_opencode.json` for, say, a Mac accessing a N.I.N.A. VM with its image file directory mapped back over SMB.
 
 ## 🔔 `nina-notify` — OpenCode v2 Autonomous Plugin

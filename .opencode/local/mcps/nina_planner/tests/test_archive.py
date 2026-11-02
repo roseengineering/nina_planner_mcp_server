@@ -58,6 +58,10 @@ class ArchiveBase(unittest.TestCase):
         self.dest = base / "archive-out"
         self.proj.mkdir()
         self.root.mkdir()
+        # Landing-directory name (the plan-id token N.I.N.A. stamps into
+        # $$TARGETNAME$$). Subclasses pinning a blank-id plan override this
+        # with the plan's DERIVED id so seeded frames attribute to it.
+        self.token_dir = "M31_plan-abc123_"
 
     # -------------------------------------------------------- fixtures
 
@@ -67,7 +71,7 @@ class ArchiveBase(unittest.TestCase):
         return path
 
     def frame(self, image_type: str, name: str, *, date: str = "2026-09-20") -> Path:
-        directory = self.root / "M31_plan-abc123_" / date / image_type
+        directory = self.root / self.token_dir / date / image_type
         directory.mkdir(parents=True, exist_ok=True)
         path = directory / name
         path.write_bytes(b"fits-bytes:" + name.encode())
@@ -85,7 +89,7 @@ class ArchiveBase(unittest.TestCase):
     def write_metadata(
         self, image_type: str, rows: list[dict[str, str]], *, date: str = "2026-09-20"
     ) -> None:
-        directory = self.root / "M31_plan-abc123_" / date / image_type
+        directory = self.root / self.token_dir / date / image_type
         directory.mkdir(parents=True, exist_ok=True)
         fieldnames = sorted({k for row in rows for k in row})
         with (directory / "ImageMetaData.csv").open(
@@ -122,7 +126,7 @@ class ArchiveBase(unittest.TestCase):
                 {
                     "ImageType": "LIGHT",
                     "FilePath": str(
-                        self.root / "M31_plan-abc123_" / "2026-09-20" / "LIGHT" / name
+                        self.root / self.token_dir / "2026-09-20" / "LIGHT" / name
                     ),
                     "FilterName": "L",
                     "Duration": "60.0",
@@ -142,7 +146,7 @@ class ArchiveBase(unittest.TestCase):
                 {
                     "ImageType": "FLAT",
                     "FilePath": str(
-                        self.root / "M31_plan-abc123_" / "2026-09-20" / "FLAT" / name
+                        self.root / self.token_dir / "2026-09-20" / "FLAT" / name
                     ),
                     "FilterName": "L",
                     "Duration": "2.0",
@@ -160,7 +164,7 @@ class ArchiveBase(unittest.TestCase):
                 {
                     "ImageType": "DARK",
                     "FilePath": str(
-                        self.root / "M31_plan-abc123_" / "2026-09-20" / "DARK" / name
+                        self.root / self.token_dir / "2026-09-20" / "DARK" / name
                     ),
                     "Duration": "60.0",
                     "ExposureStartUTC": "2026-09-21T03:00:00Z",
@@ -177,7 +181,7 @@ class ArchiveBase(unittest.TestCase):
                 {
                     "ImageType": "BIAS",
                     "FilePath": str(
-                        self.root / "M31_plan-abc123_" / "2026-09-20" / "BIAS" / name
+                        self.root / self.token_dir / "2026-09-20" / "BIAS" / name
                     ),
                     "Duration": "0.0",
                     "ExposureStartUTC": "2026-09-21T03:30:00Z",

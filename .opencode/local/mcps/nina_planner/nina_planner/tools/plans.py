@@ -18,6 +18,7 @@ from ..imaging import (
 from ..models.frame import FrameStats
 from ..models.plan import ObservationPlan
 from ..mosaic import load_pointings
+from ..pin_id import pin_plan_file
 from ..progress import (
     _light_target_matches,
     filter_metadata_rows,
@@ -194,6 +195,12 @@ async def write_mosaic_plan(
     return (
         f"Mosaic plan successfully written to {path}: {len(plan.pointings)} pointing(s)"
     )
+
+
+@mcp.tool()
+async def pin_plan_id(plan_path: str) -> str:
+    """Stamps the plan file's current derived plan_id into its plan_id field, changing nothing else — the MCP equivalent of running `nina-pin-id` on the file. A plan with a blank plan_id derives its id from a content hash, so any edit (more lights, a raised total_count) silently changes the id and orphans the frames already shot under it (their recorded paths carry the `_{plan_id}_` token); pinning freezes the id first so the plan can be edited while already-shot frames keep attributing and `nina-archive` keeps building the same `<stem>__<plan-id>` folder. Pin BEFORE editing: once a blank-id plan is edited its old hash cannot be recomputed (it survives only in an archive folder name or in frame paths, which contain `_<plan_id>_`). A plan that already carries a plan_id is a no-op ('already pinned: <id>') — a hand-written plan_id is never overwritten. The file is rewritten via an atomic temp-file rename using the same serializer write_plan_file uses. Returns the message 'pinned <path>: <id>' or 'already pinned: <id>'. Use the `nina-pin-id` CLI for batch pinning or a dry run."""
+    return await pin_plan_file(plan_path)
 
 
 @mcp.tool()
