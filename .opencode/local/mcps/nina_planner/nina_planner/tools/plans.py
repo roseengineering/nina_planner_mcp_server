@@ -1,4 +1,5 @@
 import json
+import os
 import re
 from datetime import UTC, datetime
 from pathlib import Path
@@ -1408,6 +1409,32 @@ async def list_plans(project_dir: str | None = None) -> dict[str, Any]:
     res = {"plans": entries, "errors": errors}
     client.log_payload("Plans:", json.dumps(res, indent=2))
     return res
+
+
+_ARCHIVE_SETTING_NAMES = ("NINA_ARCHIVE_DEST", "NINA_UPLOAD_CMD", "NINA_VERIFY_CMD")
+
+
+@mcp.tool()
+async def get_archive_settings() -> dict[str, Any]:
+    """Returns the archive/upload settings from this server's environment (the `environment` block of its opencode.json entry). Runs nothing and touches no files.
+
+    - ``NINA_ARCHIVE_DEST``: the local folder `nina-archive --dest` writes to (``~`` is expanded).
+    - ``NINA_UPLOAD_CMD``: the user's own command that uploads that folder to cloud storage (gcloud, rclone, aws ...).
+    - ``NINA_VERIFY_CMD``: the user's own command that confirms the upload is complete. Purge must not proceed without it.
+
+    Returns ``settings`` (name -> value, only those set), ``missing`` (names that are unset or blank) and ``ready`` (True only when all three are set). Values are returned verbatim because they are the user's own configuration; keep credentials in the cloud tool's own config, not in these variables.
+    """
+    settings = {
+        name: os.environ[name].strip()
+        for name in _ARCHIVE_SETTING_NAMES
+        if os.environ.get(name, "").strip()
+    }
+    if "NINA_ARCHIVE_DEST" in settings:
+        settings["NINA_ARCHIVE_DEST"] = str(
+            Path(settings["NINA_ARCHIVE_DEST"]).expanduser()
+        )
+    missing = [name for name in _ARCHIVE_SETTING_NAMES if name not in settings]
+    return {"settings": settings, "missing": missing, "ready": not missing}
 
 
 # sequence tools
