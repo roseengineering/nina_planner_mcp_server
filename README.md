@@ -37,6 +37,7 @@ Each table gives a one-line summary; details for the larger tools are in [Tool D
 | `write_plan_file(plan)` | Validate and write an observation plan JSON file for later use by `load_sequence`. Creates the file only; loads and starts nothing. |
 | `write_mosaic_plan(plan_path, mosaic_csv, output_path?)` | Expand a base plan into a multi-pointing mosaic plan from a Telescopius CSV. Creates the file only. |
 | `pin_plan_id(plan_path)` | Freeze a blank-id plan's current derived `plan_id` into the file before editing it, so already-shot frames keep attributing. No-op when already pinned. |
+| `get_archive_settings()` | Read `NINA_ARCHIVE_DEST`, `NINA_UPLOAD_CMD` and `NINA_VERIFY_CMD` from the server's `environment` (opencode.json). Runs nothing; returns `settings`, `missing`, `ready` for the `archive-lifecycle` skill. |
 | `get_plan_progress(file_path, max_hfr?, min_detected_stars?, max_guiding_rms_arcsec?)` | Per-frame-type acquired/remaining counts for every pointing of a plan. Use before `load_sequence` to see what still needs acquiring. Read-only. |
 | `audit_plans(plans?, project_dir?, types?, include_orphans=true)` | **Whole-project capture audit in one call**: reconcile plan expectations with CSV attribution (plus the one filesystem fact the CSV cannot hold — `bad` rejects) for every plan into an `all_saved` verdict plus `left_to_do` (including never-shot plans) and `blocked` work lists, and a `never_shot` list of plans with no frames at all. Read-only. |
 | `get_imaging_metadata(file_path, pointing_index=1, image_type="light")` | Per-exposure quality, guiding, pointing, and weather metrics for one pointing of a plan. Read-only. |
@@ -494,6 +495,7 @@ You are the automated observatory controller. The observatory runs NINA via the 
 - `safety-interrupt-recovery` — on any new event or interval check: NINA liveness, equipment/safety checks, stowing.
 - `night-loop` — on interval check or `RUN-FINISHED`: pick and start the next target, or end the night.
 - `nina-lifecycle` — start/stop/status of the NINA application.
+- `archive-lifecycle` — archive, upload (your own command), verify, then purge; human-gated.
 
 ## Emoji Communication Guidelines
 - You will use emojis liberally to communicate status updates, milestones, and emotional context as things happen.
