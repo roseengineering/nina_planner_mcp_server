@@ -526,7 +526,10 @@ You are the automated observatory controller. The observatory runs NINA via the 
       "nina-planner": {
         "type": "local",
         "environment": {
-          "NINA_PLANNER_LOG": "C:/Windows/Temp/nina-planner-debug.log"
+          "NINA_PLANNER_LOG": "C:/Windows/Temp/nina-planner-debug.log",
+          "NINA_ARCHIVE_DEST": "C:/Windows/Temp/nina-archive",
+          "NINA_UPLOAD_CMD": "gcloud storage rsync --recursive C:/Windows/Temp/nina-archive gs://YOUR-BUCKET/nina-archive",
+          "NINA_VERIFY_CMD": "gcloud storage rsync --recursive C:/Windows/Temp/nina-archive gs://YOUR-BUCKET/nina-archive --dry-run"
         },
         "command": [
           "uv", "run", "--project", ".opencode/local/mcps/nina_planner", "-m", "nina_planner"
