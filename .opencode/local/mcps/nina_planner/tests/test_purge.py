@@ -13,11 +13,12 @@ The scenarios mirror the design rule
 unarchived frames held, --all waiver releases, re-opened (archived but
 incomplete-now) plans held until their plan file moves out, pooled
 calibration held by an unarchived plan, BAD_ twins ride, orphans behave,
-the quarantine hides frames from attribution, and the rclone receipt
-gates the dest leg. PurgePlanFileTest covers the plan-file leg: the
-archive gates (folder + byte-identical plan.json) run before any frame
-is deleted, ``--purge`` removes the original plan JSON only after its
-frames are gone, and every refusal keeps frames and file intact.
+the quarantine hides frames from attribution, and --apply never touches
+the archive destination (the rclone staging leg is gone).
+PurgePlanFileTest covers the plan-file leg: the archive gates (folder +
+byte-identical plan.json) run before any frame is deleted, ``--purge``
+removes the original plan JSON only after its frames are gone, and every
+refusal keeps frames and file intact.
 """
 
 from __future__ import annotations
@@ -147,21 +148,6 @@ class PurgeBase(ArchiveBase):
             writer.writeheader()
             writer.writerows(rows)
         return plan
-
-    def make_dest_folder(
-        self, name: str = "m31__plan-abc123", *, extra_files: int = 0
-    ) -> Path:
-        """Hand-build an archive folder for the rclone receipt tests."""
-        folder = self.dest / name
-        folder.mkdir(parents=True, exist_ok=True)
-        (folder / "manifest.json").write_text(
-            json.dumps({"plan_id": "plan-abc123", "complete": True, "files": []}),
-            encoding="utf-8",
-        )
-        (folder / "plan.json").write_text("{}", encoding="utf-8")
-        for i in range(extra_files):
-            (folder / f"frame_{i}.fits").write_bytes(b"x" * 10)
-        return folder
 
 
 # ------------------------------------------------------------ dry run
@@ -682,123 +668,28 @@ class PurgePlanFileTest(PurgeBase):
         self.assertTrue(after["all_saved"])
 
 
-# ------------------------------------------------- the staging (dest) leg
+# ------------------------------------------------- removed rclone/staging leg
 
 
-class PurgeDestTest(PurgeBase):
-    def _mock_rclone(self, returncode: int = 0, stderr: str = ""):
-        return mock.patch.object(
-            purge_mod.subprocess,
-            "run",
-            return_value=mock.Mock(returncode=returncode, stdout="", stderr=stderr),
-        )
+class PurgeNoStagingLegTest(PurgeBase):
+    def test_removed_cloud_flags_are_rejected(self):
+        for flag in (["--verify-remote", "remote:arch"], ["--prune-dest"]):
+            with self.subTest(flag=flag), contextlib.redirect_stderr(io.StringIO()):
+                with self.assertRaises(SystemExit) as caught:
+                    self.run_purge(*flag)
+                self.assertEqual(caught.exception.code, 2)
 
-    def test_verify_remote_writes_receipt_only_with_apply(self):
-        folder = self.make_dest_folder(extra_files=1)
+    def test_apply_never_modifies_the_archive_dest(self):
+        self.seed_full()
+        self.assertEqual(self.run_archive(), 0)
+        before = sorted(str(p) for p in self.dest.rglob("*"))
 
-        with self._mock_rclone() as run:
-            code, out, _err = self.run_purge("--verify-remote", "remote:arch")
+        code, out, _err = self.run_purge("--apply")
+
         self.assertEqual(code, 0, out)
-        self.assertIn("rclone check passed", out)
-        run.assert_called_once()
-        argv = run.call_args[0][0]
-        self.assertEqual(argv[:3], ["rclone", "check", str(self.dest)])
-        self.assertIn("remote:arch", argv)
-        receipt_path = self.dest / ".cloud-verified.json"
-        self.assertFalse(receipt_path.exists())  # dry: report only
-
-        with self._mock_rclone():
-            code, out, _err = self.run_purge(
-                "--verify-remote", "remote:arch", "--apply"
-            )
-        self.assertEqual(code, 0, out)
-        receipt = json.loads(receipt_path.read_text())
-        self.assertEqual(receipt["remote"], "remote:arch")
-        self.assertIn(folder.name, receipt["folders"])
-        self.assertEqual(receipt["folders"][folder.name]["file_count"], 3)
-        records = [r for r in self._dest_index_records() if r["action"] == "verify"]
-        self.assertEqual(len(records), 1)
-
-    def test_verify_remote_failure_exits_one_without_receipt(self):
-        self.make_dest_folder()
-
-        with self._mock_rclone(returncode=1, stderr="ERROR : files differ"):
-            code, _out, err = self.run_purge(
-                "--verify-remote", "remote:arch", "--apply"
-            )
-
-        self.assertEqual(code, 1)
-        self.assertIn("rclone check failed", err)
-        self.assertIn("files differ", err)
+        self.assertEqual(sorted(str(p) for p in self.dest.rglob("*")), before)
         self.assertFalse((self.dest / ".cloud-verified.json").exists())
-
-    def _dest_index_records(self) -> list[dict]:
-        index = self.dest / "purge-index.jsonl"
-        if not index.exists():
-            return []
-        return [
-            json.loads(line) for line in index.read_text().splitlines() if line.strip()
-        ]
-
-    def test_prune_dest_requires_receipt(self):
-        self.make_dest_folder()
-
-        code, _out, err = self.run_purge("--prune-dest", "--apply")
-
-        self.assertEqual(code, 1)
-        self.assertIn("no receipt", err)
-        self.assertIn("--verify-remote", err)
-        self.assertTrue((self.dest / "m31__plan-abc123").is_dir())
-
-    def test_prune_dest_prunes_matching_folder(self):
-        folder = self.make_dest_folder(extra_files=2)
-        with self._mock_rclone():
-            self.assertEqual(
-                self.run_purge("--verify-remote", "remote:arch", "--apply")[0], 0
-            )
-
-        code, out, _err = self.run_purge("--prune-dest", "--apply")
-
-        self.assertEqual(code, 0, out)
-        self.assertIn("pruned", out)
-        self.assertFalse(folder.exists())  # frames+manifest gone
-        records = [r for r in self._dest_index_records() if r["action"] == "prune-dest"]
-        self.assertEqual(len(records), 1)
-        self.assertEqual(records[0]["folder"], folder.name)
-        self.assertEqual(records[0]["remote"], "remote:arch")
-
-    def test_prune_dest_skips_changed_and_unverified_folders(self):
-        changed = self.make_dest_folder("changed__plan-abc123")
-        with self._mock_rclone():
-            self.assertEqual(
-                self.run_purge("--verify-remote", "remote:arch", "--apply")[0], 0
-            )
-        # Rebuilt after verification…
-        (changed / "frame_new.fits").write_bytes(b"y" * 50)
-        # …and a folder archived after verification.
-        late = self.make_dest_folder("late__plan-abc123")
-
-        code, out, _err = self.run_purge("--prune-dest", "--apply")
-
-        self.assertEqual(code, 1)  # nothing pruned, both skipped
-        self.assertIn("changed since verification", out)
-        self.assertIn("not in the receipt", out)
-        self.assertIn("re-verify", out)
-        self.assertTrue(changed.is_dir())
-        self.assertTrue(late.is_dir())
-
-    def test_prune_dest_dry_run_reports_would(self):
-        folder = self.make_dest_folder()
-        with self._mock_rclone():
-            self.assertEqual(
-                self.run_purge("--verify-remote", "remote:arch", "--apply")[0], 0
-            )
-
-        code, out, _err = self.run_purge("--prune-dest")
-
-        self.assertEqual(code, 0, out)
-        self.assertIn("would prune", out)
-        self.assertTrue(folder.is_dir())  # nothing deleted
+        self.assertFalse((self.dest / "purge-index.jsonl").exists())
 
 
 if __name__ == "__main__":

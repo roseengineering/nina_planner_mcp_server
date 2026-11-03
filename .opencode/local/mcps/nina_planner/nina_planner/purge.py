@@ -2,8 +2,7 @@
 
 Where ``nina-archive`` copies completed plans out to a portable folder,
 ``nina-purge`` completes the lifecycle: it removes from the imaging root
-the frames an archive already holds, and (optionally) the local archive
-folders a verified cloud copy holds. Nothing here deletes on the first
+the frames an archive already holds. Nothing here deletes on the first
 pass — quarantine first, live with it, then ``--purge`` for real.
 
 The rule, per recorded frame F (deletion only ever considers frames the
@@ -50,23 +49,16 @@ directory into ``<imaging-root>/.prune-quarantine/<dir>`` — a dot
 directory every attribution walk prunes (``imaging._prunable_dir``), so
 quarantined frames and their ImageMetaData.csv behave exactly as if
 gone, while one ``mv`` restores them — and only ``--purge`` unlinks.
-``<imaging-root>/purge-index.jsonl`` (and ``<dest>/purge-index.jsonl``
-for the staging leg) append one JSON record per action — including one
-per plan file under ``--purge``, carrying ``plan_file_deleted``. A run
-refuses to touch the root while a sequence is RUNNING (N.I.N.A. may be
-appending CSV rows); an unreachable N.I.N.A. is treated as idle — the
-same posture ``nina-archive`` takes — and ``--imaging-root`` bypasses
-the profile lookup entirely.
+``<imaging-root>/purge-index.jsonl`` appends one JSON record per action —
+including one per plan file under ``--purge``, carrying
+``plan_file_deleted``. A run refuses to touch the root while a sequence
+is RUNNING (N.I.N.A. may be appending CSV rows); an unreachable N.I.N.A.
+is treated as idle — the same posture ``nina-archive`` takes — and
+``--imaging-root`` bypasses the profile lookup entirely.
 
-The staging leg retires LOCAL archive folders once the cloud holds them:
-``--verify-remote REMOTE`` runs ``rclone check`` (the receipt
-``.cloud-verified.json`` is written only under ``--apply``, and is a dot
-file rclone ignores) recording per-folder file counts and bytes;
-``--prune-dest`` deletes only folders whose current stats still match the
-receipt — anything added or rebuilt since verification is skipped and
-reported. Prune the imaging root BEFORE the dest: once a folder's
-manifest is gone, its frames no longer read as preserved and can never
-be quarantined from the root.
+This tool never deletes or modifies the archive folders under ``--dest``:
+they are the preserved copy. Confirm your own cloud upload and local
+download are intact before running ``--purge``.
 
 Plan files are removed as the LAST step of ``--purge``, once the
 plan's frames are gone: the archive already holds the verbatim
@@ -89,10 +81,9 @@ plan-shaped JSON that fails to load ABORTS the run: its claims are
 unknown, and unknown claims make deletions unsafe — unrelated project
 JSON is still ignored silently.
 
-Exit codes: 0 — something was (or, in a dry run, would be) quarantined,
-purged, verified, or pruned from the dest, and any ``--purge`` run
-without an error (purging is idempotent); 1 — nothing to do (report,
-``--apply``, or dest legs) or an error, including a stale-archive
+Exit codes: 0 — something was (or, in a dry run, would be) quarantined
+or purged, and any ``--purge`` run without an error (purging is
+idempotent); 1 — nothing to do or an error, including a stale-archive
 refusal; 2 — bad arguments.
 """
 
@@ -102,7 +93,6 @@ import argparse
 import asyncio
 import json
 import shutil
-import subprocess
 import sys
 from datetime import UTC, datetime
 from pathlib import Path
@@ -125,7 +115,6 @@ from .tools.plans import _plan_files
 
 _QUARANTINE_DIR = ".prune-quarantine"
 _INDEX_NAME = "purge-index.jsonl"
-_RECEIPT_NAME = ".cloud-verified.json"
 _FRAME_TYPES = ("light", "dark", "bias", "flat")
 # Plugin-written metadata that legitimately lives beside frames: it rides
 # into quarantine with the frames (which is what hides the rows from the
@@ -743,131 +732,6 @@ def _sweep_plan_files(
     return removed, kept, failed
 
 
-def _verify_remote(dest: Path, remote: str, *, apply: bool) -> int:
-    """Run ``rclone check`` against dest; write the receipt under apply.
-
-    Returns the number of folders covered. The receipt is a dot file —
-    invisible to rclone's default hidden-file skip — and records
-    per-folder file counts and bytes so a later ``--prune-dest`` can tell
-    a verified folder from one rebuilt since verification.
-    """
-    command = ["rclone", "check", str(dest), remote, "--exclude", _RECEIPT_NAME]
-    try:
-        proc = subprocess.run(command, capture_output=True, text=True)
-    except OSError as exc:
-        raise PurgeError(f"could not run rclone ({exc}) — is it on PATH?") from exc
-    if proc.returncode != 0:
-        detail = (proc.stderr or proc.stdout or "").strip()
-        raise PurgeError(
-            f"rclone check failed (exit {proc.returncode}) — the remote is "
-            f"not in sync with {dest}:\n{detail[-800:]}"
-        )
-    folders: dict[str, dict[str, int]] = {}
-    files = total = 0
-    for folder in sorted(dest.iterdir()):
-        if not folder.is_dir() or folder.name.startswith("."):
-            continue
-        count, size = _tree_size(folder)
-        folders[folder.name] = {"file_count": count, "total_bytes": size}
-        files += count
-        total += size
-    receipt = {
-        "tool": "nina-purge",
-        "version": 1,
-        "remote": remote,
-        "checked_at": _now().isoformat(timespec="seconds"),
-        "folders": folders,
-        "file_count": files,
-        "total_bytes": total,
-    }
-    print(
-        f"  ✅ rclone check passed — {len(folders)} folder(s), {files} files, "
-        f"{_human_bytes(total)} match {remote}"
-    )
-    if apply:
-        (dest / _RECEIPT_NAME).write_text(
-            json.dumps(receipt, indent=2) + "\n", encoding="utf-8"
-        )
-        _append_index(
-            dest,
-            {
-                "at": receipt["checked_at"],
-                "action": "verify",
-                "remote": remote,
-                "folders": len(folders),
-                "file_count": files,
-                "total_bytes": total,
-            },
-        )
-        print(f"  🧾 receipt written to {dest / _RECEIPT_NAME}")
-    else:
-        print("  🔍 dry run — receipt not written (pass --apply to record it)")
-    return len(folders)
-
-
-def _prune_dest(dest: Path, *, apply: bool) -> tuple[int, int]:
-    """Retire local archive folders the receipt vouches for.
-
-    Returns ``(prunable, skipped)``. Folders whose current file count or
-    bytes differ from the receipt were touched since verification — they
-    are skipped, because deleting them could drop the only copy of frames
-    the cloud never saw.
-    """
-    receipt_path = dest / _RECEIPT_NAME
-    if not receipt_path.is_file():
-        raise PurgeError(
-            f"no receipt at {receipt_path} — run "
-            "`nina-purge --verify-remote REMOTE --apply` first"
-        )
-    receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
-    remote = str(receipt.get("remote") or "?")
-    folders = receipt.get("folders") or {}
-    prunable = skipped = 0
-    for folder in sorted(dest.iterdir()):
-        if not folder.is_dir() or folder.name.startswith("."):
-            continue
-        expected = folders.get(folder.name)
-        if expected is None:
-            print(f"  ⏭ {folder.name}/: not in the receipt ({remote}) — re-verify")
-            skipped += 1
-            continue
-        count, size = _tree_size(folder)
-        if count != expected.get("file_count") or size != expected.get("total_bytes"):
-            print(
-                f"  ⏭ {folder.name}/: changed since verification "
-                f"({count} files, {_human_bytes(size)} vs receipt "
-                f"{expected.get('file_count')} files, "
-                f"{_human_bytes(int(expected.get('total_bytes') or 0))}) "
-                "— re-verify"
-            )
-            skipped += 1
-            continue
-        if apply:
-            shutil.rmtree(folder)
-            _append_index(
-                dest,
-                {
-                    "at": _now().isoformat(timespec="seconds"),
-                    "action": "prune-dest",
-                    "folder": folder.name,
-                    "remote": remote,
-                    "file_count": count,
-                    "total_bytes": size,
-                },
-            )
-            print(
-                f"  🗑 {folder.name}/ pruned ({count} files, "
-                f"{_human_bytes(size)}) — cloud copy verified at "
-                f"{receipt.get('checked_at')}"
-            )
-        else:
-            print(
-                f"  ✂️  would prune {folder.name}/ ({count} files, {_human_bytes(size)})"
-            )
-        prunable += 1
-    return prunable, skipped
-
-
 # ------------------------------------------------------------------- CLI
 
 
@@ -877,9 +741,8 @@ def _build_parser() -> argparse.ArgumentParser:
         description=(
             "Retire archived frames from the N.I.N.A. imaging root "
             "(quarantine first, delete only on request) — including each "
-            "purged plan's original plan JSON — and prune local archive "
-            "folders a verified cloud copy holds. Dry-run by default; "
-            "--apply executes, --purge really deletes."
+            "purged plan's original plan JSON. Dry-run by default; "
+            "--apply quarantines, --purge really deletes."
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=(
@@ -887,8 +750,6 @@ def _build_parser() -> argparse.ArgumentParser:
             "  nina-purge                                    # verdict table\n"
             "  nina-purge --apply                            # quarantine\n"
             "  nina-purge --purge                            # real delete\n"
-            "  nina-purge --verify-remote remote:nina --apply\n"
-            "  nina-purge --prune-dest --apply               # staging leg\n"
             "  nina-purge --imaging-root /mnt/c/Users/me/Documents/N.I.N.A"
         ),
     )
@@ -913,8 +774,7 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--apply",
         action="store_true",
-        help="quarantine prunable directories / write the receipt / prune "
-        "the dest (default: report only)",
+        help="quarantine prunable directories (default: report only)",
     )
     parser.add_argument(
         "--purge",
@@ -923,17 +783,6 @@ def _build_parser() -> argparse.ArgumentParser:
             "delete the quarantine for real and remove each purged plan's "
             "original plan JSON (independent of --apply; idempotent)"
         ),
-    )
-    parser.add_argument(
-        "--prune-dest",
-        action="store_true",
-        help="retire local archive folders covered by the cloud receipt",
-    )
-    parser.add_argument(
-        "--verify-remote",
-        metavar="REMOTE",
-        default=None,
-        help="run `rclone check <dest> REMOTE` and record its receipt",
     )
     return parser
 
@@ -1207,28 +1056,11 @@ async def run(args: argparse.Namespace) -> int:
         if sweep_failed:
             errors_occurred = True
 
-    if args.verify_remote:
-        try:
-            checked = _verify_remote(dest, args.verify_remote, apply=args.apply)
-            actionable += checked
-        except PurgeError as exc:
-            print(f"✗ {exc}", file=sys.stderr)
-            errors_occurred = True
-
-    if args.prune_dest:
-        try:
-            would, skipped = _prune_dest(dest, apply=args.apply)
-            actionable += would
-            if skipped:
-                print(f"  ⏭ {skipped} folder(s) skipped — see above")
-        except PurgeError as exc:
-            print(f"✗ {exc}", file=sys.stderr)
-            errors_occurred = True
-
     # A pure verdict-table run (no action flags) is actionable when it
     # FOUND work: exit 0 means "something would be quarantined" per the
-    # documented contract. Explicit legs count only their own results.
-    if not (args.apply or args.purge or args.verify_remote or args.prune_dest):
+    # documented contract. Explicit legs count only their own results, so
+    # e.g. `--purge` on an empty quarantine honestly exits 1.
+    if not (args.apply or args.purge):
         actionable += len(prunable)
         # Plan-file preview: what the --apply → --purge chain would remove.
         # Not counted as actionable — only --purge ever removes a file.
@@ -1250,9 +1082,7 @@ async def run(args: argparse.Namespace) -> int:
     if errors_occurred or refusals:
         return 1
     if actionable == 0:
-        pure_report = not (
-            args.apply or args.purge or args.verify_remote or args.prune_dest
-        )
+        pure_report = not (args.apply or args.purge)
         print("\n🔍 nothing to do" + (" (dry run)" if pure_report else ""))
         # --purge is idempotent: an already-purged state is success, not
         # "nothing to do". Report/--apply/dest legs keep the chainable
