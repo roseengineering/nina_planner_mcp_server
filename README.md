@@ -342,7 +342,7 @@ nina-archive --imaging-root /mnt/c/Users/me/Documents/N.I.N.A   # NINA down
 - ♻️ **Idempotent:** a folder that already exists in `--dest` is skipped (exit 0) unless `--force` rebuilds it. Plan files inside `--dest` are never re-discovered, so the default `--dest ./archive` inside the project is safe.
 - 🚧 **`--dest` must be outside the imaging root:** archived folders carry `ImageMetaData.csv` copies, and a later attribution pass reading them from inside the root would double-count every frame — the tool refuses with an explanatory error.
 - 📡 **Works with NINA down:** pass `--imaging-root` to bypass the site-profile lookup; otherwise the root comes from `get_site_profile` (with `NINA_DRIVE_MOUNT` mapping on non-Windows hosts), and a missing root raises rather than archiving nothing.
-- 🚪 **Exit codes:** `0` archived (or already archived), `1` nothing archivable or an error occurred (also printed per plan to stderr), `2` bad arguments — chainable, e.g. `nina-archive --dest ./archive && rclone sync ./archive remote:nina-archive`.
+- 🚪 **Exit codes:** `0` archived (or already archived), `1` nothing archivable or an error occurred (also printed per plan to stderr), `2` bad arguments — chainable, e.g. `nina-archive --dest ./archive && <your upload command>`.
 - Unrelated project JSON (opencode configs etc.) is ignored silently during discovery; naming a file explicitly makes any load failure an error.
 
 ## 📌 `nina-pin-id` — Freeze a Plan's Derived Id
@@ -363,14 +363,12 @@ nina-pin-id --dry-run plan1.json plan2.json                   # report only, wri
 
 ## 🧹 `nina-purge` — Retire Archived Frames
 
-The counterpart to `nina-archive`: once frames are safely archived (and, for the staging leg, verified on the cloud), `nina-purge` frees the disk they occupy — **quarantine first, delete only on request.** Dry-run by default; `--apply` executes, `--purge` really deletes.
+The counterpart to `nina-archive`: once frames are safely archived, `nina-purge` frees the imaging-root disk they occupy — **quarantine first, delete only on request.** Dry-run by default; `--apply` quarantines, `--purge` really deletes. It never modifies the archive folders under `--dest`; confirm your own cloud upload and local download are intact before running `--purge`.
 
 ```
 nina-purge                                    # verdict table (default: dry run)
 nina-purge --apply                            # move prunable dirs → .prune-quarantine/
 nina-purge --purge                            # actually delete the quarantine
-nina-purge --verify-remote remote:nina-archive --apply   # rclone check + receipt
-nina-purge --prune-dest --apply               # retire local folders the receipt vouches for
 ```
 
 - 📐 **The rule, per recorded frame `F`:** `prunable(F) ⟺ preserved(F) AND every plan whose selection contains F is released`. `preserved` = some committed `manifest.json` under `--dest` lists `F`'s source path. A plan is `released` when it has an archive folder **and** is either complete now (shared `_progress_facts` verdict) or was archived under `--all` (the manifest's `complete: false` is the waiver). A complete-but-unarchived plan therefore protects its frames: **archive before you purge.**
@@ -378,10 +376,9 @@ nina-purge --prune-dest --apply               # retire local folders the receipt
 - 🗂️ **Directories are the unit, verdicts are an AND:** one held frame keeps the whole landing directory. A directory with no recorded frames is held — files no CSV row ever recorded are never classified (the Session Metadata plugin is trusted); if any ride along into quarantine they are counted in the index record and flagged. `BAD_` reject twins are garbage: they ride with their directory and never block it.
 - 🧊 **Quarantine, not delete:** `--apply` *moves* each prunable directory into `<imaging-root>/.prune-quarantine/<dir>` — a dot directory every attribution walk prunes, so quarantined frames and their `ImageMetaData.csv` behave exactly as if gone (one `mv` restores them). Only `--purge` unlinks, and it is a separate invocation: live with the quarantine first. A name collision gets a `~1` suffix.
 - 🔒 **Sequence gate:** a run refuses to touch the root while a sequence is RUNNING (N.I.N.A. may be appending CSV rows); an unreachable N.I.N.A. proceeds with a `⚠` note — the same posture `nina-archive` takes. Broken plan-shaped JSON **aborts** the run (unknown claims make deletions unsafe); unrelated project JSON is ignored silently.
-- 📟 **Two append-only indexes:** `<imaging-root>/prune-index.jsonl` (one record per quarantine/purge: dir, quarantine path, frames, rejects, unrecorded, bytes, claimants) and `<dest>/prune-index.jsonl` (verify/prune-dest records).
-- 📡 **Staging leg (dest):** `--verify-remote REMOTE` runs `rclone check <dest> REMOTE` and — only under `--apply` — writes a `.cloud-verified.json` receipt (a dot file rclone ignores) recording per-folder file counts and bytes. `--prune-dest` deletes only folders whose current stats still match the receipt; anything changed or created since verification is skipped and reported. **Prune the imaging root BEFORE the dest** — once a folder's manifest is gone, its frames no longer read as preserved.
+- 📟 **Append-only index:** `<imaging-root>/prune-index.jsonl` (one record per quarantine/purge: dir, quarantine path, frames, rejects, unrecorded, bytes, claimants).
 - 📌 **Plan files are never touched,** but a quarantined plan's file (left in the project) now reads as `NEVER_SHOT` to `audit_plans`/`get_plan_progress` — after `--apply` the console names each such file; move it out (its verbatim `plan.json` is in the archive folder).
-- 🚪 **Exit codes:** `0` something was (or, in a dry run, would be) quarantined/purged/verified/pruned, `1` nothing to do or an error, `2` bad arguments — chainable, e.g. `nina-purge --apply && make archive`.
+- 🚪 **Exit codes:** `0` something was (or, in a dry run, would be) quarantined or purged, `1` nothing to do or an error, `2` bad arguments — chainable, e.g. `nina-purge --apply && make archive`.
 
 ## 📌 Notes
 
