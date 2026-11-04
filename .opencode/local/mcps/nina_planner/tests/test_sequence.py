@@ -824,6 +824,43 @@ class SequenceBehaviorTest(unittest.TestCase):
         target = dsos[0]["Target"]["TargetName"]
         self.assertTrue(target.startswith("M31 _plan-test123_"))
 
+    def test_calibration_shares_the_labeled_single_pointing_folder(self):
+        """One pointing plus one label must not split $$TARGETNAME$$ into a
+        lights folder and a calibration folder: both target names carry the
+        same "<target> - <label> _<token>_" prefix, so darks/bias/flats land
+        beside the lights instead of in a second directory."""
+        from sequence_helpers import build_sequence_darks
+
+        plan = self._plan()
+        equipment = ObservatoryEquipment()
+        lights = _deepsky_targets(
+            build_sequence_lights(plan, equipment=equipment, profile=_profile())
+        )[0]["Target"]["TargetName"]
+        darks = _deepsky_targets(
+            build_sequence_darks(plan, equipment=equipment, profile=_profile())
+        )[0]["Target"]["TargetName"]
+        self.assertEqual(lights, "M31 - core _plan-test123_")
+        self.assertEqual(darks, lights)
+
+    def test_mosaic_calibration_keeps_the_bare_plan_target(self):
+        """A mosaic's panes carry -N tokens its plan-level calibration cannot
+        share, so the first pane's label stays out of the calibration target
+        name — it would only misname the folder."""
+        from sequence_helpers import build_sequence_darks
+
+        plan = self._plan(
+            pointings=[
+                {"label": "core", "ra_hours": 0.71, "dec_deg": 41.27},
+                {"ra_hours": 0.72, "dec_deg": 41.28},
+            ]
+        )
+        darks = _deepsky_targets(
+            build_sequence_darks(
+                plan, equipment=ObservatoryEquipment(), profile=_profile()
+            )
+        )[0]["Target"]["TargetName"]
+        self.assertEqual(darks, "M31 _plan-test123_")
+
     def test_lights_slew_and_center_when_position_angle_none(self):
         plan = self._plan(pointings=[{"ra_hours": 0.71, "dec_deg": 41.27}])
         result = build_sequence_lights(

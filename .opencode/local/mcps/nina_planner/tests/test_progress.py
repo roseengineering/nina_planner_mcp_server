@@ -163,6 +163,33 @@ class PlanProgressTest(unittest.TestCase):
         plan = _plan(plan_id="plan-abc123")
         self.assertEqual(plan.plan_token(), "_plan-abc123_")
 
+    def test_calibration_prefix_carries_only_a_single_pointing_label(self):
+        # The calibration target name must match the light target name for a
+        # single-pointing plan, or $$TARGETNAME$$ splits one plan's frames
+        # across two landing folders.
+        single_labeled = _plan(
+            plan_id="plan-abc123",
+            pointings=[{"label": "Pane 1", "ra_hours": 0.71, "dec_deg": 41.27}],
+        )
+        self.assertEqual(single_labeled.calibration_prefix(), "M31 - Pane 1")
+        # No label: bare target, exactly as before.
+        self.assertEqual(_plan(plan_id="plan-abc123").calibration_prefix(), "M31")
+        # A mosaic's panes own -N tokens no calibration can share, so the
+        # first pane's label would only misname the plan-level folder.
+        multi = _plan(
+            plan_id="plan-abc123",
+            pointings=[
+                {"label": "Pane 1", "ra_hours": 0.71, "dec_deg": 41.27},
+                {"label": "Pane 2", "ra_hours": 0.72, "dec_deg": 41.28},
+            ],
+        )
+        self.assertEqual(multi.calibration_prefix(), "M31")
+        # Defensive: the model forbids an empty list, but sequence_calibration
+        # must still build when one is forced.
+        bare = _plan(plan_id="plan-abc123")
+        bare.pointings = []
+        self.assertEqual(bare.calibration_prefix(), "M31")
+
     def test_token_matches_in_any_path_segment(self):
         plan = _plan(plan_id="plan-abc123")
         rows = [

@@ -132,10 +132,13 @@ def sequence_calibration(
     ``plan.pointings``, so an empty pointings list is fine and no pane
     attribution is claimed. The target name carries the bare plan token —
     for a single-pointing plan that is also the lights token, so both share
-    one ``$$TARGETNAME$$`` folder; a mosaic's panes keep their own ``-N``
-    folders. ``kind`` names the step in the NINA UI ("Dark Sequence", ...)
-    and deliberately stays out of the target name, where ``$$TARGETNAME$$``
-    would put it in the file path and split the folder again.
+    one ``$$TARGETNAME$$`` folder (``plan.calibration_prefix`` adds that
+    pointing's label for the same reason: the light target name has it, and
+    without it the two prefixes would split the folder again); a mosaic's
+    panes keep their own ``-N`` folders. ``kind`` names the step in the NINA
+    UI ("Dark Sequence", ...) and deliberately stays out of the target name,
+    where ``$$TARGETNAME$$`` would put it in the file path and split the
+    folder again.
 
     ``tag`` ("dark", "bias", "dawn flats", "dusk flats") is ``kind``'s
     event-only counterpart: it reaches the ACQUISITION messages through
@@ -146,7 +149,7 @@ def sequence_calibration(
     darks park and never slew, and flats slew explicitly to the flat-panel
     azimuth. The plan's primary pointing is shown when it exists, else 0/0.
     """
-    target = f"{plan.target} {plan.plan_token()}"
+    target = f"{plan.calibration_prefix()} {plan.plan_token()}"
     if plan.pointings:
         primary = plan.pointings[0]
         ra = primary.ra_hours

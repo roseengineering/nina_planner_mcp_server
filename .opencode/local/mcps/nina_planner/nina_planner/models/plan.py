@@ -237,3 +237,26 @@ class ObservationPlan(StrictModel):
         """Plan-level target-name token, used for calibration (darks/bias/
         flats): calibration belongs to the whole plan, not to any pane."""
         return f"_{self._base_plan_id()}_"
+
+    def calibration_prefix(self) -> str:
+        """The ``<target>`` part of a calibration step's target name.
+
+        Mirrors the prefix ``sequence_deepsky`` builds for lights, but only
+        where the two can actually agree: a single-pointing plan shares its
+        bare plan token with its calibration (see ``effective_plan_id``), so
+        carrying that pointing's label here too keeps lights and calibration
+        in ONE ``$$TARGETNAME$$`` folder instead of splitting them into
+        ``<target> - <label> _plan-x_`` (lights) and ``<target> _plan-x_``
+        (calibration).
+
+        A mosaic's panes use ``-N`` tokens that no plan-level calibration can
+        share, so its label would only make the folder read as one pane's —
+        the label is dropped there, as before. An empty ``pointings`` list
+        (defensive; the model forbids it) likewise falls back to the bare
+        target.
+        """
+        if len(self.pointings) == 1:
+            label = self.pointings[0].label
+            if label:
+                return f"{self.target} - {label}"
+        return self.target
