@@ -797,7 +797,6 @@ async def _resolve_root(args: argparse.Namespace) -> Path:
 
 
 async def run(args: argparse.Namespace) -> int:
-    asyncio.get_running_loop().set_debug(False)
     project_dir = (
         Path(args.project_dir).expanduser() if args.project_dir else config.PROJECT_DIR
     )
