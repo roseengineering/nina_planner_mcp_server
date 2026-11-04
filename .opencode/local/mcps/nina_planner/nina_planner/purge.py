@@ -40,12 +40,19 @@ every recorded frame in them: one held frame keeps the whole landing
 directory. N.I.N.A. ``BAD_`` reject twins (found by probing a dropped
 row's pre-rename name, exactly as archive's disk report does) are
 prunable garbage: they ride with their directory and never block it.
-Files no CSV row ever recorded stay invisible by design (the Session
-Metadata plugin is trusted): they ride along into quarantine, are counted
-in the index record, and are never classified.
+Own-token frames no plan ships into a type folder — degenerate captures
+(0.00003s Smart Exposure junk) and real but uncredited ones (outside
+every window, an exposure no group asked for) — are archived by
+``nina-archive`` under ``JUNK/`` and listed in the manifest like any
+other file, so they read ``preserved`` and ride along too; they used to
+sit in ``disk.not_selected`` and hold the directory for ever as "not
+preserved — run nina-archive first". Files no CSV row ever recorded stay
+invisible by design (the Session Metadata plugin is trusted): they ride
+along into quarantine, are counted in the index record, and are never
+classified.
 
 Deletion is two deliberate steps. ``--apply`` MOVES each prunable
-directory into ``<imaging-root>/.prune-quarantine/<dir>`` — a dot
+directory into ``<imaging-root>/.quarantine/<dir>`` — a dot
 directory every attribution walk prunes (``imaging._prunable_dir``), so
 quarantined frames and their ImageMetaData.csv behave exactly as if
 gone, while one ``mv`` restores them — and only ``--purge`` unlinks.
@@ -113,7 +120,7 @@ from .imaging import _prunable_dir, read_imaging_csv
 from .models.plan import ObservationPlan
 from .tools.plans import _plan_files
 
-_QUARANTINE_DIR = ".prune-quarantine"
+_QUARANTINE_DIR = ".quarantine"
 _INDEX_NAME = "purge-index.jsonl"
 _FRAME_TYPES = ("light", "dark", "bias", "flat")
 # Plugin-written metadata that legitimately lives beside frames: it rides

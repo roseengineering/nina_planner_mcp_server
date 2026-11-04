@@ -13,6 +13,7 @@ from .nina_utils import to_local_display
 __all__ = [
     "filter_metadata_rows",
     "group_verdict",
+    "is_junk_row",
     "plan_progress",
     "plan_with_remaining",
     "progress_verdict",
@@ -58,6 +59,55 @@ def _exposure_matches(row: dict[str, Any], exposure: float | None) -> bool:
         return abs(float(raw) - exposure) < 0.05
     except (TypeError, ValueError):
         return False
+
+
+def is_junk_row(plan: ObservationPlan, row: dict[str, Any], image_type: str) -> bool:
+    """True when ``row`` is a DEGENERATE capture of ``image_type`` for ``plan``.
+
+    Two different questions get asked about a frame's duration, and they are
+    deliberately not the same test:
+
+    - ``_exposure_matches`` — *"is this the exposure this plan asked for?"*
+      Failing it is normal and harmless: a 60.5s dark against a 60s group,
+      or a dark outside the calibration window, is real data that merely
+      cannot be credited here.
+    - this function — *"is there any data in this frame at all?"*  Junk is
+      a duration under ``max(0.01s, half the plan's shortest exposure for
+      this type)``: the 0.00003s DARK an aborted N.I.N.A. default Smart
+      Exposure leaves behind holds no signal for ANY consumer, this plan or
+      the next.  The floor scales with what the plan asks for, while the
+      absolute 0.01s catches the abort case whatever the plan asked.
+
+    Bias is exempt (0s is *correct* for bias) and flat is exempt (SkyFlat
+    legitimately adapts from 0.01s) — only light and dark can be junk.
+
+    A duration that will not parse is NOT junk: the CSV contract can change
+    under us, and a parse quirk must never invent junk — the cost of a
+    false positive is a real frame shipped to ``JUNK/`` and deleted with
+    the archive's blessing.
+    """
+    if str(image_type).lower() not in ("light", "dark"):
+        return False
+
+    # Frame groups are pydantic models on the audit path but can surface as
+    # plain dicts (see frame_group_constraints), so resolve both ways.
+    def _exposure_of(group: Any) -> Any:
+        if isinstance(group, dict):
+            return group.get("exposure_time_seconds")
+        return getattr(group, "exposure_time_seconds", None)
+
+    frame_groups = getattr(plan, f"{str(image_type).lower()}_frames", None) or []
+    exposures = [
+        float(value) for value in map(_exposure_of, frame_groups) if value is not None
+    ]
+    floor = max(0.01, 0.5 * min(exposures)) if exposures else 0.01
+    try:
+        # str() first: an absent duration arrives as None, and float(None)
+        # is a TypeError the ValueError handler would miss.
+        duration = float(str(row.get("duration")))
+    except ValueError:
+        return False
+    return duration < floor
 
 
 def _light_target_matches(

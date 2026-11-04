@@ -26,6 +26,8 @@ Never add `--delete`-style flags (`--delete-unmatched-destination-objects`, `aws
 
 Only completed plans are archived; incomplete ones are listed as skipped. Originals are copied, never moved. Pass `--imaging-root` if N.I.N.A. is down.
 
+Degenerate or otherwise-uncredited own-token frames (e.g. a `0.00003s` Smart-Exposure dark) are copied to the folder's `JUNK/` and listed in `manifest.files[]` — a `🗑 … → JUNK/` line means they shipped, which is what lets `nina-purge` read them as preserved. An archive folder built by an older `nina-archive` has no `JUNK/`: re-run with `--force` before purging if such frames are what's holding a directory.
+
 ## 2. Upload
 
 Print `NINA_UPLOAD_CMD` and ask the user to confirm it before the first run in a session. Run it with `bash -c`.
@@ -39,7 +41,7 @@ Run `NINA_VERIFY_CMD`. If it reports anything pending or different, stop: do not
 `nina-purge` reads the `manifest.json` files under `DEST` and never modifies `DEST`.
 
 1. `nina-purge --dest "$DEST"` (report only). Show the verdict table.
-2. **Ask the user** before `nina-purge --dest "$DEST" --apply`. This moves folders into `.prune-quarantine/`; nothing is deleted. It refuses while a sequence is running.
+2. **Ask the user** before `nina-purge --dest "$DEST" --apply`. This moves folders into `.quarantine/`; nothing is deleted. It refuses while a sequence is running.
 3. Tell the user to move the quarantined plans' JSON files out of the project directory (they now read as `NEVER_SHOT`).
 4. **Ask again** before `nina-purge --dest "$DEST" --purge`. This deletes for real and is irreversible.
 

@@ -18,9 +18,9 @@
           "NINA_ENDPOINT": "10.0.0.35:1888",
           "NINA_DRIVE_MOUNT": "/System/Volumes/Data/Network",
           "NINA_PLANNER_LOG": "/tmp/nina-planner-debug.log",
-          "NINA_ARCHIVE_DEST": "~/nina-archive",
-          "NINA_UPLOAD_CMD": "gcloud storage rsync --recursive ~/nina-archive gs://YOUR-BUCKET/nina-archive",
-          "NINA_VERIFY_CMD": "gcloud storage rsync --recursive ~/nina-archive gs://YOUR-BUCKET/nina-archive --dry-run"
+          "NINA_ARCHIVE_DEST": ".archive/",
+          "NINA_UPLOAD_CMD": "gcloud storage rsync --recursive .archive/ gs://YOUR-BUCKET/nina-archive",
+          "NINA_VERIFY_CMD": "gcloud storage rsync --recursive .archive/ gs://YOUR-BUCKET/nina-archive --dry-run"
         },
         "command": [
           "uv", "run", "--project", ".opencode/local/mcps/nina_planner", "-m", "nina_planner"

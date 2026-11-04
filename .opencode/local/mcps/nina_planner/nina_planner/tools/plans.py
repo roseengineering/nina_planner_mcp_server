@@ -24,6 +24,7 @@ from ..progress import (
     _light_target_matches,
     filter_metadata_rows,
     group_verdict,
+    is_junk_row,
     plan_progress,
     progress_verdict,
 )
@@ -564,13 +565,11 @@ def _junk_count(
 ) -> int:
     """Count degenerate frames among this plan's own token rows.
 
-    Campaign precedent: a default Smart Exposure produced DARK frames at
-    0.00003s inside the plan's landing dir. Junk = duration below
-    ``max(0.01, half of the plan's smallest exposure for this type)``. Bias
-    is exempt (0s is *correct* for bias) and flat is exempt (SkyFlat
-    legitimately adapts from 0.01s). Frames failing the duration parse are
-    not counted — the CSV contract can change under us and a parse quirk
-    must never invent junk.
+    The rule itself lives in ``progress.is_junk_row`` (duration below
+    ``max(0.01, half the plan's smallest exposure)`` — the 0.00003s Smart
+    Exposure dark; bias and flat exempt), shared with ``nina-archive``'s
+    ``JUNK/`` diversion so the audit and the archive can never disagree
+    about which frames are worthless.
 
     Scope trade-off: a junk *dark* is excluded from ``attributed`` by the
     ±0.05s exposure matcher, so such a plan surfaces as MISSING_FILES (those
@@ -578,33 +577,13 @@ def _junk_count(
     SUSPECT_JUNK fires when attribution is satisfied while junk rides along —
     lights match on token alone, so junk lights *do* count.
     """
-    if image_type not in ("light", "dark"):
-        return 0
-
-    # The plan model is pydantic: nested frame groups may surface as models,
-    # so read exposure values through a dict-or-attribute accessor instead of
-    # assuming plain dicts.
-    def _exposure_of(group: Any) -> Any:
-        if isinstance(group, dict):
-            return group.get("exposure_time_seconds")
-        return getattr(group, "exposure_time_seconds", None)
-
-    frame_groups = getattr(plan, f"{image_type}_frames", None) or []
-    exposures = [
-        float(value) for value in map(_exposure_of, frame_groups) if value is not None
-    ]
-    floor = max(0.01, 0.5 * min(exposures)) if exposures else 0.01
-    junk = 0
-    for row in _own_token_rows(plan, rows, image_type, pointing_index=pointing_index):
-        try:
-            # str() first: an absent duration arrives as None, and
-            # float(None) is a TypeError the ValueError handler would miss.
-            duration = float(str(row.get("duration")))
-        except ValueError:
-            continue
-        if duration < floor:
-            junk += 1
-    return junk
+    return sum(
+        1
+        for row in _own_token_rows(
+            plan, rows, image_type, pointing_index=pointing_index
+        )
+        if is_junk_row(plan, row, image_type)
+    )
 
 
 def _status_for(

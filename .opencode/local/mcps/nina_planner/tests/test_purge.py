@@ -12,9 +12,10 @@ The scenarios mirror the design rule
 ``prunable(F) <=> preserved(F) AND all claiming plans released``:
 unarchived frames held, --all waiver releases, re-opened (archived but
 incomplete-now) plans held until their plan file moves out, pooled
-calibration held by an unarchived plan, BAD_ twins ride, orphans behave,
-the quarantine hides frames from attribution, and --apply never touches
-the archive destination (the rclone staging leg is gone).
+calibration held by an unarchived plan, BAD_ twins ride, JUNK/-diverted
+own-token frames ride once archived, orphans behave, the quarantine hides
+frames from attribution, and --apply never touches the archive
+destination (the rclone staging leg is gone).
 PurgePlanFileTest covers the plan-file leg: the archive gates (folder +
 byte-identical plan.json) run before any frame is deleted, ``--purge``
 removes the original plan JSON only after its frames are gone, and every
@@ -88,7 +89,7 @@ class PurgeBase(ArchiveBase):
 
     @property
     def quarantine(self) -> Path:
-        return self.root / ".prune-quarantine"
+        return self.root / ".quarantine"
 
     @property
     def purge_index(self) -> Path:
@@ -455,6 +456,83 @@ class PurgeReleaseTest(PurgeBase):
 
 
 # ------------------------------------------ plan-file removal (--purge)
+
+
+class PurgeJunkTest(PurgeBase):
+    """The ``JUNK/`` invariant: a degenerate own-token frame stops holding
+    its landing directory.
+
+    Regression for the deadlock where two 0.00003s Smart Exposure darks
+    sat in ImageMetaData.csv, matched no exposure group (so archive
+    deliberately skipped them), never appeared in any manifest's
+    ``files[]`` — and therefore made ``preserved(F)`` false, so nina-purge
+    held a finished plan's directory for ever with "not preserved — run
+    nina-archive first".
+    """
+
+    def seed_junk_dark(self) -> Path:
+        self.seed_full()
+        name = "2026-09-21_05-00-00_dark_60.00s_junk.fits"
+        path = self.frame("DARK", name, date="2026-09-21")
+        self.write_metadata(
+            "DARK",
+            [
+                {
+                    "ImageType": "DARK",
+                    "FilePath": str(path),
+                    "Duration": "0.00003",
+                    "ExposureStartUTC": "2026-09-21T05:00:00Z",
+                }
+            ],
+            date="2026-09-21",
+        )
+        return path
+
+    def test_junk_holds_directory_until_archived_then_prunes(self):
+        junk = self.seed_junk_dark()
+
+        code, out, _err = self.run_purge()
+
+        # Unarchived, junk included: held, exactly like any unarchived frame.
+        self.assertEqual(code, 1)
+        self.assertIn("HOLD", out)
+        self.assertIn("not preserved — run nina-archive first", out)
+
+        # After archiving, the junk row IS in the manifest (under JUNK/),
+        # so the very same directory reads prunable.
+        self.assertEqual(self.run_archive(), 0)
+        manifest = json.loads(
+            (self.dest / "m31__plan-abc123" / "manifest.json").read_text()
+        )
+        self.assertIn(str(junk), [f["source"] for f in manifest["files"]])
+        self.assertEqual(manifest["disk"]["junk"][0]["source"], str(junk))
+
+        code, out, _err = self.run_purge()
+
+        self.assertEqual(code, 0, out)
+        self.assertIn("PRUNE", out)
+        self.assertIn("preserved; all claims released", out)
+        self.assertNotIn("not preserved", out)
+
+    def test_full_chain_quarantines_then_purges_the_junk_frame(self):
+        junk = self.seed_junk_dark()
+        self.assertEqual(self.run_archive(), 0)
+
+        self.assertEqual(self.run_purge("--apply")[0], 0)
+        self.assertEqual(self.root_dirs(), [])
+        # The junk frame rode along with the directory into quarantine —
+        # it was never a reason to keep the directory.
+        self.assertTrue(
+            any(p.name == junk.name for p in self.quarantine.rglob(junk.name))
+        )
+
+        code, out, _err = self.run_purge("--purge")
+
+        self.assertEqual(code, 0, out)
+        self.assertEqual(self.root_dirs(), [])
+        self.assertFalse(self.quarantine.exists())
+        self.assertFalse(any(self.root.rglob(junk.name)))
+        self.assertFalse((self.proj / "m31.json").exists())  # file swept too
 
 
 class PurgePlanFileTest(PurgeBase):
