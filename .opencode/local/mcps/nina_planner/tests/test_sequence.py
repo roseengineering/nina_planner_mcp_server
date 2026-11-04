@@ -842,6 +842,62 @@ class SequenceBehaviorTest(unittest.TestCase):
         self.assertEqual(lights, "M31 - core _plan-test123_")
         self.assertEqual(darks, lights)
 
+    def test_target_name_carries_intent(self):
+        """The intent rides in the target name — and therefore in the
+        $$TARGETNAME$$ folder — because a bare catalog designation says what
+        was shot, not why. Same shape the plan file already names itself
+        with (<target> <intent>_<timestamp>.json)."""
+        plan = self._plan(intent="Galaxy portrait")
+        target = _deepsky_targets(
+            build_sequence_lights(
+                plan, equipment=ObservatoryEquipment(), profile=_profile()
+            )
+        )[0]["Target"]["TargetName"]
+        self.assertEqual(target, "M31 Galaxy portrait - core _plan-test123_")
+
+    def test_intent_stays_out_of_the_folder_when_unset(self):
+        """An empty intent must reproduce the pre-intent name verbatim — no
+        stray separator before the label or the token."""
+        plan = self._plan(intent="")
+        target = _deepsky_targets(
+            build_sequence_lights(
+                plan, equipment=ObservatoryEquipment(), profile=_profile()
+            )
+        )[0]["Target"]["TargetName"]
+        self.assertEqual(target, "M31 - core _plan-test123_")
+
+    def test_intent_does_not_split_lights_from_calibration(self):
+        """The intent is spelled by BOTH prefixes: lights and plan-level
+        calibration must still agree, or $$TARGETNAME$$ puts one plan's
+        frames in two directories (the label bug, reintroduced via intent)."""
+        from sequence_helpers import build_sequence_darks
+
+        plan = self._plan(intent="Galaxy portrait")
+        equipment = ObservatoryEquipment()
+        lights = _deepsky_targets(
+            build_sequence_lights(plan, equipment=equipment, profile=_profile())
+        )[0]["Target"]["TargetName"]
+        darks = _deepsky_targets(
+            build_sequence_darks(plan, equipment=equipment, profile=_profile())
+        )[0]["Target"]["TargetName"]
+        self.assertEqual(lights, "M31 Galaxy portrait - core _plan-test123_")
+        self.assertEqual(darks, lights)
+        # A mosaic's calibration still drops the pane label (no -N token it
+        # could share) but keeps the plan-level intent.
+        mosaic = self._plan(
+            intent="Galaxy portrait",
+            pointings=[
+                {"label": "core", "ra_hours": 0.71, "dec_deg": 41.27},
+                {"ra_hours": 0.72, "dec_deg": 41.28},
+            ],
+        )
+        mosaic_darks = _deepsky_targets(
+            build_sequence_darks(
+                mosaic, equipment=ObservatoryEquipment(), profile=_profile()
+            )
+        )[0]["Target"]["TargetName"]
+        self.assertEqual(mosaic_darks, "M31 Galaxy portrait _plan-test123_")
+
     def test_mosaic_calibration_keeps_the_bare_plan_target(self):
         """A mosaic's panes carry -N tokens its plan-level calibration cannot
         share, so the first pane's label stays out of the calibration target

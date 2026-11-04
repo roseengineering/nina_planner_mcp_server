@@ -82,7 +82,31 @@ class PlanIdCharsetTest(unittest.TestCase):
         self.assertEqual(plan.attribution_token(1), "_m31.lrgb_")
 
 
-class FlatExposurePlanTest(unittest.TestCase):
+class TargetPrefixTest(unittest.TestCase):
+    """``$$TARGETNAME$$`` writes this into the path, so the prefix is the
+    folder's readable head: ``<target> <intent> [- <label>]``."""
+
+    def test_intent_follows_the_target(self):
+        self.assertEqual(_plan().target_prefix(), "M31")
+        self.assertEqual(
+            _plan(intent="Galaxy portrait").target_prefix(), "M31 Galaxy portrait"
+        )
+
+    def test_label_keeps_its_separator_after_the_intent(self):
+        self.assertEqual(_plan().target_prefix("core"), "M31 - core")
+        self.assertEqual(
+            _plan(intent="Galaxy portrait").target_prefix("core"),
+            "M31 Galaxy portrait - core",
+        )
+
+    def test_empty_parts_leave_no_stray_separator(self):
+        # Plans that leave intent unset (the old shape) or a plan with no
+        # label must reproduce the pre-intent name verbatim — a leading or
+        # doubled separator would be a new folder for the same plan.
+        self.assertEqual(_plan().target_prefix(), "M31")
+        self.assertEqual(_plan(target="", intent="").target_prefix("core"), "core")
+        self.assertEqual(_plan(target="").target_prefix(), "")
+
     """Flats carry no exposure time: N.I.N.A.'s SkyFlat chooses it."""
 
     def test_flat_spec_is_filter_and_count_only(self):

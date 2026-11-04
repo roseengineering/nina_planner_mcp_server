@@ -190,6 +190,29 @@ class PlanProgressTest(unittest.TestCase):
         bare.pointings = []
         self.assertEqual(bare.calibration_prefix(), "M31")
 
+    def test_calibration_prefix_carries_the_intent(self):
+        # The intent is plan-level, so it belongs in BOTH prefixes — lights
+        # (sequence_deepsky via target_prefix) and calibration — or the two
+        # spellings split one plan's frames across two landing folders.
+        labeled = _plan(
+            plan_id="plan-abc123",
+            intent="Galaxy portrait",
+            pointings=[{"label": "Pane 1", "ra_hours": 0.71, "dec_deg": 41.27}],
+        )
+        self.assertEqual(labeled.calibration_prefix(), "M31 Galaxy portrait - Pane 1")
+        unlabeled = _plan(plan_id="plan-abc123", intent="Galaxy portrait")
+        self.assertEqual(unlabeled.calibration_prefix(), "M31 Galaxy portrait")
+        # A mosaic drops the pane label but not the plan-level intent.
+        multi = _plan(
+            plan_id="plan-abc123",
+            intent="Galaxy portrait",
+            pointings=[
+                {"label": "Pane 1", "ra_hours": 0.71, "dec_deg": 41.27},
+                {"label": "Pane 2", "ra_hours": 0.72, "dec_deg": 41.28},
+            ],
+        )
+        self.assertEqual(multi.calibration_prefix(), "M31 Galaxy portrait")
+
     def test_token_matches_in_any_path_segment(self):
         plan = _plan(plan_id="plan-abc123")
         rows = [

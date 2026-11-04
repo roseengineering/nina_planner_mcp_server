@@ -238,25 +238,46 @@ class ObservationPlan(StrictModel):
         flats): calibration belongs to the whole plan, not to any pane."""
         return f"_{self._base_plan_id()}_"
 
+    def target_prefix(self, label: str | None = "") -> str:
+        """The readable head of a target name: ``<target> <intent> [- label]``.
+
+        ``$$TARGETNAME$$`` turns this (plus the plan-id token) into the
+        imaging directory, so this is what a folder reads as. The intent
+        rides along because the target alone rarely says *why* — "M31" is a
+        catalog designation, not an observation. An empty target or intent
+        is skipped rather than leaving a stray separator, and an empty
+        ``label`` appends nothing, so the pre-intent shapes ("M31",
+        "M31 - core") are reproduced verbatim for plans that leave intent
+        unset.
+
+        Both lights (``sequence_deepsky``) and calibration
+        (``calibration_prefix``) build their prefix here on purpose: two
+        spellings of the same prefix would split one plan's frames across
+        two ``$$TARGETNAME$$`` folders.
+        """
+        base = " ".join(part for part in (self.target, self.intent) if part)
+        if not label:
+            return base
+        return f"{base} - {label}" if base else label
+
     def calibration_prefix(self) -> str:
-        """The ``<target>`` part of a calibration step's target name.
+        """The ``<target> <intent>`` part of a calibration step's target name.
 
         Mirrors the prefix ``sequence_deepsky`` builds for lights, but only
         where the two can actually agree: a single-pointing plan shares its
         bare plan token with its calibration (see ``effective_plan_id``), so
         carrying that pointing's label here too keeps lights and calibration
         in ONE ``$$TARGETNAME$$`` folder instead of splitting them into
-        ``<target> - <label> _plan-x_`` (lights) and ``<target> _plan-x_``
-        (calibration).
+        ``<target> <intent> - <label> _plan-x_`` (lights) and
+        ``<target> <intent> _plan-x_`` (calibration).
 
         A mosaic's panes use ``-N`` tokens that no plan-level calibration can
         share, so its label would only make the folder read as one pane's —
-        the label is dropped there, as before. An empty ``pointings`` list
-        (defensive; the model forbids it) likewise falls back to the bare
-        target.
+        the label is dropped there (the intent is not: it is plan-level, so
+        the mosaic's calibration folder still reads as this plan's). An empty
+        ``pointings`` list (defensive; the model forbids it) likewise keeps
+        just the target and intent.
         """
         if len(self.pointings) == 1:
-            label = self.pointings[0].label
-            if label:
-                return f"{self.target} - {label}"
-        return self.target
+            return self.target_prefix(self.pointings[0].label)
+        return self.target_prefix()

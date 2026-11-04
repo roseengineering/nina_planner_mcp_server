@@ -699,9 +699,10 @@ def _audit_row(
     # Lights carry the pointing-specific id (base for single-pointing plans,
     # base-N for a mosaic pane); calibration is plan-level and always uses
     # the bare base id — the very token a single-pointing plan's lights
-    # carry, so the two landing dirs coincide (the label rides along in both
-    # via plan.calibration_prefix); a mosaic's calibration keeps its own
-    # bare "<target> _<base>_" dir.
+    # carry, so the two landing dirs coincide (the label, and the intent
+    # both carry, ride along in both via plan.calibration_prefix); a
+    # mosaic's calibration keeps its own bare "<target> <intent> _<base>_"
+    # dir.
     effective = (
         plan.effective_plan_id(pointing_index or 1)
         if image_type == "light"
@@ -725,11 +726,12 @@ def _audit_row(
         # single-pointing subtitle ("M47 center") — is the human handle for
         # what pointing_index/effective_plan_id express only numerically,
         # and it is the middle segment of the landing dir name
-        # ("<target> - <label> _<token>_"); a single-pointing plan's
-        # calibration lands in that same dir (plan.calibration_prefix),
-        # though its rows still carry no label. Light-only, like `bad`:  calib
-        # rows are plan-level and have no pointing to label. Normalized to
-        # "" when unset, the same contract as `intent`.
+        # ("<target> <intent> - <label> _<token>_"); a single-pointing
+        # plan's calibration lands in that same dir
+        # (plan.calibration_prefix), though its rows still carry no label.
+        # Light-only, like `bad`:  calib rows are plan-level and have no
+        # pointing to label. Normalized to "" when unset, the same contract
+        # as `intent`.
         row["label"] = plan.pointings[(pointing_index or 1) - 1].label or ""
         # Frames deliberately rejected via N.I.N.A.'s BAD_ filename prefix.
         # The CSV row still names the pre-rename file, so a rejected frame
@@ -968,7 +970,8 @@ async def audit_plans(
     pointing's ``label`` — a mosaic pane name like ``r2_c3``/``Pane 2``, or
     a single-pointing subtitle like ``M47 center`` — the human handle for
     what ``pointing_index``/``effective_plan_id`` express numerically, and
-    the middle segment of the landing directory name. Calibration rows
+    the segment after ``<target> <intent>`` in the landing directory name.
+    Calibration rows
     carry no ``label`` (plan-level, like their null pointing_index) even
     though a single-pointing plan's calibration lands in that same labeled
     directory; it is the empty string when a pointing's label is unset.

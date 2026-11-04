@@ -109,7 +109,10 @@ def sequence_deepsky(
     ``ACQUISITION-*`` segment event (see ``acquisition_container``).
     """
     pointing = _validated_pointing(plan, pointing_index)
-    prefix = f"{plan.target} - {pointing.label}" if pointing.label else plan.target
+    # target_prefix carries <target> <intent> [- <label>]; it is shared with
+    # calibration_prefix so lights and calibration spell the folder the same
+    # way and land in one $$TARGETNAME$$ directory.
+    prefix = plan.target_prefix(pointing.label)
     target = f"{prefix} {plan.attribution_token(pointing_index)}"
     posang = 0 if pointing.position_angle_deg is None else pointing.position_angle_deg
     return acquisition_container(
@@ -132,13 +135,14 @@ def sequence_calibration(
     ``plan.pointings``, so an empty pointings list is fine and no pane
     attribution is claimed. The target name carries the bare plan token —
     for a single-pointing plan that is also the lights token, so both share
-    one ``$$TARGETNAME$$`` folder (``plan.calibration_prefix`` adds that
-    pointing's label for the same reason: the light target name has it, and
-    without it the two prefixes would split the folder again); a mosaic's
-    panes keep their own ``-N`` folders. ``kind`` names the step in the NINA
-    UI ("Dark Sequence", ...) and deliberately stays out of the target name,
-    where ``$$TARGETNAME$$`` would put it in the file path and split the
-    folder again.
+    one ``$$TARGETNAME$$`` folder (``plan.calibration_prefix`` spells the
+    readable head the same way ``sequence_deepsky`` does — ``<target>
+    <intent>`` plus that pointing's label — because a light prefix and a
+    calibration prefix that disagreed would split the folder again); a
+    mosaic's panes keep their own ``-N`` folders. ``kind`` names the step in
+    the NINA UI ("Dark Sequence", ...) and deliberately stays out of the
+    target name, where ``$$TARGETNAME$$`` would put it in the file path and
+    split the folder again.
 
     ``tag`` ("dark", "bias", "dawn flats", "dusk flats") is ``kind``'s
     event-only counterpart: it reaches the ACQUISITION messages through
