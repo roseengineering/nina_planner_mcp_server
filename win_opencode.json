@@ -16,8 +16,8 @@
         "environment": {
           "NINA_PLANNER_LOG": "C:/Windows/Temp/nina-planner-debug.log",
           "NINA_ARCHIVE_DEST": ".archive/",
-          "NINA_UPLOAD_CMD": "gcloud storage rsync --recursive .archive/ gs://YOUR-BUCKET/nina-archive",
-          "NINA_VERIFY_CMD": "gcloud storage rsync --recursive .archive/ gs://YOUR-BUCKET/nina-archive --dry-run"
+          "NINA_UPLOAD_CMD": "gcloud storage rsync --recursive .archive gs://YOUR-BUCKET/nina-archive",
+          "NINA_VERIFY_CMD": "gcloud storage rsync --recursive .archive gs://YOUR-BUCKET/nina-archive --dry-run"
         },
         "command": [
           "uv", "run", "--project", ".opencode/local/mcps/nina_planner", "-m", "nina_planner"
