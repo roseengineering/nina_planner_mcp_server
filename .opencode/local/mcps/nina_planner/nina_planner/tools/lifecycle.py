@@ -5,7 +5,6 @@ import anyio
 
 from .. import client
 from ..app import mcp
-from ..progress import append_progress_entry
 from ..system_time import (
     kill_nina_command,
     nina_exe_path,
@@ -99,12 +98,10 @@ async def stop_nina() -> dict[str, Any]:
         client.log_payload("stop_nina error:", summary)
         raise RuntimeError(summary)
 
-    log_extra: list[str] = []
     try:
         proc = await client.run_blocking(kill_nina_command(), timeout=15.0)
     except Exception as e:
         summary = f"stop_nina failed: taskkill error: {e!r}"
-        log_extra.append(summary)
         client.log_payload("stop_nina error:", summary)
         raise RuntimeError(summary) from e
 
@@ -125,7 +122,6 @@ async def stop_nina() -> dict[str, Any]:
             "stop_nina failed: NINA's REST API still answers after taskkill "
             f"({taskkill_detail}); NINA may not have terminated"
         )
-        log_extra.append(summary)
         client.log_payload("stop_nina error:", summary)
         raise RuntimeError(summary)
 
@@ -133,14 +129,8 @@ async def stop_nina() -> dict[str, Any]:
     if proc.returncode != 0:
         # e.g. "not found" because NINA exited on its own — end state holds.
         summary += f" (note: {taskkill_detail})"
-    log_extra.append("killed running NINA")
 
     client.log_payload("stop_nina:", summary)
-    try:
-        await append_progress_entry("stop_nina: " + "; ".join(log_extra))
-    except Exception as e:
-        client.log_payload("stop_nina: progress entry failed", repr(e))
-
     return {"stopped": True, "summary": summary}
 
 
@@ -168,18 +158,12 @@ async def start_nina() -> dict[str, Any]:
         )
 
     nina_exe = nina_exe_path()
-    log_extra = ["launching NINA"]
     await _launch_nina_interactive(nina_exe)
-    log_extra.append(f"launched NINA from {nina_exe}")
     summary = (
         "start_nina: launched NINA into interactive desktop session. "
         "Poll get_site_equipment_status() to confirm readiness."
     )
     client.log_payload("start_nina:", summary)
-    try:
-        await append_progress_entry("start_nina: " + "; ".join(log_extra))
-    except Exception as e:
-        client.log_payload("start_nina: progress entry failed", repr(e))
     return {"summary": summary}
 
 

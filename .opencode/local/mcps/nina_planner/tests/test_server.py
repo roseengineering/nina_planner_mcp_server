@@ -3274,48 +3274,6 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
             content = log_path.read_text()
             self.assertIn("Equipment:", content)
 
-    async def test_start_nina_real_time_progress_entry_fails(self):
-        """When append_progress_entry raises in start_nina real-time, the tool
-        still returns — the except branch swallows the error.
-        """
-        from nina_planner.server import start_nina
-
-        class FakeProcess:
-            returncode = 0
-            stdout = ""
-
-        stub_launcher_paths = (
-            Path("/tmp/launch_nina.cmd"),
-            r"C:\Users\user\AppData\Local\Temp\launch_nina.cmd",
-        )
-
-        with (
-            patch(
-                "nina_planner.client.run_blocking",
-                return_value=FakeProcess(),
-            ),
-            patch(
-                "nina_planner.tools.lifecycle.write_nina_launcher",
-                return_value=stub_launcher_paths,
-            ),
-            patch(
-                "nina_planner.client.nina_api_responsive",
-                AsyncMock(return_value=False),
-            ),
-            patch(
-                "nina_planner.tools.lifecycle.windows_interop_available",
-                return_value=True,
-            ),
-            patch(
-                "nina_planner.tools.lifecycle.append_progress_entry",
-                AsyncMock(side_effect=OSError("disk full")),
-            ),
-            patch("nina_planner.client.log_payload"),
-        ):
-            # Should not raise — the progress-entry failure is swallowed.
-            result = await start_nina()
-        self.assertIn("launched NINA", result["summary"])
-
     async def test_start_nina_already_running_raises(self):
         from nina_planner.server import start_nina
 
@@ -3411,10 +3369,6 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
             patch(
                 "nina_planner.client.run_blocking",
                 AsyncMock(return_value=FakeProcess()),
-            ),
-            patch(
-                "nina_planner.tools.lifecycle.append_progress_entry",
-                AsyncMock(),
             ),
             patch("nina_planner.tools.lifecycle.anyio.sleep", new=AsyncMockSleep()),
             patch("nina_planner.client.log_payload"),

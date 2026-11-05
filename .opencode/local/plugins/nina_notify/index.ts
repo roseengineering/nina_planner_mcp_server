@@ -5,15 +5,49 @@ type Logs = string | null;
 
 let pluginLogs: Logs = null;
 
+// Wall-clock LOCAL time carrying its UTC offset — e.g.
+// `2026-11-05T09:39:10.981-05:00`. Deliberately not UTC, and deliberately not
+// bare local either; this is the same shape `to_local_display()` gives every
+// `get_events` / `get_logs` timestamp and imaging-metadata `date`, so a wake
+// quoted from `get_events` and the line that triggered it read as the same
+// clock.
+//
+// Why local rather than UTC: this log is read next to `PROGRESS.md` and next
+// to the wall clock at the telescope, and with the telegram-bot bridge the
+// observing session and the session a prompt lands in are frequently
+// *different* opencode sessions — UTC would have to be mentally converted
+// every time (14:39Z while the observer reads 09:39).
+//
+// Why the offset is kept anyway: it is what makes a local stamp *unambiguous*
+// — a bare local time cannot say which side of a DST boundary it fell on
+// (this file's own `PROGRESS.md` headers read `-04:00` in October and
+// `-05:00` in November), and it lets any line be lined up against a `…Z`
+// stamp by arithmetic, or against a `get_events` event from a host in another
+// zone. Milliseconds are kept: two sessions waking inside the same second is
+// exactly the confusion this timestamp exists to resolve.
+function localTime(at: Date = new Date()): string {
+  const pad = (n: number, width = 2) => String(n).padStart(width, "0");
+  // Minutes east of UTC; `Date.getTimezoneOffset()` reports the inverse.
+  const offsetMin = -at.getTimezoneOffset();
+  const abs = Math.abs(offsetMin);
+  const offset = `${offsetMin < 0 ? "-" : "+"}${pad(Math.floor(abs / 60))}:${pad(abs % 60)}`;
+  return (
+    `${at.getFullYear()}-${pad(at.getMonth() + 1)}-${pad(at.getDate())}` +
+    `T${pad(at.getHours())}:${pad(at.getMinutes())}:${pad(at.getSeconds())}` +
+    `.${pad(at.getMilliseconds(), 3)}${offset}`
+  );
+}
+
 function log(message: string) {
   if (!pluginLogs) return;
+  const line = `[${localTime()}] ${message}`;
   try {
-    fs.appendFileSync(pluginLogs, `${message}\n`);
+    fs.appendFileSync(pluginLogs, `${line}\n`);
   } catch {
     // If configured path failed (e.g. Windows path on POSIX), try /tmp fallback
     if (process.platform !== "win32") {
       try {
-        fs.appendFileSync("/tmp/nina-notify-debug.log", `${message}\n`);
+        fs.appendFileSync("/tmp/nina-notify-debug.log", `${line}\n`);
       } catch {
         /* logging must never break the plugin */
       }
@@ -229,11 +263,20 @@ export default Plugin.define({
       lastInjectedText = text;
       lastInjectedTime = now;
 
-      log(`[${instanceId}] intervention: ${text}`);
+      // The receiving session is logged with the event, not just when it is
+      // first set: with the timestamp this makes each wake line self-contained
+      // — (when) it fired and (which session) it landed in — which is the only
+      // way to line this file up against a `PROGRESS.md` written by a
+      // different session.
+      log(
+        `[${instanceId}] intervention -> session=${targetSessionID}: ${text}`,
+      );
       try {
         await ctx.session.prompt({ sessionID: targetSessionID as any, text });
       } catch (err) {
-        log(`[${instanceId}] prompt failed: ${err}`);
+        log(
+          `[${instanceId}] prompt failed (session=${targetSessionID}): ${err}`,
+        );
         // Clear the dedupe record so the next attempt is not suppressed for
         // 30s by a prompt that never reached the agent.
         try {

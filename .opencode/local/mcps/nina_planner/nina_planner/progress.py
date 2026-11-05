@@ -4,9 +4,6 @@ import math
 from datetime import UTC, datetime, timedelta
 from typing import Any, Literal
 
-import anyio
-
-from . import config
 from .models.plan import ObservationPlan
 from .nina_utils import to_local_display
 
@@ -17,31 +14,11 @@ __all__ = [
     "plan_progress",
     "plan_with_remaining",
     "progress_verdict",
-    "append_progress_entry",
 ]
 
 # The three answers to "is this exposure group / pointing satisfied?", see
 # group_verdict.
 Verdict = Literal["complete", "incomplete", "expired_with_deficit"]
-
-
-async def append_progress_entry(text: str) -> None:
-    """Append an ISO-8601 timestamped entry to ``PROGRESS.md``.
-
-    Matches the convention described in ``AGENTS.md`` — each significant
-    action gets one entry. The block is appended as a markdown ``##`` section
-    (timestamp + short title line, followed by the entry body) so both humans
-    and later agent sessions can grep it by header. Existing content is
-    preserved; the file always ends in a newline.
-
-    The path to ``PROGRESS.md`` is taken from :data:`nina_planner.config.PROJECT_DIR`.
-    """
-    now = datetime.now().astimezone()
-    timestamp = now.isoformat(timespec="seconds")
-    block = f"\n## {timestamp} — auto\n\n{text.strip()}\n"
-    path = config.PROJECT_DIR / "PROGRESS.md"
-    async with await anyio.open_file(path, "a", encoding="utf-8") as f:
-        await f.write(block)
 
 
 def _path_components(path: str) -> list[str]:

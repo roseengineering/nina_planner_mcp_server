@@ -265,56 +265,11 @@ class WindowsInteropAvailableTest(unittest.TestCase):
             self.assertFalse(windows_interop_available())
 
 
-class AppendProgressEntryTest(unittest.TestCase):
-    def setUp(self):
-        self._tmp = tempfile.TemporaryDirectory()
-        self.project_dir = Path(self._tmp.name)
-        self.progress = self.project_dir / "PROGRESS.md"
-        self.progress.write_text("# progress.md\n\nShared observatory progress file.\n")
-
-    def tearDown(self):
-        self._tmp.cleanup()
-
-    def _call(self, text: str) -> str:
-        from nina_planner.progress import append_progress_entry
-
-        with patch("nina_planner.config.PROJECT_DIR", self.project_dir):
-            asyncio.run(append_progress_entry(text))
-        return self.progress.read_text(encoding="utf-8")
-
-    def test_appends_iso_timestamped_section(self):
-        body = "started NINA on real time"
-        new_content = self._call(body)
-        self.assertIn("# progress.md", new_content)
-        self.assertIn("## ", new_content)
-        self.assertIn("— auto", new_content)
-        self.assertIn(body, new_content)
-        self.assertTrue(new_content.endswith("\n"))
-
-    def test_appends_subsequent_entries(self):
-        self._call("first entry body")
-        self._call("second entry body")
-        content = self.progress.read_text(encoding="utf-8")
-        self.assertIn("first entry body", content)
-        self.assertIn("second entry body", content)
-        self.assertEqual(content.count("— auto"), 2)
-
-
 class StopNinaTest(unittest.TestCase):
-    def setUp(self):
-        self._tmp = tempfile.TemporaryDirectory()
-        self.project_dir = Path(self._tmp.name)
-        self.progress = self.project_dir / "PROGRESS.md"
-        self.progress.write_text("# progress.md\n")
-
-    def tearDown(self):
-        self._tmp.cleanup()
-
     def test_stop_when_not_running_is_noop(self):
         from nina_planner.server import stop_nina
 
         with (
-            patch("nina_planner.config.PROJECT_DIR", self.project_dir),
             patch(
                 "nina_planner.client.api_probe",
                 AsyncMock(return_value=(False, "connection refused")),
@@ -334,7 +289,6 @@ class StopNinaTest(unittest.TestCase):
         from nina_planner.server import stop_nina
 
         with (
-            patch("nina_planner.config.PROJECT_DIR", self.project_dir),
             patch(
                 # First probe: NINA is up (stop proceeds to taskkill). Second
                 # probe: the kill verification poll sees the API gone.
@@ -364,14 +318,11 @@ class StopNinaTest(unittest.TestCase):
         mock_run.assert_awaited_once()
         kill_argv = mock_run.call_args.args[0]
         self.assertEqual(kill_argv, ["taskkill.exe", "/F", "/IM", "NINA.exe"])
-        content = self.progress.read_text(encoding="utf-8")
-        self.assertIn("stop_nina: killed running NINA", content)
 
     def test_stop_when_remote_raises_runtime_error(self):
         from nina_planner.server import stop_nina
 
         with (
-            patch("nina_planner.config.PROJECT_DIR", self.project_dir),
             patch(
                 "nina_planner.client.api_probe",
                 AsyncMock(return_value=(True, None)),
@@ -392,7 +343,6 @@ class StopNinaTest(unittest.TestCase):
         from nina_planner.server import stop_nina
 
         with (
-            patch("nina_planner.config.PROJECT_DIR", self.project_dir),
             patch(
                 "nina_planner.client.api_probe",
                 AsyncMock(return_value=(True, None)),
@@ -414,20 +364,10 @@ class StopNinaTest(unittest.TestCase):
 
 
 class StartNinaTest(unittest.TestCase):
-    def setUp(self):
-        self._tmp = tempfile.TemporaryDirectory()
-        self.project_dir = Path(self._tmp.name)
-        self.progress = self.project_dir / "PROGRESS.md"
-        self.progress.write_text("# progress.md\n")
-
-    def tearDown(self):
-        self._tmp.cleanup()
-
     def test_start_errors_when_already_running(self):
         from nina_planner.server import start_nina
 
         with (
-            patch("nina_planner.config.PROJECT_DIR", self.project_dir),
             patch(
                 "nina_planner.client.nina_api_responsive",
                 AsyncMock(return_value=True),
@@ -492,7 +432,6 @@ class StartNinaTest(unittest.TestCase):
             return absent_proc
 
         with (
-            patch("nina_planner.config.PROJECT_DIR", self.project_dir),
             patch(
                 "nina_planner.client.nina_api_responsive",
                 AsyncMock(return_value=False),
@@ -518,9 +457,6 @@ class StartNinaTest(unittest.TestCase):
         self.assertIn("/IT", create_args)
         self.assertIn(self._STUB_LAUNCHER_PATHS[1], create_args)
 
-        content = self.progress.read_text(encoding="utf-8")
-        self.assertIn("start_nina: launching NINA", content)
-
     def test_start_real_time_raises_when_task_creation_fails(self):
         from nina_planner.server import start_nina
 
@@ -531,7 +467,6 @@ class StartNinaTest(unittest.TestCase):
             return MagicMock(returncode=1, stdout="", stderr="Access denied")
 
         with (
-            patch("nina_planner.config.PROJECT_DIR", self.project_dir),
             patch(
                 "nina_planner.client.nina_api_responsive",
                 AsyncMock(return_value=False),
@@ -566,7 +501,6 @@ class StartNinaTest(unittest.TestCase):
             return MagicMock(returncode=0, stdout="", stderr="")
 
         with (
-            patch("nina_planner.config.PROJECT_DIR", self.project_dir),
             patch(
                 "nina_planner.client.nina_api_responsive",
                 AsyncMock(return_value=False),
