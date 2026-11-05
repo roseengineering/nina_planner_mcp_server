@@ -122,6 +122,12 @@ const STREAK_REQUIRED = 3;
 // Light frames land ~14s apart; this only stops a burst of save events from
 // costing repeated REST round trips (short exposure runs land faster).
 const STATS_MIN_INTERVAL_MS = 5_000;
+// No N.I.N.A. event for this long while a sequence claims to be running =
+// suspicious. Frame cadence is ~14-17s, and N.I.N.A. goes quiet without ever
+// closing the socket when the network drops (the 2026-11-04/05 night missed
+// the run-ending SEQUENCE-FINISHED with no `onclose` logged anywhere), so
+// `nina_notify_status` flags it rather than trusting an open socket.
+const SOCKET_STALE_MS = 10 * 60_000;
 // One deferred second look when a frame's own statistics are not in the buffer
 // yet. N.I.N.A. commits them only after readout and processing, so a sample
 // taken at that frame's own IMAGE-SAVE can race the commit.
@@ -173,7 +179,27 @@ export default Plugin.define({
       log(`[${instanceId}] restored target session: ${targetSessionID}`);
     }
 
+    // Pinned target: written ONLY by the `nina_notify_arm` tool, and it wins
+    // over the automatic last-prompt fallback above. The automatic arm drifted
+    // to stale sessions in the field — opencode re-runs prompt admission when
+    // an old session is opened/attached/resumed (hook fires with no new
+    // message in that session), and each fire silently re-targeted the wakes
+    // to whatever historical session was last touched. While pinned, other
+    // sessions' prompts may no longer re-arm; they are logged and ignored.
+    const savedPin = await ctx.storage.get("pinnedSessionID");
+    let pinnedSessionID =
+      typeof savedPin === "string" && savedPin ? savedPin : undefined;
+    if (pinnedSessionID) {
+      log(`[${instanceId}] restored pinned session: ${pinnedSessionID}`);
+    }
+
     const promptHook = await ctx.session.hook("prompt", async (event) => {
+      if (pinnedSessionID && event.sessionID !== pinnedSessionID) {
+        log(
+          `[${instanceId}] re-arm ignored (pinned to ${pinnedSessionID}): attempted by ${event.sessionID}`,
+        );
+        return;
+      }
       targetSessionID = event.sessionID;
       log(`[${instanceId}] target session set from prompt: ${targetSessionID}`);
       try {
@@ -187,7 +213,8 @@ export default Plugin.define({
     // Wake bookkeeping. Telemetry is never stored, so the only thing worth
     // remembering is *when* we last woke and *how much* routine traffic went
     // by — both are needed to tell the agent how far back to read.
-    let lastWakeAt = Date.now();
+    const startedAt = Date.now();
+    let lastWakeAt = startedAt;
     let routineSinceWake = 0;
 
     // How far back the agent should read N.I.N.A.'s own event history. Capped
@@ -218,46 +245,83 @@ export default Plugin.define({
       return promptChain;
     }
 
+    // Where a wake goes. `pinnedSessionID` — written only by the
+    // `nina_notify_arm` tool — always wins; `targetSessionID` is the
+    // automatic last-prompt fallback used before anything is pinned.
+    // Storage is re-read on EVERY send because several opencode processes
+    // (the bot-facing server, the desktop service, standalone TUIs) each
+    // load this plugin, each holds its own websocket to N.I.N.A., and each
+    // caches these ids in memory from `setup()` — a pin made in one process
+    // must be visible to all, and a long-lived process must never keep
+    // sending to a startup-time stale id.
+    async function resolveTarget(): Promise<string | undefined> {
+      try {
+        const pin = await ctx.storage.get("pinnedSessionID");
+        if (typeof pin === "string" && pin && pin !== pinnedSessionID) {
+          pinnedSessionID = pin;
+          log(`[${instanceId}] pinned session picked up from storage: ${pin}`);
+        }
+        const auto = await ctx.storage.get("targetSessionID");
+        if (typeof auto === "string" && auto && auto !== targetSessionID) {
+          targetSessionID = auto;
+          log(`[${instanceId}] target session picked up from storage: ${auto}`);
+        }
+      } catch (err) {
+        log(`[${instanceId}] storage refresh error: ${err}`);
+      }
+      return pinnedSessionID ?? targetSessionID;
+    }
+
     async function sendIntervention(events: unknown = null) {
-      if (!targetSessionID) {
+      const since = Math.max(60, Math.round((Date.now() - lastWakeAt) / 1000));
+      const body =
+        events == null
+          ? "Routine interval check. No new immediate N.I.N.A. events."
+          : `New N.I.N.A. events.\n\n\`\`\`jsonl\n${toJSONL(events)}\n\`\`\``;
+      await deliverPrompt(`${body}${contextHint(since)}`);
+    }
+
+    // One delivery: resolve target → dedupe → log → inject. `force` skips
+    // the 30s dedupe — an operator action (arm confirmation, explicit test
+    // wake) must never be swallowed by a prompt that happens to look
+    // identical to the last one.
+    async function deliverPrompt(text: string, opts: { force?: boolean } = {}) {
+      const target = await resolveTarget();
+      if (!target) {
         log(`[${instanceId}] no target session yet; skipping injection`);
         return;
       }
 
       const now = Date.now();
-      const since = Math.max(60, Math.round((now - lastWakeAt) / 1000));
-      const body =
-        events == null
-          ? "Routine interval check. No new immediate N.I.N.A. events."
-          : `New N.I.N.A. events.\n\n\`\`\`jsonl\n${toJSONL(events)}\n\`\`\``;
-      const text = `${body}${contextHint(since)}`;
 
-      // 1. In-memory deduplication (catches same-process duplicate triggers)
-      if (lastInjectedText === text && now - lastInjectedTime < 30_000) {
-        log(
-          `[${instanceId}] duplicate prompt suppressed (in-memory, ${now - lastInjectedTime}ms ago)`,
-        );
-        return;
-      }
-
-      // 2. Storage-backed deduplication (catches cross-process / cross-server races)
-      try {
-        const last = (await ctx.storage.get("lastInjectedPrompt")) as
-          { text?: string; time?: number } | undefined;
-        if (
-          last &&
-          last.text === text &&
-          typeof last.time === "number" &&
-          now - last.time < 30_000
-        ) {
+      if (!opts.force) {
+        // 1. In-memory deduplication (catches same-process duplicate triggers)
+        if (lastInjectedText === text && now - lastInjectedTime < 30_000) {
           log(
-            `[${instanceId}] duplicate prompt suppressed (storage, ${now - last.time}ms ago)`,
+            `[${instanceId}] duplicate prompt suppressed (in-memory, ${now - lastInjectedTime}ms ago)`,
           );
           return;
         }
-        await ctx.storage.set("lastInjectedPrompt", { text, time: now });
-      } catch (err) {
-        log(`[${instanceId}] storage dedupe error: ${err}`);
+
+        // 2. Storage-backed deduplication (catches cross-process / cross-server races)
+        try {
+          const last = (await ctx.storage.get("lastInjectedPrompt")) as
+            { text?: string; time?: number } | undefined;
+          if (
+            last &&
+            last.text === text &&
+            typeof last.time === "number" &&
+            now - last.time < 30_000
+          ) {
+            log(
+              `[${instanceId}] duplicate prompt suppressed (storage, ${now - last.time}ms ago)`,
+            );
+            return;
+          }
+          await ctx.storage.set("lastInjectedPrompt", { text, time: now });
+        } catch (err) {
+          log(`[${instanceId}] storage dedupe error: ${err}`);
+        }
       }
 
       lastInjectedText = text;
@@ -268,15 +332,11 @@ export default Plugin.define({
       // — (when) it fired and (which session) it landed in — which is the only
       // way to line this file up against a `PROGRESS.md` written by a
       // different session.
-      log(
-        `[${instanceId}] intervention -> session=${targetSessionID}: ${text}`,
-      );
+      log(`[${instanceId}] intervention -> session=${target}: ${text}`);
       try {
-        await ctx.session.prompt({ sessionID: targetSessionID as any, text });
+        await ctx.session.prompt({ sessionID: target as any, text });
       } catch (err) {
-        log(
-          `[${instanceId}] prompt failed (session=${targetSessionID}): ${err}`,
-        );
+        log(`[${instanceId}] prompt failed (session=${target}): ${err}`);
         // Clear the dedupe record so the next attempt is not suppressed for
         // 30s by a prompt that never reached the agent.
         try {
@@ -292,6 +352,21 @@ export default Plugin.define({
       // and routine count must cover everything back to this one.
       lastWakeAt = now;
       routineSinceWake = 0;
+    }
+
+    // Direct (non-event) deliveries — arm confirmations and test wakes —
+    // serialize on the same chain as event wakes so two of them can never
+    // interleave their storage reads/writes.
+    function enqueueDelivery(
+      text: string,
+      opts: { force?: boolean } = {},
+    ): Promise<void> {
+      promptChain = promptChain
+        .then(() => deliverPrompt(text, opts))
+        .catch((err) => {
+          log(`[${instanceId}] delivery chain error: ${err}`);
+        });
+      return promptChain;
     }
 
     // --- Quality watchdog ---------------------------------------------------
@@ -591,6 +666,14 @@ export default Plugin.define({
     let ws: WebSocket | null = null;
     let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
     let closed = false;
+    // Health bookkeeping for `nina_notify_status`: the 2026-11-04/05 night
+    // lost ~2/3 of frame events and the run-ending milestone with NO
+    // onclose/onerror logged (silent drop), so "socket exists" alone proves
+    // nothing — last actual traffic does.
+    let wsOpenedAt = 0;
+    let wsErrors = 0;
+    let lastEventAt = 0;
+    let lastEventName = "";
 
     function cleanupSocket() {
       if (reconnectTimer) {
@@ -622,6 +705,8 @@ export default Plugin.define({
 
       socket.onopen = () => {
         if (closed || ws !== socket) return;
+        wsOpenedAt = Date.now();
+        wsErrors = 0;
         log(`[${instanceId}] ws onopen`);
         socket.send("SUB /socket");
       };
@@ -634,6 +719,8 @@ export default Plugin.define({
         } catch {
           return;
         }
+        lastEventAt = Date.now();
+        lastEventName = eventText(msg?.Response) || lastEventName;
         if (msg?.Response) {
           const response =
             typeof msg.Response === "string"
@@ -654,6 +741,7 @@ export default Plugin.define({
 
       socket.onerror = () => {
         if (closed || ws !== socket) return;
+        wsErrors++;
         log(`[${instanceId}] ws error`);
         socket.close();
       };
@@ -664,6 +752,180 @@ export default Plugin.define({
     await seedSequenceState();
 
     connect();
+
+    // --- Operator tools ------------------------------------------------------
+    // Arming used to be an invisible side effect of "whichever session was
+    // prompted last", which drifted to stale sessions whenever an old session
+    // was opened (replayed prompt admission re-fired the hook). These three
+    // tools make it explicit and verifiable:
+    //   nina_notify_arm    pin THIS (or a given) session + send a confirmation
+    //                      through the real wake-delivery path
+    //   nina_notify_status what is pinned, is the event socket actually alive
+    //   nina_notify_test   fire one wake through the exact path real wakes take
+    async function buildStatus() {
+      const target = await resolveTarget();
+      let title = "";
+      if (target) {
+        try {
+          const info = await ctx.session.get({ sessionID: target as any });
+          title = (info as { title?: string }).title ?? "";
+        } catch {
+          // A vanished session still answers "what is pinned" by id alone.
+        }
+      }
+      const now = Date.now();
+      const WS_STATES = ["CONNECTING", "OPEN", "CLOSING", "CLOSED"];
+      const quietSince = lastEventAt || wsOpenedAt || startedAt;
+      const quietForSec = Math.round((now - quietSince) / 1000);
+      const staleSocket = sequenceRunning && now - quietSince > SOCKET_STALE_MS;
+      return {
+        pinnedSessionID: pinnedSessionID ?? null,
+        autoFallbackSessionID: targetSessionID ?? null,
+        effectiveTarget: target ?? null,
+        effectiveTargetTitle: title,
+        eventSocket: {
+          url: `ws://${ninaEndpoint}/v2/socket`,
+          state: ws
+            ? (WS_STATES[ws.readyState] ?? String(ws.readyState))
+            : "NONE",
+          errorsSinceLastOpen: wsErrors,
+          lastOpenAt: wsOpenedAt ? new Date(wsOpenedAt).toISOString() : null,
+          lastEventAt: lastEventAt ? new Date(lastEventAt).toISOString() : null,
+          lastEventName: lastEventName || null,
+          secondsSinceLastTraffic: quietForSec,
+          staleWhileSequenceRunning: staleSocket,
+        },
+        sequenceRunning,
+        intervalCheckMinutes,
+        qualityWatchdog,
+        watchdog: { kind: currentKind || "unknown", hfrStreak, starsStreak },
+        lastWakeAt: new Date(lastWakeAt).toISOString(),
+        instanceStartedAt: new Date(startedAt).toISOString(),
+        staleSocketWarning: staleSocket
+          ? `no N.I.N.A. event for ${quietForSec}s while a sequence is running — the event socket has likely dropped silently; reconnect happens on close only, so verify with a get_events call or restart the opencode server`
+          : null,
+      };
+    }
+
+    let toolReg: { dispose(): Promise<void> } | null = null;
+    try {
+      if (typeof ctx.tool?.transform === "function") {
+        toolReg = await ctx.tool.transform((editor) => {
+          editor.namespace({
+            name: "nina_notify",
+            description:
+              "Arm, inspect, and test the nina-notify wake pipeline that prompts the observation controller on N.I.N.A. milestones, faults, and safety changes.",
+          });
+
+          editor.add({
+            name: "arm",
+            description:
+              "Pin the observation-controller session as nina-notify's wake target and prove delivery. Call this as the FIRST action of every observatory session, and again after creating a new controller session. Pins the calling session unless sessionID is given; once pinned, no other session's prompts can re-target the wakes. Sends a confirmation through the real wake-delivery path — seeing it appear proves end-to-end delivery.",
+            input: {
+              type: "object",
+              properties: {
+                sessionID: {
+                  type: "string",
+                  description:
+                    "Session id to pin; defaults to the calling session.",
+                },
+              },
+              additionalProperties: false,
+            },
+            options: { namespace: "nina_notify", codemode: true },
+            execute: async (input, context) => {
+              const sessionID =
+                (input as { sessionID?: string }).sessionID ||
+                (context as { sessionID?: string }).sessionID;
+              if (!sessionID) {
+                return { content: "arm failed: no session id available" };
+              }
+              let title = "";
+              try {
+                const info = await ctx.session.get({
+                  sessionID: sessionID as any,
+                });
+                title = (info as { title?: string }).title ?? "";
+              } catch (err) {
+                return {
+                  content: `arm failed: session ${sessionID} not found (${err})`,
+                };
+              }
+              pinnedSessionID = sessionID;
+              targetSessionID = sessionID;
+              try {
+                await ctx.storage.set("pinnedSessionID", sessionID);
+                await ctx.storage.set("targetSessionID", sessionID);
+              } catch (err) {
+                log(`[${instanceId}] arm: failed to persist pin: ${err}`);
+                return {
+                  content: `arm failed: could not persist pin (${err})`,
+                };
+              }
+              log(
+                `[${instanceId}] ARM: pinned session=${sessionID} title="${title}" (by ${(context as { sessionID?: string }).sessionID ?? "unknown"})`,
+              );
+              const confirm =
+                `✅ nina-notify armed → session=${sessionID}${title ? ` "${title}"` : ""}.\n\n` +
+                `This confirmation travelled the same delivery path as real wakes — if you can read it, intervention delivery works end-to-end.`;
+              await enqueueDelivery(confirm, { force: true });
+              return {
+                content: `pinned session=${sessionID} "${title}"; confirmation wake sent — verify it appeared in this session (and in Telegram).`,
+              };
+            },
+          });
+
+          editor.add({
+            name: "status",
+            description:
+              "Report what nina-notify is pinned to, whether the N.I.N.A. event socket is actually receiving (not just open), and wake history. Use it to answer 'am I synced?' before trusting an unattended night.",
+            input: {
+              type: "object",
+              properties: {},
+              additionalProperties: false,
+            },
+            options: { namespace: "nina_notify", codemode: true },
+            execute: async () => ({
+              content: JSON.stringify(await buildStatus(), null, 2),
+            }),
+          });
+
+          editor.add({
+            name: "test",
+            description:
+              "Fire one test wake through the exact path real N.I.N.A. wakes take (dedupe bypassed) and return socket health. Run once after arming, before leaving the observatory unattended.",
+            input: {
+              type: "object",
+              properties: {},
+              additionalProperties: false,
+            },
+            options: { namespace: "nina_notify", codemode: true },
+            execute: async () => {
+              const status = await buildStatus();
+              log(
+                `[${instanceId}] TEST wake requested (target=${status.effectiveTarget ?? "none"})`,
+              );
+              const text =
+                `🧪 nina-notify TEST WAKE — armed → session=${status.effectiveTarget ?? "NONE"}. ` +
+                `No action required; this only proves the delivery path.`;
+              await enqueueDelivery(text, { force: true });
+              return { content: JSON.stringify(status, null, 2) };
+            },
+          });
+        });
+        log(
+          `[${instanceId}] tools registered: nina_notify_arm, nina_notify_status, nina_notify_test`,
+        );
+      } else {
+        log(
+          `[${instanceId}] ctx.tool.transform unavailable; tools not registered`,
+        );
+      }
+    } catch (err) {
+      // Tools are additive: a plugin API mismatch must never take down the
+      // event pipeline itself.
+      log(`[${instanceId}] tool registration failed: ${err}`);
+    }
 
     // The interval is the only periodic driver between milestones now that
     // telemetry no longer prompts, so it deliberately fires even when the
@@ -684,6 +946,14 @@ export default Plugin.define({
       }
       closed = true;
       await promptHook.dispose();
+      if (toolReg) {
+        try {
+          await toolReg.dispose();
+        } catch {
+          /* registration may already be gone with the plugin */
+        }
+        toolReg = null;
+      }
       if (intervalId !== null) {
         clearInterval(intervalId);
         intervalId = null;
