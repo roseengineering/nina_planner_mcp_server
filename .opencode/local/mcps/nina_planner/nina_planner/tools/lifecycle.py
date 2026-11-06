@@ -185,6 +185,12 @@ async def get_nina_status() -> dict[str, Any]:
     Use this before ``start_nina()`` to confirm a previous instance is down, or
     as a quick "is NINA alive?" check.
 
+    This probe answers **N.I.N.A.'s REST API only** — for the nina-notify wake
+    pipeline (which session the observation controller is pinned to, whether the
+    event socket is actually receiving) use ``nina_notify_health`` from the
+    nina-notify plugin; that tool never touches the API and this one never wakes
+    anyone.
+
     Returns a dict with:
     - ``running`` (bool): authoritative liveness — ``GET /time`` answered
     - ``lifecycle_control_available`` (bool): this host has Windows interop, so

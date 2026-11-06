@@ -126,7 +126,7 @@ const STATS_MIN_INTERVAL_MS = 5_000;
 // suspicious. Frame cadence is ~14-17s, and N.I.N.A. goes quiet without ever
 // closing the socket when the network drops (the 2026-11-04/05 night missed
 // the run-ending SEQUENCE-FINISHED with no `onclose` logged anywhere), so
-// `nina_notify_status` flags it rather than trusting an open socket.
+// `nina_notify_health` flags it rather than trusting an open socket.
 const SOCKET_STALE_MS = 10 * 60_000;
 // One deferred second look when a frame's own statistics are not in the buffer
 // yet. N.I.N.A. commits them only after readout and processing, so a sample
@@ -666,7 +666,7 @@ export default Plugin.define({
     let ws: WebSocket | null = null;
     let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
     let closed = false;
-    // Health bookkeeping for `nina_notify_status`: the 2026-11-04/05 night
+    // Health bookkeeping for `nina_notify_health`: the 2026-11-04/05 night
     // lost ~2/3 of frame events and the run-ending milestone with NO
     // onclose/onerror logged (silent drop), so "socket exists" alone proves
     // nothing — last actual traffic does.
@@ -760,8 +760,20 @@ export default Plugin.define({
     // tools make it explicit and verifiable:
     //   nina_notify_arm    pin THIS (or a given) session + send a confirmation
     //                      through the real wake-delivery path
-    //   nina_notify_status what is pinned, is the event socket actually alive
-    //   nina_notify_test   fire one wake through the exact path real wakes take
+    //   nina_notify_health  what is pinned, is the event socket actually
+    //                      alive. Named "health" after a bare "status" kept
+    //                      resolving to the nina-planner `get_nina_status` /
+    //                      `get_site_equipment_status` probes instead of this
+    //                      pipeline — a noun reads as a report, whereas a
+    //                      verb-shaped name ("live", "ready", "sync") invites
+    //                      the model to assume the tool *does* something.
+    //   nina_notify_test   fire one wake through the exact path real wakes
+    //                      take, changing NO pin — kept separate from `arm`
+    //                      (folding it in as `test:true` was reverted
+    //                      2026-11-05) so a re-verification can never be one
+    //                      forgotten flag away from re-targeting the wakes.
+    // Read and write stay separate: `health` never wakes anyone, so the
+    // once-per-session health check can be called as often as it is useful.
     async function buildStatus() {
       const target = await resolveTarget();
       let title = "";
@@ -820,7 +832,7 @@ export default Plugin.define({
           editor.add({
             name: "arm",
             description:
-              "Pin the observation-controller session as nina-notify's wake target and prove delivery. Call this as the FIRST action of every observatory session, and again after creating a new controller session. Pins the calling session unless sessionID is given; once pinned, no other session's prompts can re-target the wakes. Sends a confirmation through the real wake-delivery path — seeing it appear proves end-to-end delivery.",
+              "Pin the observation-controller session as nina-notify's wake target and prove delivery. Call this as the FIRST action of every observatory session, and again after creating a new controller session. Pins the calling session unless sessionID is given; once pinned, no other session's prompts can re-target the wakes. Sends a confirmation through the real wake-delivery path — seeing it appear proves end-to-end delivery. Answers the nina-notify wake pipeline, not N.I.N.A. API liveness — that is get_nina_status / get_site_equipment_status. (To re-prove delivery WITHOUT re-pinning, use nina_notify_test.)",
             input: {
               type: "object",
               properties: {
@@ -876,9 +888,9 @@ export default Plugin.define({
           });
 
           editor.add({
-            name: "status",
+            name: "health",
             description:
-              "Report what nina-notify is pinned to, whether the N.I.N.A. event socket is actually receiving (not just open), and wake history. Use it to answer 'am I synced?' before trusting an unattended night.",
+              "Health of the nina-notify wake pipeline: what it is pinned to, whether the N.I.N.A. event socket is actually receiving (not just open), and wake history — ask this to answer 'is everything healthy / am I synced?'. NOT N.I.N.A. API liveness or equipment state: for those use get_nina_status / get_site_equipment_status from nina-planner. Read-only: it never wakes anyone and arms nothing.",
             input: {
               type: "object",
               properties: {},
@@ -893,7 +905,7 @@ export default Plugin.define({
           editor.add({
             name: "test",
             description:
-              "Fire one test wake through the exact path real N.I.N.A. wakes take (dedupe bypassed) and return socket health. Run once after arming, before leaving the observatory unattended.",
+              "Fire one test wake through the exact path real N.I.N.A. wakes take (dedupe bypassed) and return socket health. Run once after arming, before leaving the observatory unattended. Changes NO pin — it re-proves delivery only, so it can never re-target the wakes the way calling arm again would. For N.I.N.A. API liveness/equipment use get_nina_status / get_site_equipment_status instead.",
             input: {
               type: "object",
               properties: {},
@@ -914,7 +926,7 @@ export default Plugin.define({
           });
         });
         log(
-          `[${instanceId}] tools registered: nina_notify_arm, nina_notify_status, nina_notify_test`,
+          `[${instanceId}] tools registered: nina_notify_arm, nina_notify_health, nina_notify_test`,
         );
       } else {
         log(
