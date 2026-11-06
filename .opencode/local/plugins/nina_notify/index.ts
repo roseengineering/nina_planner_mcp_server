@@ -74,6 +74,13 @@ function toJSONL(value: unknown): string {
 //   faults      failures, aborts, timeouts and link loss -> diagnose + recover
 //   safety      SAFE/UNSAFE/WEATHER/DOME/ROOF -> stow or stand down
 // External alerts (transient broker / GCN) are not wired up yet.
+//
+// A fourth lane exists: `RECOVERY:` wakes are injected once per dispose/init
+// cycle by reconcileGap() when N.I.N.A. events landed while this plugin was
+// evicted (see "Downtime reconciliation" below) — they carry the same
+// IMMEDIATE_EVENT classification as live wakes, forced past the dedupe.
+// Verified 2026-11-06: a backdated 6h25m mark produced exactly one wake
+// enumerating the run-end events missed that morning, then went quiet.
 const IMMEDIATE_EVENT =
   /SAFETY|SAFE|UNSAFE|WEATHER|DOME|ROOF|RUN-(STARTING|FINISHED)|SEQUENCE-(STARTING|FINISHED)|TS-NEWTARGETSTART|STOW|MOUNT|OFFLINE|DISCONNECT|LOST|EMERGENCY|ERROR|FAIL|EXCEPTION|ABORT|INTERRUPT|CRITICAL|TIMEOUT/i;
 
@@ -367,6 +374,228 @@ export default Plugin.define({
           log(`[${instanceId}] delivery chain error: ${err}`);
         });
       return promptChain;
+    }
+
+    // --- Downtime reconciliation --------------------------------------------
+    // OpenCode's server garbage-collects idle project "locations", and
+    // evicting a location disposes this plugin (observed 2026-11-05/06: the
+    // 02:42 local eviction swallowed the run's RUN-FINISHED — no wake, no
+    // wrap-up). The plugin cannot prevent eviction, so it keeps a persisted
+    // high-water mark of the last N.I.N.A. event it saw, and on the next init
+    // reads N.I.N.A.'s own event-history for the gap: one consolidated
+    // forced RECOVERY wake when anything wake-worthy was missed, `gap clean`
+    // and silence when not.
+    const HIGHWATER_KEY = "lastEventAt";
+    // At most one storage write per 30s from the hot path; `cleanup()` and
+    // the gap reconcile write unconditionally (force).
+    const HIGHWATER_THROTTLE_MS = 30_000;
+    // Below this, an init is an ordinary fast restart (plugin-file watcher,
+    // config save): no fetch, no wake.
+    const GAP_MIN_MS = 60_000;
+    const GAP_FETCH_TIMEOUT_MS = 5_000;
+    const GAP_RETRY_DELAY_MS = 30_000;
+    // How many missed events the RECOVERY text enumerates before truncating.
+    const RECOVERY_LIST_CAP = 20;
+    // When the last persisted write happened (throttle bookkeeping).
+    let highWaterWrittenAt = 0;
+    // One gap reconciliation per instance; the fetch already retries once.
+    let gapReconciled = false;
+
+    // Persist the high-water mark. Never throws: this runs from the websocket
+    // hot path and from cleanup(), and a storage hiccup must not take the
+    // event stream down (same rule as `failed to persist session ID`). Also
+    // refuses to write a zero/no-traffic value, so an instance that saw
+    // nothing can never clobber its predecessor's mark.
+    async function persistHighWater(at: number, force = false): Promise<void> {
+      try {
+        if (at <= 0) return;
+        const now = Date.now();
+        if (!force && now - highWaterWrittenAt < HIGHWATER_THROTTLE_MS) return;
+        highWaterWrittenAt = now;
+        await ctx.storage.set(HIGHWATER_KEY, new Date(at).toISOString());
+      } catch (err) {
+        log(`[${instanceId}] failed to persist high-water mark: ${err}`);
+      }
+    }
+
+    function formatDuration(ms: number): string {
+      const total = Math.max(0, Math.round(ms / 1000));
+      if (total < 60) return `${total}s`;
+      const minutes = Math.round(total / 60);
+      if (minutes < 60) return `${minutes}m`;
+      const hours = Math.floor(minutes / 60);
+      const rest = minutes % 60;
+      return rest ? `${hours}h${rest}m` : `${hours}h`;
+    }
+
+    // GET /v2/api/event-history — the same endpoint nina_planner's
+    // `get_events` reads (client.api_get("/event-history") under
+    // http://<endpoint>/v2/api). Two attempts (one retry after ~30s), then
+    // null: the caller leaves the mark unadvanced so the NEXT init can retry
+    // the whole gap, and `setup()` never sees a throw.
+    async function fetchEventHistory(): Promise<any[] | null> {
+      const url = `http://${ninaEndpoint}/v2/api/event-history`;
+      for (let attempt = 1; attempt <= 2; attempt++) {
+        try {
+          const res = await fetch(url, {
+            signal: AbortSignal.timeout(GAP_FETCH_TIMEOUT_MS),
+          });
+          if (!res.ok) throw new Error(`HTTP ${res.status}`);
+          const payload: any = await res.json();
+          const rows: any = Array.isArray(payload?.Response)
+            ? payload.Response
+            : Array.isArray(payload)
+              ? payload
+              : null;
+          if (!Array.isArray(rows)) {
+            throw new Error("unexpected event-history payload shape");
+          }
+          return rows;
+        } catch (err) {
+          log(
+            `[${instanceId}] event-history fetch failed (attempt ${attempt}/2): ${err}`,
+          );
+          if (attempt < 2) {
+            await new Promise((resolve) =>
+              setTimeout(resolve, GAP_RETRY_DELAY_MS),
+            );
+          }
+        }
+      }
+      return null;
+    }
+
+    // Reconcile the downtime between this instance's predecessor and now.
+    // Runs once, from the first successful socket open, after the sequence
+    // state seed; never throws (the caller fences it too).
+    async function reconcileGap(): Promise<void> {
+      if (gapReconciled) return;
+      gapReconciled = true;
+
+      let markIso: unknown;
+      try {
+        markIso = await ctx.storage.get(HIGHWATER_KEY);
+      } catch (err) {
+        log(
+          `[${instanceId}] gap check storage read failed (${err}); mark left untouched`,
+        );
+        return;
+      }
+      const markMs = typeof markIso === "string" ? Date.parse(markIso) : NaN;
+      const now = Date.now();
+
+      // First run (or unreadable value): start the clock, check nothing.
+      if (!Number.isFinite(markMs)) {
+        log(`[${instanceId}] no high-water mark; gap check skipped`);
+        await persistHighWater(now, true);
+        return;
+      }
+
+      // Ordinary fast restart: nothing worth reconciling.
+      if (now - markMs < GAP_MIN_MS) {
+        log(
+          `[${instanceId}] gap clean (fast restart, ${formatDuration(now - markMs)} since last event)`,
+        );
+        await persistHighWater(now, true);
+        return;
+      }
+
+      log(
+        `[${instanceId}] gap detected: ${localTime(new Date(markMs))} → ${localTime(new Date(now))} (${formatDuration(now - markMs)})`,
+      );
+
+      const rows = await fetchEventHistory();
+      if (!rows) {
+        // Do NOT advance the mark: a later init gets to retry the whole gap
+        // instead of it being lost silently.
+        log(
+          `[${instanceId}] gap reconcile given up (event-history unavailable); mark stays at ${localTime(new Date(markMs))} for the next init`,
+        );
+        return;
+      }
+
+      // Parse and order the history. Records are {Time, Event, ...} on the
+      // wire — the same shape `get_events` converts — and N.I.N.A.'s clock
+      // wears its own UTC offset, so every stamp is parsed to an epoch first.
+      const parsed: { name: string; ts: number; record: any }[] = [];
+      for (const row of rows) {
+        const name = eventText(row);
+        const ts = typeof row?.Time === "string" ? Date.parse(row.Time) : NaN;
+        if (!name || !Number.isFinite(ts)) continue;
+        parsed.push({ name, ts, record: row });
+      }
+      parsed.sort((a, b) => a.ts - b.ts);
+
+      const missed = parsed.filter((e) => e.ts > markMs);
+      const duration = now - markMs;
+
+      // Claim the gap BEFORE waking: a second opencode process loading this
+      // plugin right behind us then reads a fresh mark and stays quiet, so
+      // one gap produces one RECOVERY wake in the common case.
+      await persistHighWater(now, true);
+
+      // History that does not reach back to the mark means N.I.N.A. itself
+      // restarted (or trimmed) inside the gap: what we cannot see, we cannot
+      // call quiet — the wake says so instead of claiming `gap clean`.
+      const uncovered = parsed.length === 0 || parsed[0].ts - markMs > 60_000;
+
+      // The SAME wake-worthy predicate the live path uses — IMMEDIATE_EVENT
+      // with the ROUTINE_OVERRIDE / LINK_EVENT demotions — replayed against a
+      // LOCAL sequence-running flag, so replaying history can never rewind
+      // live state and a live wake can never interleave with this scan.
+      let gapRunning = sequenceRunning;
+      const wakeworthy: typeof parsed = [];
+      for (const e of missed) {
+        if (/^(RUN|SEQUENCE)-STARTING/.test(e.name)) gapRunning = true;
+        else if (/^(RUN|SEQUENCE)-FINISHED/.test(e.name)) gapRunning = false;
+        const housekeeping =
+          ROUTINE_OVERRIDE.test(e.name) ||
+          (LINK_EVENT.test(e.name) && !gapRunning);
+        if (IMMEDIATE_EVENT.test(e.name) && !housekeeping) wakeworthy.push(e);
+      }
+
+      // Run endings and safety changes lead the list — they are what the
+      // wrap-up and the stow decision hang on.
+      const rank = (name: string) =>
+        /RUN-FINISHED|SEQUENCE-FINISHED/.test(name)
+          ? 0
+          : /SAFETY|SAFE|UNSAFE|WEATHER|DOME|ROOF/.test(name)
+            ? 1
+            : 2;
+      wakeworthy.sort((a, b) => rank(a.name) - rank(b.name) || a.ts - b.ts);
+
+      if (wakeworthy.length === 0 && !uncovered) {
+        log(
+          `[${instanceId}] gap clean (${formatDuration(duration)}, ${missed.length} events read)`,
+        );
+        return;
+      }
+
+      const shown = wakeworthy.slice(0, RECOVERY_LIST_CAP);
+      const describe = (e: (typeof parsed)[number]) => {
+        const safe = e.record?.IsSafe;
+        const detail = typeof safe === "boolean" ? ` (IsSafe=${safe})` : "";
+        return `${e.name}${detail} at ${localTime(new Date(e.ts))}`;
+      };
+      const list =
+        shown.map(describe).join("; ") +
+        (wakeworthy.length > shown.length
+          ? `; +${wakeworthy.length - shown.length} more`
+          : "");
+      const text =
+        `RECOVERY: nina_notify was down ${localTime(new Date(markMs))} → ${localTime(new Date(now))} (${formatDuration(duration)}). ` +
+        (wakeworthy.length > 0
+          ? `Missed wake-worthy events: ${list}.`
+          : `Event-history does not reach back to the gap start, so coverage of the gap could not be verified.`) +
+        (uncovered && wakeworthy.length > 0
+          ? ` Event-history does not reach back to the gap start, so the list may be incomplete.`
+          : "") +
+        ` Check sequence state and run night-loop wrap-up if the run ended in the gap.` +
+        contextHint(Math.max(60, Math.round(duration / 1000)));
+      log(
+        `[${instanceId}] gap recovery: ${wakeworthy.length} wake-worthy missed over ${formatDuration(duration)}; injecting RECOVERY wake`,
+      );
+      await enqueueDelivery(text, { force: true });
     }
 
     // --- Quality watchdog ---------------------------------------------------
@@ -674,6 +903,10 @@ export default Plugin.define({
     let wsErrors = 0;
     let lastEventAt = 0;
     let lastEventName = "";
+    // The setup-time sequence seed can fail while N.I.N.A.'s API is down
+    // (the socket retries on its own), so the first successful open re-seeds
+    // and then reconciles the predecessor's downtime — exactly once.
+    let startupReconciled = false;
 
     function cleanupSocket() {
       if (reconnectTimer) {
@@ -709,6 +942,18 @@ export default Plugin.define({
         wsErrors = 0;
         log(`[${instanceId}] ws onopen`);
         socket.send("SUB /socket");
+        if (!startupReconciled) {
+          startupReconciled = true;
+          // Re-seed first: both the link-event gate and the gap scan below
+          // decide against `sequenceRunning`, which is stuck at its safe
+          // default if the setup-time seed failed.
+          seedSequenceState()
+            .catch(() => undefined)
+            .then(() => reconcileGap())
+            .catch((err) =>
+              log(`[${instanceId}] gap reconcile failed: ${err}`),
+            );
+        }
       };
 
       socket.onmessage = (event) => {
@@ -728,6 +973,11 @@ export default Plugin.define({
               : msg.Response;
           log(
             `[${instanceId}] ws onmessage ${JSON.stringify(response, null, 2)}`,
+          );
+          // Throttled high-water persist: this is the value the next init's
+          // gap check reads after an eviction disposes us.
+          persistHighWater(lastEventAt).catch((err) =>
+            log(`[${instanceId}] high-water persist failed: ${err}`),
           );
           pushEvent(response);
         }
@@ -979,6 +1229,12 @@ export default Plugin.define({
         retryTimer = null;
       }
       cleanupSocket();
+      // Last act before disposal: freeze the mark where this instance last
+      // saw N.I.N.A., so the next init's gap check measures exactly this
+      // instance's downtime. No-op when this instance saw no traffic (its
+      // predecessor's mark — written by live events or the reconcile — must
+      // not be clobbered by a zero).
+      await persistHighWater(lastEventAt, true);
       log(`[${instanceId}] disposed`);
     };
 
