@@ -19,7 +19,7 @@ def _resolve_name(name: str) -> SkyCoord:
 
 @mcp.tool()
 async def resolve_target(name: str) -> dict[str, Any]:
-    """Resolves a deep-sky object name (e.g. 'M31', 'NGC 6960') to J2000 RA/Dec via a SIMBAD lookup, so plans use verified coordinates instead of remembered ones. Returns `ra_hours` and `dec_deg`. Requires internet access; if the lookup fails, supply coordinates explicitly. This tool is read-only and takes no action."""
+    """Resolves a deep-sky object name (e.g. 'M31', 'NGC 6960') to J2000 RA/Dec via a SIMBAD lookup. NOT needed for any object in the built-in catalog (`best_targets` rows and `dso_catalog.csv`) -- those coordinates were already verified against SIMBAD and are returned ready to use, so prefer them and stay offline. Call this only for a name outside the catalog (e.g. a named target added to PLAN.md). Returns `ra_hours` and `dec_deg`. Requires internet access; if the lookup fails, skip that target and pick another rather than guessing coordinates. This tool is read-only and takes no action."""
     try:
         coord = await anyio.to_thread.run_sync(_resolve_name, name)
     except Exception as e:
@@ -73,7 +73,7 @@ def _altitudes(
 async def target_altitudes(
     targets: list[dict[str, Any]], hours_ahead: float = 0.0
 ) -> dict[str, Any]:
-    """Computes the altitude and azimuth of each target at the active site's location, sorted highest altitude first, for ranking night-loop candidates. Each target is `{"name": ...}` plus optional J2000 `ra_hours` and `dec_deg`; without coordinates the name is resolved via SIMBAD. `hours_ahead` evaluates a future time (default 0 = now, using this host's clock). Altitude is geometric (no refraction) and only orders candidates — N.I.N.A.'s altitude guards still enforce the floor at runtime. This tool is read-only and takes no action."""
+    """Computes the altitude and azimuth of each target at the active site's location, sorted highest altitude first, for ranking night-loop candidates. Each target is `{"name": ...}` plus optional J2000 `ra_hours` and `dec_deg`; pass the coordinates carried on a `best_targets` row (pre-verified against SIMBAD) so no network lookup happens. Without coordinates the name is resolved via SIMBAD, which needs internet -- only used for names outside the catalog. `hours_ahead` evaluates a future time (default 0 = now, using this host's clock). Altitude is geometric (no refraction) and only orders candidates — N.I.N.A.'s altitude guards still enforce the floor at runtime. This tool is read-only and takes no action."""
     profile = await equipment_tools.get_site_profile()
     site = profile.site
     when = Time(datetime.now(timezone.utc)) + hours_ahead * u.hour
@@ -375,6 +375,10 @@ def _rank_catalog(
             "common": obj.common,
             "kind": obj.kind,
             "level": obj_level,
+            # Pre-verified against SIMBAD: safe to point from these directly,
+            # no resolve_target round-trip needed (works offline).
+            "ra_hours": obj.ra_hours,
+            "dec_deg": obj.dec_deg,
             "mag": obj.mag,
             "surface_brightness": round(
                 _surface_brightness(obj.mag, obj.major_arcmin, obj.minor_arcmin), 2
@@ -421,7 +425,7 @@ async def best_targets(
 
     `min_altitude` (default 30, matching the usual PLAN.md floor) gates both now and tonight's peak. `top` caps each returned list (default 10). `level` filters to one difficulty ("beginner" | "intermediate" | "advanced"). `kinds` filters by type: "galaxy", "globular", "open" (cluster), "pn" (planetary nebula), "bn" (bright nebula), "snr" (supernova remnant), "cloud" (star cloud).
 
-    Returns `visible_now` (dark now, above the altitude floor at this moment, sorted by a score blending current altitude and easiness, 0-100) and `later_tonight` (the next observing opportunity: peak altitude reached WITHIN astronomical darkness -- sun below -18 deg -- over the next 12 hours, with each row's `peak_utc` and `peak_alt_deg` for scheduling; daytime and twilight peaks are never reported, so a midday "peak" in an older version of this output cannot happen). `is_dark_now` reports whether the site is currently in astronomical darkness; when false, `visible_now` is empty and every row lands in `later_tonight`. Rows carry `surface_brightness` in mag/arcmin^2 and `large_for_field` (object wider than the profile's field of view -- mosaic or framing care needed). Twilight boundaries for the site come from `sun_times`. No N.I.N.A. calls beyond reading the site profile; read-only, takes no action. Catalog coordinates are for ranking, not pointing -- use resolve_target for verified plan coordinates."""
+    Returns `visible_now` (dark now, above the altitude floor at this moment, sorted by a score blending current altitude and easiness, 0-100) and `later_tonight` (the next observing opportunity: peak altitude reached WITHIN astronomical darkness -- sun below -18 deg -- over the next 12 hours, with each row's `peak_utc` and `peak_alt_deg` for scheduling; daytime and twilight peaks are never reported, so a midday "peak" in an older version of this output cannot happen). `is_dark_now` reports whether the site is currently in astronomical darkness; when false, `visible_now` is empty and every row lands in `later_tonight`. Rows carry `surface_brightness` in mag/arcmin^2 and `large_for_field` (object wider than the profile's field of view -- mosaic or framing care needed). Twilight boundaries for the site come from `sun_times`. No N.I.N.A. calls beyond reading the site profile; read-only, takes no action. Every row carries `ra_hours`/`dec_deg` -- these catalog coordinates were verified against SIMBAD and are safe to use directly in a plan, no resolve_target call needed (this works offline). Use `resolve_target` only for a target name that is NOT in this catalog."""
     if level is not None and level not in ("beginner", "intermediate", "advanced"):
         raise ValueError(
             f"level must be beginner, intermediate, or advanced, got {level!r}"

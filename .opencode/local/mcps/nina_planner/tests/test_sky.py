@@ -167,6 +167,22 @@ class RankCatalogTest(unittest.TestCase):
         self.assertGreaterEqual(rising["peak_alt_deg"], 30.0)
         self.assertIn("T", rising["peak_utc"])
 
+    def test_rows_carry_preverified_coordinates(self):
+        # best_targets rows must ship ra_hours/dec_deg so plans can point
+        # from the SIMBAD-verified catalog without any network lookup.
+        when = Time("2026-10-18T02:00:00")
+        catalog = self._catalog(when, 45.0, -75.0)
+        rows = sky._rank_catalog(
+            catalog, when, 45.0, -75.0, 100.0, 30.0, None, None, None, 10
+        )
+        all_rows = rows["visible_now"] + rows["later_tonight"]
+        self.assertTrue(all_rows)
+        by_name = {r["name"]: r for r in all_rows}
+        for obj in catalog:
+            if obj.name in by_name:
+                self.assertEqual(by_name[obj.name]["ra_hours"], obj.ra_hours)
+                self.assertEqual(by_name[obj.name]["dec_deg"], obj.dec_deg)
+
     def test_daytime_yields_no_visible_now(self):
         # 2026-10-18 14:00 UTC = 10:00 local: sun well up, nothing visible.
         when = Time("2026-10-18T14:00:00")

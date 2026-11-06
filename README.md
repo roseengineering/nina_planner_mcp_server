@@ -49,10 +49,10 @@ Powered by [astropy](https://www.astropy.org); no NINA connection is needed for 
 
 | Tool | Purpose |
 |---|---|
-| `resolve_target(name)` | Resolve a deep-sky object name (e.g. `M31`, `NGC 6960`) to J2000 `ra_hours` / `dec_deg` through a SIMBAD lookup, so plans use verified coordinates. 🌐 Requires internet access. Read-only. |
-| `target_altitudes(targets, hours_ahead=0.0)` | Altitude/azimuth of each target at the active site, sorted highest first, for ranking candidates. Each target is `{"name": ...}` plus optional `ra_hours` / `dec_deg` (otherwise resolved via SIMBAD). Read-only. |
+| `resolve_target(name)` | Resolve a deep-sky object name (e.g. `M31`, `NGC 6960`) to J2000 `ra_hours` / `dec_deg` through a SIMBAD lookup. **Only needed for names not in `dso_catalog.csv`** — catalog coordinates are already SIMBAD-verified and returned on `best_targets` rows. 🌐 Requires internet access; if it fails, skip the target rather than guessing. Read-only. |
+| `target_altitudes(targets, hours_ahead=0.0)` | Altitude/azimuth of each target at the active site, sorted highest first, for ranking candidates. Each target is `{"name": ...}` plus optional `ra_hours` / `dec_deg` (pass the pre-verified values from a `best_targets` row; without them the name is resolved via SIMBAD — needs internet). Read-only. |
 | `sun_times()` | Next sunrise/sunset plus all four twilight boundaries (civil −6°, nautical −12°, astronomical −18°) and the astronomical-darkness window in effect or next to open, with `night_phase` (`evening`/`dark`/`morning`) and `is_dark_now` for end-of-night decisions. Read-only; reads only the site profile. |
-| `best_targets(min_altitude=30.0, top=10, level, kinds)` | Ranks Messier and bright NGC objects to observe from the active site right now, returning `visible_now` (dark and above the floor now) plus `later_tonight` (peak altitude within astronomical darkness), with `is_dark_now` and surface-brightness-based difficulty filtering. Catalog coordinates are for ranking only — use `resolve_target` for pointing. Read-only. |
+| `best_targets(min_altitude=30.0, top=10, level, kinds)` | Ranks Messier and bright NGC objects to observe from the active site right now, returning `visible_now` (dark and above the floor now) plus `later_tonight` (peak altitude within astronomical darkness), with `is_dark_now` and surface-brightness-based difficulty filtering. Each row carries pre-verified (SIMBAD-checked) `ra_hours` / `dec_deg` — use them directly for pointing, no `resolve_target` needed, so this works offline. Read-only. |
 
 ### 🎬 Sequence Management
 
@@ -432,45 +432,36 @@ A markdown file at the project root, **edited by the user at any time** (before 
 
 [PLAN.md](./PLAN.md)
 ```markdown PLAN.md
-# Tonight — catalog-driven ("shoot whatever is up")
+# Tonight — catalog-driven
 
-Wishlist source: **the `best_targets` catalog**, not a hand-written list.
-The controller picks targets live from `best_targets` and images whatever it
-can. No editing of this file is needed night to night.
+The wishlist **is** `best_targets`: call it fresh on each re-selection and
+shoot whatever it returns above the floor. Nothing outside this file gets
+imaged. No editing needed night to night.
 
 ## Wishlist policy
 
-- The wishlist **is** `best_targets` — call it fresh on every re-selection and
-  treat its results as authorized targets. Nothing outside `PLAN.md` gets
-  imaged; by delegating the list here, the catalog output *is* `PLAN.md`.
-- **No difficulty filter** — shoot `beginner` through `advanced` alike. Take
-  everything the catalog returns that clears the floor.
-- Take from `visible_now` first. If nothing is visible now, use
-  `later_tonight` (`peak_utc` / `peak_alt_deg`) to decide whether to wait for a
-  peak or shoot a lower-scoring target in the gap.
-- De-duplicate: once a target has been fully shot (`get_plan_progress`
-  reports `complete`), do not re-pick it. Re-selection moves down the ranked
-  list.
-- Named targets below (if any) take priority over catalog picks.
+- No difficulty filter — take everything that clears the floor.
+- `visible_now` first; else `later_tonight` (`peak_utc`/`peak_alt_deg`) — wait
+  for the peak or shoot a lower-scoring target in the gap.
+- De-dup: a target whose `get_plan_progress` reports `complete` is not
+  re-picked; move down the ranked list.
+- **Full night, not just to midnight** — when generating a run, queue targets
+  to cover the whole night, until darkness ends at dawn (or the enclosure goes
+  unsafe); only then end it.
+- Named targets (below) beat catalog picks.
 
 ## Named targets
 
 _None — catalog only._
 
-## Auto-generated plan shape
+## Plan shape (`write_plan_file`, Seestar S30)
 
-When the controller writes a plan for a catalog target (`write_plan_file`),
-use the proven Seestar S30 shape already in `plans/`:
-
-- **Lights:** filter `L`, 10.0 s, 90 frames (15 min per target).
-- **Calibration:** 20 × `L` flats, 20 × 10.0 s darks, 20 bias.
-- `cooler.on: false`, `batch_size: 10`, `calibration_window_days: 7`.
-- `constraints`: from the `Rules` block below.
-- `autofocus` / `guiding`: same values as `plans/m15_..._20261003T112008.json`.
-- Resolve coordinates via `resolve_target` (SIMBAD) before writing — never
-  point from catalog coords alone.
-- If `large_for_field` is set on a catalog row, treat it as framing/mosaic
-  care rather than a single blind pointing.
+- Lights: `L`, 10.0 s, 90 frames. Calibration: 20 × `L` flats, 20 × 10.0 s
+  darks, 20 bias.
+- `cooler.on: false`, `batch_size: 10`, `calibration_window_days: 7`,
+  `constraints` from Rules below, `autofocus`/`guiding` as in
+  `plans/m15_..._20261003T112008.json`.
+- `large_for_field` → framing/mosaic care, not a single blind pointing.
 
 ## Rules
 
@@ -498,6 +489,7 @@ You are the automated observatory controller. The observatory runs NINA via the 
 - `is_safe=false` (enclosure closed) or weather violations mean: scope stowed, if not by the NINA sequence then by you, and no **sky-dependent** acquisition (lights, dawn/dusk sky flats) may start or resume until it clears. **Darks and biases are exempt** — they need no open sky: the step parks the scope and cuts light at the camera (`Dark` slot / cover / shutter), so a `dark` or `bias` load may be started with the roof closed.
 - Append a timestamped entry to `PROGRESS.md` after each action; never edit `PLAN.md` (the user's living wishlist). The entry header is **host-local ISO-8601 carrying its UTC offset** — `## 2026-11-05T09:39:10-05:00` — never bare UTC `…Z`. That is the same form `get_events`/`get_logs` timestamps and the `nina-notify` plugin log already use, so a header matches the local event stamps quoted in its own body; the offset is what keeps it unambiguous across a DST change and across hosts. Older `…Z` headers are history — leave them.
 - You are woken only by milestones, faults, safety changes, the interval check, and sustained quality problems. Routine telemetry (per-frame image saves, guider, autofocus) is **not** pushed to you — every wake prompt names a `get_events(since=…)` window covering the quiet gap, so read it before deciding. `QUALITY-WATCHDOG: …` in a wake means frame quality degraded and held. Device connect/disconnect events wake **only while a sequence is running**; if you hear nothing about a device, that is by design, not a missed event.
+- **Trust `dso_catalog.csv` coordinates — no SIMBAD confirmation needed.** Every position in the built-in catalog (`best_targets` rows carry `ra_hours`/`dec_deg`) was pre-verified against SIMBAD, so point directly from them: never call `resolve_target` for a catalog object, and never block on the network to "confirm" them — this keeps the whole night loop working when the internet is down. `resolve_target` is only for a name *outside* the catalog; if that lookup fails, skip the target and pick another instead of guessing coordinates.
 - **Arm the notifier first.** Your first action in a fresh controller session: call `nina_notify_status`; if `effectiveTarget` is not this session, call `nina_notify_arm` — it pins this session (other sessions' prompts then cannot re-target the wakes) and sends a confirmation through the real delivery path. Run `nina_notify_test` once before leaving the night unattended, and re-arm after creating any new controller session. A `staleWhileSequenceRunning: true` in `nina_notify_status` means the N.I.N.A. event socket dropped silently — verify with `get_events` before trusting the quiet.
 
 ## Detailed procedures live in `.agents/skills/`:

@@ -6,9 +6,10 @@ NGC/Caldwell showpieces, chosen to cover every season from northern latitudes
 and include the southern showpieces for southern sites.
 
 Magnitudes are integrated (total) visual magnitudes; sizes are major/minor
-axes in arcminutes. These are catalog values good enough for ranking and
-scheduling -- not for plate-solving; use ``resolve_target`` (SIMBAD) when a
-plan needs verified precision coordinates.
+axes in arcminutes. Every row's J2000 position was verified against SIMBAD,
+so catalog coordinates are safe to point from directly -- plans may use them
+without a ``resolve_target`` lookup, which keeps the whole flow working
+offline. ``resolve_target`` remains available for names NOT in this catalog.
 """
 
 from __future__ import annotations
