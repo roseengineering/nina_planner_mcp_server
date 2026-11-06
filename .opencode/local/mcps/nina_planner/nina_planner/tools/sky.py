@@ -1,8 +1,10 @@
 import math
+import re
 from datetime import datetime, timezone
 from typing import Any
 
 import anyio
+import httpx
 import numpy as np
 from astropy import units as u
 from astropy.coordinates import AltAz, EarthLocation, SkyCoord, get_sun
@@ -12,14 +14,97 @@ from .. import dso_catalog
 from ..app import mcp
 from . import equipment as equipment_tools
 
+# --- name resolution --------------------------------------------------------
+#
+# Two layers, fastest/most-likely-live first:
+#
+# 1. SIMBAD's web interface on its live mirrors -- CfA Harvard, then IDIA
+#    (South Africa). Both answer in well under a second.
+# 2. Astropy's `SkyCoord.from_name` (SESAME), whose mirrors are CDS Strasbourg
+#    + Harvard's Sesame -- kept as a backstop because it also consults NED/VizieR.
+#
+# Layer 2 leads only when layer 1 is down. CDS Strasbourg has been dark since
+# its 2026-10-28 cybersecurity incident (its whole 130.79.128.x subnet silently
+# drops SYNs), and Harvard's Sesame hangs on any name not already in its cache
+# because its backend is that same Strasbourg -- so going to the mirrors
+# directly is what keeps `resolve_target` working through the outage.
+
+_SIMBAD_MIRRORS: tuple[str, ...] = (
+    "https://simbad.cfa.harvard.edu",
+    "https://simbad.idia.ac.za",
+)
+_SIMBAD_TIMEOUT_S = 10.0
+
+# `Coordinates(ICRS,ep=J2000,eq=2000): 00 43 13.2  +61 46 26 (Opt ) E ...`
+# RA is sexagesimal hours, Dec sexagesimal degrees with an explicit sign.
+# SIMBAD's ASCII page carries arcsec precision, which is far finer than the
+# arcmin-level initial slew this feeds; N.I.N.A.'s pointing/plate-solve does
+# the rest.
+_COORD_RE = re.compile(
+    r"^Coordinates\(ICRS,ep=J2000[^)]*\):\s*"
+    r"(\d{1,2}(?:\s+\d{1,2})+(?:\.\d+)?)"
+    r"\s+"
+    r"([+-]\d{1,2}(?:\s+\d{1,2})+(?:\.\d+)?)",
+    re.MULTILINE,
+)
+
+
+def _fetch_simbad(base: str, name: str) -> str:
+    """Fetch one mirror's ASCII `sim-id` page for ``name``."""
+    resp = httpx.get(
+        f"{base}/simbad/sim-id",
+        params={"Ident": name, "output.format": "ASCII"},
+        timeout=_SIMBAD_TIMEOUT_S,
+        follow_redirects=True,
+    )
+    resp.raise_for_status()
+    return resp.text
+
+
+def _resolve_via_simbad_web(name: str) -> SkyCoord:
+    """Resolve ``name`` against SIMBAD's live mirrors, Harvard then IDIA.
+
+    Raises ``ValueError`` naming every mirror's reason when none can produce
+    an ICRS coordinate for ``name`` (mirror unreachable, or SIMBAD does not
+    know the identifier -- that page is HTTP 200 with a `!!` error and no
+    coordinates line, so a plain status check would miss it).
+    """
+    errors: list[str] = []
+    for base in _SIMBAD_MIRRORS:
+        try:
+            match = _COORD_RE.search(_fetch_simbad(base, name))
+        except Exception as e:
+            errors.append(f"{base}: {e}")
+            continue
+        if match is None:
+            errors.append(f"{base}: no ICRS coordinates for {name!r}")
+            continue
+        ra, dec = match.group(1), match.group(2)
+        return SkyCoord(ra, dec, unit=("hourangle", "deg"), frame="icrs")
+    raise ValueError("; ".join(errors))
+
+
+def _resolve_via_sesame(name: str) -> SkyCoord:
+    """Astropy's SESAME resolver (CDS Strasbourg, then Harvard's Sesame)."""
+    return SkyCoord.from_name(name)
+
 
 def _resolve_name(name: str) -> SkyCoord:
-    return SkyCoord.from_name(name)
+    """Resolve a catalog name to coordinates: SIMBAD mirrors, then SESAME."""
+    try:
+        return _resolve_via_simbad_web(name)
+    except Exception as web_error:
+        try:
+            return _resolve_via_sesame(name)
+        except Exception as sesame_error:
+            raise ValueError(
+                f"SIMBAD mirrors failed ({web_error}); SESAME failed ({sesame_error})"
+            ) from sesame_error
 
 
 @mcp.tool()
 async def resolve_target(name: str) -> dict[str, Any]:
-    """Resolves a deep-sky object name (e.g. 'M31', 'NGC 6960') to J2000 RA/Dec via a SIMBAD lookup. NOT needed for any object in the built-in catalog (`best_targets` rows and `dso_catalog.csv`) -- those coordinates were already verified against SIMBAD and are returned ready to use, so prefer them and stay offline. Call this only for a name outside the catalog (e.g. a named target added to PLAN.md). Returns `ra_hours` and `dec_deg`. Requires internet access; if the lookup fails, skip that target and pick another rather than guessing coordinates. This tool is read-only and takes no action."""
+    """Resolves a deep-sky object name (e.g. 'M31', 'NGC 6960') to J2000 RA/Dec via a SIMBAD lookup. NOT needed for any object in the built-in catalog (`best_targets` rows and `dso_catalog.csv`) -- those coordinates were already verified against SIMBAD and are returned ready to use, so prefer them and stay offline. Call this only for a name outside the catalog (e.g. a named target added to PLAN.md). Returns `ra_hours` and `dec_deg`. The lookup goes to SIMBAD's live mirrors (CfA Harvard, then IDIA) with astropy's SESAME resolver as a backstop, so it keeps working while CDS Strasbourg is offline; it still needs internet access. If every source fails, skip that target and pick another rather than guessing coordinates. This tool is read-only and takes no action."""
     try:
         coord = await anyio.to_thread.run_sync(_resolve_name, name)
     except Exception as e:

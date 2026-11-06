@@ -39,6 +39,114 @@ class AltitudesTest(unittest.TestCase):
                 sky._altitudes([{"name": "X"}], 45.0, -75.0, 0.0, Time("2026-10-18"))
 
 
+# A real SIMBAD ASCII reply (NGC 225), trimmed to the lines the parser reads.
+SIMBAD_ASCII = """C.D.S.  -  SIMBAD4 rel 1.8  -  2026.11.06CET01:57:40
+
+NGC 225
+-------
+
+Object NGC 225  ---  OpC  ---  OID=@167149   (@@126904,19)  ---  coobox=2160
+
+Coordinates(ICRS,ep=J2000,eq=2000): 00 43 13.2  +61 46 26 (Opt ) E [~ ~ ] \
+2021A&A...647A..19T
+Coordinates(FK4,ep=B1950,eq=1950): 00 40 17.1  +61 30 01
+Coordinates(Gal,ep=J2000,eq=2000): 121.9602  -01.0824
+"""
+
+# SIMBAD answers unknown identifiers with HTTP 200 and no coordinates line.
+SIMBAD_UNKNOWN = (
+    "!! 'NoSuchObject99' this identifier has an incorrect format for catalogs:\n"
+    "\tN (NOVA): catalogue NOVA\n"
+)
+
+
+class NameResolutionTest(unittest.TestCase):
+    """`_resolve_name` must work while CDS Strasbourg is offline (the
+    2026-10-28 cybersecurity incident): SIMBAD mirrors first, SESAME second."""
+
+    def test_parses_simbad_ascii_coordinates(self):
+        with patch.object(sky, "_fetch_simbad", return_value=SIMBAD_ASCII) as fetch:
+            coord = sky._resolve_via_simbad_web("NGC 225")
+        fetch.assert_called_once_with(sky._SIMBAD_MIRRORS[0], "NGC 225")
+        self.assertAlmostEqual(coord.ra.hour, 0.7203333, places=5)
+        self.assertAlmostEqual(coord.dec.deg, 61.773889, places=5)
+
+    def test_falls_through_to_the_next_mirror(self):
+        def fetch(base, name):
+            if base == sky._SIMBAD_MIRRORS[0]:
+                raise RuntimeError("connection timed out")
+            return SIMBAD_ASCII
+
+        with patch.object(sky, "_fetch_simbad", side_effect=fetch) as mocked:
+            coord = sky._resolve_via_simbad_web("NGC 225")
+        self.assertEqual(mocked.call_count, 2)
+        self.assertAlmostEqual(coord.dec.deg, 61.773889, places=5)
+
+    def test_identifier_simbad_does_not_know_is_a_failure(self):
+        with patch.object(sky, "_fetch_simbad", return_value=SIMBAD_UNKNOWN):
+            with self.assertRaises(ValueError) as ctx:
+                sky._resolve_via_simbad_web("NotARealObject12345")
+        # HTTP 200 is not enough: the reason must name the missing coordinates.
+        self.assertIn("no ICRS coordinates", str(ctx.exception))
+
+    def test_mirror_outage_falls_back_to_sesame(self):
+        coord = SkyCoord(2.53, 89.26, unit=("hourangle", "deg"))
+        with (
+            patch.object(
+                sky, "_resolve_via_simbad_web", side_effect=ValueError("mirrors down")
+            ),
+            patch.object(sky, "_resolve_via_sesame", return_value=coord) as sesame,
+        ):
+            resolved = sky._resolve_name("M1")
+        sesame.assert_called_once_with("M1")
+        self.assertEqual(resolved.dec.deg, 89.26)
+
+    def test_mirror_success_never_touches_sesame(self):
+        with (
+            patch.object(sky, "_fetch_simbad", return_value=SIMBAD_ASCII),
+            patch.object(sky, "_resolve_via_sesame") as sesame,
+        ):
+            sky._resolve_name("NGC 225")
+        sesame.assert_not_called()
+
+    def test_all_sources_down_raises_with_both_reasons(self):
+        with (
+            patch.object(
+                sky, "_resolve_via_simbad_web", side_effect=ValueError("mirrors down")
+            ),
+            patch.object(
+                sky, "_resolve_via_sesame", side_effect=RuntimeError("sesame timed out")
+            ),
+        ):
+            with self.assertRaises(ValueError) as ctx:
+                sky._resolve_name("M1")
+        message = str(ctx.exception)
+        self.assertIn("mirrors down", message)
+        self.assertIn("sesame timed out", message)
+
+    def test_fetch_builds_the_simbad_sim_id_request(self):
+        """The endpoint shape is load-bearing: `sim-id` + ASCII output is what
+        the coordinate regex matches against."""
+
+        class FakeResponse:
+            text = SIMBAD_ASCII
+
+            @staticmethod
+            def raise_for_status():
+                return None
+
+        with patch.object(sky.httpx, "get", return_value=FakeResponse()) as get:
+            body = sky._fetch_simbad("https://simbad.cfa.harvard.edu", "M 42")
+        self.assertEqual(body, SIMBAD_ASCII)
+        url = get.call_args.args[0]
+        params = get.call_args.kwargs["params"]
+        self.assertEqual(url, "https://simbad.cfa.harvard.edu/simbad/sim-id")
+        self.assertEqual(params["Ident"], "M 42")
+        self.assertEqual(params["output.format"], "ASCII")
+        self.assertTrue(get.call_args.kwargs["follow_redirects"])
+        self.assertEqual(get.call_args.kwargs["timeout"], sky._SIMBAD_TIMEOUT_S)
+
+
 class SurfaceBrightnessTest(unittest.TestCase):
     def test_m57_ranks_easier_than_m33_despite_fainter_mag(self):
         # M33: mag 5.7 spread over 62x44 arcmin. M57: mag 8.8 in 1.4x1.0.
