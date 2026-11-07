@@ -469,6 +469,30 @@ class JsonTemplateBuildersTest(unittest.TestCase):
         self.assertIn("SelectedProvider", result)
         self.assertIn("SunsetProvider", result["SelectedProvider"]["$type"])
 
+    def test_sequence_wait_until_sunset(self):
+        from nina_planner.sequence import sequence_wait_until_sunset
+
+        mount = MountDevice(connected=True, name="m", can_park=True)
+        eq = ObservatoryEquipment(mount=mount)
+        result = sequence_wait_until_sunset(eq)
+        self.assertEqual(result["Name"], "Wait For Sunset")
+        self.assertEqual(len(_find_items(result, "TimeCondition")), 1)
+        self.assertEqual(len(_find_items(result, "ParkScope")), 1)
+        self.assertEqual(len(_find_items(result, "WaitForTime")), 1)
+        self.assertEqual(len(_find_items(result, "WaitForSunAltitude")), 1)
+
+    def test_sequence_wait_until_dawn(self):
+        from nina_planner.sequence import sequence_wait_until_dawn
+
+        mount = MountDevice(connected=True, name="m", can_park=True)
+        eq = ObservatoryEquipment(mount=mount)
+        result = sequence_wait_until_dawn(eq)
+        self.assertEqual(result["Name"], "Wait For Dawn")
+        self.assertEqual(len(_find_items(result, "TimeCondition")), 1)
+        self.assertEqual(len(_find_items(result, "ParkScope")), 1)
+        self.assertEqual(len(_find_items(result, "WaitForTime")), 1)
+        self.assertEqual(len(_find_items(result, "WaitForSunAltitude")), 1)
+
     def test_sequence_wait_until_dusk(self):
         from nina_planner.sequence import sequence_wait_until_dusk
 
@@ -1523,6 +1547,50 @@ class SequenceBehaviorTest(unittest.TestCase):
         dawn = _find_items(result, "DawnProvider")
         self.assertGreaterEqual(len(sunset), 1)
         self.assertEqual(dawn, [])
+
+    def test_flats_waits_do_not_block_on_safety_monitor(self):
+        """Wait For Sunset and Wait For Dawn in flats do not gate on the
+        safety monitor or hold on Wait until safe while the scope is parked.
+        Only Image Flats gates on safe acquisition."""
+        from sequence_helpers import build_sequence_flats
+
+        plan = self._plan()
+        mount = MountDevice(connected=True, name="m", can_park=True)
+        eq = ObservatoryEquipment(mount=mount)
+
+        # Dusk flats
+        dusk_res = build_sequence_flats(
+            plan, equipment=eq, profile=_profile(), dusk=True
+        )
+        dusk_sunset = _find_named(dusk_res, "Wait For Sunset")
+        self.assertEqual(len(dusk_sunset), 1)
+        self.assertEqual(_find_items(dusk_sunset[0], "WaitUntilSafe"), [])
+        self.assertEqual(_find_items(dusk_sunset[0], "SafetyMonitorCondition"), [])
+        self.assertEqual(len(_find_items(dusk_sunset[0], "ParkScope")), 1)
+
+        dusk_img = _find_named(dusk_res, "Image Flats")
+        self.assertEqual(len(dusk_img), 1)
+        self.assertGreaterEqual(len(_find_items(dusk_img[0], "WaitUntilSafe")), 1)
+
+        # Dawn flats
+        dawn_res = build_sequence_flats(
+            plan, equipment=eq, profile=_profile(), dusk=False
+        )
+        dawn_sunset = _find_named(dawn_res, "Wait For Sunset")
+        self.assertEqual(len(dawn_sunset), 1)
+        self.assertEqual(_find_items(dawn_sunset[0], "WaitUntilSafe"), [])
+        self.assertEqual(_find_items(dawn_sunset[0], "SafetyMonitorCondition"), [])
+        self.assertEqual(len(_find_items(dawn_sunset[0], "ParkScope")), 1)
+
+        dawn_wait = _find_named(dawn_res, "Wait For Dawn")
+        self.assertEqual(len(dawn_wait), 1)
+        self.assertEqual(_find_items(dawn_wait[0], "WaitUntilSafe"), [])
+        self.assertEqual(_find_items(dawn_wait[0], "SafetyMonitorCondition"), [])
+        self.assertEqual(len(_find_items(dawn_wait[0], "ParkScope")), 1)
+
+        dawn_img = _find_named(dawn_res, "Image Flats")
+        self.assertEqual(len(dawn_img), 1)
+        self.assertGreaterEqual(len(_find_items(dawn_img[0], "WaitUntilSafe")), 1)
 
 
 class CoordinateHelpersTest(unittest.TestCase):

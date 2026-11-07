@@ -13,6 +13,7 @@ from .builders import (
     sequence_safetynet,
     sequence_smart_exposure,
     sequence_unpark_scope,
+    sequence_wait_until_dawn,
     sequence_wait_until_dusk,
     sequence_wait_until_sunset,
 )
@@ -35,12 +36,8 @@ from .instructions import (
     start_guiding,
     stop_guiding,
     switch_filter,
-    wait_if_sun_altitude_above,
-    wait_if_sun_altitude_below,
     wait_until_above_altitude,
     wait_until_above_horizon,
-    wait_until_dawn,
-    wait_until_sunset,
 )
 from .nodes import (
     NINA_FLATS_ALTITUDE,
@@ -301,26 +298,22 @@ def target_payload_flats(
     panel azimuth and take the flats while the sun is on the right side of
     the horizon, or nothing when the window has passed."""
 
+    wait_instructions = (
+        [sequence_wait_until_sunset(equipment)]
+        if dusk
+        else [
+            sequence_wait_until_sunset(equipment),
+            sequence_wait_until_dawn(equipment),
+        ]
+    )
+
     return [
         sequence_calibration(
             plan=plan,
             kind="Dusk Flats" if dusk else "Dawn Flats",
             tag="dusk flats" if dusk else "dawn flats",
-            instructions=[
-                sequence_wait_until_sunset(equipment),
-                # wait until start time
-                sequence_safetynet(
-                    name="Wait Until Sunset" if dusk else "Wait Until Dawn",
-                    equipment=equipment,
-                    instructions=[
-                        (wait_until_sunset() if dusk else wait_until_dawn()),
-                        (
-                            wait_if_sun_altitude_above(0)
-                            if dusk
-                            else wait_if_sun_altitude_below(-8)
-                        ),
-                    ],
-                ),
+            instructions=wait_instructions
+            + [
                 # image flats if before stop time
                 sequence_safetynet(
                     name="Image Flats",
