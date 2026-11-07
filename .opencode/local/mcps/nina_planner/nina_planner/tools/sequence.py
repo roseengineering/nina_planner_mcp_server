@@ -40,7 +40,7 @@ async def load_sequence(
     - `dark` and `bias` take `wheel` (default — park the wheel on the profile's `Dark` filter slot), `cover` (close the motorized cover — e.g. a flip-flat — around the exposures, then reopen it so a later step never shoots through a closed cover), or `shutter` (expose without moving the filter wheel, relying on the camera's shutter). The variant is capability-checked at load: `wheel` needs a configured filter wheel with a `Dark` slot, `cover` a configured flat device reporting open/close support, `shutter` a camera reporting HasShutter. A variant the rig cannot perform fails naming the reason and the variants it supports — the default is checked the same way, so an omitted variant never silently picks another method.
     - `light` takes no variant.
 
-    Steps run in order as the sequence reaches them; a step carrying its own wait conditions (lights, flats) waits, or is skipped when its window has passed, without blocking the steps behind it, so list order controls timing. Entries already complete in `remaining` mode are skipped and reported; if every entry is complete, nothing is sent to N.I.N.A. Profile, equipment, and metadata are fetched once per call, one POST carries the whole sequence, and a validation failure names its 0-based position (`request[1]: ...`).
+    Steps run in order as the sequence reaches them; a step carrying its own wait conditions (lights, flats) waits, or is skipped when its window has passed, without blocking the steps behind it, so list order controls timing. Entries already complete in `remaining` mode are skipped and reported; if every entry is complete, nothing is sent to N.I.N.A. Profile, equipment, and metadata are fetched once per call, one POST carries the whole sequence, and a validation failure names its 0-based position (`request[1]: ...`). A mount reporting neither `can_park` nor `can_find_home` — or no mount at all — is rejected as soon as a sequence would load: the End area could not stow it, and the wait stages that park first would leave it unparked. An all-complete list sends nothing and so needs no stow, and loads without that error.
 
     Fails if a sequence is already running — NINA's own error is reported; call stop_sequence() first."""
     if not isinstance(request, list):
@@ -113,7 +113,9 @@ async def _load_many(requests: list[SequenceRequest]) -> str:
     Entries already complete in ``remaining`` mode contribute no payload, so
     a fully-complete list never POSTs. An empty list is the stow: no steps at
     all, just the stow End area. Every list's End area stows (park, then
-    warm), so the night ends parked no matter what ran (see load_sequence).
+    warm), so the night ends parked no matter what ran (see load_sequence) —
+    which is why a mount that can neither park nor home is rejected at the
+    point a sequence would load: that stow would silently do nothing.
     """
     state: dict[str, Any] = {}
 
@@ -286,20 +288,6 @@ async def _load_many(requests: list[SequenceRequest]) -> str:
             )
         return payload, f"{label}{where} — {note}"
 
-    if not requests:
-        # The empty request list is the stow; it keeps the stow's guardrail —
-        # a mount that can neither park nor home has nothing to stow, and a
-        # stow that silently does nothing is worse than an error.
-        eq = await equipment()
-        mount = eq.mount
-        can_park = bool(mount and mount.can_park)
-        can_home = bool(mount and mount.can_find_home)
-        if not (can_park or can_home):
-            raise ValueError(
-                "Mount can neither park nor home "
-                f"(can_park={can_park}, can_find_home={can_home}) — nothing to stow."
-            )
-
     lines: list[str] = []
     payloads: list[list[dict[str, Any]]] = []
     for i, request in enumerate(requests):
@@ -315,11 +303,28 @@ async def _load_many(requests: list[SequenceRequest]) -> str:
     # The empty list is the stow: no steps, but the End area still parks (or
     # homes) then warms, so it always loads.
     if any(payloads) or not requests:
-        # The End area always stows (park, then warm), so the empty list —
-        # no steps at all — is exactly the stow.
-        await client.load_sequence_payload(
-            build_sequence_many(await equipment(), payloads)
-        )
+        # Guard at the point a sequence really is sent: every load — the
+        # empty stow included — ends with the End-area park (or home), and
+        # sequence_park_scope emits nothing when the mount can neither, so
+        # the wait stages that park first (wait for dusk/dawn, the safetynet,
+        # wait for object) would sit unparked through a long wait while the
+        # End area announces a stow around a no-op. A stow that silently does
+        # nothing is worse than an error. It is checked here rather than up
+        # front so a fully-complete list — nothing sent, no End area — stays a
+        # clean "Nothing to load".
+        eq = await equipment()
+        mount = eq.mount
+        can_park = bool(mount and mount.can_park)
+        can_home = bool(mount and mount.can_find_home)
+        if not (can_park or can_home):
+            raise ValueError(
+                "Mount can neither park nor home "
+                f"(can_park={can_park}, can_find_home={can_home}) — nothing to "
+                "stow: the End area would announce STOW-STARTING/"
+                "STOW-FINISHED around an instruction list that does nothing. "
+                "Nothing was loaded."
+            )
+        await client.load_sequence_payload(build_sequence_many(eq, payloads))
         if requests:
             lines.append(
                 f"Sequence loaded ({sum(1 for p in payloads if p)} of "

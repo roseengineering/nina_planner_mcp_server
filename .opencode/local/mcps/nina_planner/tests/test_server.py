@@ -585,6 +585,21 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
             ),
         )
 
+    @staticmethod
+    def _payload_equipment() -> ObservatoryEquipment:
+        """Equipment for the payload tests: the stowable mount and nothing else.
+
+        load_sequence only sends a sequence a mount can actually stow — every
+        list ends with the End-area park — so a bare ``ObservatoryEquipment()``
+        (no mount reported) is now rejected at load. These tests are about what
+        the plan builds into the payload, so they carry just the mount the
+        guard needs: no camera, so no cool/warm step is added to what they
+        count.
+        """
+        return ObservatoryEquipment(
+            mount=MountDevice(connected=True, name="m", can_park=True)
+        )
+
     async def test_resolve_imaging_root(self):
         from nina_planner.imaging import windows_to_local
         from nina_planner.metadata import resolve_imaging_root as _resolve_imaging_root
@@ -1697,7 +1712,7 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
                 ),
                 patch(
                     "nina_planner.tools.equipment._get_site_equipment_status",
-                    AsyncMock(return_value=ObservatoryEquipment()),
+                    AsyncMock(return_value=self._payload_equipment()),
                 ),
                 patch(
                     "nina_planner.metadata.read_metadata",
@@ -1744,7 +1759,7 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
                 ),
                 patch(
                     "nina_planner.tools.equipment._get_site_equipment_status",
-                    AsyncMock(return_value=ObservatoryEquipment()),
+                    AsyncMock(return_value=self._payload_equipment()),
                 ),
                 patch(
                     "nina_planner.metadata.read_metadata",
@@ -1790,7 +1805,7 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
                 ),
                 patch(
                     "nina_planner.tools.equipment._get_site_equipment_status",
-                    AsyncMock(return_value=ObservatoryEquipment()),
+                    AsyncMock(return_value=self._payload_equipment()),
                 ),
                 patch(
                     "nina_planner.metadata.read_metadata",
@@ -1848,7 +1863,7 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
                 ),
                 patch(
                     "nina_planner.tools.equipment._get_site_equipment_status",
-                    AsyncMock(return_value=ObservatoryEquipment()),
+                    AsyncMock(return_value=self._payload_equipment()),
                 ),
                 patch(
                     "nina_planner.metadata.read_metadata",
@@ -1911,7 +1926,7 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
                 ),
                 patch(
                     "nina_planner.tools.equipment._get_site_equipment_status",
-                    AsyncMock(return_value=ObservatoryEquipment()),
+                    AsyncMock(return_value=self._payload_equipment()),
                 ),
                 patch(
                     "nina_planner.metadata.read_metadata",
@@ -1970,7 +1985,7 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
                 ),
                 patch(
                     "nina_planner.tools.equipment._get_site_equipment_status",
-                    AsyncMock(return_value=ObservatoryEquipment()),
+                    AsyncMock(return_value=self._payload_equipment()),
                 ),
                 patch(
                     "nina_planner.tools.sequence.target_payload_darks",
@@ -2022,7 +2037,7 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
                 ),
                 patch(
                     "nina_planner.tools.equipment._get_site_equipment_status",
-                    AsyncMock(return_value=ObservatoryEquipment()),
+                    AsyncMock(return_value=self._payload_equipment()),
                 ),
                 patch(
                     "nina_planner.metadata.read_metadata",
@@ -2110,7 +2125,7 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
                 ),
                 patch(
                     "nina_planner.tools.equipment._get_site_equipment_status",
-                    AsyncMock(return_value=ObservatoryEquipment()),
+                    AsyncMock(return_value=self._payload_equipment()),
                 ),
                 patch(
                     "nina_planner.tools.sequence.target_payload_flats",
@@ -2171,7 +2186,7 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
                 ),
                 patch(
                     "nina_planner.tools.equipment._get_site_equipment_status",
-                    AsyncMock(return_value=ObservatoryEquipment()),
+                    AsyncMock(return_value=self._payload_equipment()),
                 ),
                 patch(
                     "nina_planner.tools.sequence.target_payload_flats",
@@ -2227,7 +2242,7 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
                 ),
                 patch(
                     "nina_planner.tools.equipment._get_site_equipment_status",
-                    AsyncMock(return_value=ObservatoryEquipment()),
+                    AsyncMock(return_value=self._payload_equipment()),
                 ),
                 patch("nina_planner.client.api_post", api_post),
             ):
@@ -2276,7 +2291,7 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
                 ),
                 patch(
                     "nina_planner.tools.equipment._get_site_equipment_status",
-                    AsyncMock(return_value=ObservatoryEquipment()),
+                    AsyncMock(return_value=self._payload_equipment()),
                 ),
                 patch(
                     "nina_planner.metadata.read_metadata",
@@ -2354,7 +2369,7 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
                 ),
                 patch(
                     "nina_planner.tools.equipment._get_site_equipment_status",
-                    AsyncMock(return_value=ObservatoryEquipment()),
+                    AsyncMock(return_value=self._payload_equipment()),
                 ),
                 patch(
                     "nina_planner.metadata.read_metadata",
@@ -2407,7 +2422,7 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
                 ),
                 patch(
                     "nina_planner.tools.equipment._get_site_equipment_status",
-                    AsyncMock(return_value=ObservatoryEquipment()),
+                    AsyncMock(return_value=self._payload_equipment()),
                 ),
                 patch(
                     "nina_planner.metadata.read_metadata",
@@ -2476,7 +2491,7 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
                 ),
                 patch(
                     "nina_planner.tools.equipment._get_site_equipment_status",
-                    AsyncMock(return_value=ObservatoryEquipment()),
+                    AsyncMock(return_value=self._payload_equipment()),
                 ),
                 patch(
                     "nina_planner.metadata.read_metadata",
@@ -2581,6 +2596,81 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
             )
         self.assertIn("neither park nor home", str(ctx.exception))
         self.assertIn("nothing to stow", str(ctx.exception))
+
+    async def test_load_sequence_with_an_unstowable_mount_sends_nothing(self):
+        """The stow guardrail is the sequence guardrail: every loaded list
+        ends with the End-area stow, so a mount that can neither park nor
+        home fails a real plan exactly as it fails the empty stow — before
+        anything reaches N.I.N.A."""
+        from nina_planner.server import load_sequence
+
+        api_post = AsyncMock(return_value={})
+        with tempfile.TemporaryDirectory() as tmp:
+            plan_path = Path(tmp) / "plan.json"
+            plan_path.write_text(json.dumps(self._list_plan_dict()))
+            with (
+                patch(
+                    "nina_planner.tools.equipment.get_site_profile",
+                    AsyncMock(return_value=self._full_profile()),
+                ),
+                patch(
+                    "nina_planner.tools.equipment._get_site_equipment_status",
+                    AsyncMock(
+                        return_value=self._equipment(
+                            can_park=False, can_find_home=False
+                        )
+                    ),
+                ),
+                patch(
+                    "nina_planner.metadata.read_metadata", AsyncMock(return_value=[])
+                ),
+                patch("nina_planner.client.api_post", api_post),
+                self.assertRaises(ValueError) as ctx,
+            ):
+                await load_sequence(
+                    [SequenceRequest(plan=str(plan_path), action="light")]
+                )
+
+        self.assertIn("neither park nor home", str(ctx.exception))
+        self.assertIn("nothing to stow", str(ctx.exception))
+        self.assertIn("Nothing was loaded", str(ctx.exception))
+        api_post.assert_not_awaited()
+
+    async def test_load_sequence_with_no_mount_reported_sends_nothing(self):
+        """NINA reporting no Mount is the same rejection, stow or plan: with
+        nothing that can park, the End-area stow is a no-op, and there is no
+        scope sitting unparked through the wait stages either."""
+        from nina_planner.server import load_sequence
+
+        api_post = AsyncMock(return_value={})
+        with tempfile.TemporaryDirectory() as tmp:
+            plan_path = Path(tmp) / "plan.json"
+            plan_path.write_text(json.dumps(self._list_plan_dict()))
+            with (
+                patch(
+                    "nina_planner.tools.equipment.get_site_profile",
+                    AsyncMock(return_value=self._full_profile()),
+                ),
+                patch(
+                    "nina_planner.tools.equipment._get_site_equipment_status",
+                    AsyncMock(return_value=ObservatoryEquipment()),
+                ),
+                patch(
+                    "nina_planner.metadata.read_metadata", AsyncMock(return_value=[])
+                ),
+                patch("nina_planner.client.api_post", api_post),
+            ):
+                with self.assertRaises(ValueError) as stow_ctx:
+                    await load_sequence([])
+                with self.assertRaises(ValueError) as plan_ctx:
+                    await load_sequence(
+                        [SequenceRequest(plan=str(plan_path), action="light")]
+                    )
+
+        for ctx in (stow_ctx, plan_ctx):
+            self.assertIn("nothing to stow", str(ctx.exception))
+            self.assertIn("Nothing was loaded", str(ctx.exception))
+        api_post.assert_not_awaited()
 
     # load_sequence with a LIST of requests
 
@@ -2747,6 +2837,24 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn("Nothing to load", result)
         self.assertNotIn("start_sequence()", result)
 
+    async def test_load_sequence_all_complete_needs_no_stow(self):
+        """Nothing sent means nothing guarded: with every entry complete the
+        load POSTs no sequence, so an unstowable mount is only an error when
+        a sequence — and its End-area stow — would actually load."""
+        with tempfile.TemporaryDirectory() as tmp:
+            plan_path = Path(tmp) / "plan.json"
+            plan_path.write_text(json.dumps(self._list_plan_dict()))
+            requests = [SequenceRequest(plan=str(plan_path), action="light")]
+            result, api_post = await self._load_list(
+                requests,
+                progress=self._progress(light=0),
+                equipment=self._equipment(can_park=False, can_find_home=False),
+            )
+
+        api_post.assert_not_awaited()
+        self.assertIn("is complete", result)
+        self.assertIn("Nothing to load", result)
+
     async def test_load_sequence_stow_action_is_rejected(self):
         """There is no stow action — an empty request list is the stow."""
         from nina_planner.server import load_sequence
@@ -2819,11 +2927,12 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
                     "nina_planner.tools.equipment._get_site_equipment_status",
                     AsyncMock(
                         return_value=ObservatoryEquipment(
+                            mount=MountDevice(connected=True, name="m", can_park=True),
                             flat_device=FlatDevice(
                                 connected=True,
                                 cover_state="Closed",
                                 supports_open_close=True,
-                            )
+                            ),
                         )
                     ),
                 ),
@@ -2890,9 +2999,10 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
                     "nina_planner.tools.equipment._get_site_equipment_status",
                     AsyncMock(
                         return_value=ObservatoryEquipment(
+                            mount=MountDevice(connected=True, name="m", can_park=True),
                             camera=CameraDevice(
                                 connected=True, name="cam", has_shutter=True
-                            )
+                            ),
                         )
                     ),
                 ),
