@@ -1,4 +1,4 @@
-"""Tests for the nina-pin-id CLI (nina_planner/pin_id.py) and pin_plan_id tool.
+"""Tests for the nina-pin-id CLI (nina_planner/pin_id.py).
 
 Reuses test_archive.ArchiveBase: same tmp project + landing root +
 ``seed_full`` fixture, with the landing token dir pointed at the plan's
@@ -27,7 +27,6 @@ from test_archive import ArchiveBase, _plan
 from nina_planner import pin_id as pin_mod
 from nina_planner.imaging import read_imaging_csv
 from nina_planner.models.plan import ObservationPlan
-from nina_planner.pin_id import PinError
 from nina_planner.tools import plans as plans_mod
 
 
@@ -270,25 +269,6 @@ class PinAcceptanceTest(PinBase):
         code, _out, err = self.run_cli("--force")
         self.assertEqual(code, 0, err)
         self.assertEqual(self.folders(), [folder])
-
-
-class PinPlanIdToolTest(PinBase):
-    def test_pin_plan_id_tool_pins_then_reports_already_pinned(self):
-        plan = _plan(plan_id="")
-        derived = self.derive_from(plan)
-        self.write_plan(plan)
-
-        result = asyncio.run(plans_mod.pin_plan_id(str(self.plan_file)))
-        self.assertIn(f"pinned {self.plan_file}: {derived}", result)
-        self.assertEqual(json.loads(self.plan_file.read_text())["plan_id"], derived)
-
-        again = asyncio.run(plans_mod.pin_plan_id(str(self.plan_file)))
-        self.assertIn("already pinned", again)
-
-    def test_pin_plan_id_tool_reports_missing_file(self):
-        with self.assertRaises(PinError) as ctx:
-            asyncio.run(plans_mod.pin_plan_id(str(self.proj / "ghost.json")))
-        self.assertIn("ghost.json", str(ctx.exception))
 
 
 if __name__ == "__main__":

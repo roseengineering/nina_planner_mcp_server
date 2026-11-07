@@ -23,7 +23,7 @@
           "NINA_VERIFY_CMD": "gcloud storage rsync --recursive .archive gs://YOUR-BUCKET/nina-archive --dry-run"
         },
         "command": [
-          "uv", "run", "--project", ".opencode/local/mcps/nina_planner", "-m", "nina_planner"
+          "uv", "run", "--project", ".opencode/local/mcps/nina_planner", "nina-planner"
         ]
       }
     }

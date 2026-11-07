@@ -36,7 +36,6 @@ Each table gives a one-line summary; details for the larger tools are in [Tool D
 | `list_plans(project_dir?)` | List every observation plan file in the project directory with its `file`, absolute `path`, `plan_id`, `target`, `intent`, `pointing_count`, and mtime — enumerate plans without globbing. Read-only. |
 | `write_plan_file(plan)` | Validate and write an observation plan JSON file for later use by `load_sequence`. Creates the file only; loads and starts nothing. |
 | `write_mosaic_plan(plan_path, mosaic_csv, output_path?)` | Expand a base plan into a multi-pointing mosaic plan from a Telescopius CSV. Creates the file only. |
-| `pin_plan_id(plan_path)` | Freeze a blank-id plan's current derived `plan_id` into the file before editing it, so already-shot frames keep attributing. No-op when already pinned. |
 | `get_archive_settings()` | Read `NINA_ARCHIVE_DEST`, `NINA_UPLOAD_CMD` and `NINA_VERIFY_CMD` from the server's `environment` (opencode.json). Runs nothing; returns `settings`, `missing`, `ready` for the `archive-lifecycle` skill. |
 | `get_plan_progress(file_path, max_hfr?, min_detected_stars?, max_guiding_rms_arcsec?)` | Per-frame-type acquired/remaining counts for every pointing of a plan. Use before `load_sequence` to see what still needs acquiring. Read-only. |
 | `audit_plans(plans?, project_dir?, types?, include_orphans=true)` | **Whole-project capture audit in one call**: reconcile plan expectations with CSV attribution (plus the one filesystem fact the CSV cannot hold — `bad` rejects) for every plan into an `all_saved` verdict plus `left_to_do` (including never-shot plans) and `blocked` work lists, and a `never_shot` list of plans with no frames at all. Read-only. |
@@ -361,7 +360,7 @@ nina-pin-id --dry-run plan1.json plan2.json                   # report only, wri
 - ⏭️ **Idempotent:** a plan that already carries an id (pinned or hand-written) prints `already pinned: <id>` and is left byte-for-byte untouched — an explicit id is never overwritten.
 - ♻️ **Edit freely afterwards:** raise a group's `total_count`, add more lights, reword the intent — the id stays put, so frames attributed before the pin stay attributed after it and `nina-archive --force` rebuilds the same `<stem>__<plan-id>` folder.
 - ⚠️ **Pin BEFORE editing:** once a blank-id plan is edited its old hash cannot be recomputed; it survives only in an archive folder name or in frame paths (they contain `_<plan_id>_`).
-- 📡 **MCP tool:** `pin_plan_id(plan_path)` does the same for one plan from the server.
+- 🖥️ **CLI only:** this is a human-side tool — plans written by `write_plan_file` / `write_mosaic_plan` are stamped with an explicit id at creation, so the agent never needs to pin. There is no MCP tool for it.
 - 🚪 **Exit codes:** `0` pinned (or already pinned / dry run), `1` a plan could not be loaded or written, `2` bad arguments — chainable, e.g. `nina-pin-id plan.json && <edit>`.
 
 ## 🧹 `nina-purge` — Retire Archived Frames
@@ -514,6 +513,9 @@ You are the automated observatory controller. The observatory runs NINA via the 
 {
   "$schema": "https://opencode.ai/config.json",
   "instructions": [ ".opencode/rules/*.md" ],
+  "experimental": {
+    "location_idle_timeout": false
+  },
   "plugins": [
     {
       "package": "./local/plugins/nina_notify",
@@ -533,7 +535,7 @@ You are the automated observatory controller. The observatory runs NINA via the 
           "NINA_VERIFY_CMD": "gcloud storage rsync --recursive .archive gs://YOUR-BUCKET/nina-archive --dry-run"
         },
         "command": [
-          "uv", "run", "--project", ".opencode/local/mcps/nina_planner", "-m", "nina_planner"
+          "uv", "run", "--project", ".opencode/local/mcps/nina_planner", "nina-planner"
         ]
       }
     }
