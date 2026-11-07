@@ -654,4 +654,47 @@ $ opencode serve --port 4096
 $ opencode --server http://127.0.0.1:4096
 ```
 
+## 📱 Setting up Telegram
+
+[`@grinev/opencode-telegram-bot`](https://github.com/grinev/opencode-telegram-bot) bridges Telegram to a local opencode server, so the same agent that runs the observatory runs from your phone: plan a night, load and start a sequence, stop a run, check safety — and every `nina-notify` wake shows up in the chat. A Telegram chat is just an ordinary opencode session, so [`nina_notify_arm`](#-nina-notify--opencode-v2-autonomous-plugin) can pin the wakes to the session behind it.
+
+It needs **two processes, both kept running in the background** for as long as you want to chat:
+
+| Process | Command |
+|---|---|
+| **opencode server** | `opencode serve --port 4096` (started with `OPENCODE_SERVER_PASSWORD` set) |
+| **telegram bot** | `npx -y -- @grinev/opencode-telegram-bot start` |
+
+### 1. Create the bot
+
+1. Message [@BotFather](https://t.me/BotFather) with `/newbot`, pick a name and username, and copy the **bot token** it returns.
+2. Message [@userinfobot](https://t.me/userinfobot) with `/start` to get your numeric **user id**. Only that id may talk to the bot — everyone else is silently ignored.
+3. Open your bot (`t.me/<your-bot-username>`) and send `/settings` — a good first move is turning off thinking content so replies stay short.
+
+### 2. Configure it
+
+Settings come from environment variables or an `.env` file (process environment wins). The bot reads `.env` from its app-data directory — `~/Library/Application Support/opencode-telegram-bot/.env` on macOS, `%APPDATA%\opencode-telegram-bot\.env` on Windows, `~/.config/opencode-telegram-bot/.env` on Linux — or you can export them yourself:
+
+| Variable | Example | Description |
+|---|---|---|
+| `TELEGRAM_BOT_TOKEN` | _(from @BotFather)_ | **Required.** The bot's API token. |
+| `TELEGRAM_ALLOWED_USER_ID` | `123456789` | **Required.** Your Telegram user id — the whitelist that keeps strangers out. |
+| `OPENCODE_SERVER_VERSION` | `v2` | `v1` or `v2`; must match the server you run. |
+| `OPENCODE_API_URL` | `http://127.0.0.1:4096` | Where `opencode serve` listens. |
+| `OPENCODE_SERVER_USERNAME` | `opencode` | Server auth user. |
+| `OPENCODE_SERVER_PASSWORD` | _(same as the server)_ | **Required on v2.** Must equal the password the server was started with. |
+| `OPENCODE_MODEL_PROVIDER` / `OPENCODE_MODEL_ID` | `opencode-go` / `mimo-v2.6-flash` | Default model for new sessions. |
+| `BOT_LOCALE` | `en` | Bot UI language. |
+| `INITIAL_SETTINGS_PRESET` | `{"showAssistantRunFooter":false,"compactOutputMode":true,"showThinkingContent":false}` | Seeds `/settings` defaults on first run — only keys not already persisted are touched. |
+
+### 3. Run both in the background
+
+```bash
+$ export OPENCODE_SERVER_PASSWORD=pass   # must match the value the bot sees
+$ opencode serve --port 4096             # background
+$ npx -y -- @grinev/opencode-telegram-bot start   # background
+```
+
+Start them the way you start any long-lived service so both survive a reboot, then open the chat and send `/status` — it reports server health, current project, session and model. From there `/new`, `/abort`, `/sessions` and plain messages drive the agent, and the night's milestones, faults and safety changes arrive as pushes instead of waiting for you to notice them.
+
 
