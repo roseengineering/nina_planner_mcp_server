@@ -13,6 +13,7 @@ from .builders import (
     sequence_safetynet,
     sequence_smart_exposure,
     sequence_unpark_scope,
+    sequence_wait_until_dusk,
     sequence_wait_until_sunset,
 )
 from .instructions import (
@@ -39,7 +40,6 @@ from .instructions import (
     wait_until_above_altitude,
     wait_until_above_horizon,
     wait_until_dawn,
-    wait_until_dusk,
     wait_until_sunset,
 )
 from .nodes import (
@@ -179,18 +179,24 @@ def target_payload_lights(
     pointing = _validated_pointing(plan, pointing_index)
     reference_filter_name = plan.autofocus.reference_filter_name
     reference_filter_position = profile.filter_position(reference_filter_name)
-    name_park = "Park Unless in View"
+    name_object = "Wait For Object"
 
     return [
         sequence_deepsky(
             plan=plan,
             pointing_index=pointing_index,
             instructions=[
-                # park if object not in view
+                # wait for dusk: if not dusk, park scope and wait for dusk; otherwise skip to next container
+                sequence_wait_until_dusk(equipment),
+                # wait for object: if already in view, break out immediately; else park scope and wait until in view
                 container_sequential(
-                    name=name_park,
+                    name=name_object,
+                    conditions=[
+                        loop_until_dawn(),
+                        loop_until_meridian(),
+                    ],
                     instructions=[
-                        # in view: bail out of this container without parking
+                        # in view: bail out of Wait For Object without parking or waiting
                         container_sequential(
                             name="Break If in View",
                             conditions=[
@@ -201,31 +207,12 @@ def target_payload_lights(
                                     plan.constraints.min_altitude
                                 ),
                             ],
-                            instructions=[end_instruction(name_park)],
+                            instructions=[end_instruction(name_object)],
                         ),
                     ]
-                    # out of view: park (or home) until the safetynets unpark
-                    + sequence_park_scope(equipment),
-                ),
-                # wait for sunset first
-                sequence_wait_until_sunset(equipment),
-                # wait for dusk before imaging
-                sequence_safetynet(
-                    name="Wait For Dusk",
-                    equipment=equipment,
-                    instructions=[
-                        wait_until_dusk(),
-                    ],
-                ),
-                # wait for object to be high enough
-                sequence_safetynet(
-                    name="Wait For Object",
-                    equipment=equipment,
-                    conditions=[
-                        loop_until_dawn(),
-                        loop_until_meridian(),
-                    ],
-                    instructions=[
+                    # out of view: park (or home) while waiting for object to rise
+                    + sequence_park_scope(equipment)
+                    + [
                         wait_until_above_horizon(
                             plan.constraints.horizon_offset_degrees
                         ),

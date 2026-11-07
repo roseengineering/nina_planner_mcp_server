@@ -19,6 +19,7 @@ from .instructions import (
     smart_exposure,
     unpark_scope,
     wait_for_timespan,
+    wait_until_dusk,
     wait_until_safe,
     wait_until_sunset,
     warm_camera,
@@ -231,22 +232,23 @@ def sequence_smart_exposure(
     )
 
 
-def sequence_wait_until_sunset(equipment: ObservatoryEquipment) -> dict[str, Any]:
+def sequence_wait_until_sunset(
+    equipment: ObservatoryEquipment | None = None,
+) -> dict[str, Any]:
     name = "Wait For Sunset"
     return container_sequential(
         name=name,
         conditions=[loop_until_dusk()],
-        instructions=[
-            container_sequential(
-                name="On Safe",
-                conditions=[loop_while_safe()],
-                instructions=[wait_until_sunset(), end_instruction(name)],
-            )
-        ]
-        + sequence_park_scope(equipment)
-        + [
-            wait_until_safe(),
-        ],
+        instructions=[wait_until_sunset()],
+    )
+
+
+def sequence_wait_until_dusk(equipment: ObservatoryEquipment) -> dict[str, Any]:
+    name = "Wait For Dusk"
+    return container_sequential(
+        name=name,
+        conditions=[loop_until_dusk()],
+        instructions=sequence_park_scope(equipment) + [wait_until_dusk()],
     )
 
 

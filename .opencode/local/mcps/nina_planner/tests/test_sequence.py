@@ -469,6 +469,17 @@ class JsonTemplateBuildersTest(unittest.TestCase):
         self.assertIn("SelectedProvider", result)
         self.assertIn("SunsetProvider", result["SelectedProvider"]["$type"])
 
+    def test_sequence_wait_until_dusk(self):
+        from nina_planner.sequence import sequence_wait_until_dusk
+
+        mount = MountDevice(connected=True, name="m", can_park=True)
+        eq = ObservatoryEquipment(mount=mount)
+        result = sequence_wait_until_dusk(eq)
+        self.assertEqual(result["Name"], "Wait For Dusk")
+        self.assertEqual(len(_find_items(result, "TimeCondition")), 1)
+        self.assertEqual(len(_find_items(result, "ParkScope")), 1)
+        self.assertEqual(len(_find_items(result, "WaitForTime")), 1)
+
     def test_wait_if_sun_altitude_above(self):
         from nina_planner.sequence import wait_if_sun_altitude_above
 
@@ -1145,9 +1156,10 @@ class SequenceBehaviorTest(unittest.TestCase):
         self.assertEqual(cools, [])
 
     def test_lights_parks_when_object_is_not_in_view(self):
-        """The leading "Park Unless in View" container parks (or homes) the
-        mount when the target is below the plan's constraints, and skips the
-        park — via an End set naming that container — when it is in view."""
+        """The "Wait For Object" container folds in the visibility check: if
+        the target is already in view, it skips the wait and park via an End set
+        naming that container; if not in view, it parks (or homes) the mount and
+        waits for the target to rise."""
         plan = self._plan(
             constraints={"min_altitude": 45.0, "horizon_offset_degrees": 5.0}
         )
@@ -1155,13 +1167,14 @@ class SequenceBehaviorTest(unittest.TestCase):
         eq = ObservatoryEquipment(mount=mount)
         result = build_sequence_lights(plan, equipment=eq, profile=_profile())
 
-        found = _find_named(result, "Park Unless in View")
-        self.assertEqual(len(found), 1, "exactly one park-unless-in-view container")
-        park = found[0]
-        self.assertEqual(park["Conditions"]["$values"], [], "no loop: one pass only")
+        found = _find_named(result, "Wait For Object")
+        self.assertEqual(len(found), 1, "exactly one wait-for-object container")
+        obj_wait = found[0]
 
-        items = park["Items"]["$values"]
-        self.assertEqual(len(items), 2, "guard then park")
+        items = obj_wait["Items"]["$values"]
+        self.assertEqual(
+            len(items), 4, "guard then park then horizon wait then altitude wait"
+        )
         guard = items[0]
         conditions = guard["Conditions"]["$values"]
         kinds = [c["$type"].split(",")[0].split(".")[-1] for c in conditions]
@@ -1169,24 +1182,27 @@ class SequenceBehaviorTest(unittest.TestCase):
         self.assertEqual(conditions[0]["Data"]["Offset"], 5.0)
         self.assertEqual(conditions[1]["Data"]["Offset"], 45.0)
 
-        # in view -> end the container before the park instruction runs
+        # in view -> end the Wait For Object container before park and waits run
         ends = _find_items(guard, "EndInstructionSet")
-        self.assertEqual(
-            [e["InstructionSetName"] for e in ends], ["Park Unless in View"]
-        )
+        self.assertEqual([e["InstructionSetName"] for e in ends], ["Wait For Object"])
         # out of view -> fall through to the capability-driven park
         self.assertTrue(_find_items(items[1], "ParkScope"))
         self.assertEqual(_find_items(items[1], "FindHome, NINA.Sequencer"), [])
 
-        # and it runs before anything waits for dusk
+        # and it runs after dusk, right before imaging
         dsos = _deepsky_targets(result)
         self.assertEqual(len(dsos), 1)
         dso_items = dsos[0]["Items"]["$values"]
         names = [i.get("Name") for i in dso_items]
         self.assertLess(
-            names.index("Park Unless in View"),
             names.index("Wait For Dusk"),
-            "park first, then the safetynets",
+            names.index("Wait For Object"),
+            "wait for dusk first, then wait for object",
+        )
+        self.assertLess(
+            names.index("Wait For Object"),
+            names.index("Image Object"),
+            "wait for object before image object",
         )
 
     def test_lights_parks_with_find_home_when_mount_cannot_park(self):
@@ -1197,9 +1213,53 @@ class SequenceBehaviorTest(unittest.TestCase):
         eq = ObservatoryEquipment(mount=mount)
         result = build_sequence_lights(plan, equipment=eq, profile=_profile())
 
-        park = _find_named(result, "Park Unless in View")[0]
-        self.assertEqual(_find_items(park, "ParkScope"), [])
-        self.assertEqual(len(_find_items(park, "FindHome, NINA.Sequencer")), 1)
+        obj_wait = _find_named(result, "Wait For Object")[0]
+        self.assertEqual(_find_items(obj_wait, "ParkScope"), [])
+        self.assertEqual(len(_find_items(obj_wait, "FindHome, NINA.Sequencer")), 1)
+
+    def test_lights_waits_for_dusk_and_object_do_not_block_on_safety_monitor(self):
+        """Wait For Dusk and Wait For Object do not gate on the safety monitor
+        or hold on Wait until safe while the scope is parked. Only Image Object
+        gates on safe acquisition.
+        """
+        plan = self._plan()
+        eq = ObservatoryEquipment(
+            mount=MountDevice(connected=True, name="m", can_park=True)
+        )
+        result = build_sequence_lights(plan, equipment=eq, profile=_profile())
+
+        # Wait For Sunset is replaced by Wait For Dusk in light sequences
+        self.assertEqual(_find_named(result, "Wait For Sunset"), [])
+
+        dusk = _find_named(result, "Wait For Dusk")
+        self.assertEqual(len(dusk), 1)
+        self.assertEqual(_find_items(dusk[0], "WaitUntilSafe"), [])
+        self.assertEqual(_find_items(dusk[0], "SafetyMonitorCondition"), [])
+        # Wait For Dusk parks the scope if not dusk yet, then waits until dusk
+        self.assertEqual(len(_find_items(dusk[0], "ParkScope")), 1)
+        self.assertEqual(len(_find_items(dusk[0], "WaitForTime")), 1)
+        dusk_conds = _find_items(dusk[0], "TimeCondition")
+        self.assertEqual(len(dusk_conds), 1)
+        self.assertIn("DuskProvider", dusk_conds[0]["SelectedProvider"]["$type"])
+
+        obj_wait = _find_named(result, "Wait For Object")
+        self.assertEqual(len(obj_wait), 1)
+        self.assertEqual(_find_items(obj_wait[0], "WaitUntilSafe"), [])
+        self.assertEqual(_find_items(obj_wait[0], "SafetyMonitorCondition"), [])
+        self.assertEqual(len(_find_items(obj_wait[0], "ParkScope")), 1)
+
+        # Wait For Object carries the meridian gate so it skips rather than waits
+        # once the target has passed the meridian
+        time_conds = _find_items(obj_wait[0], "TimeCondition")
+        self.assertEqual(len(time_conds), 2, "meridian and dawn conditions")
+        self.assertEqual(len(_find_items(obj_wait[0], "MeridianProvider")), 1)
+        self.assertGreaterEqual(len(_find_items(result, "DawnProvider")), 1)
+
+        # Image Object still gates on safe to protect the unparked scope
+        img = _find_named(result, "Image Object")
+        self.assertEqual(len(img), 1)
+        self.assertGreaterEqual(len(_find_items(img[0], "SafetyMonitorCondition")), 1)
+        self.assertGreaterEqual(len(_find_items(img[0], "WaitUntilSafe")), 1)
 
     def test_end_area_waits_three_minutes_then_stows_and_warms(self):
         """The End area waits out one bounded "On Safe" pass — a single

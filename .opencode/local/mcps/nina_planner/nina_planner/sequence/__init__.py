@@ -17,6 +17,7 @@ from .builders import (
     sequence_safetynet,
     sequence_smart_exposure,
     sequence_unpark_scope,
+    sequence_wait_until_dusk,
     sequence_wait_until_sunset,
     sequence_warm_camera,
 )
@@ -157,6 +158,7 @@ __all__ = [
     "sequence_unpark_scope",
     "sequence_warm_camera",
     "sequence_smart_exposure",
+    "sequence_wait_until_dusk",
     "sequence_wait_until_sunset",
     "set_readout",
     "set_tracking",
