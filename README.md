@@ -496,10 +496,43 @@ You are the automated observatory controller. The observatory runs NINA via the 
 - `night-loop` — on interval check or `RUN-FINISHED`: pick and start the next target, or end the night.
 - `nina-lifecycle` — start/stop/status of the NINA application.
 - `archive-lifecycle` — archive, upload (your own command), verify, then purge; human-gated.
+- `frame-quality-diagnostics` — diagnose AF failures and read per-frame quality (HFR, HFR σ, stars, ADU) when a run degrades; decide whether to escalate or stop.
 
 ## Emoji Communication Guidelines
 - You will use emojis liberally to communicate status updates, milestones, and emotional context as things happen.
 ```
+
+## 🧠 `.agents/skills` — Agent Skills
+
+The detailed procedures `AGENTS.md` defers to live in [.agents/skills/](./.agents/skills) — one directory per skill, each holding a `SKILL.md`. Its YAML frontmatter (`name`, `description`) is what opencode matches against the task at hand; the body is the procedure the agent then follows. Skills are loaded on demand rather than carried in context all night.
+
+| Skill | Procedure |
+|---|---|
+| [`archive-lifecycle`](./.agents/skills/archive-lifecycle/SKILL.md) | Archive → upload → verify → purge finished imaging sets, human-gated. |
+| [`frame-quality-diagnostics`](./.agents/skills/frame-quality-diagnostics/SKILL.md) | Autofocus failures and per-frame quality telemetry (HFR, HFR σ, stars, ADU). |
+| [`night-loop`](./.agents/skills/night-loop/SKILL.md) | Pick and start the next target, or end the night with a report and a stow. |
+| [`nina-lifecycle`](./.agents/skills/nina-lifecycle/SKILL.md) | Start / stop / status of the NINA application. |
+| [`safety-interrupt-recovery`](./.agents/skills/safety-interrupt-recovery/SKILL.md) | Interrupts, sequence halts, and recovery: liveness, safety, stowing. |
+
+### 🗄️ `archive-lifecycle`
+
+Archive completed plans, upload the archive to the user's cloud storage, verify the upload, then free the imaging root with `nina-purge`. Use when the user asks to archive, back up, upload, or clean up finished imaging sets. Runs `get_archive_settings()` → archive → `NINA_UPLOAD_CMD` → `NINA_VERIFY_CMD` → `nina-purge` in order, stopping at any failure; never purges without a verify step.
+
+### 🩺 `frame-quality-diagnostics`
+
+Diagnose autofocus failures and read per-frame quality telemetry (HFR, HFR σ, detected stars, Mean ADU, StDev) during an acquisition run. Use when an AF run fails or its curve looks flat, when HFR or star counts drift/spike, when ASTAP solving fails, or when deciding whether frames are degraded and whether to escalate or stop a run. Telemetry is read on demand from `get_frame_stats()`, `get_imaging_metadata()`, `get_events()`, and `get_logs()` — it is no longer pushed to the agent.
+
+### 🌙 `night-loop`
+
+Multi-target night loop. Use on an interval check or a `RUN-FINISHED` event to pick the next target from `PLAN.md`, load and start its sequence (single or mosaic), or end the night with a date-stamped `report_<YYYY-MM-DD>.md` and a stow. Safety checks come from the `safety-interrupt-recovery` skill; `PLAN.md` stays the user's wishlist and is never edited by the agent.
+
+### ⚙️ `nina-lifecycle`
+
+Check, start, or stop the NINA application via the nina-planner MCP server. Use when NINA may be down or unresponsive, or when `start_nina` / `stop_nina` / `get_nina_status` is needed. `get_nina_status()` is the cheap probe: it reports `running`, `lifecycle_control_available`, and a one-line summary, and `lifecycle_control_available=false` means the MCP server is remote from NINA so it cannot be started or stopped from here.
+
+### 🛟 `safety-interrupt-recovery`
+
+Handle automated safety interrupts, sequence halts, and recovery on a new event or interval check. Use to verify NINA is up, check equipment/safety/weather, stow the scope, or decide whether to start a plan or stow. `is_safe=false` gates sky-dependent work (lights, dawn/dusk sky flats) only — darks and biases need no open sky and may still be started with the enclosure closed.
 
 ## 📜 `PROGRESS.md` — Shared Progress File
 
