@@ -133,7 +133,7 @@ const STATS_MIN_INTERVAL_MS = 5_000;
 // suspicious. Frame cadence is ~14-17s, and N.I.N.A. goes quiet without ever
 // closing the socket when the network drops (the 2026-11-04/05 night missed
 // the run-ending SEQUENCE-FINISHED with no `onclose` logged anywhere), so
-// `nina_notify_health` flags it rather than trusting an open socket.
+// `nina_notify_check` flags it rather than trusting an open socket.
 const SOCKET_STALE_MS = 10 * 60_000;
 // One deferred second look when a frame's own statistics are not in the buffer
 // yet. N.I.N.A. commits them only after readout and processing, so a sample
@@ -895,7 +895,7 @@ export default Plugin.define({
     let ws: WebSocket | null = null;
     let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
     let closed = false;
-    // Health bookkeeping for `nina_notify_health`: the 2026-11-04/05 night
+    // Bookkeeping surfaced by `nina_notify_check`: the 2026-11-04/05 night
     // lost ~2/3 of frame events and the run-ending milestone with NO
     // onclose/onerror logged (silent drop), so "socket exists" alone proves
     // nothing — last actual traffic does.
@@ -1010,20 +1010,21 @@ export default Plugin.define({
     // tools make it explicit and verifiable:
     //   nina_notify_arm    pin THIS (or a given) session + send a confirmation
     //                      through the real wake-delivery path
-    //   nina_notify_health  what is pinned, is the event socket actually
-    //                      alive. Named "health" after a bare "status" kept
-    //                      resolving to the nina-planner `get_nina_status` /
-    //                      `get_site_equipment_status` probes instead of this
-    //                      pipeline — a noun reads as a report, whereas a
-    //                      verb-shaped name ("live", "ready", "sync") invites
-    //                      the model to assume the tool *does* something.
+    //   nina_notify_check   what is pinned, is the event socket actually
+    //                      alive. Renamed 2026-11-07 (`health` → `check`);
+    //                      the name has to point at this notifier, not at
+    //                      N.I.N.A. — a bare "status" kept resolving to the
+    //                      nina-planner `get_nina_status` /
+    //                      `get_site_equipment_status` probes instead.
+    //                      Despite the verb shape it is read-only, which the
+    //                      description states explicitly.
     //   nina_notify_test   fire one wake through the exact path real wakes
     //                      take, changing NO pin — kept separate from `arm`
     //                      (folding it in as `test:true` was reverted
     //                      2026-11-05) so a re-verification can never be one
     //                      forgotten flag away from re-targeting the wakes.
-    // Read and write stay separate: `health` never wakes anyone, so the
-    // once-per-session health check can be called as often as it is useful.
+    // Read and write stay separate: `check` never wakes anyone, so the
+    // once-per-session pipeline check can be called as often as it is useful.
     async function buildStatus() {
       const target = await resolveTarget();
       let title = "";
@@ -1138,9 +1139,9 @@ export default Plugin.define({
           });
 
           editor.add({
-            name: "health",
+            name: "check",
             description:
-              "Health of the nina-notify wake pipeline: what it is pinned to, whether the N.I.N.A. event socket is actually receiving (not just open), and wake history — ask this to answer 'is everything healthy / am I synced?'. NOT N.I.N.A. API liveness or equipment state: for those use get_nina_status / get_site_equipment_status from nina-planner. Read-only: it never wakes anyone and arms nothing.",
+              "Check the nina-notify wake pipeline: what it is pinned to, whether the N.I.N.A. event socket is actually receiving (not just open), and wake history — ask this to answer 'is everything healthy / am I synced?'. NOT N.I.N.A. API liveness or equipment state: for those use get_nina_status / get_site_equipment_status from nina-planner. Read-only: it never wakes anyone and arms nothing.",
             input: {
               type: "object",
               properties: {},
@@ -1176,7 +1177,7 @@ export default Plugin.define({
           });
         });
         log(
-          `[${instanceId}] tools registered: nina_notify_arm, nina_notify_health, nina_notify_test`,
+          `[${instanceId}] tools registered: nina_notify_arm, nina_notify_check, nina_notify_test`,
         );
       } else {
         log(

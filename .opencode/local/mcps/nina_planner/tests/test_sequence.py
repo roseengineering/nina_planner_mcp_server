@@ -504,6 +504,41 @@ class JsonTemplateBuildersTest(unittest.TestCase):
         self.assertEqual(len(_find_items(result, "ParkScope")), 1)
         self.assertEqual(len(_find_items(result, "WaitForTime")), 1)
 
+    def test_wait_containers_loop_boundary_matches_inner_wait(self):
+        """The loop condition and the inner wait must name the same instant.
+
+        NINA loops an instruction set while its condition is fulfilled, and a
+        TimeCondition stays fulfilled until its target time passes. If the loop
+        target is later than where the inner waits end, the set takes a second
+        pass: WaitForTime re-resolves, either spinning on instant returns until
+        the loop target arrives or rolling its provider to the next day. The
+        trailing sun-altitude wait is what carries each container past its
+        boundary, so the providers matching is what keeps the set to one pass.
+        """
+        from nina_planner.sequence import (
+            sequence_wait_until_dawn,
+            sequence_wait_until_dusk,
+            sequence_wait_until_sunset,
+        )
+
+        mount = MountDevice(connected=True, name="m", can_park=True)
+        eq = ObservatoryEquipment(mount=mount)
+        for builder in (
+            sequence_wait_until_sunset,
+            sequence_wait_until_dawn,
+            sequence_wait_until_dusk,
+        ):
+            result = builder(eq)
+            with self.subTest(container=result["Name"]):
+                conditions = _find_items(result, "TimeCondition")
+                self.assertEqual(len(conditions), 1)
+                waits = _find_items(result, "WaitForTime")
+                self.assertEqual(len(waits), 1)
+                self.assertEqual(
+                    conditions[0]["SelectedProvider"]["$type"],
+                    waits[0]["SelectedProvider"]["$type"],
+                )
+
     def test_wait_if_sun_altitude_above(self):
         from nina_planner.sequence import wait_if_sun_altitude_above
 

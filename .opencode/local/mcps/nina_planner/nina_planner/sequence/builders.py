@@ -9,8 +9,10 @@ from .instructions import (
     end_instruction,
     home_scope,
     loop_for_iterations,
+    loop_until_dawn,
     loop_until_dusk,
     loop_until_sunrise,
+    loop_until_sunset,
     loop_while_safe,
     park_scope,
     run_finished_event,
@@ -239,7 +241,13 @@ def sequence_wait_until_sunset(equipment: ObservatoryEquipment) -> dict[str, Any
     name = "Wait For Sunset"
     return container_sequential(
         name=name,
-        conditions=[loop_until_dusk()],
+        # NINA loops a set while its condition is fulfilled, and a TimeCondition
+        # stays fulfilled until its target passes. The boundary must therefore be
+        # reached no later than where the inner waits end (the altitude wait
+        # exits only once the sun is below the horizon), or the set runs a second
+        # pass and WaitForTime re-resolves - spinning until dusk, or rolling to
+        # the next day.
+        conditions=[loop_until_sunset()],
         instructions=sequence_park_scope(equipment)
         + [
             wait_until_sunset(),
@@ -252,7 +260,11 @@ def sequence_wait_until_dawn(equipment: ObservatoryEquipment) -> dict[str, Any]:
     name = "Wait For Dawn"
     return container_sequential(
         name=name,
-        conditions=[loop_until_sunrise()],
+        # Same boundary rule as Wait For Sunset: the altitude wait exits once the
+        # sun has climbed above -8 degrees, which is already past dawn, so the
+        # condition is unfulfilled on the first check and the set finishes
+        # instead of repeating and re-resolving wait_until_dawn() to tomorrow.
+        conditions=[loop_until_dawn()],
         instructions=sequence_park_scope(equipment)
         + [
             wait_until_dawn(),

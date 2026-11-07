@@ -187,7 +187,7 @@ async def get_nina_status() -> dict[str, Any]:
 
     This probe answers **N.I.N.A.'s REST API only** — for the nina-notify wake
     pipeline (which session the observation controller is pinned to, whether the
-    event socket is actually receiving) use ``nina_notify_health`` from the
+    event socket is actually receiving) use ``nina_notify_check`` from the
     nina-notify plugin; that tool never touches the API and this one never wakes
     anyone.
 
