@@ -57,7 +57,7 @@ Powered by [astropy](https://www.astropy.org); no NINA connection is needed for 
 
 | Tool | Purpose |
 |---|---|
-| `load_sequence(request=[...])` | Load a sequence for the whole night with safety guardrails. 💤 **Never starts it.** An empty list is the stow. See [details](#load_sequence). |
+| `load_sequence(request=[...])` | Load a sequence for the whole night with safety guardrails. 💤 **Never starts it.** **Every** loaded sequence ends with the stow — an empty list is just that stow with no steps in front of it. See [details](#load_sequence). |
 | `start_sequence()` | Start the currently loaded sequence immediately. Use after `load_sequence()`. ▶️ |
 | `stop_sequence()` | Stop the running sequence and wait until NINA reports it stopped. ⚠️ Does **not** stow the scope. |
 | `get_sequence_state(detail)` | Per-step view of the loaded sequence: plan attribution, status, exposure progress, horizon altitude, errors. `detail`: `summary` (default) or `raw` (`/sequence/state`). Read-only. |
@@ -167,7 +167,9 @@ Answers **"are all my targets' captures saved to disk, and what is left to do?"*
 
 Loads a sequence with safety guardrails — 💤 it **never starts it**; call `start_sequence()` to begin. ⚠️ Fails if a sequence is already running — call `stop_sequence()` first.
 
-`request` is a **list** of request objects composing one N.I.N.A. sequence for the whole night: a single Start area, one Target area holding each step's containers in list order, and one End area that always stows — one bounded 3-minute "On Safe" wait, then park (or home) the mount and warm the camera. 🅿️ **An empty list (the default) is therefore the stow**; there is no `stow`/`park`/`warm`/`unpark` action, and `load_sequence()` with no arguments is the teardown.
+`request` is a **list** of request objects composing one N.I.N.A. sequence for the whole night: a single Start area, one Target area holding each step's containers in list order, and one End area that always stows — one bounded 3-minute "On Safe" wait, then park (or home) the mount and warm the camera.
+
+🅿️ **The stow is unconditional: every sequence `load_sequence` builds ends with that same End area**, whatever the request contains — a full night's target list, a single dark set, or nothing at all. So the night always finishes parked and warmed no matter what ran; the request list only decides what happens *before* the stow. **An empty list (the default) is simply the stow with an empty Target area** — there is no `stow`/`park`/`warm`/`unpark` action, and `load_sequence()` with no arguments is the teardown.
 
 | Field | Description |
 |---|---|
