@@ -685,7 +685,6 @@ Settings come from environment variables or an `.env` file (process environment 
 | `OPENCODE_SERVER_PASSWORD` | _(same as the server)_ | **Required on v2.** Must equal the password the server was started with. |
 | `OPENCODE_MODEL_PROVIDER` / `OPENCODE_MODEL_ID` | `opencode-go` / `mimo-v2.6-flash` | Default model for new sessions. |
 | `BOT_LOCALE` | `en` | Bot UI language. |
-| `INITIAL_SETTINGS_PRESET` | `{"showAssistantRunFooter":false,"compactOutputMode":true,"showThinkingContent":false}` | Seeds `/settings` defaults on first run — only keys not already persisted are touched. |
 
 ### 3. Run both in the background
 
