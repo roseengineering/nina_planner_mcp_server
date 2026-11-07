@@ -19,7 +19,7 @@
     "horizon_offset_degrees": 2.0
   },
   "autofocus": {
-    "reference_filter_name": "Clear",
+    "reference_filter_name": "L",
     "hfr_increase_sample_size": 3,
     "hfr_increase_threshold_percent": 15.0,
     "every_n_exposures": 10,
@@ -32,14 +32,14 @@
   },
   "light_frames": [
     {
-      "filter_name": "Clear",
+      "filter_name": "L",
       "exposure_time_seconds": 60.0,
       "total_count": 60
     }
   ],
   "flat_frames": [
     {
-      "filter_name": "Clear",
+      "filter_name": "L",
       "total_count": 30
     }
   ],

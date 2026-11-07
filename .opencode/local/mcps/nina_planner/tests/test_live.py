@@ -1,4 +1,5 @@
 import asyncio
+import json
 import time
 import unittest
 from pathlib import Path
@@ -300,7 +301,13 @@ class LiveNinaTest(unittest.TestCase):
     def test_enter_teardown(self):
         result = asyncio.run(load_sequence())
         self.assertIn("`stow` sequence loaded", result)
+        # The summary only counts Target Sequence items, and a stow lives in
+        # End Sequence_Container — so step_count is legitimately 0 for it.
+        # Assert the shape the summary really has, then find the stow node in
+        # the raw payload to prove the teardown sequence is what got loaded.
         state = asyncio.run(get_sequence_state())
-        self.assertIsInstance(state, list)
-        self.assertTrue(len(state) > 0, "teardown sequence should be loaded")
+        self.assertIsInstance(state, dict)
+        self.assertFalse(state["running"])
+        raw = asyncio.run(get_sequence_state(detail="raw"))
+        self.assertIn("Stow Telescope_Container", json.dumps(raw))
         asyncio.run(stop_sequence())
