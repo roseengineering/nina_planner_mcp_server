@@ -339,6 +339,10 @@ def target_payload_flats(
                             filter_name=d[2],
                             filter_position=profile.filter_position(d[2]),
                         )
+                        # Filter order: dawn shoots list order as written (broadband first
+                        # while twilight is dim, narrowband last as sky brightens); dusk
+                        # shoots reversed (narrowband first while sky is bright, broadband
+                        # last as it fades).
                         for d in _round_robin(plan.flat_frames, reverse=dusk)
                         if d[2] is not None
                     ],

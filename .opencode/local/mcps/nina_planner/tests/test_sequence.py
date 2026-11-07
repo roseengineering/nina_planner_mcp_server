@@ -1592,6 +1592,42 @@ class SequenceBehaviorTest(unittest.TestCase):
         self.assertEqual(len(dawn_img), 1)
         self.assertGreaterEqual(len(_find_items(dawn_img[0], "WaitUntilSafe")), 1)
 
+    def test_flats_shoot_order_reverses_at_dusk(self):
+        """Dawn flats shoot flat_frames in plan list order; dusk flats reverse
+        the list so narrowband/darker filters shoot first while twilight is
+        brightest and broadband filters shoot last as it darkens."""
+        from sequence_helpers import build_sequence_flats
+
+        from nina_planner.models.profile import FilterInfo
+
+        plan = self._plan(
+            flat_frames=[
+                {"filter_name": "L", "total_count": 10},
+                {"filter_name": "R", "total_count": 10},
+                {"filter_name": "G", "total_count": 10},
+                {"filter_name": "B", "total_count": 10},
+                {"filter_name": "Ha", "total_count": 10},
+            ]
+        )
+        eq = ObservatoryEquipment()
+        profile = _profile()
+        profile.filters = [
+            FilterInfo(name=n, position=i)
+            for i, n in enumerate(["L", "R", "G", "B", "Ha", "Dark"])
+        ]
+
+        # Dawn: exact list order (L -> R -> G -> B -> Ha)
+        dawn_res = build_sequence_flats(plan, equipment=eq, profile=profile, dusk=False)
+        dawn_switches = _find_items(dawn_res, "SwitchFilter")
+        dawn_order = [s["Filter"]["_name"] for s in dawn_switches]
+        self.assertEqual(dawn_order, ["L", "R", "G", "B", "Ha"])
+
+        # Dusk: reversed list order (Ha -> B -> G -> R -> L)
+        dusk_res = build_sequence_flats(plan, equipment=eq, profile=profile, dusk=True)
+        dusk_switches = _find_items(dusk_res, "SwitchFilter")
+        dusk_order = [s["Filter"]["_name"] for s in dusk_switches]
+        self.assertEqual(dusk_order, ["Ha", "B", "G", "R", "L"])
+
 
 class CoordinateHelpersTest(unittest.TestCase):
     """The radec/coord helpers aren't directly imported elsewhere; cover them

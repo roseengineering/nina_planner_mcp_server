@@ -29,6 +29,11 @@ class FlatExposurePlan(StrictModel):
     # itself to hit a target signal level, so a plan-specified duration is
     # never sent. A plan that still carries one is refused at load rather
     # than silently reinterpreted — see StrictModel.
+    #
+    # List order is shoot order: dawn flats shoot flat_frames in list order
+    # as written, while dusk flats shoot it reversed. The convention is to
+    # list broadband filters first and narrowband last (e.g. L, R, G, B, Ha)
+    # so narrowband always shoots while twilight is brighter.
     filter_name: str
     total_count: int = Field(ge=1)
 
@@ -144,7 +149,10 @@ class ObservationPlan(StrictModel):
         description=(
             "Flat specs (filter + count only — N.I.N.A.'s SkyFlat picks the "
             "exposure itself); loaded with action='flat' and "
-            "variant='dawn' (morning) or variant='dusk' (evening)."
+            "variant='dawn' (morning) or variant='dusk' (evening). "
+            "List order is shoot order: dawn shoots as written, dusk shoots "
+            "reversed; list broadband first, narrowband last so narrowband "
+            "shoots while the sky is brighter in both variants."
         ),
     )
     dark_frames: list[DarkExposurePlan] = Field(

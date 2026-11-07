@@ -290,7 +290,7 @@ An example json plan:
 | `autofocus` | no | `reference_filter_name` defaults to `"L"`; `hfr_increase_sample_size` to `3`; `hfr_increase_threshold_percent` to `15`; `every_n_exposures` to `10`; and `threshold_celsius` to `1`. Numeric values must be greater than zero. |
 | `guiding` | no | `dither_every_n_exposures` defaults to `2`; `check_drift_every_n_exposures` to `6`; and `max_drift_arcmin` to `1.5`. Numeric values must be greater than zero. |
 | `light_frames` | **yes** | Nonempty list of light exposure specs, each with `filter_name`, `exposure_time_seconds` (greater than zero), and `total_count` (at least `1`). |
-| `flat_frames` | **yes** | Nonempty list of flat exposure specs, each with `filter_name` and `total_count` (at least `1`). No exposure time: N.I.N.A.'s SkyFlat item chooses it automatically to hit the right signal level. |
+| `flat_frames` | **yes** | Nonempty list of flat exposure specs, each with `filter_name` and `total_count` (at least `1`). No exposure time: N.I.N.A.'s SkyFlat item chooses it automatically to hit the right signal level. List order is shoot order: dawn flats shoot as written, dusk flats shoot reversed. List broadband first, narrowband last (e.g. L, R, G, B, Ha) so narrowband shoots while twilight is brighter in both variants. |
 | `dark_frames` | **yes** | Nonempty list of dark exposure specs, each with `exposure_time_seconds` (greater than zero) and `total_count` (at least `1`). |
 | `bias_frames` | **yes** | Nonempty list of bias exposure specs, each with `total_count` (at least `1`). |
 
