@@ -400,6 +400,33 @@ class ImagingDefensivePathsTest(unittest.TestCase):
             self.assertEqual(len(rows), 2)
             self.assertTrue(all(r["frame_type"] == "LIGHT" for r in rows))
 
+    def test_read_weather_rows_missing_file_returns_empty_dict(self):
+        from nina_planner.imaging import read_weather_rows
+
+        with tempfile.TemporaryDirectory() as tmp:
+            self.assertEqual(read_weather_rows(Path(tmp)), {})
+
+    def test_read_weather_rows_returns_snake_cased_dict_by_exposure_number(self):
+        from nina_planner.imaging import read_weather_rows
+
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            with open(tmp_path / "WeatherData.csv", "w", newline="") as f:
+                writer = csv.writer(f)
+                writer.writerow(
+                    ["ExposureNumber", "ExposureStartUTC", "CloudCover", "DewPoint"]
+                )
+                writer.writerow(["0", "2026-09-20T21:00:00Z", "15", "10.2"])
+                writer.writerow(["1", "2026-09-20T21:01:00Z", "25", "10.5"])
+
+            wx = read_weather_rows(tmp_path)
+            self.assertEqual(len(wx), 2)
+            self.assertIn("0", wx)
+            self.assertIn("1", wx)
+            self.assertEqual(wx["0"]["cloud_cover"], "15")
+            self.assertEqual(wx["0"]["dew_point"], "10.2")
+            self.assertEqual(wx["1"]["cloud_cover"], "25")
+
 
 if __name__ == "__main__":
     unittest.main()

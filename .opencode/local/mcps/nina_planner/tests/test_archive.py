@@ -103,6 +103,19 @@ class ArchiveBase(unittest.TestCase):
             writer.writeheader()
             writer.writerows(rows)
 
+    def write_weather(
+        self, image_type: str, rows: list[dict[str, str]], *, date: str = "2026-09-20"
+    ) -> None:
+        directory = self.root / self.token_dir / date / image_type
+        directory.mkdir(parents=True, exist_ok=True)
+        fieldnames = sorted({k for row in rows for k in row})
+        with (directory / "WeatherData.csv").open(
+            "w", newline="", encoding="utf-8"
+        ) as handle:
+            writer = csv.DictWriter(handle, fieldnames=fieldnames)
+            writer.writeheader()
+            writer.writerows(rows)
+
     def seed_full(
         self,
         *,
@@ -286,6 +299,238 @@ class ArchiveHappyPathTest(ArchiveBase):
         self.assertEqual(json.loads(self.index_lines()[0])["plan_id"], "plan-abc123")
         # Staging dirs never survive a successful run.
         self.assertFalse(any(p.name.startswith(".") for p in self.dest.iterdir()))
+
+    def test_weather_joined_per_folder_into_light_imagemetadata(self):
+        plan = _plan(
+            light_frames=[
+                {"filter_name": "L", "exposure_time_seconds": 60.0, "total_count": 2}
+            ],
+            flat_frames=[{"filter_name": "L", "total_count": 1}],
+            dark_frames=[{"exposure_time_seconds": 60.0, "total_count": 1}],
+            bias_frames=[{"total_count": 1}],
+        )
+        self.write_plan(plan)
+
+        # Date 1: 1 light frame (ExposureNumber 0) with cloud_cover=12
+        f1 = self.frame("LIGHT", "f1.fits", date="2026-09-20")
+        self.write_metadata(
+            "LIGHT",
+            [
+                {
+                    "ImageType": "LIGHT",
+                    "FilePath": str(f1),
+                    "FilterName": "L",
+                    "Duration": "60.0",
+                    "ExposureNumber": "0",
+                    "ExposureStartUTC": "2026-09-20T21:00:00Z",
+                }
+            ],
+            date="2026-09-20",
+        )
+        self.write_weather(
+            "LIGHT",
+            [
+                {
+                    "ExposureNumber": "0",
+                    "ExposureStartUTC": "2026-09-20T21:00:00Z",
+                    "CloudCover": "12",
+                    "Temperature": "16.5",
+                    "DewPoint": "10.0",
+                }
+            ],
+            date="2026-09-20",
+        )
+
+        # Date 2: 1 light frame (ExposureNumber 0) with cloud_cover=78
+        f2 = self.frame("LIGHT", "f2.fits", date="2026-09-21")
+        self.write_metadata(
+            "LIGHT",
+            [
+                {
+                    "ImageType": "LIGHT",
+                    "FilePath": str(f2),
+                    "FilterName": "L",
+                    "Duration": "60.0",
+                    "ExposureNumber": "0",
+                    "ExposureStartUTC": "2026-09-21T21:00:00Z",
+                }
+            ],
+            date="2026-09-21",
+        )
+        self.write_weather(
+            "LIGHT",
+            [
+                {
+                    "ExposureNumber": "0",
+                    "ExposureStartUTC": "2026-09-21T21:00:00Z",
+                    "CloudCover": "78",
+                    "Temperature": "11.2",
+                    "DewPoint": "9.5",
+                }
+            ],
+            date="2026-09-21",
+        )
+
+        # Calibration
+        f_flat = self.frame("FLAT", "flat.fits", date="2026-09-20")
+        self.write_metadata(
+            "FLAT",
+            [
+                {
+                    "ImageType": "FLAT",
+                    "FilePath": str(f_flat),
+                    "FilterName": "L",
+                    "Duration": "2.0",
+                    "ExposureStartUTC": "2026-09-20T22:00:00Z",
+                }
+            ],
+            date="2026-09-20",
+        )
+        f_dark = self.frame("DARK", "dark.fits", date="2026-09-20")
+        self.write_metadata(
+            "DARK",
+            [
+                {
+                    "ImageType": "DARK",
+                    "FilePath": str(f_dark),
+                    "Duration": "60.0",
+                    "ExposureNumber": "0",
+                    "ExposureStartUTC": "2026-09-20T23:00:00Z",
+                }
+            ],
+            date="2026-09-20",
+        )
+        # Even if DARK has WeatherData.csv, it must NOT be joined
+        self.write_weather(
+            "DARK",
+            [
+                {
+                    "ExposureNumber": "0",
+                    "ExposureStartUTC": "2026-09-20T23:00:00Z",
+                    "CloudCover": "99",
+                }
+            ],
+            date="2026-09-20",
+        )
+        f_bias = self.frame("BIAS", "bias.fits", date="2026-09-20")
+        self.write_metadata(
+            "BIAS",
+            [
+                {
+                    "ImageType": "BIAS",
+                    "FilePath": str(f_bias),
+                    "Duration": "0.0",
+                    "ExposureStartUTC": "2026-09-20T23:30:00Z",
+                }
+            ],
+            date="2026-09-20",
+        )
+
+        code, _out, err = self.run_cli()
+        self.assertEqual(code, 0, err)
+
+        folder = archive_mod._folder_name(self.proj / "m31.json", plan)
+        base = self.dest / folder
+
+        # LIGHT sidecar has joined weather per source folder
+        with (base / "LIGHT" / "ImageMetaData.csv").open(newline="") as handle:
+            rows = list(csv.DictReader(handle))
+        self.assertEqual(len(rows), 2)
+        row1 = next(r for r in rows if "f1.fits" in r["file_path"])
+        row2 = next(r for r in rows if "f2.fits" in r["file_path"])
+        self.assertEqual(row1["cloud_cover"], "12")
+        self.assertEqual(row1["temperature"], "16.5")
+        self.assertEqual(row1["dew_point"], "10.0")
+        self.assertEqual(row2["cloud_cover"], "78")
+        self.assertEqual(row2["temperature"], "11.2")
+        self.assertEqual(row2["dew_point"], "9.5")
+
+        # DARK sidecar must NOT have weather columns
+        with (base / "DARK" / "ImageMetaData.csv").open(newline="") as handle:
+            dark_rows = list(csv.DictReader(handle))
+        self.assertNotIn("cloud_cover", dark_rows[0])
+
+    def test_no_weather_flag_skips_weather_join(self):
+        plan = _plan(
+            light_frames=[
+                {"filter_name": "L", "exposure_time_seconds": 60.0, "total_count": 1}
+            ],
+            flat_frames=[{"filter_name": "L", "total_count": 1}],
+            dark_frames=[{"exposure_time_seconds": 60.0, "total_count": 1}],
+            bias_frames=[{"total_count": 1}],
+        )
+        self.write_plan(plan)
+        f1 = self.frame("LIGHT", "f1.fits")
+        self.write_metadata(
+            "LIGHT",
+            [
+                {
+                    "ImageType": "LIGHT",
+                    "FilePath": str(f1),
+                    "FilterName": "L",
+                    "Duration": "60.0",
+                    "ExposureNumber": "0",
+                    "ExposureStartUTC": "2026-09-20T21:00:00Z",
+                }
+            ],
+        )
+        self.write_weather(
+            "LIGHT",
+            [
+                {
+                    "ExposureNumber": "0",
+                    "ExposureStartUTC": "2026-09-20T21:00:00Z",
+                    "CloudCover": "12",
+                }
+            ],
+        )
+        f_flat = self.frame("FLAT", "flat.fits")
+        self.write_metadata(
+            "FLAT",
+            [
+                {
+                    "ImageType": "FLAT",
+                    "FilePath": str(f_flat),
+                    "FilterName": "L",
+                    "Duration": "2.0",
+                    "ExposureStartUTC": "2026-09-20T22:00:00Z",
+                }
+            ],
+        )
+        f_dark = self.frame("DARK", "dark.fits")
+        self.write_metadata(
+            "DARK",
+            [
+                {
+                    "ImageType": "DARK",
+                    "FilePath": str(f_dark),
+                    "Duration": "60.0",
+                    "ExposureStartUTC": "2026-09-20T23:00:00Z",
+                }
+            ],
+        )
+        f_bias = self.frame("BIAS", "bias.fits")
+        self.write_metadata(
+            "BIAS",
+            [
+                {
+                    "ImageType": "BIAS",
+                    "FilePath": str(f_bias),
+                    "Duration": "0.0",
+                    "ExposureStartUTC": "2026-09-20T23:30:00Z",
+                }
+            ],
+        )
+
+        code, _out, err = self.run_cli("--no-weather")
+        self.assertEqual(code, 0, err)
+
+        folder = archive_mod._folder_name(self.proj / "m31.json", plan)
+        base = self.dest / folder
+
+        with (base / "LIGHT" / "ImageMetaData.csv").open(newline="") as handle:
+            rows = list(csv.DictReader(handle))
+        self.assertNotIn("cloud_cover", rows[0])
 
     def test_frame_bytes_survive_copy_verified_by_checksum(self):
         plan = _plan(

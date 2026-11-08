@@ -64,6 +64,28 @@ def windows_to_local(windows_path: str, drive_mount: str | None = None) -> Path:
     return Path(mount).joinpath(*win.parts[1:])
 
 
+def read_weather_rows(type_dir: Path) -> dict[str, dict[str, Any]]:
+    """Read per-exposure weather samples from a directory's ``WeatherData.csv``.
+
+    Returns a dict mapping ``exposure_number`` (as a string) to the snake_cased
+    weather row. If ``WeatherData.csv`` is absent, empty, or unreadable, returns
+    an empty dict so callers degrade cleanly rather than failing an archive.
+    """
+    path = type_dir / "WeatherData.csv"
+    if not path.is_file():
+        return {}
+    try:
+        rows = _read_csv(path)
+    except Exception:
+        return {}
+    out: dict[str, dict[str, Any]] = {}
+    for r in rows:
+        exp_nr = str(r.get("exposure_number", "")).strip()
+        if exp_nr:
+            out[exp_nr] = r
+    return out
+
+
 def _read_csv(path: Path) -> list[dict[str, Any]]:
     with open(path, "r", encoding="utf-8-sig", newline="") as f:
         return [{to_snake(k): v for k, v in row.items()} for row in csv.DictReader(f)]

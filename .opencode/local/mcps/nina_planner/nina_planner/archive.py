@@ -9,7 +9,7 @@ down to a workstation for calibration and stacking::
         manifest.json          identity, per-type counts, file list, disk
                                report (rejected/gone/not_selected/junk),
                                warnings
-        LIGHT/ImageMetaData.csv   the archived light frames' metadata rows
+        LIGHT/ImageMetaData.csv   archived light metadata (+ joined weather)
         LIGHT/*.fits.fz        attributed light frames
         FLAT/  DARK/  BIAS/    matched calibration frames (+ sidecar CSVs)
         JUNK/  ImageMetaData.csv  own-token frames no plan ships into a
@@ -89,7 +89,7 @@ from pathlib import Path
 from typing import Any
 
 from . import config, metadata, plan_utils
-from .imaging import read_imaging_csv
+from .imaging import read_imaging_csv, read_weather_rows
 from .models.plan import ObservationPlan
 from .progress import (
     filter_metadata_rows,
@@ -162,6 +162,40 @@ def _folder_name(plan_file: Path, plan: ObservationPlan) -> str:
     if plan_id:
         return f"{stem}__{plan_utils.sanitize_filename(plan_id)}"
     return stem
+
+
+def _merge_weather(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Merge sibling WeatherData.csv columns into light rows.
+
+    Weather is resolved per source folder (derived from each row's ``file_path``)
+    so ExposureNumber resets across date folders never cross-attach weather.
+    Shared identity keys (``exposure_number``, ``exposure_start``,
+    ``exposure_start_utc``) keep their image-metadata values.
+    """
+    if not rows:
+        return rows
+    cache: dict[Path, dict[str, dict[str, Any]]] = {}
+    merged: list[dict[str, Any]] = []
+    for row in rows:
+        file_path_str = str(row.get("file_path") or "")
+        if not file_path_str:
+            merged.append(row)
+            continue
+        parent_dir = Path(file_path_str).parent
+        if parent_dir not in cache:
+            cache[parent_dir] = read_weather_rows(parent_dir)
+        weather_map = cache[parent_dir]
+        exp_nr = str(row.get("exposure_number", "")).strip()
+        wx = weather_map.get(exp_nr)
+        if not wx:
+            merged.append(row)
+            continue
+        out = dict(row)
+        for k, v in wx.items():
+            if k not in out:
+                out[k] = v
+        merged.append(out)
+    return merged
 
 
 def _write_image_metadata_csv(
@@ -775,6 +809,13 @@ def _build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="skip writing per-type ImageMetaData.csv sidecars",
     )
+    parser.add_argument(
+        "--no-weather",
+        dest="weather",
+        action="store_false",
+        default=True,
+        help="skip joining WeatherData.csv into LIGHT ImageMetaData.csv sidecars",
+    )
     return parser
 
 
@@ -854,6 +895,8 @@ async def run(args: argparse.Namespace) -> int:
             kept, dropped = read_imaging_csv(
                 root=imaging_root, image_type=image_type, report_dropped=True
             )
+            if image_type == "light" and getattr(args, "weather", True):
+                kept = _merge_weather(kept)
             rows.extend(kept)
             dropped_rows.extend(dropped)
     except FileNotFoundError as exc:
