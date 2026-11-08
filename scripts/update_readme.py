@@ -2,13 +2,45 @@
 
 Finds ```json <filename> blocks, reads that file's real contents, injects
 them into the block, and adds a markdown link above it. This is what keeps
-the README's embedded copies (e.g. the example observation plan) from
+README.md's embedded copies (e.g. the example observation plan) from
 drifting away from the files they quote.
 
 Paths are resolved against the PROJECT ROOT -- the parent of this script's
 directory -- never against the current working directory, so the script
 behaves identically whether it is run by the pre-commit hook, by
 `make readme`, or by hand from any subdirectory.
+
+--------------------------------------------------------------------------
+WIRING THE PRE-COMMIT HOOK
+--------------------------------------------------------------------------
+
+This script does nothing on its own; a hook has to call it. The hook lives
+in `.githooks/pre-commit` (committed to the repo, so the whole team gets
+the same file). Enabling it is one line:
+
+    git config core.hooksPath .githooks
+
+That is the entire wiring, and yes -- it is just a line in `.git/config`.
+Git normally runs hooks from `.git/hooks/`; `core.hooksPath` redirects it
+to `.githooks/` instead, where the versioned one lives.
+
+Because `.git/config` is NOT committed, this is per-clone: every teammate
+runs it once after cloning (as does any fresh clone on this machine).
+Check or undo it with:
+
+    git config core.hooksPath     # -> .githooks
+    git config --unset core.hooksPath   # back to the default .git/hooks/
+
+Without that line the hook file sits in the repo doing nothing -- worth
+knowing, since a missing hook looks exactly like a working one until
+someone commits a stale README.
+
+Run the script directly to refresh without committing:
+
+    python3 scripts/update_readme.py
+
+It is idempotent: running it against an already-fresh README changes
+nothing, which is why the hook can safely run it on every commit.
 """
 
 import os
