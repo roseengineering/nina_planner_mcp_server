@@ -7,7 +7,6 @@ from pathlib import Path
 import pytest
 from conftest import requires_windows_interop, windows_interop_available
 
-from nina_planner.client import api_get as _api_get
 from nina_planner.models.request import SequenceRequest
 from nina_planner.server import (
     get_events,
@@ -18,7 +17,6 @@ from nina_planner.server import (
     get_site_equipment_status,
     get_site_profile,
     load_sequence,
-    screenshot_dashboard,
     start_nina,
     stop_nina,
     stop_sequence,
@@ -160,34 +158,6 @@ class LiveNinaTest(unittest.TestCase):
     def test_get_logs(self):
         result = asyncio.run(get_logs(since=60))
         self.assertIsInstance(result, list)
-
-    def test_screenshot_dashboard(self):
-        # Force a known-different tab first, so the assertion below cannot pass
-        # vacuously when NINA was already left on the Imaging tab.
-        asyncio.run(_api_get("/application/switch-tab?tab=equipment"))
-        self.assertEqual(asyncio.run(_api_get("/application/get-tab")), "equipment")
-
-        result = asyncio.run(screenshot_dashboard())
-        self.assertIsInstance(result, list)
-        self.assertEqual(len(result), 2)
-        path, image = result
-        self.assertIsInstance(path, str)
-        from mcp.server.fastmcp import Image
-
-        self.assertIsInstance(image, Image)
-        png = Path(path)
-        self.assertTrue(png.is_absolute())
-        self.assertEqual(png.suffix, ".png")
-        self.assertTrue(png.is_file())
-        # A real dashboard capture is ~150 KB; guard against a blank stub.
-        data = png.read_bytes()
-        self.assertGreater(len(data), 10_000)
-        self.assertTrue(data.startswith(b"\x89PNG\r\n\x1a\n"))
-        # The inline image block carries exactly the bytes written to disk.
-        self.assertEqual(image.data, data)
-
-        # The switch really happened: get-tab now reports the imaging tab.
-        self.assertEqual(asyncio.run(_api_get("/application/get-tab")), "imaging")
 
     def test_stop_sequence(self):
         result = asyncio.run(stop_sequence())

@@ -25,7 +25,6 @@ Each table gives a one-line summary; details for the larger tools are in [Tool D
 | `get_site_profile()` | Active NINA profile and static configuration: site, optics, camera geometry, filters, plate solvers, image-save path. Read-only. |
 | `get_events(since=300)` | Timestamped NINA events from the last `since` seconds, to reconstruct sequence, equipment, safety, imaging, and error activity. Read-only. |
 | `get_logs(since=300)` | NINA application log entries from the last `since` seconds, for diagnosing failures. Read-only. |
-| `screenshot_dashboard()` | Capture the N.I.N.A. dashboard as a PNG; returns the file path and the image. Only side effect: switches NINA to the Imaging tab. |
 
 ### 🗺️ Planning & Progress
 
@@ -34,7 +33,6 @@ Each table gives a one-line summary; details for the larger tools are in [Tool D
 | `list_plans(project_dir?)` | List every observation plan file in the project directory with its `file`, absolute `path`, `plan_id`, `target`, `intent`, `pointing_count`, and mtime — enumerate plans without globbing. Read-only. |
 | `write_plan_file(plan)` | Validate and write an observation plan JSON file for later use by `load_sequence`. Creates the file only; loads and starts nothing. |
 | `write_mosaic_plan(plan_path, mosaic_csv, output_path?)` | Expand a base plan into a multi-pointing mosaic plan from a Telescopius CSV. Creates the file only. |
-| `get_archive_settings()` | Read `NINA_ARCHIVE_DEST`, `NINA_UPLOAD_CMD` and `NINA_VERIFY_CMD` from the server's `environment` (opencode.json). Runs nothing; returns `settings`, `missing`, `ready` for the `archive-lifecycle` skill. |
 | `get_plan_progress(file_path, max_hfr?, min_detected_stars?, max_guiding_rms_arcsec?)` | Per-frame-type acquired/remaining counts for every pointing of a plan. Use before `load_sequence` to see what still needs acquiring. Read-only. |
 | `audit_plans(plans?, project_dir?, types?, include_orphans=true)` | **Whole-project capture audit in one call**: reconcile plan expectations with CSV attribution (plus the one filesystem fact the CSV cannot hold — `bad` rejects) for every plan into an `all_saved` verdict plus `left_to_do` (including never-shot plans) and `blocked` work lists, and a `never_shot` list of plans with no frames at all. Read-only. |
 | `get_frame_stats(image_type?)` | Live per-frame statistics for the current (most recent) frame, straight from the `image-history` API — the watchdog's own data source (HFR, HFR σ, stars, ADU, guiding RMS, temp, filter, filename). Single-frame only, no history; read-only. |
@@ -83,10 +81,6 @@ Returns the current connection, operating state, measurements, and capabilities 
 ### `get_events` / `get_logs`
 
 Use `get_events` to reconstruct activity; use `get_site_equipment_status` and `get_sequence_state` for current status. Use `get_logs` to diagnose sequence failures, equipment communication problems, and unexpected behavior.
-
-### `screenshot_dashboard`
-
-Returns **two content blocks: the absolute file path as text, then the image itself** (e.g. `/var/folders/.../T/nina_screenshots/dashboard_20261005T120000123456.png`). The image is written to the system temp dir under `nina_screenshots/`, one uniquely named file per call, nothing overwritten. Clients that render MCP image blocks show the capture inline; otherwise open the returned path with the read tool. The tool is unstructured (no `outputSchema`) because it carries mixed text/image content. Switches NINA to the Imaging tab first so the capture shows the main imaging workspace; that tab switch is the only side effect.
 
 ### `get_frame_stats`
 
@@ -503,7 +497,7 @@ The detailed procedures `AGENTS.md` defers to live in [.agents/skills/](./.agent
 
 ### 🗄️ `archive-lifecycle`
 
-Archive completed plans, upload the archive to the user's cloud storage, verify the upload, then free the imaging root with `nina-purge`. Use when the user asks to archive, back up, upload, or clean up finished imaging sets. Runs `get_archive_settings()` → archive → `NINA_UPLOAD_CMD` → `NINA_VERIFY_CMD` → `nina-purge` in order, stopping at any failure; never purges without a verify step.
+Archive completed plans, upload the archive to the user's cloud storage, verify the upload, then free the imaging root with `nina-purge`. Use when the user asks to archive, back up, upload, or clean up finished imaging sets. Reads `NINA_ARCHIVE_DEST` / `NINA_UPLOAD_CMD` / `NINA_VERIFY_CMD` from `.opencode/opencode.json`'s `environment`, then runs archive → `NINA_UPLOAD_CMD` → `NINA_VERIFY_CMD` → `nina-purge` in order, stopping at any failure; never purges without a verify step.
 
 ### 🩺 `frame-quality-diagnostics`
 

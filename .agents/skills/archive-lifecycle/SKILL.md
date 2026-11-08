@@ -9,13 +9,13 @@ Run these in order. Stop at any failure. Do not skip a step.
 
 ## 0. Settings
 
-Call `get_archive_settings()`. It returns the user's own commands from the MCP server's `environment`:
+Read the `environment` block of `.opencode/opencode.json` (the `nina-planner` MCP entry) — that is where these three live; there is no tool for them:
 
 - `NINA_ARCHIVE_DEST` — local archive folder (call it `DEST`).
 - `NINA_UPLOAD_CMD` — uploads `DEST` to cloud storage (gcloud, rclone, aws ...).
 - `NINA_VERIFY_CMD` — confirms the upload is complete.
 
-If `ready` is false, stop and tell the user which names are in `missing`. **Never continue to purge without `NINA_VERIFY_CMD`.** It is the only check that the cloud copy is whole.
+If any is unset or blank, stop and tell the user which. **Never continue to purge without `NINA_VERIFY_CMD`.** It is the only check that the cloud copy is whole.
 
 Never add `--delete`-style flags (`--delete-unmatched-destination-objects`, `aws s3 sync --delete`, `rclone sync` semantics) to an upload command; a stale local folder must never remove cloud files. If the configured command does, warn the user.
 

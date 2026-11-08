@@ -1,13 +1,9 @@
-import base64
 import json
 from collections.abc import Set as AbstractSet
-from datetime import UTC, datetime
+from datetime import datetime
 from typing import Any, cast
 
-import anyio
-from mcp.server.fastmcp import Image
-
-from .. import client, config
+from .. import client
 from ..app import mcp
 from ..models.observatory import ObservatoryEquipment
 from ..models.profile import (
@@ -288,27 +284,6 @@ async def get_site_profile() -> ObservatoryProfile:
     )
     client.log_payload("Profile:", profile.model_dump_json(indent=2))
     return profile
-
-
-@mcp.tool(structured_output=False)
-async def screenshot_dashboard() -> list[Image | str]:
-    """Switches NINA to the Imaging tab, waits briefly for the repaint to settle, captures the dashboard as a PNG, writes it to the system temp screenshot directory, and returns two content blocks: the absolute path of the written file as text (e.g. /var/folders/.../T/nina_screenshots/dashboard_20261005T120000123456.png), followed by the image itself. If your client renders MCP image blocks you see the capture inline; otherwise open the returned path with the read tool to view it. Use it to visually verify UI state — which panel is active, whether a sequence is running, and any on-screen errors. Each call writes a new uniquely named file; nothing is overwritten. Side effects: switching the active tab and creating the PNG — no sequence or equipment state is changed. If N.I.N.A. answers the capture with an empty or non-text payload, the tool raises an error naming the endpoint and writes no file."""
-    await client.api_get("/application/switch-tab?tab=imaging")
-    if config.SCREENSHOT_SETTLE_SECONDS:
-        await anyio.sleep(config.SCREENSHOT_SETTLE_SECONDS)
-    text = await client.api_get("/application/screenshot")
-    if not isinstance(text, str) or not text.strip():
-        detail = f"got {type(text).__name__}: {text!r:.200}"
-        raise RuntimeError(
-            f"NINA /application/screenshot returned no base64 screenshot ({detail})"
-        )
-    data = base64.b64decode(text)
-    config.SCREENSHOT_DIR.mkdir(parents=True, exist_ok=True)
-    timestamp = datetime.now(tz=UTC).astimezone().strftime("%Y%m%dT%H%M%S%f")
-    path = config.SCREENSHOT_DIR / f"dashboard_{timestamp}.png"
-    async with await anyio.open_file(path, "wb") as f:
-        await f.write(data)
-    return [str(path), Image(data=data, format="png")]
 
 
 @mcp.tool()
