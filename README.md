@@ -8,7 +8,7 @@
 
 1. **🔭 Prepare N.I.N.A.** — install the **Advanced API**, **Sequencer+**, and **Session Metadata** plugins, and put `$$TARGETNAME$$` in the profile's `FilePattern` (see [Notes](#-notes)) — without it, light frames can't be attributed to a plan.
 2. **📦 Install requirements** — [opencode](https://opencode.ai) v2 (the `nina-notify` plugin is not compatible with Claude Code or other coding agents), Python 3.11+, and [uv](https://docs.astral.sh/uv/). Dependencies are installed by `uv` on first run.
-3. **🧩 Pick a config** — replace `.opencode/opencode.json` with the opencode.json variant that matches where opencode runs: `win_opencode.json` (Windows), `wsl_opencode.json` (WSL), or `smb_opencode.json` (e.g. a Mac reaching a N.I.N.A. VM).
+3. **🧩 Pick a config** — `.opencode/opencode.json` is the config for running opencode **on Windows**. For another host, replace it with `wsl_opencode.json` (WSL) or `smb_opencode.json` (e.g. a Mac reaching a N.I.N.A. VM).
 4. **🔌 Point at N.I.N.A.** — set `NINA_ENDPOINT` (default `127.0.0.1:1888`) in the config's `environment`. If the server isn't on the N.I.N.A. machine, also set `NINA_DRIVE_MOUNT` so image metadata can be read, as `smb_opencode.json` does (see [Environment Variables](#-environment-variables)).
 5. **▶️ Start opencode** in the project root; it launches the MCP server for you.
 6. **🌟 Plan a night** — list targets in `PLAN.md` and let the agent write plans, load a sequence, and start it.
@@ -389,7 +389,7 @@ nina-purge --purge                            # actually delete the quarantine
 - ✅ **Quality thresholds — set in the plan file:** the plan's optional `quality` section holds `max_hfr`, `max_hfr_st_dev`, `min_detected_stars`, and `max_guiding_rms_arcsec` (all optional; absent means no filtering, which is the default). A light frame that fails an enabled threshold — or is missing the quality field it needs (fail-closed: NINA writes `0` for unmeasured values, and `0` never passes an active threshold) — is excluded from the acquired count, leaving a deficit the next `mode="remaining"` load re-acquires. Thresholds apply only to light frames — calibration frames have no star quality. They are read from the plan by `load_sequence` and `get_plan_progress` only: `audit_plans` and the archive ignore them, reporting what is on disk rather than what qualifies. To enable them, add the section to the plan JSON (keep `plan_id` set — see the plan-file note below) e.g. `"quality": {"max_hfr": 2.5, "max_hfr_st_dev": 0.6}`; `get_plan_progress` echoes the active set in its `quality` field.
 - 👎 **Manually failing a frame:** delete (or move using thumbs down icon) the image file on disk — e.g. a bad `.fits`/`.tif`. The metadata row stays in the CSV (the plugin only appends), but it is omitted when the metadata is read, so progress no longer counts that frame as acquired and the next `mode="remaining"` load re-acquires it.
 - 💾 **The plan file is persistent.** You can inspect, edit, and reuse it across sessions. Changing the file will, however, alter its derived `plan_id`, which is calculated when `plan_id` is missing — run [`nina-pin-id`](#-nina-pin-id--freeze-a-plans-derived-id) first to freeze the id so already-shot frames keep attributing. A hand-written `plan_id` must satisfy the same charset rule (empty, or ASCII letters, digits, `.` and `-`) — anything else, `_` included, is refused when the plan is loaded.
-- 🧩 **opencode.json variants:** the repo contains example opencode.json variants: `win_opencode.json` for Windows, `wsl_opencode.json` for WSL, and `smb_opencode.json` for, say, a Mac accessing a N.I.N.A. VM with its image file directory mapped back over SMB.
+- 🧩 **opencode.json variants:** `.opencode/opencode.json` is the Windows config; `wsl_opencode.json` (WSL) and `smb_opencode.json` (a Mac accessing a N.I.N.A. VM with its image file directory mapped back over SMB) are the examples for other hosts.
 
 ## 🔔 `nina-notify` — OpenCode v2 Autonomous Plugin
 
@@ -583,7 +583,7 @@ Read the 7-day hourly forecast for the observatory site from clearoutside.com �
 }
 ```
 
-Registers the opencode plugin and the `nina_planner` MCP server so both run together. The MCP server provides the tools (`load_sequence`, `get_site_equipment_status`, etc.) that the plugin-prompted agent calls.
+This is the **Windows** config; see `wsl_opencode.json` / `smb_opencode.json` for other hosts. It registers the opencode plugin and the `nina_planner` MCP server so both run together. The MCP server provides the tools (`load_sequence`, `get_site_equipment_status`, etc.) that the plugin-prompted agent calls.
 
 ---
 
