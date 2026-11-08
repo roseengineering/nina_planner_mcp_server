@@ -81,7 +81,6 @@ def _convert_to_met(
     return res
 
 
-@mcp.tool()
 async def _get_site_equipment_status(
     profile: ObservatoryProfile,
 ) -> ObservatoryEquipment:
