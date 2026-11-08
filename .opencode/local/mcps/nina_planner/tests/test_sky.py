@@ -235,6 +235,235 @@ class SunEventsTest(unittest.TestCase):
         self.assertGreater(out["events"]["sunset"], "2026-10-18T17:00")
 
 
+class MoonEventsTest(unittest.TestCase):
+    """`_moon_events` against published ephemerides.
+
+    Phase instants are the USNO-published UTC times (identical everywhere on
+    Earth); moonrise/moonset are Ottawa's published table, which is local
+    EST (UTC-5) after the 2026-11-01 DST end.
+    """
+
+    LOCATION = None  # set in setUpClass
+
+    @classmethod
+    def setUpClass(cls):
+        from astropy import units as u
+        from astropy.coordinates import EarthLocation
+
+        cls.LOCATION = EarthLocation(
+            lat=45.42 * u.deg, lon=-75.70 * u.deg, height=70 * u.m
+        )
+
+    def _minutes(self, iso_a: str, iso_b: str) -> float:
+        """Absolute difference between two UTC instants, in minutes."""
+        from astropy import units as u
+
+        return abs((Time(iso_a) - Time(iso_b)).to_value(u.min))
+
+    def test_phase_instants_match_published_november_2026(self):
+        out = sky._moon_events(Time("2026-11-07T04:00:00"), self.LOCATION)
+        ev = out["events"]
+        published = {
+            "new_moon": "2026-11-09T07:02:00",
+            "first_quarter": "2026-11-17T11:47:00",
+            "full_moon": "2026-11-24T14:53:00",
+            "last_quarter": "2026-12-01T06:09:00",
+        }
+        for name, expected in published.items():
+            self.assertIsNotNone(ev[name], msg=f"{name} missing")
+            # Hourly sampling + linear interpolation lands well inside 2 min.
+            self.assertLess(
+                self._minutes(ev[name], expected),
+                2.0,
+                msg=f"{name}: got {ev[name]}, published {expected}",
+            )
+
+    def test_phase_instants_are_ordered_and_in_the_future(self):
+        when = Time("2026-11-07T04:00:00")
+        ev = sky._moon_events(when, self.LOCATION)["events"]
+        # Every instant is strictly after now, and they advance in phase order.
+        for name in ("new_moon", "first_quarter", "full_moon", "last_quarter"):
+            self.assertGreater(ev[name], when.utc.isot, msg=name)
+        self.assertLess(ev["new_moon"], ev["first_quarter"])
+        self.assertLess(ev["first_quarter"], ev["full_moon"])
+        self.assertLess(ev["full_moon"], ev["last_quarter"])
+        # Successive principal phases are ~7.4 d apart on average, but the
+        # real spacing swings roughly 6.8-8.2 d either side of that (this
+        # month's new->first quarter ran 8.2 d), so assert the range, not
+        # the mean.
+        from astropy import units as u
+
+        gaps = [
+            (Time(ev[b]) - Time(ev[a])).to_value(u.day)
+            for a, b in (
+                ("new_moon", "first_quarter"),
+                ("first_quarter", "full_moon"),
+                ("full_moon", "last_quarter"),
+            )
+        ]
+        for gap in gaps:
+            self.assertGreater(gap, 6.5, msg=f"gap {gap} d too short")
+            self.assertLess(gap, 8.5, msg=f"gap {gap} d too long")
+
+    def test_moonrise_and_moonset_match_published_ottawa_table(self):
+        # fullmoonphase.com's Ottawa table, Nov 2026, local EST (UTC-5) after
+        # the Nov 1 DST end. Asking at local midnight returns that day's rise
+        # AND set in one call (both fall after local midnight), so each day
+        # costs a single ephemeris pass. Worst observed error across these
+        # four days plus an 11-day sweep: 0.7 min.
+        from datetime import datetime, timedelta
+
+        published = {
+            6: ("04:01", "15:10"),
+            7: ("05:11", "15:30"),
+            8: ("06:21", "15:54"),
+            9: ("07:31", "16:22"),
+        }
+        est = timedelta(hours=5)  # EST = UTC-5, so UTC = local + 5h
+        for day, (rise_local, set_local) in published.items():
+            midnight_utc = datetime(2026, 11, day) + est
+
+            def expected(local: str, midnight: datetime = midnight_utc) -> str:
+                h, m = map(int, local.split(":"))
+                return (midnight + timedelta(hours=h, minutes=m)).isoformat()
+
+            ev = sky._moon_events(Time(midnight_utc), self.LOCATION)["events"]
+            self.assertIsNotNone(ev["moonrise"], msg=f"Nov {day} rise missing")
+            self.assertIsNotNone(ev["moonset"], msg=f"Nov {day} set missing")
+            self.assertLess(
+                self._minutes(ev["moonrise"], expected(rise_local)),
+                3.0,
+                msg=f"Nov {day} moonrise {ev['moonrise']} vs {rise_local} local",
+            )
+            self.assertLess(
+                self._minutes(ev["moonset"], expected(set_local)),
+                3.0,
+                msg=f"Nov {day} moonset {ev['moonset']} vs {set_local} local",
+            )
+
+    def test_moon_up_now_agrees_with_event_order(self):
+        # Moon below the horizon: the next crossing must be the rise.
+        down = sky._moon_events(Time("2026-11-07T04:00:00"), self.LOCATION)
+        self.assertFalse(down["moon_up_now"])
+        self.assertLess(down["events"]["moonrise"], down["events"]["moonset"])
+        # Moon above it: the set comes first, then the next day's rise.
+        up = sky._moon_events(Time("2026-10-18T02:00:00"), self.LOCATION)
+        self.assertTrue(up["moon_up_now"])
+        self.assertGreater(up["altitude_deg"], 0.0)
+        self.assertLess(up["events"]["moonset"], up["events"]["moonrise"])
+
+    def test_every_event_is_in_the_future(self):
+        when = Time("2026-11-07T04:00:00")
+        ev = sky._moon_events(when, self.LOCATION)["events"]
+        for name, value in ev.items():
+            self.assertIsNotNone(value, msg=f"{name} missing")
+            self.assertGreater(value, when.utc.isot, msg=name)
+
+    def test_illumination_and_phase_name_at_principal_instants(self):
+        # Straight off the elongation, no ephemeris needed.
+        cases = {
+            0.0: ("new", 0.0, False),
+            90.0: ("first_quarter", 0.5, True),
+            180.0: ("full", 1.0, False),
+            270.0: ("last_quarter", 0.5, False),
+            45.0: ("waxing_crescent", None, True),
+            135.0: ("waxing_gibbous", None, True),
+            225.0: ("waning_gibbous", None, False),
+            315.0: ("waning_crescent", None, False),
+        }
+        for elong, (name, illum, waxing) in cases.items():
+            phase = sky._phase_from_elongation(elong)
+            self.assertEqual(phase["name"], name, msg=f"elong={elong}")
+            self.assertEqual(phase["waxing"], waxing, msg=f"elong={elong}")
+            if illum is not None:
+                self.assertAlmostEqual(phase["illumination_fraction"], illum, places=3)
+            self.assertGreaterEqual(phase["elongation_deg"], 0.0)
+            self.assertLess(phase["elongation_deg"], 360.0)
+
+    def test_illumination_bands_split_on_fraction_not_angle(self):
+        # The band is on ILLUMINATION, not elongation: half-lit (k=0.5) is
+        # exactly 90 deg, so "quarter" means "looks like a half disc". That
+        # matches published daily calendars, which a45 deg-sector split does
+        # not -- on 2026-11-16 (elong ~72 deg, 35% lit) almanacs say
+        # "waxing crescent", and on 11-18 (elong ~97 deg, 56% lit) they say
+        # "waxing gibbous", while equal sectors would call both "quarter".
+        # Quarter band is k in [0.47, 0.53] = 86.6-93.4 deg.
+        self.assertEqual(sky._phase_from_elongation(88.0)["name"], "first_quarter")
+        self.assertEqual(sky._phase_from_elongation(92.0)["name"], "first_quarter")
+        # Just outside it, still under half lit: a crescent.
+        self.assertEqual(sky._phase_from_elongation(85.0)["name"], "waxing_crescent")
+        self.assertEqual(sky._phase_from_elongation(70.0)["name"], "waxing_crescent")
+        # Just past the band on the far side: already gibbous.
+        self.assertEqual(sky._phase_from_elongation(95.0)["name"], "waxing_gibbous")
+        # The new/full plateaus are wide enough to cover their fuzzy edges.
+        self.assertEqual(sky._phase_from_elongation(355.0)["name"], "new")
+        self.assertEqual(sky._phase_from_elongation(175.0)["name"], "full")
+        # Just past the new plateau: already a crescent again.
+        self.assertEqual(sky._phase_from_elongation(330.0)["name"], "waning_crescent")
+
+    def test_elongation_wraps_into_half_open_range(self):
+        # 360 is congruent to 0 (new) and must never be reported as 360.0.
+        phase = sky._phase_from_elongation(360.0)
+        self.assertEqual(phase["elongation_deg"], 0.0)
+        self.assertEqual(phase["name"], "new")
+        # Negative input normalises too (unwrapped series can go below zero).
+        self.assertEqual(sky._phase_from_elongation(-90.0)["name"], "last_quarter")
+        # A hair under 360 rounds to 360 before the modulo -- re-wrap it.
+        self.assertLess(sky._phase_from_elongation(359.9999)["elongation_deg"], 360.0)
+
+    def test_age_days_is_zero_at_new_moon_and_half_at_full(self):
+        # Age counts back to the PREVIOUS new moon, so at a new moon it is a
+        # whole synodic month (~29.5 d), not zero, and small just after one.
+        at_new = sky._moon_events(Time("2026-11-09T07:02:11"), self.LOCATION)
+        self.assertAlmostEqual(at_new["phase"]["age_days"], 29.53, delta=0.3)
+        just_after = sky._moon_events(Time("2026-11-10T00:00:00"), self.LOCATION)
+        self.assertAlmostEqual(just_after["phase"]["age_days"], 0.7, delta=0.3)
+        # At full moon the age is one new->full interval. That is 14.77 d on
+        # average but ranges13.9-15.9 d in reality -- this month's ran 15.33
+        # d -- so assert the physical range rather than the mean.
+        at_full = sky._moon_events(Time("2026-11-24T14:53:43"), self.LOCATION)
+        self.assertGreater(at_full["phase"]["age_days"], 13.5)
+        self.assertLess(at_full["phase"]["age_days"], 16.5)
+        # Age must increase monotonically across the cycle.
+        self.assertLess(just_after["phase"]["age_days"], at_full["phase"]["age_days"])
+        self.assertLess(at_full["phase"]["age_days"], at_new["phase"]["age_days"])
+
+    def test_phase_reports_name_illumination_and_age(self):
+        phase = sky._moon_events(Time("2026-11-07T04:00:00"), self.LOCATION)["phase"]
+        for key in ("name", "illumination_fraction", "waxing", "elongation_deg"):
+            self.assertIn(key, phase)
+        # Waning crescent: less than half lit, past full, ~2 days from new.
+        self.assertEqual(phase["name"], "waning_crescent")
+        self.assertFalse(phase["waxing"])
+        self.assertLess(phase["illumination_fraction"], 0.5)
+        self.assertGreater(phase["age_days"], 27.0)
+
+    def test_distance_is_topocentric_and_position_is_reported(self):
+        out = sky._moon_events(Time("2026-11-07T04:00:00"), self.LOCATION)
+        # Topocentric: within Earth's radius of the geocentric figure, and
+        # never below the Moon's perigee-ish distance.
+        self.assertGreater(out["distance_km"], 350000)
+        self.assertLess(out["distance_km"], 410000)
+        self.assertTrue(-90.0 <= out["altitude_deg"] <= 90.0)
+        self.assertTrue(0.0 <= out["azimuth_deg"] < 360.0)
+        self.assertEqual(out["time_utc"], "2026-11-07T04:00:00.000")
+        self.assertEqual(out["site"]["latitude_deg"], 45.42)
+
+    def test_polar_site_can_report_no_crossing(self):
+        # North Pole in the sample window: if the Moon never crosses the
+        # horizon the entry is null, never an invented time.
+        from astropy import units as u
+        from astropy.coordinates import EarthLocation
+
+        pole = EarthLocation(lat=90.0 * u.deg, lon=0.0 * u.deg, height=0 * u.m)
+        ev = sky._moon_events(Time("2026-11-07T04:00:00"), pole)["events"]
+        self.assertIsNone(ev["moonrise"])
+        self.assertIsNone(ev["moonset"])
+        # Phase instants are geocentric: they never depend on the site.
+        self.assertIsNotNone(ev["new_moon"])
+        self.assertIsNotNone(ev["full_moon"])
+
+
 class RankCatalogTest(unittest.TestCase):
     def _catalog(self, when, lat, lon):
         lst = float(when.sidereal_time("apparent", longitude=lon).hour)

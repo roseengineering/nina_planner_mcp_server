@@ -7,6 +7,7 @@ skill; see SKILL.md before changing the parsing rules.
     ./fetch_conditions.py <lat> <lon>
     ./fetch_conditions.py <lat> <lon> --night-only
     ./fetch_conditions.py <lat> <lon> --json
+    ./fetch_conditions.py <lat> <lon> --hours 4            # near-term window
     ./fetch_conditions.py <lat> <lon> --html saved.html    # parse offline
 
 <lat>/<lon> are read from the active profile (get_site_profile() ->
@@ -498,6 +499,37 @@ def parse(html: str) -> dict:
     }
 
 
+def slice_hours(data: dict, n: int) -> dict:
+    """Keep only the first `n` hourly columns of the report.
+
+    Days arrive in forecast order and each day's columns are in row order, so
+    flattening in that sequence is continuous under every `view` (current,
+    midnight and midday each start the rows at a different hour, but none of
+    them breaks the chain). With the default `--view current` the first column
+    is the current hour, so the first n columns are the next n hours from now.
+
+    Days that fall entirely outside the window are omitted rather than printed
+    as `no forecast data`, which means *absent from the page* -- a different
+    claim from *outside your window*. Parsing is untouched: this runs after
+    parse(), so every maintenance invariant still sees the full page.
+    """
+    kept: list[dict] = []
+    remaining = n
+    for day in data["days"]:
+        if remaining <= 0:
+            break
+        if not day["columns"]:
+            continue
+        sliced = dict(day)
+        sliced["columns"] = day["columns"][:remaining]
+        kept.append(sliced)
+        remaining -= len(sliced["columns"])
+    out = dict(data)
+    out["days"] = kept
+    out["hours"] = n
+    return out
+
+
 def summarize(data: dict, threshold: int, night_only: bool) -> str:
     """Render the compact human-readable report."""
     lines = []
@@ -516,6 +548,8 @@ def summarize(data: dict, threshold: int, night_only: bool) -> str:
         lines.append(
             f"Total cloud ≤{threshold}% per hour  (* = run lies inside astro dark)"
         )
+    if data.get("hours"):
+        lines.append(f"Window: first {data['hours']} hourly columns")
     lines.append("")
 
     any_clear = False
@@ -558,7 +592,11 @@ def _tag(day: dict) -> str:
 
 
 def summarize_conditions(
-    data: dict, max_wind: float, max_precip: int, min_dew_spread: int
+    data: dict,
+    max_wind: float,
+    max_precip: int,
+    min_dew_spread: int,
+    night_only: bool = False,
 ) -> str:
     """One line per night: worst values, with breaches marked.
 
@@ -571,16 +609,31 @@ def summarize_conditions(
     own flag is authoritative for it -- while dew is pure saturation and can
     wreck an optic at +12 C. Measured across 453 hours, spread alone called
     164 false frosts, every one of them above freezing.
+
+    `night_only` restricts every count and every max/min to hours inside
+    astro darkness: the section then answers "will the session hold", not
+    "will the 24-column row hold" -- without it, a `wind max` or a `precip
+    n/24h` can come entirely from daytime hours that are irrelevant to the
+    session. The header says which window is in force, and a row that has
+    columns but no dark hours reports `no astro-dark hours` -- never `no
+    forecast data`, which means the page itself was empty (invariant 3).
     """
     unit = data.get("wind_unit") or "mph"
+    scope = "astro-dark hours only · " if night_only else ""
     lines = [
-        f"Conditions  (wind>={max_wind:g}{unit} · precip>={max_precip}% · "
+        f"Conditions  ({scope}wind>={max_wind:g}{unit} · precip>={max_precip}% · "
         f"dew-spread<={min_dew_spread}°C · any frost)"
     ]
     any_breach = False
     for day in data["days"]:
         tag = _tag(day)
         cols = day["columns"]
+        if night_only:
+            dark = [c for c in cols if c["astro_dark"] is True]
+            if cols and not dark:
+                lines.append(f"  {tag}  —  no astro-dark hours")
+                continue
+            cols = dark
         if not cols:
             lines.append(f"  {tag}  —  no forecast data")
             continue
@@ -630,7 +683,8 @@ def summarize_conditions(
         lines.append(f"  {tag}  {'⚠' if breach else '✓'} " + " · ".join(parts))
 
     if not any_breach:
-        lines.append("  → no wind / precip / frost / dew breach in this forecast.")
+        where = "the astro-dark hours" if night_only else "this forecast"
+        lines.append(f"  → no wind / precip / frost / dew breach in {where}.")
     return "\n".join(lines)
 
 
@@ -650,7 +704,8 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument(
         "--night-only",
         action="store_true",
-        help="report only hours inside astronomical darkness",
+        help="restrict both report sections (clear hours and conditions) to "
+        "hours inside astronomical darkness",
     )
     ap.add_argument(
         "--view",
@@ -658,6 +713,15 @@ def main(argv: list[str] | None = None) -> int:
         default="current",
         help="where each row's 24 columns start: current local hour "
         "(default), 00:00, or 12:00",
+    )
+    ap.add_argument(
+        "--hours",
+        type=int,
+        default=None,
+        metavar="N",
+        help="keep only the first N hourly columns of the report; with the "
+        "default --view current that is the next N hours from now. Days "
+        "outside the window are omitted (default: all 7 days)",
     )
     ap.add_argument(
         "--max-wind",
@@ -686,6 +750,8 @@ def main(argv: list[str] | None = None) -> int:
         "--html", metavar="FILE", help="parse a saved page instead of fetching"
     )
     args = ap.parse_args(argv)
+    if args.hours is not None and args.hours < 1:
+        ap.error("--hours must be at least 1")
 
     try:
         if args.html:
@@ -699,12 +765,16 @@ def main(argv: list[str] | None = None) -> int:
         print(f"site-conditions: {exc}", file=sys.stderr)
         return 1
 
+    if args.hours is not None:
+        data = slice_hours(data, args.hours)
+
     if args.json:
         data = dict(data)
         data["url"] = url or (
             f"{BASE_URL}/{_fmt_coord(args.lat)}/{_fmt_coord(args.lon)}?view={args.view}"
         )
         data["view"] = args.view
+        data["hours"] = args.hours
         data["threshold"] = args.threshold
         data["breach_thresholds"] = {
             "max_wind": args.max_wind,
@@ -717,7 +787,11 @@ def main(argv: list[str] | None = None) -> int:
         print()
         print(
             summarize_conditions(
-                data, args.max_wind, args.max_precip, args.min_dew_spread
+                data,
+                args.max_wind,
+                args.max_precip,
+                args.min_dew_spread,
+                args.night_only,
             )
         )
     return 0

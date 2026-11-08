@@ -7,7 +7,14 @@ import anyio
 import httpx
 import numpy as np
 from astropy import units as u
-from astropy.coordinates import AltAz, EarthLocation, SkyCoord, get_sun
+from astropy.coordinates import (
+    AltAz,
+    EarthLocation,
+    GeocentricTrueEcliptic,
+    SkyCoord,
+    get_body,
+    get_sun,
+)
 from astropy.time import Time
 
 from .. import dso_catalog
@@ -380,6 +387,230 @@ def _sun_events(when: Time, location: EarthLocation) -> dict[str, Any]:
     }
 
 
+# --- moon (see moon_times) --------------------------------------------------
+#
+# astropy ships no lunar-phase helper (and `get_moon` was removed in 7.0 in
+# favour of `get_body("moon", ...)`), so phase, illumination and rise/set are
+# all derived here from `get_body` plus the same threshold-crossing sampler
+# the sun events use. Phase is geocentric -- it is identical everywhere on
+# Earth, which is what published tables report -- while altitude, azimuth,
+# distance and rise/set are topocentric, i.e. what this site actually sees.
+# Fully offline: astropy's builtin ephemeris, no network.
+
+# Moon rise/set altitude. Meeus's standard altitude for the Moon is
+# h0 = 0.7275*pi - 0.5667 deg (pi ~0.95 deg horizontal parallax) = +0.125
+# deg, but that is the GEOCENTRIC figure: it folds in the parallax that drops
+# the Moon's apparent position by up to ~0.95 deg. `get_body(..., location)`
+# is already topocentric, so what is left is the usual apparent-upper-limb
+# condition -- -(refraction + semidiameter) = -(0.5667 + 0.259) ~ -0.83 deg,
+# the same number the sun events use (the Sun's and Moon's semidiameters are
+# both ~0.26 deg). Measured against Ottawa's published table for 2026-11-07:
+# -0.833 gives rise 10:11:15 / set 20:30:42 UTC against a published 10:11 /
+# 20:30, while Meeus's +0.125 applied to topocentric altitudes lands 6
+# minutes late on rise.
+_MOON_HORIZON_ALT = -0.833
+
+# One lunar day runs ~24h50m, so 48 h forward always contains a moonrise and
+# a moonset unless the Moon genuinely never crosses the horizon (polar
+# summer) -- then the entry is null, exactly as `sun_times` reports a polar
+# twilight rather than inventing one.
+_MOON_FORWARD_H = 48.0
+_MOON_STEP_MIN = 5
+
+# Phase events need a whole synodic month (29.53 d) of lookahead for the
+# "next" of any principal phase, and the same again behind `when` for
+# `age_days`, so +/-32 d at hourly cadence covers both with margin. Hourly
+# linear interpolation tracks the ~0.5 deg/h drift of the Moon-Sun longitude
+# difference to well under a minute -- verified against published phase
+# times, which agree to the minute.
+_PHASE_BACK_D = 32.0
+_PHASE_FORWARD_D = 32.0
+_PHASE_STEP_H = 1.0
+
+# Principal phase instants, as angles of the Moon-minus-Sun ecliptic
+# longitude difference: conjunction, eastern quadrature, opposition,
+# western quadrature.
+_PHASE_EVENT_ANGLES: tuple[tuple[str, float], ...] = (
+    ("new_moon", 0.0),
+    ("first_quarter", 90.0),
+    ("full_moon", 180.0),
+    ("last_quarter", 270.0),
+)
+
+# Illumination bands for `phase.name`. Boundaries sit where they are
+# visually meaningful: the crescent/gibbous split is at half-lit, "quarter"
+# is a +/-3% window around it, and new/full are the near-0 / near-1 plateaus
+# (under 3% lit is within ~1.6 days of conjunction, over 97% its mirror at
+# opposition). Illumination, not the name, is what decides a target: k is the
+# Moon's contribution to sky background.
+_PHASE_NEW_MAX = 0.03
+_PHASE_FULL_MIN = 0.97
+_PHASE_QUARTER_BAND = 0.03
+
+
+def _moon_altitudes(times: Time, location: EarthLocation) -> list[float]:
+    """Topocentric geometric moon altitude in degrees for each time.
+
+    No refraction -- astropy's `AltAz` applies none at its default pressure
+    of 0, which is why the crossing threshold above absorbs it. Accepts a
+    scalar or vector `Time`; always returns a list.
+    """
+    moon = get_body("moon", times, location)
+    altaz = moon.transform_to(AltAz(obstime=times, location=location))
+    alts = np.atleast_1d(altaz.alt.deg)
+    return [float(a) for a in alts]
+
+
+def _elongation_series(times: Time) -> np.ndarray:
+    """Moon-minus-Sun ecliptic longitude of date at each time, unwrapped.
+
+    The Moon laps the Sun every 29.53 d (~12.2 deg/day) and never moves
+    retrograde in ecliptic longitude, so consecutive hourly samples differ
+    by a fraction of a degree and the unwrapped series is strictly
+    increasing -- which is what lets every phase instant be found by binary
+    search plus interpolation instead of a root find.
+    """
+    moon_lon = (
+        get_body("moon", times)
+        .transform_to(GeocentricTrueEcliptic(obstime=times))
+        .lon.deg
+    )
+    sun_lon = get_sun(times).transform_to(GeocentricTrueEcliptic(obstime=times)).lon.deg
+    delta = np.asarray((moon_lon - sun_lon) % 360.0, dtype=float)
+    return np.unwrap(np.deg2rad(delta)) * 180.0 / math.pi
+
+
+def _next_angle(base: float, target: float) -> float:
+    """Smallest angle strictly greater than `base` congruent to `target`
+    modulo 360."""
+    angle = target + math.ceil((base - target) / 360.0) * 360.0
+    return angle + 360.0 if angle <= base else angle
+
+
+def _prev_angle(base: float, target: float) -> float:
+    """Largest angle at or before `base` congruent to `target` modulo 360."""
+    return target + math.floor((base - target) / 360.0) * 360.0
+
+
+def _crossing_time(times: Time, values: np.ndarray, want: float) -> Time | None:
+    """Time at which the strictly increasing `values` first reaches `want`.
+
+    Linear interpolation between the bracketing samples. None when `want`
+    falls outside the sampled window.
+    """
+    idx = int(np.searchsorted(values, want))
+    if idx == 0 or idx >= len(values):
+        return None
+    lo, hi = float(values[idx - 1]), float(values[idx])
+    if hi <= lo:
+        return None
+    frac = (want - lo) / (hi - lo)
+    return times[idx - 1] + frac * (times[idx] - times[idx - 1])
+
+
+def _phase_from_elongation(elongation_deg: float) -> dict[str, Any]:
+    """Phase name, lit fraction, waxing flag and wrapped elongation.
+
+    Pure function of the Moon-minus-Sun ecliptic longitude difference (any
+    real value; taken modulo 360). Illumination is k = (1 - cos(elong))/2 --
+    dropping the Moon's ecliptic latitude (<=5.1 deg) and the observer's
+    offset from the geocenter moves k by under 0.5%, well inside the 1%
+    published tables quote.
+    """
+    wrapped = float(elongation_deg) % 360.0
+    illumination = (1.0 - math.cos(math.radians(wrapped))) / 2.0
+    waxing = 0.0 < wrapped < 180.0
+    if illumination < _PHASE_NEW_MAX:
+        name = "new"
+    elif illumination > _PHASE_FULL_MIN:
+        name = "full"
+    elif abs(illumination - 0.5) <= _PHASE_QUARTER_BAND:
+        name = "first_quarter" if waxing else "last_quarter"
+    elif illumination < 0.5:
+        name = "waxing_crescent" if waxing else "waning_crescent"
+    else:
+        name = "waxing_gibbous" if waxing else "waning_gibbous"
+    # Round first, then re-wrap: at new moon the elongation sits a hair under
+    # 360, and rounding it would otherwise report `360.0` -- outside the
+    # documented [0, 360) range -- for a Moon that is still a hair waning.
+    return {
+        "name": name,
+        "illumination_fraction": round(illumination, 4),
+        "waxing": waxing,
+        "elongation_deg": round(wrapped, 3) % 360.0,
+    }
+
+
+def _moon_events(when: Time, location: EarthLocation) -> dict[str, Any]:
+    """Phase, position, next moonrise/moonset, and the next four principal
+    phase instants for `location` at `when`.
+
+    Pure helper -- unit-testable without N.I.N.A. Events are the first
+    occurrence strictly after `when`; each is null only when no crossing
+    happens inside its sampling window (polar day/night for rise/set), never
+    an error. Rise/set are topocentric for the site; phase instants and
+    `age_days` are geocentric and therefore identical everywhere on Earth.
+    """
+    # Phase instants and age come off one unwrapped elongation series spanning
+    # +/-32 days; `when` sits exactly at its midpoint index.
+    samples = int((_PHASE_BACK_D + _PHASE_FORWARD_D) * 24 / _PHASE_STEP_H) + 1
+    mid = samples // 2
+    ptimes = when + (np.arange(samples) - mid) * _PHASE_STEP_H * u.hour
+    elong = _elongation_series(ptimes)
+    base = float(elong[mid])
+
+    events: dict[str, Time | None] = {}
+    for name, target in _PHASE_EVENT_ANGLES:
+        events[name] = _crossing_time(ptimes, elong, _next_angle(base, target))
+    previous_new = _crossing_time(ptimes, elong, _prev_angle(base, 0.0))
+
+    # Horizon: topocentric altitude, first crossing of each kind after now.
+    n_horizon = int(_MOON_FORWARD_H * 60 / _MOON_STEP_MIN) + 1
+    htimes = when + np.arange(n_horizon) * _MOON_STEP_MIN * u.min
+    alts = _moon_altitudes(htimes, location)
+    rise: Time | None = None
+    set_: Time | None = None
+    for i in range(n_horizon - 1):
+        if rise is None and alts[i] < _MOON_HORIZON_ALT <= alts[i + 1]:
+            rise = _interp_time(htimes, alts, i, _MOON_HORIZON_ALT)
+        if set_ is None and alts[i] >= _MOON_HORIZON_ALT > alts[i + 1]:
+            set_ = _interp_time(htimes, alts, i, _MOON_HORIZON_ALT)
+        if rise is not None and set_ is not None:
+            break
+
+    moon = get_body("moon", when, location)
+    altaz = moon.transform_to(AltAz(obstime=when, location=location))
+    age_days = (when - previous_new) / u.day if previous_new is not None else None
+
+    phase = _phase_from_elongation(base)
+    if age_days is not None:
+        phase["age_days"] = round(float(age_days), 2)
+
+    return {
+        "time_utc": when.utc.isot,
+        "site": {
+            "latitude_deg": round(float(location.lat.deg), 4),
+            "longitude_deg": round(float(location.lon.deg), 4),
+            "elevation_m": round(float(location.height.to_value(u.m)), 1),
+        },
+        "moon_up_now": bool(float(altaz.alt.deg) > _MOON_HORIZON_ALT),
+        "altitude_deg": round(float(altaz.alt.deg), 2),
+        "azimuth_deg": round(float(altaz.az.deg), 2),
+        # Topocentric (from the observer), so it can differ from an almanac's
+        # geocentric figure by up to Earth's radius.
+        "distance_km": round(float(moon.distance.to_value(u.km))),
+        "phase": phase,
+        "events": {
+            name: (value.utc.isot if value is not None else None)
+            for name, value in {
+                "moonrise": rise,
+                "moonset": set_,
+                **events,
+            }.items()
+        },
+    }
+
+
 def _rank_catalog(
     catalog: "list[dso_catalog.Dso]",
     when: Time,
@@ -556,3 +787,25 @@ async def sun_times() -> dict[str, Any]:
     )
     when = Time(datetime.now(timezone.utc))
     return await anyio.to_thread.run_sync(_sun_events, when, location)
+
+
+@mcp.tool()
+async def moon_times() -> dict[str, Any]:
+    """Returns the Moon's phase, illumination, position, next moonrise/moonset, and the next four principal phase instants (new, first quarter, full, last quarter) for the active site -- the lunar counterpart to `sun_times`, for judging how much moonlight a night will carry.
+
+    `phase` gives `name` (one of new, waxing_crescent, first_quarter, waxing_gibbous, full, waning_gibbous, last_quarter, waning_crescent), `illumination_fraction` (0..1 -- THIS is the number to plan against: it is the Moon's contribution to sky background, so faint galaxies and nebulae want it low and lunar-rich targets want it high), `waxing` (true new -> full), `elongation_deg` (0..360; everything else derives from it), and `age_days` (days since the last new moon). Illumination uses the standard k = (1 - cos(elongation))/2; the name is banded off it (under 3% = new, over 97% = full, within 3% of half-lit = quarter, otherwise crescent below half / gibbous above), so near a boundary the fraction, not the name, is authoritative.
+
+    `events` are the FIRST occurrence after now, UTC ISO, exactly as `sun_times` reports them: `moonrise` and `moonset` are topocentric horizon crossings for the site (upper limb apparent on the horizon -- geometric center altitude -0.833 deg, refraction and semidiameter folded in, matching how `sun_times` treats sunrise/sunset), and `new_moon`/`first_quarter`/`full_moon`/`last_quarter` are geocentric instants identical everywhere on Earth. `moonrise` or `moonset` is `null` only when the Moon does not cross the horizon within the next 48 h (polar day/night), never a failure.
+
+    `moon_up_now`, `altitude_deg`, `azimuth_deg` and `distance_km` describe the Moon at this instant (topocentric, so `distance_km` can differ from an almanac's geocentric figure by up to Earth's radius). `moon_up_now` is defined against the same -0.833 deg line `moonrise`/`moonset` cross, so it is consistent with those two events.
+
+    Combine with `sun_times`: `events.moonrise`/`moonset` against `darkness.start_utc`/`end_utc` says whether the Moon will be up during astronomical darkness, and `phase.illumination_fraction` says how bright it will be when it is. Read-only; no N.I.N.A. calls beyond reading the site profile, and no network."""
+    profile = await equipment_tools.get_site_profile()
+    site = profile.site
+    location = EarthLocation(
+        lat=site.latitude_deg * u.deg,
+        lon=site.longitude_deg * u.deg,
+        height=site.elevation_m * u.m,
+    )
+    when = Time(datetime.now(timezone.utc))
+    return await anyio.to_thread.run_sync(_moon_events, when, location)

@@ -28,7 +28,13 @@ from .tools.sequence import (
     start_sequence,
     stop_sequence,
 )
-from .tools.sky import best_targets, resolve_target, sun_times, target_altitudes
+from .tools.sky import (
+    best_targets,
+    moon_times,
+    resolve_target,
+    sun_times,
+    target_altitudes,
+)
 
 __all__ = [
     "audit_plans",
@@ -49,6 +55,7 @@ __all__ = [
     "list_site_profiles",
     "load_sequence",
     "mcp",
+    "moon_times",
     "plans",
     "resolve_target",
     "screenshot_dashboard",
