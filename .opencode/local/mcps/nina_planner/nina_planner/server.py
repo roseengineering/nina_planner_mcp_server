@@ -7,9 +7,7 @@ from .tools.equipment import (
     get_logs,
     get_site_equipment_status,
     get_site_profile,
-    list_site_profiles,
     screenshot_dashboard,
-    switch_site_profile,
 )
 from .tools.lifecycle import get_nina_status, start_nina, stop_nina
 from .tools.plans import (
@@ -50,7 +48,6 @@ __all__ = [
     "get_site_profile",
     "lifecycle",
     "list_plans",
-    "list_site_profiles",
     "load_sequence",
     "mcp",
     "moon_times",
@@ -64,7 +61,6 @@ __all__ = [
     "stop_nina",
     "stop_sequence",
     "sun_times",
-    "switch_site_profile",
     "target_altitudes",
     "write_mosaic_plan",
     "write_plan_file",

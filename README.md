@@ -23,8 +23,6 @@ Each table gives a one-line summary; details for the larger tools are in [Tool D
 |---|---|
 | `get_site_equipment_status()` | Live connection, state, measurements, and capabilities of all equipment, plus weather and safety-monitor status. ⚠️ **Not read-only** — it auto-connects devices (see [details](#get_site_equipment_status)). |
 | `get_site_profile()` | Active NINA profile and static configuration: site, optics, camera geometry, filters, plate solvers, image-save path. Read-only. |
-| `list_site_profiles()` | Summaries (id, name, description, last-used time) of every NINA profile, with the active one marked `active: true`. Read-only. |
-| `switch_site_profile(profile_id)` | Switch the active NINA profile by GUID from `list_site_profiles`. Reconnects equipment — 🚫 never call during a running sequence. |
 | `get_events(since=300)` | Timestamped NINA events from the last `since` seconds, to reconstruct sequence, equipment, safety, imaging, and error activity. Read-only. |
 | `get_logs(since=300)` | NINA application log entries from the last `since` seconds, for diagnosing failures. Read-only. |
 | `screenshot_dashboard()` | Capture the N.I.N.A. dashboard as a PNG; returns the file path and the image. Only side effect: switches NINA to the Imaging tab. |
@@ -81,10 +79,6 @@ Returns the current connection, operating state, measurements, and capabilities 
 ### `get_site_profile`
 
 `image_save_path` is the raw Windows path from the profile; `local_image_save_path` is the derived path usable on this host (the drive letter is mapped through `NINA_DRIVE_MOUNT`, default `/mnt/<drive>`, on Linux/WSL/macOS; unchanged on Windows) and is the one to use for local file access. Use `get_site_equipment_status` for live equipment state.
-
-### `list_site_profiles` / `switch_site_profile`
-
-`list_site_profiles` only exposes summaries; only the active profile exposes full site/optics/filter detail, so use `get_site_profile` to inspect it. `switch_site_profile` passes the id straight through to NINA; an unknown id or refusal surfaces NINA's own error. Switching disconnects and reconnects equipment and changes site, filters, image-save path, and file pattern. Confirm with `get_site_profile` afterward.
 
 ### `get_events` / `get_logs`
 
