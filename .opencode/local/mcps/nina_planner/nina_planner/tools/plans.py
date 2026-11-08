@@ -12,16 +12,12 @@ from ..app import mcp
 from ..imaging import (
     _prunable_dir,
     _walk_visible,
-    read_imaging_csv,
-    read_weather_csv,
-    widen_imaging_metadata,
 )
 from ..models.frame import FrameStats
 from ..models.plan import ObservationPlan
 from ..mosaic import load_pointings
 from ..progress import (
     _light_target_matches,
-    filter_metadata_rows,
     group_verdict,
     is_junk_row,
     plan_progress,
@@ -31,56 +27,12 @@ from . import equipment as equipment_tools
 
 
 @mcp.tool()
-async def get_imaging_metadata(
-    file_path: str,
-    pointing_index: int = 1,
-    image_type: str = "light",
-) -> dict[str, Any]:
-    """Returns per-exposure imaging metadata for one pointing of a plan, parsed from the ImageMetaData.csv and WeatherData.csv files in the N.I.N.A. imaging directory.
-
-    Frame attribution:
-    - Light frames are attributed via the underscore-delimited plan-id token in the recorded file path: `_{base_plan_id}_` for a single-pointing plan, `_{base_plan_id}-{pointing_index}_` per pane for a mosaic (N.I.N.A. rewrites `[` and `]` to `_` when it substitutes `$$TARGETNAME$$` into the path, so the token is written with underscores). There is no target-name fallback.
-    - Dark/bias frames are matched plan-wide by image type and exposure; flat frames by image type and filter (exposure is not checked for flats). All calibration frames count only when shot within the plan's `calibration_window_days` of the session start (the earliest attributed light), on either side of it.
-    - `pointing_index` (default 1, range-checked 1..pointing count for every image type) labels the response (`plan_id`, `pointing_index`). For lights it selects the pointing; for calibration types it only selects which pointing's light session anchors the window.
-
-    `image_type` is `light` (default), `dark`, `bias`, or `flat` (case-insensitive).
-
-    This reports the frames that are attributable, not what the plan still needs; use get_plan_progress for that.
-
-    Returns a wide table with one row per exposure: identity fields (file_path, exposure_number, exposure_start, duration, filter_name) plus metrics as columns namespaced by group (quality.hfr, guiding.rms, background.adu_mean, pointing.airmass, weather.temperature, ...). Weather samples are joined by exposure number and UTC exposure start. Timestamps are in the host's local time with UTC offset (e.g. 2026-09-21T21:16:25.123-05:00). Columns constant across the returned frames are listed once under `summary.constants`; columns with no real values (NaN/-1, empty, 'n/a', or the 0 sentinel NINA writes for unmeasured metrics) are listed under `summary.unpopulated`. This tool is read-only."""
-    root = await metadata.resolve_imaging_root()
-    plan = await plan_utils.load_plan(file_path)
-    plan_utils.check_pointing_index(plan, pointing_index)
-    rows = read_imaging_csv(root=root, image_type=image_type)
-    if image_type.upper() != "LIGHT":
-        # Calibration is anchored to the plan's light session, so the light
-        # rows are needed to derive session_start even when the caller asked
-        # for a calibration type.
-        rows = read_imaging_csv(root=root, image_type="light") + rows
-    rows = filter_metadata_rows(
-        plan,
-        rows,
-        image_type,
-        pointing_index=pointing_index,
-        max_age_days=plan.calibration_window_days,
-        now=datetime.now(UTC).replace(microsecond=0),
-    )
-    weather = read_weather_csv(root=root)
-    res = widen_imaging_metadata(rows, weather_rows=weather)
-    res["plan_id"] = plan.effective_plan_id(pointing_index)
-    res["pointing_index"] = pointing_index
-    res["target"] = plan.target
-    client.log_payload("Metadata:", json.dumps(res, indent=2))
-    return res
-
-
-@mcp.tool()
 async def get_frame_stats(image_type: str | None = None) -> dict[str, Any]:
     """Returns N.I.N.A.'s live per-frame statistics for the current (most recently captured) frame, read from the image-history API.
 
     This is the on-demand mirror of the quality watchdog's own data source, so on a QUALITY-WATCHDOG wake you can read exactly the numbers it saw instead of waiting for ImageMetaData.csv to be written. Returns the full record: HFR, HFR standard deviation (`hfr_st_dev`), detected star count (`stars`), background ADU statistics (`mean`, `median`, `st_dev`, `min`, `max`), guiding RMS text (`rms_text`), camera temperature, gain, offset, filter, exposure time, target name, and filename. `date` is the frame's capture timestamp.
 
-    Scope: despite its name, image-history serves only the current frame (a single record; there is no paging and no count parameter). For a multi-frame trend use get_imaging_metadata, which reads the on-disk ImageMetaData.csv for the whole session — this tool is the live view, that one is the historical view. A genuine `0` (e.g. `stars: 0`) is a real reading, not a missing value.
+    Scope: despite its name, image-history serves only the current frame (a single record; there is no paging and no count parameter). For a multi-frame trend read the per-date folders on the imaging drive, or `get_events`/`get_logs` for the timeline — there is no session-wide per-frame table tool. A genuine `0` (e.g. `stars: 0`) is a real reading, not a missing value.
 
     `image_type` (optional, e.g. "light", "dark") is passed through as the API's imageType filter to assert the current frame's type; when the current frame is not of that type the tool reports `count: 0` rather than erroring. This tool is read-only and takes no action.
 

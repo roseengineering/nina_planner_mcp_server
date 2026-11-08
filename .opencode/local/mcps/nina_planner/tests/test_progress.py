@@ -892,7 +892,7 @@ class FrameGroupConstraintsTest(unittest.TestCase):
     def test_lights_differ_between_the_two_by_design(self):
         # The one place the callers intentionally do NOT share the rule.
         # `filter_metadata_rows` answers "every frame attributable to this
-        # pointing" (what get_imaging_metadata reports) so it applies no
+        # pointing" (the archive's view of it) so it applies no
         # filter/exposure constraint; `plan_progress` counts per group, so a
         # light must match its own group's filter and exposure. A light on
         # the right token but the wrong filter counts in one and not the

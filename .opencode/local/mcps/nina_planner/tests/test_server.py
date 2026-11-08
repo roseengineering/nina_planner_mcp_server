@@ -3236,40 +3236,6 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
             result = await get_sequence_state(detail="raw")
         self.assertEqual(result, expected)
 
-    async def test_get_imaging_metadata_returns_widened(self):
-        from nina_planner.server import get_imaging_metadata
-
-        plan_dict = {
-            "plan_id": "plan-test123",
-            "target": "M31",
-            "pointings": [{"ra_hours": 5.0, "dec_deg": 10.0}],
-            "light_frames": [
-                {"filter_name": "L", "exposure_time_seconds": 60.0, "total_count": 1}
-            ],
-            "flat_frames": [{"filter_name": "L", "total_count": 1}],
-            "dark_frames": [{"exposure_time_seconds": 60.0, "total_count": 1}],
-            "bias_frames": [{"total_count": 1}],
-        }
-
-        with tempfile.TemporaryDirectory() as tmp:
-            plan_path = Path(tmp) / "plan.json"
-            plan_path.write_text(json.dumps(plan_dict))
-
-            with (
-                patch(
-                    "nina_planner.metadata.resolve_imaging_root",
-                    AsyncMock(return_value=Path(tmp)),
-                ),
-                patch("nina_planner.tools.plans.read_imaging_csv", return_value=[]),
-                patch("nina_planner.tools.plans.read_weather_csv", return_value=[]),
-            ):
-                result = await get_imaging_metadata(
-                    str(plan_path), pointing_index=1, image_type="light"
-                )
-        # Single-pointing plan: the reported plan id is the bare plan-level id.
-        self.assertEqual(result["plan_id"], "plan-test123")
-        self.assertEqual(result["target"], "M31")
-
     async def test_get_nina_status_running_with_api(self):
         """API responsive => running."""
         from nina_planner.server import get_nina_status

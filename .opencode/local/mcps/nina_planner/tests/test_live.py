@@ -11,7 +11,6 @@ from nina_planner.client import api_get as _api_get
 from nina_planner.models.request import SequenceRequest
 from nina_planner.server import (
     get_events,
-    get_imaging_metadata,
     get_logs,
     get_nina_status,
     get_plan_progress,
@@ -287,16 +286,6 @@ class LiveNinaTest(unittest.TestCase):
         self.assertIsInstance(first["frame_types"], dict)
         for frame_type in ("light", "flat", "dark", "bias"):
             self.assertIn(frame_type, first["frame_types"])
-
-    def test_get_imaging_metadata(self):
-        plan_path = str(_FIXTURES_DIR / "veil.json")
-        result = asyncio.run(get_imaging_metadata(file_path=plan_path))
-        self.assertIsInstance(result, dict)
-        self.assertIn("plan_id", result)
-        self.assertIn("pointing_index", result)
-        self.assertIn("target", result)
-        self.assertEqual(result["target"], "Veil Nebula")
-        self.assertEqual(result["pointing_index"], 1)
 
     def test_enter_teardown(self):
         result = asyncio.run(load_sequence())
