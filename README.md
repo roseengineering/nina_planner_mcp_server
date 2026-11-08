@@ -510,6 +510,7 @@ The detailed procedures `AGENTS.md` defers to live in [.agents/skills/](./.agent
 | [`night-loop`](./.agents/skills/night-loop/SKILL.md) | Pick and start the next target, or end the night with a report and a stow. |
 | [`nina-lifecycle`](./.agents/skills/nina-lifecycle/SKILL.md) | Start / stop / status of the NINA application. |
 | [`safety-interrupt-recovery`](./.agents/skills/safety-interrupt-recovery/SKILL.md) | Interrupts, sequence halts, and recovery: liveness, safety, stowing. |
+| [`site-conditions`](./.agents/skills/site-conditions/SKILL.md) | 7-day hourly forecast (cloud, wind, precip, dew/frost, Bortle, astro-dark) — advisory only, never a substitute for `is_safe`. |
 
 ### 🗄️ `archive-lifecycle`
 
@@ -530,6 +531,10 @@ Check, start, or stop the NINA application via the nina-planner MCP server. Use 
 ### 🛟 `safety-interrupt-recovery`
 
 Handle automated safety interrupts, sequence halts, and recovery on a new event or interval check. Use to verify NINA is up, check equipment/safety/weather, stow the scope, or decide whether to start a plan or stow. `is_safe=false` gates sky-dependent work (lights, dawn/dusk sky flats) only — darks and biases need no open sky and may still be started with the enclosure closed.
+
+### 🌤️ `site-conditions`
+
+Read the 7-day hourly forecast for the observatory site from clearoutside.com — cloud cover, wind, precipitation probability, temperature/dew point, frost chance, Bortle class and astro-dark windows. Use when deciding whether to start or continue sky-dependent imaging, when picking between targets on a forecast-driven night, when planning dawn/dusk flats, or when the user asks about cloud cover, transparency, wind, dew or frost ahead. Coordinates come from `get_site_profile()` and go out at **2 decimal places** (a full-precision URL is 301-redirected in a way that silently drops `?view=`, substituting the default window). **Advisory only — never a substitute for `is_safe`:** it may inform a decision, but `is_safe` and the weather device remain the only inputs that start, stop or resume sky-dependent work, and a network failure logs and carries on rather than stalling the night.
 
 ## 📜 `PROGRESS.md` — Shared Progress File
 
