@@ -1,0 +1,48 @@
+#!/bin/sh
+#
+# pre-commit: regenerate README.md from the files it embeds.
+#
+# README.md quotes files verbatim inside ```json <filename> fences (e.g. the
+# example observation plan). Editing such a file without refreshing the
+# README leaves it documenting something that no longer exists on disk.
+#
+# Policy: this hook CHECKS, it does not fix. If the refresh changed
+# README.md, the commit is refused so the regenerated file is reviewed and
+# deliberately staged rather than silently swept in.
+
+set -e
+
+# Run from the repository root so the script's own project-root resolution
+# and this hook's git queries agree about where the README lives.
+repo_root=$(git rev-parse --show-toplevel)
+cd "$repo_root"
+
+if ! command -v python3 >/dev/null 2>&1; then
+    echo "pre-commit: python3 not found; cannot verify README.md is in sync." >&2
+    echo "pre-commit: install python3, or bypass with: git commit --no-verify" >&2
+    exit 1
+fi
+
+# 1. Regenerate. Any failure aborts the commit.
+if ! python3 scripts/update_readme.py; then
+    echo "pre-commit: scripts/update_readme.py failed." >&2
+    echo "pre-commit: commit aborted. Fix the script, or bypass with: git commit --no-verify" >&2
+    exit 1
+fi
+
+# 2. Did that leave README.md with unstaged changes?
+#    `git diff --quiet -- README.md` exits 1 when the worktree copy differs
+#    from the index, i.e. the refresh produced something not yet staged.
+if ! git diff --quiet -- README.md; then
+    echo "" >&2
+    echo "pre-commit: README.md is out of date and has been regenerated." >&2
+    echo "pre-commit: review the refreshed file, then run:" >&2
+    echo "" >&2
+    echo "              git add README.md" >&2
+    echo "" >&2
+    echo "pre-commit: and try your commit again." >&2
+    echo "pre-commit: commit aborted." >&2
+    exit 1
+fi
+
+exit 0
