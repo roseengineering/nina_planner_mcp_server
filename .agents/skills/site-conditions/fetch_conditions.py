@@ -65,7 +65,36 @@ RE_HOUR_LABEL = re.compile(
 RE_TOTAL_CLOUDS = re.compile(
     r"<span>Total Clouds \(% Sky Obscured\)</span>.*?<ul>(.*?)</ul>", re.S
 )
-RE_INT_CELL = re.compile(r"<li[^>]*>(\d+)</li>")
+
+# SIGNED on purpose. `(\d+)` returns [] for "-14", not "-14" -- an empty list
+# that then reads as "row missing" and reports the whole day as no-data. Proven
+# on 80.00/-3.52 (Jan Mayen), where temperature is -14..-17 every hour: the
+# unsigned pattern would have reported a total forecast blackout on a fully
+# populated page. Any row that can go negative MUST use this pattern.
+RE_INT_CELL = re.compile(r"<li[^>]*>(-?\d+)</li>")
+
+# Generic cell access for rows whose value is NOT bare text in the <li>:
+#   wind  -> value is inside a nested <span>, so tags must be stripped to read
+#            the speed; the title is only a fallback for the speed itself
+#   frost -> <li> is EMPTY, state is in title; and the two states differ in
+#            both class spelling and ATTRIBUTE ORDER (class-then-title at one
+#            site, title-then-class at another), so read attrs as a string.
+RE_LI = re.compile(r"<li\b([^>]*)>(.*?)</li>", re.S)
+RE_TITLE = re.compile(r'title="([^"]*)"')
+# Speed only. Direction/degrees are deliberately NOT extracted: every threshold
+# and every output line runs on speed, and nothing in this skill consumes a
+# bearing. Add it back if crosswind-vs-pointing or front-arrival logic ever
+# needs it.
+RE_WIND_TITLE_SPEED = re.compile(r"(\d+(?:\.\d+)?)\s*(?:mph|km/h)")
+RE_WIND_UNIT = re.compile(r"Wind Speed/Direction \(([^)]+)\)")
+
+# Row labels as patterns: the unit inside the wind label changes with the
+# site's unit setting (mph vs km/h), so match the shape, not the literal.
+ROW_PRECIP = r"Precipitation Probability \(%\)"
+ROW_TEMP = r"Temperature \(&deg;C\)"
+ROW_DEW = r"Dew Point \(&deg;C\)"
+ROW_FROST = r"Chance of Frost"
+ROW_WIND = r"Wind Speed/Direction \([^)]+\)"
 
 
 class FetchError(Exception):
@@ -76,23 +105,56 @@ class ParseError(Exception):
     pass
 
 
+def _fmt_coord(value: str) -> str:
+    """Render a coordinate at 2 decimal places -- the site's canonical form.
+
+    Full precision is 301-redirected to the 2-dp URL and that redirect DROPS
+    the query string, so `?view=midnight` silently came back as `current`.
+    Measured 2026-11-07: `/forecast/31.54738/-99.382423?view=midnight`
+    -> `/forecast/31.55/-99.38` (no query), while the 2-dp URL honoured the
+    view. 0.01 deg is ~1.1 km -- irrelevant to a forecast grid, and the site
+    performs this same normalisation itself.
+    """
+    try:
+        v = round(float(value), 2)
+    except (TypeError, ValueError):
+        return str(value)
+    if v == 0:  # suppress "-0.00"
+        v = 0.0
+    return f"{v:.2f}"
+
+
 def fetch(lat: str, lon: str, view: str = "current") -> tuple[str, str]:
     """Download the forecast page. Returns (url, html).
 
     `view` sets where each row's 24 columns start: `current` at the current
     local hour, `midnight` at 00:00, `midday` at 12:00. Passed explicitly
     even though the site already defaults to `current`, so the window can
-    never drift if their default changes.
+    never drift if their default changes -- but it only survives if the
+    coordinates are already canonical (see _fmt_coord).
     """
-    url = f"{BASE_URL}/{lat}/{lon}?view={view}"
+    url = (
+        f"{BASE_URL}/{_fmt_coord(lat)}/{_fmt_coord(lon)}"
+        f"?view={view if view in ('current', 'midnight', 'midday') else 'current'}"
+    )
     req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
     try:
         with urllib.request.urlopen(req, timeout=30) as resp:
+            final = resp.geturl()
             body = resp.read().decode("utf-8", "replace")
     except urllib.error.HTTPError as exc:
         raise FetchError(f"HTTP {exc.code} from {url}") from exc
     except (urllib.error.URLError, OSError, TimeoutError) as exc:
         raise FetchError(f"network failure fetching {url}: {exc}") from exc
+
+    # A redirect that strips ?view= would silently substitute the default view
+    # for the one asked for. Loud here rather than a quietly wrong row later.
+    if "view=" not in final and "view=" in url:
+        print(
+            f"site-conditions: redirected to {final} -- the view parameter was "
+            f"dropped, so the window may not be '{view}'",
+            file=sys.stderr,
+        )
     if "Forecast for" not in body:
         raise ParseError(f"{url} did not return a Clear Outside forecast page")
     return url, body
@@ -173,6 +235,97 @@ def _compress(pairs: list[tuple[str, bool]]) -> str:
     return ",".join(runs)
 
 
+def _row_cells(block: str, label: str) -> list[tuple[str, str | None]] | None:
+    """Return [(text, title)] per <li> for the named row, or None if absent.
+
+    `label` is a regex fragment matched against the row's label span. The
+    attribute string is handed back verbatim so callers can read `title`
+    without assuming attribute order.
+    """
+    m = re.search(
+        r'<span class="fc_detail_label"><span>' + label + r"</span></span>"
+        r".*?<ul>(.*?)</ul>",
+        block,
+        re.S,
+    )
+    if not m:
+        return None
+    cells: list[tuple[str, str | None]] = []
+    for attrs, inner in RE_LI.findall(m.group(1)):
+        t = RE_TITLE.search(attrs)
+        cells.append((re.sub(r"<[^>]+>", "", inner).strip(), t.group(1) if t else None))
+    return cells
+
+
+def _fit(seq: list, n: int, name: str = "") -> list:
+    """Align a row to the hour columns: pad short, truncate long, all-None
+    when the row is missing entirely.
+
+    A present-but-short row is suspicious: padding appends at the END, which
+    keeps every cell at its correct hour, but a markup change that dropped a
+    cell mid-row would misalign the rest. Loudly report it rather than let the
+    hours silently disagree with the values beside them.
+    """
+    if not seq:
+        return [None] * n
+    if 0 < len(seq) < n:
+        print(
+            f"site-conditions: row {name or '?'} has {len(seq)} cells for "
+            f"{n} hour labels -- check alignment",
+            file=sys.stderr,
+        )
+    return (list(seq) + [None] * n)[:n]
+
+
+def _row_ints(cells: list[tuple[str, str | None]] | None, n: int, name: str) -> list:
+    out = []
+    for text, _ in cells or []:
+        try:
+            out.append(int(text))
+        except ValueError:
+            out.append(None)
+    return _fit(out, n, name)
+
+
+def _row_frost(cells: list[tuple[str, str | None]] | None, n: int, name: str) -> list:
+    """Frost is a title, not a value: 'No Frost' vs 'Chance of Frost'."""
+    out = []
+    for _, title in cells or []:
+        if title is None:
+            out.append(None)
+        elif title.strip().lower() == "no frost":
+            out.append(False)
+        elif "frost" in title.lower():
+            out.append(True)
+        else:
+            out.append(None)
+    return _fit(out, n, name)
+
+
+def _row_wind(cells: list[tuple[str, str | None]] | None, n: int, name: str) -> list:
+    """Wind speed only -- see RE_WIND_TITLE_SPEED for why direction is dropped.
+
+    Cell text is the rendered speed; the title is a fallback for the case where
+    the nested span is absent, so an empty cell degrades to a real value rather
+    than silently hiding wind from the whole forecast.
+    """
+    speeds: list = []
+    for text, title in cells or []:
+        speed: object | None = None
+        try:
+            speed = int(text)
+        except ValueError:
+            pass
+        if speed is None and title:
+            m = RE_WIND_TITLE_SPEED.search(title)
+            if m:
+                speed = float(m.group(1))
+                if speed == int(speed):
+                    speed = int(speed)
+        speeds.append(speed)
+    return _fit(speeds, n, name)
+
+
 def parse(html: str) -> dict:
     """Parse a Clear Outside forecast page into a dict (see SKILL.md)."""
     loc = RE_LOCATION.search(html)
@@ -236,8 +389,27 @@ def parse(html: str) -> dict:
 
         start = astro.group(1) if astro else None
         end = astro.group(2) if astro else None
-
         idx = int(key)
+
+        # Condition rows for this block, aligned to the hour columns later.
+        n = len(hour_labels)
+        wind_unit_m = RE_WIND_UNIT.search(block)
+        w_spd = _row_wind(_row_cells(block, ROW_WIND), n, f"wind (day {idx})")
+        cond = {
+            "precip_probability": _row_ints(
+                _row_cells(block, ROW_PRECIP), n, f"precip (day {idx})"
+            ),
+            "temperature_c": _row_ints(
+                _row_cells(block, ROW_TEMP), n, f"temperature (day {idx})"
+            ),
+            "dew_point_c": _row_ints(
+                _row_cells(block, ROW_DEW), n, f"dew point (day {idx})"
+            ),
+            "frost": _row_frost(_row_cells(block, ROW_FROST), n, f"frost (day {idx})"),
+            "wind_speed": w_spd,
+        }
+        wind_unit = wind_unit_m.group(1) if wind_unit_m else None
+
         block_date = start_date + timedelta(days=idx) if start_date else None
         label_dow = date_m.group(1) if date_m else None
         label_dom = date_m.group(2) if date_m else None
@@ -268,6 +440,8 @@ def parse(html: str) -> dict:
                 "_end": end,
                 "_labels": hour_labels,
                 "_values": cloud_values,
+                "_cond": cond,
+                "_wind_unit": wind_unit,
             }
         )
 
@@ -276,8 +450,11 @@ def parse(html: str) -> dict:
     starts = {d["_date"]: d["_start"] for d in days if d["_date"] and d["_start"]}
     ends = {d["_date"]: d["_end"] for d in days if d["_date"] and d["_end"]}
 
+    wind_unit = None
     for d in days:
         labels, values = d.pop("_labels"), d.pop("_values")
+        cond, unit = d.pop("_cond"), d.pop("_wind_unit")
+        wind_unit = wind_unit or unit
         day0, first = d.pop("_date"), None
         d.pop("_start"), d.pop("_end")
         if labels:
@@ -292,11 +469,22 @@ def parse(html: str) -> dict:
             col_date = (
                 day0 + timedelta(days=1) if (first is not None and h < first) else day0
             )
+            temp = cond["temperature_c"][i]
+            dew = cond["dew_point_c"][i]
+            # Derived, not on the page: temperature minus dew point. The single
+            # best dew-risk number available here.
+            spread = (temp - dew) if temp is not None and dew is not None else None
             columns.append(
                 {
                     "hour": h,
                     "total_clouds": values[i],
                     "astro_dark": _is_dark(h, col_date, starts, ends),
+                    "precip_probability": cond["precip_probability"][i],
+                    "temperature_c": temp,
+                    "dew_point_c": dew,
+                    "dewpoint_spread_c": spread,
+                    "frost": cond["frost"][i],
+                    "wind_speed": cond["wind_speed"][i],
                 }
             )
         d["columns"] = columns
@@ -305,6 +493,7 @@ def parse(html: str) -> dict:
         "location": loc.group(1),
         "generated": generated,
         "sky_quality": sky_quality,
+        "wind_unit": wind_unit,
         "days": days,
     }
 
@@ -364,6 +553,87 @@ def summarize(data: dict, threshold: int, night_only: bool) -> str:
     return "\n".join(lines)
 
 
+def _tag(day: dict) -> str:
+    return f"{day['weekday'][:3] if day['weekday'] else '???':<3} {day['day_of_month'] or '??':>2}"
+
+
+def summarize_conditions(
+    data: dict, max_wind: float, max_precip: int, min_dew_spread: int
+) -> str:
+    """One line per night: worst values, with breaches marked.
+
+    Exceptions-first -- the question this answers is "will conditions hold for
+    the next few hours", so the verdict and the worst case matter, not 120 raw
+    numbers.
+
+    `dew` (from dew-point spread) and `frost` are reported separately on
+    purpose: they are different questions. Frost needs freezing -- the page's
+    own flag is authoritative for it -- while dew is pure saturation and can
+    wreck an optic at +12 C. Measured across 453 hours, spread alone called
+    164 false frosts, every one of them above freezing.
+    """
+    unit = data.get("wind_unit") or "mph"
+    lines = [
+        f"Conditions  (wind>={max_wind:g}{unit} · precip>={max_precip}% · "
+        f"dew-spread<={min_dew_spread}°C · any frost)"
+    ]
+    any_breach = False
+    for day in data["days"]:
+        tag = _tag(day)
+        cols = day["columns"]
+        if not cols:
+            lines.append(f"  {tag}  —  no forecast data")
+            continue
+        n = len(cols)
+        ws = [c["wind_speed"] for c in cols if c["wind_speed"] is not None]
+        pp = [
+            c["precip_probability"] for c in cols if c["precip_probability"] is not None
+        ]
+        sp = [
+            c["dewpoint_spread_c"] for c in cols if c["dewpoint_spread_c"] is not None
+        ]
+        fr = sum(1 for c in cols if c["frost"] is True)
+        w_b = sum(
+            1
+            for c in cols
+            if c["wind_speed"] is not None and c["wind_speed"] >= max_wind
+        )
+        p_b = sum(
+            1
+            for c in cols
+            if c["precip_probability"] is not None
+            and c["precip_probability"] >= max_precip
+        )
+        s_b = sum(
+            1
+            for c in cols
+            if c["dewpoint_spread_c"] is not None
+            and c["dewpoint_spread_c"] <= min_dew_spread
+        )
+        breach = bool(w_b or p_b or s_b or fr)
+        any_breach = any_breach or breach
+
+        parts = []
+        if ws:
+            parts.append(
+                f"wind {w_b}/{n}h max{max(ws):g}" if w_b else f"wind max{max(ws):g}"
+            )
+        if pp:
+            parts.append(
+                f"precip {p_b}/{n}h max{max(pp)}%" if p_b else f"precip max{max(pp)}%"
+            )
+        if sp:
+            parts.append(
+                f"dew {s_b}/{n}h min{min(sp)}°C" if s_b else f"dew min{min(sp)}°C"
+            )
+        parts.append(f"frost {fr}/{n}h" if fr else "no frost")
+        lines.append(f"  {tag}  {'⚠' if breach else '✓'} " + " · ".join(parts))
+
+    if not any_breach:
+        lines.append("  → no wind / precip / frost / dew breach in this forecast.")
+    return "\n".join(lines)
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(
         description="Clear Outside hourly forecast for an observing site."
@@ -389,6 +659,28 @@ def main(argv: list[str] | None = None) -> int:
         help="where each row's 24 columns start: current local hour "
         "(default), 00:00, or 12:00",
     )
+    ap.add_argument(
+        "--max-wind",
+        type=float,
+        default=12,
+        metavar="MPH",
+        help="wind breach threshold, in the page's own wind unit (default 12)",
+    )
+    ap.add_argument(
+        "--max-precip",
+        type=int,
+        default=40,
+        metavar="PCT",
+        help="precipitation-probability breach threshold in percent (default 40)",
+    )
+    ap.add_argument(
+        "--min-dew-spread",
+        type=int,
+        default=2,
+        metavar="C",
+        help="dew-point spread at or below this means optics fogging risk "
+        "(default 2 C). Separate from frost, which comes from the page",
+    )
     ap.add_argument("--json", action="store_true", help="emit JSON instead of text")
     ap.add_argument(
         "--html", metavar="FILE", help="parse a saved page instead of fetching"
@@ -409,12 +701,25 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.json:
         data = dict(data)
-        data["url"] = url or f"{BASE_URL}/{args.lat}/{args.lon}?view={args.view}"
+        data["url"] = url or (
+            f"{BASE_URL}/{_fmt_coord(args.lat)}/{_fmt_coord(args.lon)}?view={args.view}"
+        )
         data["view"] = args.view
         data["threshold"] = args.threshold
+        data["breach_thresholds"] = {
+            "max_wind": args.max_wind,
+            "max_precip": args.max_precip,
+            "min_dew_spread": args.min_dew_spread,
+        }
         print(json.dumps(data, indent=2))
     else:
         print(summarize(data, args.threshold, args.night_only))
+        print()
+        print(
+            summarize_conditions(
+                data, args.max_wind, args.max_precip, args.min_dew_spread
+            )
+        )
     return 0
 
 
