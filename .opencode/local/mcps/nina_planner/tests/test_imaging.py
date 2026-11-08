@@ -427,6 +427,17 @@ class ImagingDefensivePathsTest(unittest.TestCase):
             self.assertEqual(wx["0"]["dew_point"], "10.2")
             self.assertEqual(wx["1"]["cloud_cover"], "25")
 
+    def test_read_weather_rows_unreadable_file_returns_empty_dict(self):
+        from nina_planner.imaging import read_weather_rows
+
+        # A file that exists but cannot be decoded (a truncated/renamed
+        # non-UTF-8 file on a share) degrades to "no weather", never raises:
+        # callers are archiving frames and must not abort on a sidecar.
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            (tmp_path / "WeatherData.csv").write_bytes(b"\xff\xfe\x00\x80 junk")
+            self.assertEqual(read_weather_rows(tmp_path), {})
+
 
 if __name__ == "__main__":
     unittest.main()

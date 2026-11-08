@@ -183,6 +183,11 @@ class AuditBase(unittest.IsolatedAsyncioTestCase):
         with p1, p2:
             return await _call(plans_mod.audit_plans, **kwargs)
 
+    async def progress(self, plan_path):
+        p1, p2 = self.patch_metadata()
+        with p1, p2:
+            return await _call(plans_mod.get_plan_progress, plan_path)
+
     def row_by(self, result, image_type: str, pointing_index=None):
         matches = [
             r
@@ -610,6 +615,81 @@ class AuditTest(AuditBase):
         self.assertFalse(res["all_saved"])
         self.assertEqual(res["totals"]["plans"], 1)  # the good plan still audited
 
+    async def test_light_frames_without_any_plan_id_are_a_gap_error(self):
+        # The other side of the same left join: recorded LIGHT frames whose
+        # path carries no plan token at all (a FilePattern without
+        # $$TARGETNAME$$). Nothing can ever claim them, so they are owed
+        # work — reported as a gap with a null plan id, not silently dropped.
+        self.seed_full()
+        self.rows += [_row(target="Untokened target") for _ in range(2)]
+
+        res = await self.audit(project_dir=str(self.proj))
+
+        gaps = [e for e in res["errors"] if e["plan_id"] is None]
+        self.assertEqual(len(gaps), 1)
+        self.assertIn("2 light frames", gaps[0]["reason"])
+        self.assertIn("carry no plan id", gaps[0]["reason"])
+        self.assertFalse(res["all_saved"])
+
+    async def test_frames_claiming_a_dead_plan_id_warn_nothing_audited(self):
+        # A plan file exists but no recorded light frame references it, and
+        # the frames that DO exist name an id no file serves: there is no
+        # row to build, so the report must say the load found nothing to
+        # audit rather than implying an empty-but-clean sweep.
+        self.write_plan(_plan())
+        self.rows += [_row(target="Ghost _plan-deadbeef_") for _ in range(5)]
+
+        res = await self.audit(project_dir=str(self.proj))
+
+        self.assertEqual(res["totals"]["plans"], 0)
+        self.assertEqual(res["rows"], [])
+        self.assertIn("no plan could be loaded from", res["warning"])
+        self.assertFalse(res["all_saved"])
+
+    async def test_unknown_type_filter_is_rejected(self):
+        with self.assertRaises(ValueError) as ctx:
+            await self.audit(project_dir=str(self.proj), types=["light", "flats"])
+        message = str(ctx.exception)
+        self.assertIn("unknown types", message)
+        self.assertIn("flats", message)
+        self.assertIn("bias", message)  # names the accepted set
+
+    async def test_relative_project_dir_is_rooted_at_the_project_root(self):
+        # A caller may name the plan dir the way the CLI does ("plans"),
+        # which must resolve under PROJECT_DIR — not under the process cwd.
+        self.seed_full()
+        sub = self.proj / "plans"
+        sub.mkdir()
+        (self.proj / "m31.json").rename(sub / "m31.json")
+
+        with mock.patch.object(plans_mod.config, "PROJECT_DIR", self.proj):
+            res = await self.audit(project_dir="plans")
+
+        self.assertEqual(res["totals"]["plans"], 1)
+        self.assertTrue(res["all_saved"])
+
+    def test_written_iso_of_a_missing_file_is_none(self):
+        # A plan that vanishes between load and stat must yield a null
+        # `written`, not an exception that fails the whole listing.
+        self.assertIsNone(plans_mod._written_iso(self.proj / "gone.json"))
+
+    async def test_overshoot_and_expired_window_warnings_are_joined(self):
+        # Both warnings can be true of one plan — a mode=full re-shoot that
+        # overshot the light total while an older calibration window closed
+        # short. Neither may silently replace the other.
+        old = (datetime.now(UTC) - timedelta(days=10)).strftime("%Y-%m-%dT%H:%M:%SZ")
+        self.seed_full(light_rows=25, exposure_start=old, skip={"bias"})
+
+        res = await self.progress(str(self.proj / "m31.json"))
+
+        self.assertTrue(res["overshot"])
+        self.assertTrue(res["expired_with_deficit"])
+        warning = res["warning"]
+        self.assertIn("beyond the plan total", warning)
+        self.assertIn(
+            "ALSO: Calibration window(s) expired with deficits: bias", warning
+        )
+
     async def test_never_shot_plan_reported_not_audited(self):
         # Plan file loads fine but the CSV never mentions it → NOT audited
         # (no rows: expected/attributed means nothing for frames
@@ -930,6 +1010,34 @@ class ListPlansTest(AuditBase):
             [e["file"] for e in res["plans"]], ["m31.json", "m42.json"]
         )  # shallowest first; pruned junk absent
         self.assertEqual(res["errors"], [])  # pruned files never load, so never error
+
+    async def test_relative_project_dir_is_rooted_at_the_project_root(self):
+        (self.proj / "nested").mkdir()
+        self.write_plan(_plan(target="M31"), name="nested/m31.json")
+
+        with mock.patch.object(plans_mod.config, "PROJECT_DIR", self.proj):
+            res = await _call(plans_mod.list_plans, project_dir="nested")
+
+        self.assertEqual([e["file"] for e in res["plans"]], ["m31.json"])
+        self.assertEqual(res["errors"], [])
+
+    async def test_written_is_none_when_the_file_vanishes_before_stat(self):
+        # A plan deleted between the load pass and the mtime read is a
+        # listing entry with `written: null`, not a failed call.
+        ghost = self.proj / "ghost.json"
+        plan = _plan()
+
+        async def _load(plan_dir):
+            return ([(ghost, plan)], [])
+
+        with mock.patch.object(plans_mod, "_load_project_plans", _load):
+            res = await _call(plans_mod.list_plans, project_dir=str(self.proj))
+
+        self.assertEqual(len(res["plans"]), 1)
+        entry = res["plans"][0]
+        self.assertEqual(entry["file"], "ghost.json")
+        self.assertIsNone(entry["written"])
+        self.assertEqual(entry["plan_id"], plan._base_plan_id())
 
 
 if __name__ == "__main__":

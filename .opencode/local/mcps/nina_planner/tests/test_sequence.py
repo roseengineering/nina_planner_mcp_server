@@ -237,6 +237,28 @@ class ContainerDefaultsTest(unittest.TestCase):
         result = container_deepsky(name="DSO", target="M31", ra=5.0, dec=10.0, posang=0)
         self.assertEqual(result["Items"]["$values"], [])
 
+    def test_safetynet_defaults_none_instructions_and_conditions(self):
+        from nina_planner.sequence import sequence_safetynet
+
+        # Callers pass one or the other (lights: conditions+triggers, flats:
+        # instructions+conditions); the omitted argument must still arrive at
+        # container_sequential as a list, not None.
+        result = sequence_safetynet(
+            name="Image Object",
+            equipment=ObservatoryEquipment(),
+            instructions=None,
+            conditions=None,
+        )
+        # conditions=None → only safetynet's own sunrise loop is present.
+        conditions = result["Conditions"]["$values"]
+        self.assertEqual(len(conditions), 1)
+        self.assertIn("TimeCondition", conditions[0]["$type"])
+        # instructions=None → the On Safe container holds just its end marker.
+        on_safe = result["Items"]["$values"][0]
+        ends = on_safe["Items"]["$values"]
+        self.assertEqual(len(ends), 1)
+        self.assertEqual(ends[0]["InstructionSetName"], "Image Object")
+
     def test_container_deepsky_explicit_lists_are_preserved(self):
         from nina_planner.sequence import container_deepsky
 

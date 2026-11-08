@@ -97,6 +97,23 @@ class LoadPointingsTextTest(unittest.TestCase):
         pointings = load_pointings_text(text)
         self.assertEqual([p.label for p in pointings], ["Pane 2"])
 
+    def test_bad_position_angle_row_skipped(self):
+        # Coordinates are good, so the row is salvageable — but an
+        # unparseable position angle must not be guessed as 0 (which would
+        # silently reproject a mosaic pane): the row is dropped and logged.
+        text = (
+            TELESCOPIUS_HEADER
+            + "\nPane 1, 0hr 56' 01\", 45º 51' 18\", east, 309.00, 205.80, 10%, 1, 1"
+            + "\nPane 2, 0hr 29' 28\", 45º 51' 18\", 0.00, 309.00, 205.80, 10%, 1, 2\n"
+        )
+        with self.assertLogs("nina_planner.mosaic", level="WARNING") as logs:
+            pointings = load_pointings_text(text)
+        self.assertEqual([p.label for p in pointings], ["Pane 2"])
+        self.assertTrue(
+            any("bad position angle 'east'" in line for line in logs.output),
+            msg=logs.output,
+        )
+
     def test_out_of_range_dec_row_skipped(self):
         text = (
             TELESCOPIUS_HEADER
@@ -173,6 +190,28 @@ class LoadPointingsTextTest(unittest.TestCase):
     def test_header_only_raises(self):
         with self.assertRaises(ValueError):
             load_pointings_text(TELESCOPIUS_HEADER + "\n")
+
+
+class ParseIntTest(unittest.TestCase):
+    def test_blank_cell_is_no_index(self):
+        from nina_planner.mosaic import _parse_int
+
+        self.assertIsNone(_parse_int(""))
+        self.assertIsNone(_parse_int("   "))
+
+    def test_numeric_string_that_is_not_an_integer(self):
+        from nina_planner.mosaic import _parse_int
+
+        # Telescopius writes "3" but a hand-edited file may say "3.0":
+        # accept it rather than dropping the row's index.
+        self.assertEqual(_parse_int("3.5"), 3)
+        self.assertEqual(_parse_int("3.0"), 3)
+
+    def test_non_numeric_cell_is_no_index(self):
+        from nina_planner.mosaic import _parse_int
+
+        self.assertIsNone(_parse_int("row"))
+        self.assertIsNone(_parse_int("1,5"))
 
 
 class LoadPointingsFileTest(unittest.TestCase):

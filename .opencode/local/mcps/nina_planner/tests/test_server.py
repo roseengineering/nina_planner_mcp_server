@@ -349,6 +349,37 @@ class HelperFunctionsTest(unittest.TestCase):
         self.assertIn("non-JSON", str(ctx.exception))
         self.assertIn("gateway exploded", str(ctx.exception))
 
+    def test_api_200_success_false_without_error_is_generic_failure(self):
+        # NINA always pairs Success:false with an Error string; a body that
+        # does not still must not be reported as a success.
+        from nina_planner.client import unwrap_response as _unwrap_response
+
+        resp = self._api_response(200, json_body={"Success": False, "Response": ""})
+        with self.assertRaisesRegex(RuntimeError, "^API request failed$"):
+            _unwrap_response("GET", "/time", resp)
+
+    def test_run_blocking_runs_a_real_subprocess(self):
+        import sys
+
+        from nina_planner.client import run_blocking as _run_blocking
+
+        result = asyncio.run(_run_blocking([sys.executable, "-c", "print('ok')"]))
+        self.assertEqual(result.returncode, 0)
+        self.assertIn("ok", result.stdout)
+
+    def test_stop_running_sequence_and_wait_times_out(self):
+        from nina_planner.client import stop_running_sequence_and_wait as _stop_wait
+
+        # NINA keeps reporting RUNNING past the deadline: the wait must give
+        # up loudly (the caller then knows a load would be rejected) instead
+        # of polling forever.
+        with patch(
+            "nina_planner.client.api_get",
+            AsyncMock(return_value={"Status": "RUNNING"}),
+        ):
+            with self.assertRaisesRegex(RuntimeError, "did not stop within 0s"):
+                asyncio.run(_stop_wait(timeout=0.01))
+
     def _make_plan(self, **overrides):
         data = {
             "plan_id": "plan-test",
@@ -817,6 +848,43 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(kept["B"].focus_offset)
         self.assertEqual(kept["L"].focus_offset, 0)
 
+    async def test_get_site_profile_unparseable_focus_offset_keeps_filter(self):
+        # "n/a" is an ASCOM *missing* marker (ascom_int returns None); a
+        # value that is not a number at all is the parse failure — the
+        # filter stays in the profile with focus_offset=None, because a
+        # metadata field must never drop the filter a plan references.
+        from nina_planner.server import get_site_profile
+
+        filters = [
+            {"Name": "L", "Position": 1, "FocusOffset": "fast-focus"},
+            {"Name": "R", "Position": 2, "FocusOffset": 0},
+        ]
+        raw = {
+            "Name": "Test",
+            "Id": "abc",
+            "Description": "",
+            "AstrometrySettings": {},
+            "TelescopeSettings": {},
+            "CameraSettings": {},
+            "FilterWheelSettings": {"FilterWheelFilters": filters},
+            "ImageFileSettings": {"FilePath": "", "FilePattern": None},
+            "PlateSolveSettings": {"PlateSolverType": None, "BlindSolverType": None},
+            "FramingAssistantSettings": {},
+            "GuiderSettings": {},
+            "RotatorSettings": {},
+            "DomeSettings": {},
+            "WeatherDataSettings": {},
+            "SafetyMonitorSettings": {},
+            "FocuserSettings": {},
+            "SwitchSettings": {},
+        }
+        with patch("nina_planner.client.api_get", AsyncMock(return_value=raw)):
+            result = await get_site_profile()
+        kept = {f.name: f for f in result.filters}
+        self.assertEqual(list(kept), ["L", "R"])
+        self.assertIsNone(kept["L"].focus_offset)
+        self.assertEqual(kept["R"].focus_offset, 0)
+
     async def test_get_site_equipment_status_returns_empty_when_all_false(self):
         from nina_planner.tools.equipment import (
             _get_site_equipment_status as _get_site_equipment_status,
@@ -828,6 +896,20 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
         self.assertIsInstance(equipment, ObservatoryEquipment)
         self.assertIsNone(equipment.mount)
         self.assertIsNone(equipment.camera)
+
+    async def test_get_site_equipment_status_unnamed_unconnected_device_is_none(self):
+        # A device section that reports neither a connection nor a name
+        # (NINA writing a stub entry for hardware it does not see) is not a
+        # device: it must not be turned into a MountDevice with empty fields.
+        from nina_planner.tools.equipment import (
+            _get_site_equipment_status as _get_site_equipment_status,
+        )
+
+        profile = self._minimal_profile()
+        raw = {"Mount": {"Connected": False, "Description": "no name reported"}}
+        with patch("nina_planner.client.api_get", AsyncMock(return_value=raw)):
+            equipment = await _get_site_equipment_status(profile)
+        self.assertIsNone(equipment.mount)
 
     async def test_get_site_equipment_status_connects_missing_devices(self):
         from nina_planner.tools.equipment import (
@@ -1074,6 +1156,43 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["count"], 0)
         self.assertIsNone(result["frame"])
         self.assertIn("no frame record", result["note"])
+
+    async def test_get_frame_stats_accepts_a_bare_record_object(self):
+        # The endpoint is documented as a one-element list, but a bare
+        # object is tolerated rather than read as "no frame".
+        from nina_planner.server import get_frame_stats
+
+        with patch(
+            "nina_planner.client.api_get",
+            AsyncMock(return_value=dict(self._FRAME_RECORD)),
+        ):
+            result = await get_frame_stats()
+        self.assertEqual(result["count"], 1)
+        self.assertEqual(result["frame"]["stars"], self._FRAME_RECORD["Stars"])
+
+    async def test_get_frame_stats_unrecognised_payload_reads_as_empty(self):
+        from nina_planner.server import get_frame_stats
+
+        with patch(
+            "nina_planner.client.api_get",
+            AsyncMock(return_value="unexpected shape"),
+        ):
+            result = await get_frame_stats()
+        self.assertEqual(result["count"], 0)
+        self.assertIsNone(result["frame"])
+        self.assertIsNone(result["image_type"])
+
+    async def test_get_frame_stats_reraises_an_unexpected_api_error(self):
+        # "Index out of range" is the expected empty state; every other
+        # failure is a fault the caller must see.
+        from nina_planner.server import get_frame_stats
+
+        with patch(
+            "nina_planner.client.api_get",
+            AsyncMock(side_effect=RuntimeError("gateway exploded")),
+        ):
+            with self.assertRaisesRegex(RuntimeError, "gateway exploded"):
+                await get_frame_stats()
 
     async def test_write_plan_file_creates_file(self):
         from nina_planner.server import write_plan_file
@@ -1613,6 +1732,34 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
             self.assertNotEqual(data["plan_id"], "plan-base123")
             self.assertTrue(data["plan_id"])
 
+    async def test_write_mosaic_plan_relative_paths_resolve_under_project_dir(self):
+        # A caller (or the CLI habit) naming files by name only: the CSV,
+        # the base plan and the output all root at PROJECT_DIR, never at the
+        # process cwd — a relative output must land in the project dir.
+        from nina_planner.server import write_mosaic_plan
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            plan_path, csv_path = self._write_mosaic_source(root)
+            with (
+                patch("nina_planner.config.PROJECT_DIR", root),
+                patch(
+                    "nina_planner.tools.equipment.get_site_profile",
+                    AsyncMock(return_value=self._full_profile()),
+                ),
+            ):
+                result = await write_mosaic_plan(
+                    plan_path.name,
+                    csv_path.name,
+                    output_path="mosaic_out.json",
+                )
+
+            self.assertIn("2 pointing(s)", result)
+            written = root / "mosaic_out.json"
+            self.assertTrue(written.is_file())
+            data = json.loads(written.read_text())
+            self.assertEqual(len(data["pointings"]), 2)
+
     async def test_write_mosaic_plan_zero_pa_without_rotator_ok(self):
         from nina_planner.server import write_mosaic_plan
 
@@ -1976,6 +2123,16 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
                         ]
                     )
         self.assertIn("Unsupported mode", str(ctx.exception))
+
+    async def test_load_sequence_request_must_be_a_list(self):
+        # A single object (or any non-list) is a caller bug, caught before a
+        # plan is read: the error names the type so the shape is obvious.
+        from nina_planner.server import load_sequence
+
+        with self.assertRaises(ValueError) as ctx:
+            await load_sequence(request={"plan": "plan.json", "action": "light"})
+        self.assertIn("must be a list", str(ctx.exception))
+        self.assertIn("dict", str(ctx.exception))
 
     async def test_load_sequence_requires_plan(self):
         """`plan` is optional in the schema, but every action needs one."""
@@ -3387,6 +3544,30 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
         ):
             result = await get_sequence_state(detail="raw")
         self.assertEqual(result, expected)
+
+    async def test_get_sequence_state_rejects_unknown_detail(self):
+        from nina_planner.server import get_sequence_state
+
+        with self.assertRaisesRegex(ValueError, 'detail must be "summary" or "raw"'):
+            await get_sequence_state(detail="verbose")
+        # The bad detail is rejected before anything is fetched.
+        with patch("nina_planner.client.api_get", AsyncMock()) as api_get:
+            with self.assertRaises(ValueError):
+                await get_sequence_state(detail="")
+            api_get.assert_not_awaited()
+
+    async def test_get_sequence_state_without_sequence_json(self):
+        # /sequence/json is an optional merge: when it fails the summary is
+        # still built from /sequence/state, with no horizon data.
+        from nina_planner.server import get_sequence_state
+
+        with patch(
+            "nina_planner.client.api_get",
+            AsyncMock(side_effect=[[], RuntimeError("no sequencer json")]),
+        ):
+            result = await get_sequence_state()
+        self.assertEqual(result["step_count"], 0)
+        self.assertEqual(result["steps"], [])
 
     async def test_get_nina_status_running_with_api(self):
         """API responsive => running."""

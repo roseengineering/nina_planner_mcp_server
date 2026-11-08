@@ -1,8 +1,11 @@
+import asyncio
 import math
 import unittest
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
-from astropy.coordinates import SkyCoord
+import numpy as np
+from astropy import units as u
+from astropy.coordinates import EarthLocation, SkyCoord
 from astropy.time import Time
 
 from nina_planner import dso_catalog
@@ -124,6 +127,41 @@ class NameResolutionTest(unittest.TestCase):
         self.assertIn("mirrors down", message)
         self.assertIn("sesame timed out", message)
 
+    def test_sesame_backstop_is_used_when_the_web_mirrors_fail(self):
+        # Layer 2 must actually be *called* (not just its result mocked):
+        # this is the path that keeps resolve_target working while CDS is out.
+        coord = SkyCoord(2.53, 89.26, unit=("hourangle", "deg"))
+        with (
+            patch.object(
+                sky, "_resolve_via_simbad_web", side_effect=ValueError("mirrors down")
+            ),
+            patch.object(sky.SkyCoord, "from_name", return_value=coord) as from_name,
+        ):
+            resolved = sky._resolve_name("M1")
+        from_name.assert_called_once_with("M1")
+        self.assertEqual(resolved.dec.deg, 89.26)
+
+    def test_resolve_target_wraps_a_total_failure_as_value_error(self):
+        # The tool's contract: skip the target rather than guess coordinates.
+        # The reason from the layer below must survive into the message.
+        with patch.object(
+            sky, "_resolve_name", side_effect=RuntimeError("all mirrors down")
+        ):
+            with self.assertRaises(ValueError) as ctx:
+                asyncio.run(sky.resolve_target("My Named Nebula"))
+        message = str(ctx.exception)
+        self.assertIn("could not resolve target 'My Named Nebula'", message)
+        self.assertIn("all mirrors down", message)
+
+    def test_resolve_target_reports_ra_hours_and_dec_deg(self):
+        coord = SkyCoord(5.0, 10.5, unit=("hourangle", "deg"))
+        with patch.object(sky, "_resolve_name", return_value=coord) as resolve:
+            out = asyncio.run(sky.resolve_target("My Named Nebula"))
+        resolve.assert_called_once_with("My Named Nebula")
+        self.assertEqual(
+            out, {"name": "My Named Nebula", "ra_hours": 5.0, "dec_deg": 10.5}
+        )
+
     def test_fetch_builds_the_simbad_sim_id_request(self):
         """The endpoint shape is load-bearing: `sim-id` + ASCII output is what
         the coordinate regex matches against."""
@@ -161,6 +199,11 @@ class SurfaceBrightnessTest(unittest.TestCase):
         self.assertAlmostEqual(
             sky._surface_brightness(8.0, 10.0, 0.0), expected, places=6
         )
+
+    def test_zero_area_returns_the_magnitude_unchanged(self):
+        # A catalog row with no angular size has no surface to spread its
+        # light over: log10(0) would be -inf, so the magnitude stands in.
+        self.assertEqual(sky._surface_brightness(12.0, 0.0, 0.0), 12.0)
 
 
 class DifficultyTest(unittest.TestCase):
@@ -233,6 +276,67 @@ class SunEventsTest(unittest.TestCase):
         out = sky._sun_events(Time("2026-10-18T14:00:00"), self.LOCATION)
         # Local solar noon ~17:00 UTC at lon -75; sunset must follow it.
         self.assertGreater(out["events"]["sunset"], "2026-10-18T17:00")
+
+
+class SunEventsPolarPhaseTest(unittest.TestCase):
+    """The `night_phase` branches that need a site with no daily twilight.
+
+    At 75°N the sun stays above −18° from mid-March to late September, so
+    the -18° crossings disappear for months — the cases the docstring calls
+    out as polar day/night. Dates below are the real 2026 crossings for
+    lat=75, lon=0: the last astronomical dawn of spring is 2026-03-13T00:16Z
+    and the first astronomical dusk of autumn is 2026-09-30T23:23Z.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        cls.LOCATION = EarthLocation(lat=75.0 * u.deg, lon=0.0 * u.deg, height=0 * u.m)
+
+    def test_no_crossing_in_the_window_is_evening(self):
+        # Midsummer: no dusk or dawn within -24h..+48h at all. The night is
+        # still ahead, so this must never read as "the night just ended".
+        out = sky._sun_events(Time("2026-06-15T12:00:00"), self.LOCATION)
+        self.assertFalse(out["is_dark_now"])
+        self.assertEqual(out["night_phase"], "evening")
+        self.assertIsNone(out["darkness"]["start_utc"])
+        self.assertIsNone(out["darkness"]["end_utc"])
+
+    def test_dawn_without_a_dusk_ahead_is_morning(self):
+        # Hours after the spring dawn, with no dusk due until September:
+        # the night that just ended is the one to document.
+        out = sky._sun_events(Time("2026-03-13T12:00:00"), self.LOCATION)
+        self.assertFalse(out["is_dark_now"])
+        self.assertEqual(out["night_phase"], "morning")
+        self.assertIsNotNone(out["darkness"]["end_utc"])
+        self.assertTrue(out["darkness"]["end_utc"].startswith("2026-03-13"))
+
+    def test_dusk_ahead_without_a_dawn_behind_is_evening(self):
+        # Late afternoon on the first day of the new season: the sun has
+        # been above -18° for months (no dawn behind us) but dusk is hours
+        # away — the night is ahead, so evening.
+        out = sky._sun_events(Time("2026-09-30T12:00:00"), self.LOCATION)
+        self.assertFalse(out["is_dark_now"])
+        self.assertEqual(out["night_phase"], "evening")
+        self.assertIsNotNone(out["darkness"]["start_utc"])
+        self.assertTrue(out["darkness"]["start_utc"].startswith("2026-09-30"))
+        # The window it opens closes at the dawn that follows it.
+        self.assertTrue(out["darkness"]["end_utc"].startswith("2026-10-01"))
+
+
+class CrossingTimeTest(unittest.TestCase):
+    def test_want_outside_the_sampled_window_is_none(self):
+        times = Time("2026-10-18T00:00:00") + np.arange(4) * u.hour
+        values = np.array([1.0, 2.0, 3.0, 4.0])
+        # Below every sample: searchsorted lands on index 0.
+        self.assertIsNone(sky._crossing_time(times, values, 0.5))
+        # Above every sample: searchsorted lands past the end.
+        self.assertIsNone(sky._crossing_time(times, values, 9.0))
+
+    def test_crossing_inside_the_window_is_interpolated(self):
+        times = Time("2026-10-18T00:00:00") + np.arange(4) * u.hour
+        values = np.array([0.0, 1.0, 2.0, 3.0])
+        crossing = sky._crossing_time(times, values, 1.5)
+        self.assertEqual(crossing.utc.isot, "2026-10-18T01:30:00.000")
 
 
 class MoonEventsTest(unittest.TestCase):
@@ -568,6 +672,59 @@ class RankCatalogTest(unittest.TestCase):
         rows = sky._rank_catalog(catalog, **{**base, "top": 1})
         self.assertLessEqual(len(rows["visible_now"]), 1)
 
+    def test_no_darkness_in_the_window_returns_empty_lists(self):
+        # 75°N in June: the sun never reaches -18° in the sampled 12 hours,
+        # so there is no peak "within darkness" to report at all — and the
+        # day's peaks must not leak in as if they were observable.
+        when = Time("2026-06-15T12:00:00")
+        rows = sky._rank_catalog(
+            self._catalog(when, 75.0, 0.0),
+            when,
+            75.0,
+            0.0,
+            0.0,
+            30.0,
+            None,
+            None,
+            None,
+            10,
+        )
+        self.assertEqual(
+            rows,
+            {"visible_now": [], "later_tonight": [], "sampled_catalog": 3},
+        )
+
+    def test_large_for_field_uses_the_reported_fov(self):
+        when = Time("2026-10-18T02:00:00")
+        catalog = self._catalog(when, 45.0, -75.0)
+        # Every fixture object is 10 arcmin across; a 0.1° (6 arcmin) field
+        # makes them all wider than the frame — mosaic/framing care.
+        rows = sky._rank_catalog(
+            catalog, when, 45.0, -75.0, 100.0, 30.0, (0.1, 0.1), None, None, 10
+        )
+        self.assertTrue(rows["visible_now"])
+        self.assertTrue(
+            all(r["large_for_field"] for r in rows["visible_now"]),
+            msg=[r["name"] for r in rows["visible_now"]],
+        )
+        # No field of view reported → nothing can be judged too large.
+        rows = sky._rank_catalog(
+            catalog, when, 45.0, -75.0, 100.0, 30.0, None, None, None, 10
+        )
+        self.assertFalse(any(r["large_for_field"] for r in rows["visible_now"]))
+
+    def test_compact_objects_are_never_flagged_large(self):
+        # Compact (< 5 arcmin) objects bucket on integrated magnitude and
+        # are treated as point-like for framing, whatever the fov.
+        when = Time("2026-10-18T02:00:00")
+        lst = float(when.sidereal_time("apparent", longitude=-75.0).hour)
+        compact = dso_catalog.Dso("M57", "M57", "pn", lst, 33.0, 8.8, 1.4, 1.0)
+        rows = sky._rank_catalog(
+            [compact], when, 45.0, -75.0, 100.0, 30.0, (0.01, 0.01), None, None, 10
+        )
+        self.assertTrue(rows["visible_now"])
+        self.assertFalse(rows["visible_now"][0]["large_for_field"])
+
 
 class BuiltinCatalogTest(unittest.TestCase):
     def test_catalog_is_loaded_from_csv(self):
@@ -586,6 +743,116 @@ class BestTargetsValidationTest(unittest.TestCase):
 
         with self.assertRaises(ValueError):
             asyncio.run(sky.best_targets(level="expert"))
+
+
+class ToolWrapperTest(unittest.TestCase):
+    """The @mcp.tool() wrappers around the pure helpers.
+
+    Each wrapper only fetches the site profile, extracts site/optics and
+    hops a thread — the profile is patched exactly as test_server.py does,
+    so no live N.I.N.A. and no network is involved.
+    """
+
+    @staticmethod
+    def _profile(fov=None):
+        from nina_planner.models.profile import (
+            EquipmentConfig,
+            ObservatoryProfile,
+            OpticalTrainInfo,
+            SiteLocationInfo,
+        )
+
+        return ObservatoryProfile(
+            profile_name="Test",
+            profile_id="abc",
+            description="",
+            site=SiteLocationInfo(
+                latitude_deg=45.0, longitude_deg=-75.0, elevation_m=100.0
+            ),
+            optics=OpticalTrainInfo(field_of_view_deg=fov),
+            filters=[],
+            image_save_path="C:\\NINA",
+            file_pattern=None,
+            equipment=EquipmentConfig(
+                has_mount=False,
+                has_camera=False,
+                has_focuser=False,
+                has_filter_wheel=False,
+                has_guider=False,
+                has_rotator=False,
+                has_dome=False,
+                has_weather=False,
+                has_safety_monitor=False,
+                has_switch=False,
+                has_flat_device=False,
+            ),
+        )
+
+    def test_target_altitudes_reads_the_site_and_sorts_highest_first(self):
+        targets = [
+            {"name": "M31", "ra_hours": 0.71, "dec_deg": 41.27},
+            {"name": "south", "ra_hours": 0.0, "dec_deg": -60.0},
+        ]
+        with patch(
+            "nina_planner.tools.equipment.get_site_profile",
+            AsyncMock(return_value=self._profile()),
+        ):
+            out = asyncio.run(sky.target_altitudes(targets))
+        # Coordinates given → no resolver, no network; highest altitude first.
+        self.assertEqual([r["name"] for r in out["targets"]], ["M31", "south"])
+        self.assertIn("T", out["time_utc"])
+        self.assertGreater(out["targets"][0]["alt_deg"], 0)
+        self.assertLess(out["targets"][1]["alt_deg"], 0)
+
+    def test_best_targets_reads_the_site_and_forwards_the_fov(self):
+        # CATALOG is patched so the full 497-row sweep is not paid for here;
+        # what this asserts is that the wrapper pulls site+optics out of the
+        # profile and into the ranking (the ranking itself is RankCatalogTest).
+        extended = dso_catalog.Dso("Big", "Big", "open", 0.0, 45.0, 8.0, 60.0, 60.0)
+        compact = dso_catalog.Dso("Small", "Small", "pn", 0.0, 45.0, 8.8, 1.4, 1.0)
+        with (
+            patch(
+                "nina_planner.tools.equipment.get_site_profile",
+                AsyncMock(return_value=self._profile(fov=(0.1, 0.1))),
+            ),
+            patch("nina_planner.dso_catalog.CATALOG", (extended, compact)),
+        ):
+            out = asyncio.run(sky.best_targets(min_altitude=25.0, top=5))
+        self.assertEqual(out["sampled_catalog"], 2)
+        self.assertEqual(out["min_altitude"], 25.0)
+        self.assertIn("T", out["time_utc"])
+        self.assertIn("visible_now", out)
+        self.assertIn("later_tonight", out)
+
+    def test_best_targets_rejects_an_unknown_level_before_fetching(self):
+        with patch(
+            "nina_planner.tools.equipment.get_site_profile", AsyncMock()
+        ) as profile:
+            with self.assertRaises(ValueError):
+                asyncio.run(sky.best_targets(level="expert"))
+        profile.assert_not_awaited()
+
+    def test_sun_times_reads_the_site(self):
+        with patch(
+            "nina_planner.tools.equipment.get_site_profile",
+            AsyncMock(return_value=self._profile()),
+        ):
+            out = asyncio.run(sky.sun_times())
+        self.assertEqual(out["site"]["latitude_deg"], 45.0)
+        self.assertEqual(out["site"]["longitude_deg"], -75.0)
+        self.assertIn(out["night_phase"], ("dark", "morning", "evening"))
+        self.assertIn("T", out["time_utc"])
+
+    def test_moon_times_reads_the_site(self):
+        with patch(
+            "nina_planner.tools.equipment.get_site_profile",
+            AsyncMock(return_value=self._profile()),
+        ):
+            out = asyncio.run(sky.moon_times())
+        self.assertEqual(out["site"]["latitude_deg"], 45.0)
+        self.assertGreaterEqual(out["phase"]["illumination_fraction"], 0.0)
+        self.assertLessEqual(out["phase"]["illumination_fraction"], 1.0)
+        self.assertIn("events", out)
 
 
 if __name__ == "__main__":

@@ -692,6 +692,33 @@ class PurgePlanFileTest(PurgeBase):
         self.assertFalse((self.proj / "m31.json").exists())
         self.assertFalse(self.quarantine.exists())
 
+    def test_plan_file_removal_failure_fails_the_run(self):
+        # The frames are gone and the gates passed, but the original JSON
+        # itself cannot be unlinked: the run reports it, records the failed
+        # removal in the index, and exits 1 so the next run retries.
+        self.seed_full()
+        self.assertEqual(self.run_archive(), 0)
+        self.assertEqual(self.run_purge("--apply")[0], 0)
+
+        real_unlink = Path.unlink
+
+        def _boom(path, *args, **kwargs):
+            if path.name == "m31.json":
+                raise OSError("read-only filesystem")
+            return real_unlink(path, *args, **kwargs)
+
+        with mock.patch.object(Path, "unlink", _boom):
+            code, out, err = self.run_purge("--purge")
+
+        self.assertEqual(code, 1)
+        self.assertIn("cannot remove plan file", err)
+        self.assertNotIn("removed plan file", out)
+        self.assertTrue((self.proj / "m31.json").is_file())
+        records = self.plan_file_records()
+        self.assertEqual(len(records), 1)
+        self.assertFalse(records[0]["plan_file_deleted"])
+        self.assertIn("read-only filesystem", records[0]["reason"])
+
     # ------------------------------------------------------- same-folder edge
 
     def test_only_byte_identical_plan_files_are_removed(self):
@@ -768,6 +795,354 @@ class PurgeNoStagingLegTest(PurgeBase):
         self.assertEqual(sorted(str(p) for p in self.dest.rglob("*")), before)
         self.assertFalse((self.dest / ".cloud-verified.json").exists())
         self.assertFalse((self.dest / "purge-index.jsonl").exists())
+
+
+class PurgeDetailTest(PurgeBase):
+    """Branches the end-to-end purge runs never reach.
+
+    Helper-level cases where the fixture cannot produce the state (a
+    vanished manifest, a corrupt index line, an unlink that fails) and CLI
+    argument shapes the happy path does not use (relative paths, no
+    --imaging-root).
+    """
+
+    # ------------------------------------------------------------ helpers
+
+    def test_unique_join_truncates_past_the_limit(self):
+        self.assertEqual(purge_mod._unique_join(["a", "b"]), "a; b")
+        # Duplicates collapse first: the limit counts distinct reasons.
+        self.assertEqual(
+            purge_mod._unique_join(["a", "b", "a", "c", "d", "e"]),
+            "a; b; c; +2 more",
+        )
+
+    def test_plan_file_gate_refuses_a_plan_inside_dest(self):
+        plan_file = self.dest / "m31.json"  # the archived copy itself
+        _folder, ok, stale, reason = purge_mod._plan_file_gate(
+            plan_file, _plan(), self.dest
+        )
+        self.assertFalse(ok)
+        self.assertFalse(stale)
+        self.assertIn("inside --dest", reason)
+
+    def test_plan_file_gate_reports_an_unreadable_comparison(self):
+        # The project's plan file is unreadable (here: a directory where a
+        # file should be) — the refusal must name the comparison, not raise.
+        plan = _plan()
+        plan_file = self.proj / "m31.json"
+        plan_file.mkdir()
+        archived = self.dest / purge_mod._folder_name(plan_file, plan) / "plan.json"
+        archived.parent.mkdir(parents=True)
+        archived.write_text("{}", encoding="utf-8")
+
+        _folder, ok, stale, reason = purge_mod._plan_file_gate(
+            plan_file, plan, self.dest
+        )
+
+        self.assertFalse(ok)
+        self.assertFalse(stale)
+        self.assertIn("cannot compare against the archive", reason)
+
+    def test_resolve_root_rejects_a_missing_imaging_root(self):
+        args = purge_mod._build_parser().parse_args(
+            ["--imaging-root", str(self.proj / "no-such-root")]
+        )
+        with self.assertRaisesRegex(purge_mod.PurgeError, "does not exist"):
+            asyncio.run(purge_mod._resolve_root(args))
+
+    def test_resolve_root_reports_a_profile_failure(self):
+        args = purge_mod._build_parser().parse_args([])
+        with mock.patch.object(
+            metadata_mod,
+            "resolve_imaging_root",
+            side_effect=RuntimeError("NINA is down"),
+        ):
+            with self.assertRaises(purge_mod.PurgeError) as ctx:
+                asyncio.run(purge_mod._resolve_root(args))
+        message = str(ctx.exception)
+        self.assertIn("cannot resolve the imaging root", message)
+        self.assertIn("NINA is down", message)
+        self.assertIn("--imaging-root", message)
+
+    def test_read_manifests_skips_folders_without_a_usable_manifest(self):
+        (self.dest / "no-manifest").mkdir(parents=True)
+        broken = self.dest / "broken"
+        broken.mkdir()
+        (broken / "manifest.json").write_text("{oops", encoding="utf-8")
+        nameless = self.dest / "nameless"
+        nameless.mkdir()
+        (nameless / "manifest.json").write_text(
+            json.dumps({"complete": True}), encoding="utf-8"
+        )
+
+        by_plan, preserved, warnings = purge_mod._read_manifests(self.dest)
+
+        self.assertEqual(by_plan, {})
+        self.assertEqual(preserved, set())
+        self.assertEqual(len(warnings), 2)
+        self.assertTrue(any("unreadable manifest" in w for w in warnings), warnings)
+        self.assertTrue(any("no plan_id" in w for w in warnings), warnings)
+
+    def test_classify_tolerates_pathless_rows_and_outside_rejects(self):
+        vanished = self.root / "tok" / "2026-09-20" / "LIGHT" / "gone.fits"
+        outside_reject = Path("/elsewhere/BAD_renamed.fits")
+        inside_reject = self.root / "tok" / "2026-09-20" / "LIGHT" / "BAD_gone.fits"
+        rows = [
+            {"image_type": "LIGHT"},  # no file_path: nothing to classify
+            {"image_type": "LIGHT", "file_path": str(vanished)},  # stat fails
+        ]
+
+        dirs, outside = purge_mod._classify(
+            self.root,
+            rows,
+            [outside_reject, inside_reject],
+            {},
+            set(),
+            set(),
+            {},
+            {},
+        )
+
+        # The pathless row never reaches the outside-root report...
+        self.assertEqual([o["path"] for o in outside], [str(outside_reject)])
+        by_name = {d["dir"]: d for d in dirs}
+        # ...and the vanished frame still holds its directory.
+        self.assertEqual(by_name["tok"]["verdict"], "hold")
+
+    def test_quarantine_skips_a_directory_that_vanished(self):
+        entry = {"dir": "ghost", "frames": 0, "rejects": 0, "plan_ids": set()}
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            moved = purge_mod._quarantine(self.root, [entry])
+        self.assertEqual(moved, [])
+        self.assertIn("vanished before the move", err.getvalue())
+
+    def test_quarantine_reports_a_failed_move(self):
+        (self.root / "tok").mkdir()
+        entry = {"dir": "tok", "frames": 1, "rejects": 0, "plan_ids": set()}
+        err = io.StringIO()
+        with (
+            mock.patch(
+                "nina_planner.purge.shutil.move",
+                side_effect=OSError("permission denied"),
+            ),
+            contextlib.redirect_stderr(err),
+        ):
+            moved = purge_mod._quarantine(self.root, [entry])
+        self.assertEqual(moved, [])
+        self.assertIn("permission denied", err.getvalue())
+        self.assertTrue((self.root / "tok").is_dir())  # nothing moved
+
+    def test_quarantine_warns_about_unrecorded_files_riding_along(self):
+        token = self.root / "tok"
+        token.mkdir()
+        (token / "loose.fits").write_bytes(b"x")
+        entry = {"dir": "tok", "frames": 0, "rejects": 0, "plan_ids": ["plan-abc123"]}
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            moved = purge_mod._quarantine(self.root, [entry])
+        self.assertEqual(len(moved), 1)
+        self.assertIn("unrecorded file(s) rode along", out.getvalue())
+        self.assertTrue(self.quarantine.is_dir())
+
+    def test_purge_quarantine_unlinks_loose_files(self):
+        # Loose files are never claimed by any plan, so they always ride
+        # along with a purge rather than being kept for manual inspection.
+        self.quarantine.mkdir(parents=True)
+        (self.quarantine / "stray.fits").write_bytes(b"1234")
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            removed, skipped, failed = purge_mod._purge_quarantine(self.root, set(), {})
+        self.assertEqual((removed, skipped, failed), (1, 0, 0))
+        self.assertFalse((self.quarantine / "stray.fits").exists())
+        self.assertIn("purged 1 quarantined item(s)", out.getvalue())
+
+    def test_quarantine_gates_reads_claimants_and_skips_unknown_children(self):
+        self.quarantine.mkdir(parents=True)
+        (self.quarantine / "loose.fits").write_bytes(b"x")  # never claimed
+        (self.quarantine / "hand-made").mkdir()  # moved in by hand
+        (self.quarantine / "claimed").mkdir()
+        self.purge_index.write_text(
+            "{not json\n"
+            + json.dumps(
+                {
+                    "action": "quarantine",
+                    "quarantine": ".quarantine/claimed",
+                    "claimants": ["plan-deadbeef"],
+                }
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+
+        qdir, claimants, purgeable, skips = purge_mod._quarantine_gates(
+            self.root, [], {}, {}
+        )
+
+        self.assertEqual(qdir, self.quarantine)
+        self.assertEqual(claimants["claimed"], {"plan-deadbeef"})
+        self.assertIn("loose.fits", purgeable)
+        self.assertIn("hand-made", skips)
+        self.assertIn("no quarantine record", skips["hand-made"])
+        self.assertIn("claimed", skips)
+        self.assertIn("no plan file and no manifest", skips["claimed"])
+
+    # ------------------------------------------------------ plan-file sweep
+
+    @staticmethod
+    def _record(plan_file: Path, **overrides) -> dict:
+        record = {
+            "file": plan_file,
+            "plan_id": "plan-abc123",
+            "folder": "m31__plan-abc123",
+            "archive_ok": True,
+            "stale": False,
+            "gate_reason": "",
+            "selected": [],
+        }
+        record.update(overrides)
+        return record
+
+    def _sweep(self, record, *, purge: bool, dirs=()):
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            result = purge_mod._sweep_plan_files(
+                [record],
+                root=self.root,
+                dirs=list(dirs),
+                held_claimants=set(),
+                purge=purge,
+            )
+        return result, out.getvalue(), err.getvalue()
+
+    def test_sweep_skips_a_plan_file_that_is_already_gone(self):
+        record = self._record(self.proj / "ghost.json")
+        result, _out, _err = self._sweep(record, purge=True)
+        self.assertEqual(result, (0, 0, 0))
+
+    def test_sweep_treats_a_vanished_frame_as_the_state_it_waits_for(self):
+        plan_file = self.write_plan(_plan())
+        record = self._record(plan_file, selected=[str(self.proj / "gone.fits")])
+
+        result, out, _err = self._sweep(record, purge=True)
+
+        self.assertEqual(result, (1, 0, 0))  # no frames left → file removed
+        self.assertIn("removed plan file", out)
+        self.assertFalse(plan_file.exists())
+
+    def test_sweep_keeps_the_file_while_frames_are_present_under_purge(self):
+        frame = self.frame("LIGHT", "still-here.fits")
+        plan_file = self.write_plan(_plan())
+        record = self._record(plan_file, selected=[str(frame)])
+
+        result, out, _err = self._sweep(record, purge=True)
+
+        self.assertEqual(result, (0, 1, 0))
+        self.assertIn("frames still present", out)
+        self.assertTrue(plan_file.exists())
+
+    def test_sweep_keeps_a_frame_that_lives_outside_the_root(self):
+        # A frame outside the imaging root can never be proven gone by this
+        # run's verdicts, so the plan file stays for the re-run.
+        outside = self.proj / "outside.fits"
+        outside.write_bytes(b"x")
+        plan_file = self.write_plan(_plan())
+        record = self._record(plan_file, selected=[str(outside)])
+
+        result, out, _err = self._sweep(record, purge=False)
+
+        self.assertEqual(result, (0, 1, 0))
+        self.assertIn("frames still present", out)
+        self.assertTrue(plan_file.exists())
+
+    # --------------------------------------------------------------- CLI
+
+    def test_relative_dest_and_project_dir_with_a_dead_nina(self):
+        # Relative --dest roots at the cwd, relative --project-dir at
+        # PROJECT_DIR, and a profile failure is reported (not raised) with
+        # the --imaging-root escape hatch named.
+        argv = ["--dest", self.dest.name, "--project-dir", self.proj.name]
+        out, err = io.StringIO(), io.StringIO()
+        with (
+            mock.patch("nina_planner.purge.config.PROJECT_DIR", self.dest.parent),
+            contextlib.chdir(self.dest.parent),
+            mock.patch.object(
+                metadata_mod,
+                "resolve_imaging_root",
+                side_effect=RuntimeError("NINA is down"),
+            ),
+            contextlib.redirect_stdout(out),
+            contextlib.redirect_stderr(err),
+        ):
+            code = purge_mod.main(argv)
+        self.assertEqual(code, 1)
+        self.assertIn("cannot resolve the imaging root", err.getvalue())
+        self.assertIn("NINA is down", err.getvalue())
+
+    def test_missing_metadata_csv_is_reported_not_raised(self):
+        with mock.patch(
+            "nina_planner.purge.read_imaging_csv",
+            side_effect=FileNotFoundError("ImageMetaData.csv is missing"),
+        ):
+            code, _out, err = self.run_purge()
+        self.assertEqual(code, 1)
+        self.assertIn("ImageMetaData.csv is missing", err)
+
+    def test_dropped_rows_without_a_path_are_ignored(self):
+        # The BAD_ twin scan reads dropped rows; one with no path cannot
+        # name a twin and must not be treated as a gone reject either.
+        with mock.patch(
+            "nina_planner.purge.read_imaging_csv",
+            return_value=([], [{"image_type": "LIGHT"}]),
+        ):
+            code, out, err = self.run_purge()
+        self.assertEqual(code, 1)
+        self.assertNotIn("BAD_", out)
+        self.assertNotIn("gone", out)
+
+    def test_apply_with_nothing_to_quarantine_says_so(self):
+        code, out, _err = self.run_purge("--apply")
+        self.assertIn("nothing to quarantine", out)
+        self.assertFalse(self.quarantine.exists())
+
+    def test_report_run_previews_quarantine_keeps(self):
+        # The report leg prints what --apply → --purge would refuse, so an
+        # operator sees the held directories before acting.
+        self.quarantine.mkdir(parents=True)
+        (self.quarantine / "hand-made").mkdir()
+
+        code, out, _err = self.run_purge()
+
+        self.assertIn("would keep in quarantine — no quarantine record", out)
+
+    def test_module_entry_point_exits_with_main_status(self):
+        import runpy
+        import sys
+        import warnings
+
+        argv = [
+            "nina-purge",
+            "--dest",
+            str(self.dest),
+            "--imaging-root",
+            str(self.root),
+            "--project-dir",
+            str(self.proj),
+        ]
+        out = io.StringIO()
+        with (
+            mock.patch.object(sys, "argv", argv),
+            contextlib.redirect_stdout(out),
+            contextlib.redirect_stderr(io.StringIO()),
+            self.assertRaises(SystemExit) as ctx,
+        ):
+            # runpy re-executes the already-imported module under __main__;
+            # its "found in sys.modules" RuntimeWarning is expected here.
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore", RuntimeWarning)
+                runpy.run_module("nina_planner.purge", run_name="__main__")
+        # An empty project has nothing to act on: the report leg exits 1.
+        self.assertEqual(ctx.exception.code, 1)
 
 
 if __name__ == "__main__":

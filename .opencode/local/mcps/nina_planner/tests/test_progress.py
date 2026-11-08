@@ -1222,6 +1222,33 @@ class PrivateHelperDefensivePathsTest(unittest.TestCase):
         # counts, matching the pre-sentinel count-all behavior.
         self.assertTrue(_quality_accepted({"hfr": 0, "detected_stars": 0}, None, None))
 
+    def test_quality_hfr_st_dev_invalid_string_returns_false(self):
+        from nina_planner.progress import _quality_accepted
+
+        # HFR sigma="abc" → float() raises ValueError → returns False, the
+        # same non-junk read as a bad mean-HFR string: a parse quirk must
+        # never invent a passing OR a failing reading.
+        self.assertFalse(
+            _quality_accepted({"hfr_st_dev": "abc"}, None, None, None, 1.0)
+        )
+        self.assertTrue(_quality_accepted({"hfr_st_dev": "0.3"}, None, None, None, 1.0))
+
+    def test_junk_row_reads_plain_dict_frame_groups(self):
+        from nina_planner.progress import is_junk_row
+
+        # frame_group_constraints hands plain dicts on the audit path, so
+        # is_junk_row must read a group's exposure either way — a group it
+        # cannot read would silently yield floor=0.01 and call every frame
+        # of the plan junk.
+        plan = self._plan()
+        plan.light_frames = [{"exposure_time_seconds": 60.0}]
+        self.assertFalse(is_junk_row(plan, {"duration": "60.0"}, "light"))
+        self.assertTrue(is_junk_row(plan, {"duration": "0.00003"}, "light"))
+        # A group with no exposure still leaves the absolute floor in place.
+        plan.light_frames = [{}]
+        self.assertFalse(is_junk_row(plan, {"duration": "60.0"}, "light"))
+        self.assertTrue(is_junk_row(plan, {"duration": "0.00003"}, "light"))
+
     # ---- _within_age ----
 
     def test_within_age_returns_true_when_max_age_days_none(self):

@@ -1304,6 +1304,368 @@ class ArchiveErrorPathTest(ArchiveBase):
         self.assertEqual(len(self.folders()), 1)
 
 
+class ArchiveDetailTest(ArchiveBase):
+    """Branches of archive.py that the end-to-end runs never reach.
+
+    Direct calls where a fixture alone cannot produce the state (a short
+    copy, a vanished junk frame), and CLI runs with the argument shapes the
+    happy path does not use (relative paths, no --imaging-root).
+    """
+
+    _COUNTS = {
+        "light": {"expected": 2, "acquired": 2, "archived": 1},
+        "flat": {"expected": 1, "acquired": 1, "archived": 0},
+        "dark": {"expected": 1, "acquired": 1, "archived": 0},
+        "bias": {"expected": 1, "acquired": 1, "archived": 0},
+    }
+    _DISK = {"rejected": [], "gone": [], "not_selected": [], "junk": []}
+
+    def seed_small(self) -> ObservationPlan:
+        """A plan whose totals match what seed_full writes (2/1/1/1).
+
+        The completeness gate skips anything short of its own totals, so a
+        CLI run that must actually archive needs the two to agree.
+        """
+        plan = _plan(
+            light_frames=[
+                {
+                    "filter_name": "L",
+                    "exposure_time_seconds": 60.0,
+                    "total_count": 2,
+                }
+            ],
+            flat_frames=[{"filter_name": "L", "total_count": 1}],
+            dark_frames=[{"exposure_time_seconds": 60.0, "total_count": 1}],
+            bias_frames=[{"total_count": 1}],
+        )
+        return self.seed_full(
+            plan=plan, light_count=2, flat_count=1, dark_count=1, bias_count=1
+        )
+
+    def _archive_one(self, plan, selected, *, divert=(), write_metadata=False):
+        return archive_mod._archive_one(
+            self.proj / "m31.json",
+            plan,
+            selected,
+            dest=self.dest,
+            complete=True,
+            counts=dict(self._COUNTS),
+            disk=dict(self._DISK),
+            divert=list(divert),
+            imaging_root=self.root,
+            write_metadata=write_metadata,
+            checksum=False,
+        )
+
+    # ------------------------------------------------------- small helpers
+
+    def test_unreadable_json_is_not_plan_shaped(self):
+        ghost = self.proj / "ghost.json"  # never written → OSError
+        junk = self.proj / "smb_opencode.json"
+        junk.write_text("{not json", encoding="utf-8")
+        self.assertFalse(archive_mod._looks_like_plan_file(ghost))
+        self.assertFalse(archive_mod._looks_like_plan_file(junk))
+
+    def test_merge_weather_keeps_rows_without_a_file_path(self):
+        # A row with no path has no folder to read weather from: it must
+        # ride through untouched rather than raise or be dropped.
+        row = {"image_type": "LIGHT", "duration": "60.0"}
+        self.assertEqual(archive_mod._merge_weather([row]), [row])
+        self.assertEqual(archive_mod._merge_weather([]), [])
+
+    def test_write_metadata_csv_of_no_rows_writes_nothing(self):
+        target = self.dest / "ImageMetaData.csv"
+        archive_mod._write_image_metadata_csv(target, [], {})
+        self.assertFalse(target.exists())
+
+    def test_copy_file_detects_a_short_copy(self):
+        src = self.proj / "src.fits"
+        src.write_bytes(b"0123456789")
+        dst = self.dest / "dst.fits"
+
+        def truncated_copy(_src, target):
+            Path(target).write_bytes(b"01234")
+
+        with mock.patch(
+            "nina_planner.archive.shutil.copy2", side_effect=truncated_copy
+        ):
+            with self.assertRaisesRegex(
+                archive_mod.ArchiveError, "size mismatch after copy"
+            ):
+                archive_mod._copy_file(src, dst, checksum=False)
+
+    def test_copy_file_detects_a_checksum_mismatch(self):
+        # Same byte count, different bytes: only the checksum catches it.
+        src = self.proj / "src.fits"
+        src.write_bytes(b"0123456789")
+        dst = self.dest / "dst.fits"
+
+        def corrupt_copy(_src, target):
+            Path(target).write_bytes(b"012345678X")
+
+        with mock.patch("nina_planner.archive.shutil.copy2", side_effect=corrupt_copy):
+            with self.assertRaisesRegex(
+                archive_mod.ArchiveError, "checksum mismatch after copy"
+            ):
+                archive_mod._copy_file(src, dst, checksum=True)
+
+    # ------------------------------------------------------- archive runs
+
+    def test_stale_staging_dir_is_cleared_before_archiving(self):
+        # An interrupted earlier run leaves dest/.<folder>.partial behind;
+        # the next run must start that folder from scratch, not merge into
+        # whatever half-copy survived.
+        plan = self.seed_small()
+        folder = archive_mod._folder_name(self.proj / "m31.json", plan)
+        stale = self.dest / f".{folder}.partial"
+        stale.mkdir(parents=True)
+        (stale / "half-copied.fits").write_bytes(b"partial")
+
+        code, out, err = self.run_cli()
+
+        self.assertEqual(code, 0, err)
+        self.assertFalse(stale.exists())
+        self.assertTrue((self.dest / folder).is_dir())
+        self.assertEqual(list((self.dest / folder).glob("*.partial")), [])
+
+    def test_same_filename_from_two_date_folders_keeps_both(self):
+        plan = self.seed_full(light_count=2, flat_count=1, dark_count=1, bias_count=1)
+        first = self.frame("LIGHT", "same.fits", date="2026-09-20")
+        second = self.frame("LIGHT", "same.fits", date="2026-09-21")
+        selected = {
+            "light": [{"file_path": str(first)}, {"file_path": str(second)}],
+            "flat": [],
+            "dark": [],
+            "bias": [],
+        }
+
+        self._archive_one(plan, selected)
+
+        lights = {
+            p.name
+            for p in (
+                self.dest
+                / archive_mod._folder_name(self.proj / "m31.json", plan)
+                / "LIGHT"
+            ).iterdir()
+        }
+        self.assertIn("same.fits", lights)
+        self.assertEqual(len(lights), 2)
+        self.assertTrue(any(name.startswith("same_dup") for name in lights), lights)
+
+    def test_vanishing_junk_frame_is_recorded_under_missing(self):
+        plan = self.seed_full(light_count=2, flat_count=1, dark_count=1, bias_count=1)
+        light = next(
+            (self.root / "M31_plan-abc123_" / "2026-09-20" / "LIGHT").glob("*.fits")
+        )
+        gone = str(
+            self.root / "M31_plan-abc123_" / "2026-09-21" / "DARK" / "vanished.fits"
+        )
+        selected = {
+            "light": [{"file_path": str(light)}],
+            "flat": [],
+            "dark": [],
+            "bias": [],
+        }
+
+        self._archive_one(plan, selected, divert=[({"file_path": gone}, "degenerate")])
+
+        manifest = json.loads(
+            (
+                self.dest
+                / archive_mod._folder_name(self.proj / "m31.json", plan)
+                / archive_mod._MANIFEST_NAME
+            ).read_text()
+        )
+        self.assertIn({"type": "JUNK", "source": gone}, manifest["missing"])
+
+    def test_duplicate_filenames_inside_junk_are_renamed(self):
+        plan = self.seed_full(light_count=2, flat_count=1, dark_count=1, bias_count=1)
+        light = next(
+            (self.root / "M31_plan-abc123_" / "2026-09-20" / "LIGHT").glob("*.fits")
+        )
+        first = self.frame("DARK", "same.fits", date="2026-09-20")
+        second = self.frame("DARK", "same.fits", date="2026-09-21")
+        selected = {
+            "light": [{"file_path": str(light)}],
+            "flat": [],
+            "dark": [],
+            "bias": [],
+        }
+
+        self._archive_one(
+            plan,
+            selected,
+            divert=[
+                ({"file_path": str(first)}, "degenerate"),
+                ({"file_path": str(second)}, "degenerate"),
+            ],
+        )
+
+        junk = (
+            self.dest / archive_mod._folder_name(self.proj / "m31.json", plan) / "JUNK"
+        )
+        names = {p.name for p in junk.iterdir()}
+        self.assertIn("same.fits", names)
+        self.assertEqual(len(names), 2)
+        self.assertTrue(any(n.startswith("same_dup") for n in names), names)
+
+    # ------------------------------------------------------------ CLI runs
+
+    def test_unresolvable_imaging_root_is_an_error_not_a_crash(self):
+        # No --imaging-root: the root comes from N.I.N.A.'s profile, and a
+        # dead NINA must be reported as such (with the --imaging-root
+        # escape hatch named) rather than raising out of main().
+        self.seed_full(light_count=2, flat_count=1, dark_count=1, bias_count=1)
+        argv = ["--dest", str(self.dest), "--project-dir", str(self.proj)]
+        err = io.StringIO()
+        with (
+            mock.patch(
+                "nina_planner.metadata.resolve_imaging_root",
+                side_effect=RuntimeError("NINA is down"),
+            ),
+            contextlib.redirect_stderr(err),
+        ):
+            code = archive_mod.main(argv)
+        self.assertEqual(code, 1)
+        self.assertIn("cannot resolve the imaging root", err.getvalue())
+        self.assertIn("NINA is down", err.getvalue())
+        self.assertIn("--imaging-root", err.getvalue())
+
+    def test_relative_dest_project_dir_and_plan_path(self):
+        # Relative arguments must not depend on where the process was
+        # started from: --dest roots at the cwd, --project-dir at
+        # PROJECT_DIR, and a named plan at the resolved project dir.
+        self.seed_small()
+        argv = [
+            "--dest",
+            self.dest.name,  # relative → cwd (the tmp base)
+            "--project-dir",
+            self.proj.name,  # relative → config.PROJECT_DIR
+            "--imaging-root",
+            str(self.root),
+            (self.proj / "m31.json").name,  # relative → project dir
+        ]
+        out = io.StringIO()
+        with (
+            mock.patch("nina_planner.archive.config.PROJECT_DIR", self.dest.parent),
+            contextlib.chdir(self.dest.parent),
+            contextlib.redirect_stdout(out),
+            contextlib.redirect_stderr(io.StringIO()),
+        ):
+            code = archive_mod.main(argv)
+        self.assertEqual(code, 0, out.getvalue())
+        self.assertTrue(self.dest.is_dir())
+        self.assertEqual(len(self.folders()), 1)
+
+    def test_missing_metadata_csv_is_reported_not_raised(self):
+        self.seed_full(light_count=2, flat_count=1, dark_count=1, bias_count=1)
+        argv = [
+            "--dest",
+            str(self.dest),
+            "--imaging-root",
+            str(self.root),
+            "--project-dir",
+            str(self.proj),
+        ]
+        err = io.StringIO()
+        with (
+            mock.patch(
+                "nina_planner.archive.read_imaging_csv",
+                side_effect=FileNotFoundError("ImageMetaData.csv is missing"),
+            ),
+            contextlib.redirect_stderr(err),
+        ):
+            code = archive_mod.main(argv)
+        self.assertEqual(code, 1)
+        self.assertIn("ImageMetaData.csv is missing", err.getvalue())
+
+    def test_explicit_broken_plan_is_an_error(self):
+        # Naming a file IS the request to archive it: a load failure counts
+        # (discovery mode would ignore it as unrelated JSON).
+        self.seed_full(light_count=2, flat_count=1, dark_count=1, bias_count=1)
+        (self.proj / "broken.json").write_text("{not json", encoding="utf-8")
+
+        code, _out, err = self.run_cli("broken.json")
+
+        self.assertEqual(code, 1)
+        self.assertIn("broken.json", err)
+
+    def test_dry_run_totals_junk_and_notes_disk_anomalies(self):
+        # The dry-run report is the only place the divert byte total and
+        # the rejected/gone annotation are computed.
+        self.seed_full(light_count=3, flat_count=2, dark_count=2, bias_count=2)
+        junk = self.frame(
+            "DARK", "2026-09-21_05-00-00_dark_junk.fits", date="2026-09-21"
+        )
+        self.write_metadata(
+            "DARK",
+            [
+                {
+                    "ImageType": "DARK",
+                    "FilePath": str(junk),
+                    "Duration": "0.00003",
+                    "ExposureStartUTC": "2026-09-21T05:00:00Z",
+                }
+            ],
+            date="2026-09-21",
+        )
+        victim = sorted(
+            (self.root / "M31_plan-abc123_" / "2026-09-20" / "LIGHT").glob("*.fits")
+        )[0]
+        victim.unlink()  # recorded-but-gone: a disk anomaly
+
+        code, out, err = self.run_cli("--dry-run", "--all")
+
+        self.assertEqual(code, 0, err)
+        self.assertIn("would archive", out)
+        self.assertIn("1 junk", out)
+        self.assertIn("gone on disk", out)
+        self.assertEqual(self.folders(), [])  # nothing written
+
+    def test_archive_error_is_collected_per_plan(self):
+        self.seed_small()
+        with mock.patch(
+            "nina_planner.archive._archive_one",
+            side_effect=archive_mod.ArchiveError("copy exploded"),
+        ):
+            code, _out, err = self.run_cli()
+        self.assertEqual(code, 1)
+        self.assertIn("m31.json", err)
+        self.assertIn("copy exploded", err)
+        self.assertEqual(self.folders(), [])
+
+    def test_module_entry_point_exits_with_main_status(self):
+        import runpy
+        import sys
+        import warnings
+
+        self.seed_small()
+        argv = [
+            "nina-archive",
+            "--dest",
+            str(self.dest),
+            "--imaging-root",
+            str(self.root),
+            "--project-dir",
+            str(self.proj),
+        ]
+        out = io.StringIO()
+        with (
+            mock.patch.object(sys, "argv", argv),
+            contextlib.redirect_stdout(out),
+            contextlib.redirect_stderr(io.StringIO()),
+            self.assertRaises(SystemExit) as ctx,
+        ):
+            # runpy re-executes the already-imported module under __main__;
+            # its "found in sys.modules" RuntimeWarning is expected here.
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore", RuntimeWarning)
+                runpy.run_module("nina_planner.archive", run_name="__main__")
+        self.assertEqual(ctx.exception.code, 0)
+        self.assertIn("archived to", out.getvalue())
+
+
 class FolderNameTest(unittest.TestCase):
     def test_folder_name_is_stem_plus_plan_id(self):
         plan = _plan()

@@ -1,5 +1,5 @@
 import unittest
-from datetime import datetime
+from datetime import UTC, datetime
 
 from nina_planner.nina_utils import ascom_datetime, ascom_float, ascom_int
 
@@ -211,6 +211,24 @@ class AscomDatetimeFallbackTest(unittest.TestCase):
         self.assertIsNone(ascom_datetime(1.5))  # float
         self.assertIsNone(ascom_datetime(["2026-09-22"]))  # list
         self.assertIsNone(ascom_datetime({"date": "2026-09-22"}))  # dict
+
+
+class ToLocalDisplayTest(unittest.TestCase):
+    def test_naive_datetime_is_taken_as_already_local(self):
+        from nina_planner.nina_utils import to_local_display
+
+        # No conversion: a naive wall clock is rendered verbatim (with its
+        # seconds), matching "naive means local" everywhere else.
+        self.assertEqual(
+            to_local_display(datetime(2026, 9, 22, 21, 0, 0)), "2026-09-22T21:00:00"
+        )
+
+    def test_aware_datetime_is_rendered_in_the_host_zone(self):
+        from nina_planner.nina_utils import to_local_display
+
+        rendered = to_local_display(datetime(2026, 9, 22, 21, 0, 0, tzinfo=UTC))
+        self.assertTrue(rendered.startswith("2026-09-2"))
+        self.assertIn(":", rendered[-6:])
 
 
 if __name__ == "__main__":

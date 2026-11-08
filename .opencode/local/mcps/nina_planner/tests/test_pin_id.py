@@ -20,6 +20,7 @@ import contextlib
 import io
 import json
 import unittest
+from pathlib import Path
 from unittest import mock
 
 from test_archive import ArchiveBase, _plan
@@ -209,6 +210,75 @@ class PinCliTest(PinBase):
             pin_mod.main([])
         self.assertEqual(ctx.exception.code, 2)
         self.assertIn("usage:", err.getvalue())
+
+    # ------------------------------------------------------- failure paths
+
+    def test_relative_plan_path_resolves_under_the_project_dir(self):
+        with mock.patch.object(pin_mod.config, "PROJECT_DIR", self.proj):
+            self.assertEqual(pin_mod._resolve("m31.json"), self.proj / "m31.json")
+        # An absolute path is never re-rooted; ~ is expanded first.
+        self.assertEqual(pin_mod._resolve(str(self.plan_file)), self.plan_file)
+        self.assertEqual(
+            pin_mod._resolve("~/somewhere/x.json"),
+            Path.home() / "somewhere" / "x.json",
+        )
+
+    def test_write_atomic_leaves_no_temp_file_when_the_replace_fails(self):
+        target = self.proj / "plan.json"
+        target.write_text("original", encoding="utf-8")
+
+        with mock.patch(
+            "nina_planner.pin_id.os.replace", side_effect=OSError("disk full")
+        ):
+            with self.assertRaises(OSError):
+                pin_mod._write_atomic(target, "replacement")
+
+        # The plan keeps its bytes and the half-written sibling is gone —
+        # a stray .tmp would be discovered as junk by the next plan scan.
+        self.assertEqual(target.read_text(encoding="utf-8"), "original")
+        self.assertEqual(list(self.proj.glob(".*.tmp")), [])
+
+    def test_write_failure_is_reported_as_a_pin_error(self):
+        blank = self.proj / "blank.json"
+        blank.write_text(_plan(plan_id="").model_dump_json(indent=2), encoding="utf-8")
+
+        with mock.patch(
+            "nina_planner.pin_id.os.replace", side_effect=OSError("disk full")
+        ):
+            with self.assertRaises(pin_mod.PinError) as ctx:
+                asyncio.run(pin_mod.pin_plan_file(str(blank)))
+
+        message = str(ctx.exception)
+        self.assertIn("blank.json", message)
+        self.assertIn("could not write", message)
+        self.assertIn("disk full", message)
+
+    def test_module_entry_point_exits_with_main_status(self):
+        import runpy
+        import sys
+        import warnings
+
+        # `python -m nina_planner.pin_id` → `raise SystemExit(main())`.
+        plan_file = self.proj / "entry.json"
+        plan_file.write_text(
+            _plan(plan_id="").model_dump_json(indent=2), encoding="utf-8"
+        )
+        out = io.StringIO()
+        with (
+            mock.patch.object(
+                sys, "argv", ["nina-pin-id", "--dry-run", str(plan_file)]
+            ),
+            contextlib.redirect_stdout(out),
+            contextlib.redirect_stderr(io.StringIO()),
+            self.assertRaises(SystemExit) as ctx,
+        ):
+            # runpy re-executes the already-imported module under __main__;
+            # its "found in sys.modules" RuntimeWarning is expected here.
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore", RuntimeWarning)
+                runpy.run_module("nina_planner.pin_id", run_name="__main__")
+        self.assertEqual(ctx.exception.code, 0)
+        self.assertIn("would pin", out.getvalue())
 
     def test_multiple_files_pin_in_one_run(self):
         first = _plan(plan_id="")
