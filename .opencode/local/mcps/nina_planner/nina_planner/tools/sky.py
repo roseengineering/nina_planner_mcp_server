@@ -477,7 +477,10 @@ def _elongation_series(times: Time) -> np.ndarray:
     )
     sun_lon = get_sun(times).transform_to(GeocentricTrueEcliptic(obstime=times)).lon.deg
     delta = np.asarray((moon_lon - sun_lon) % 360.0, dtype=float)
-    return np.unwrap(np.deg2rad(delta)) * 180.0 / math.pi
+    # Annotated so mypy sees ndarray even where numpy's stubs type
+    # np.deg2rad as Any (numpy 2.4.x, the last release for Python 3.11).
+    radians: np.ndarray = np.deg2rad(delta)
+    return np.unwrap(radians) * 180.0 / math.pi
 
 
 def _next_angle(base: float, target: float) -> float:
