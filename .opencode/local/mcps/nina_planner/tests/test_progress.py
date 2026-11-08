@@ -473,6 +473,80 @@ class QualityFilterTest(unittest.TestCase):
         lights = plan_progress(plan, rows)["light"][0]
         self.assertEqual(lights["acquired_count"], 1)
 
+    # --- HFR sigma (max_hfr_st_dev) ---
+
+    def _sigma_row(self, sigma, hfr=2.0, stars=10):
+        """A light row whose mean HFR passes max_hfr=2.5 but whose per-star
+        spread is whatever the test asks for — the whole point of the sigma
+        threshold is catching a frame the mean HFR lets through."""
+        row = _row()
+        row["hfr"] = str(hfr)
+        row["hfr_st_dev"] = str(sigma)
+        row["detected_stars"] = str(stars)
+        return row
+
+    def test_max_hfr_st_dev_excludes_uneven(self):
+        plan = _plan()
+        rows = [self._sigma_row(0.2), self._sigma_row(0.9), self._sigma_row(0.4)]
+        lights = plan_progress(plan, rows, max_hfr_st_dev=0.6)["light"][0]
+        self.assertEqual(lights["acquired_count"], 2)
+
+    def test_missing_hfr_st_dev_excluded_when_filtered(self):
+        plan = _plan()
+        rows = [self._sigma_row(0.3), self._hfr_row(2.0)]  # second has no sigma
+        lights = plan_progress(plan, rows, max_hfr_st_dev=0.6)["light"][0]
+        self.assertEqual(lights["acquired_count"], 1)
+
+    def test_zero_hfr_st_dev_excluded_when_filtered(self):
+        # NINA writes 0 for an unmeasured ASCOM value: under an active
+        # threshold that is "not measured", never a passing reading.
+        plan = _plan()
+        rows = [self._sigma_row(0.0), self._sigma_row(0.3)]
+        lights = plan_progress(plan, rows, max_hfr_st_dev=0.6)["light"][0]
+        self.assertEqual(lights["acquired_count"], 1)
+
+    def test_hfr_st_dev_above_threshold_rejected(self):
+        plan = _plan()
+        rows = [self._sigma_row(1.2)]
+        lights = plan_progress(plan, rows, max_hfr_st_dev=0.6)["light"][0]
+        self.assertEqual(lights["acquired_count"], 0)
+
+    def test_no_sigma_threshold_counts_all(self):
+        plan = _plan()
+        rows = [self._sigma_row(9.0), self._sigma_row(0.2)]
+        lights = plan_progress(plan, rows)["light"][0]
+        self.assertEqual(lights["acquired_count"], 2)
+
+    def test_hfr_st_dev_and_hfr_are_anded(self):
+        # Row 1: mean HFR fails. Row 2: mean HFR passes, sigma fails.
+        # Row 3: both pass. Only row 3 counts.
+        plan = _plan()
+        rows = [
+            self._sigma_row(0.2, hfr=4.0),
+            self._sigma_row(0.9, hfr=2.0),
+            self._sigma_row(0.2, hfr=2.0),
+        ]
+        lights = plan_progress(plan, rows, max_hfr=2.5, max_hfr_st_dev=0.6)["light"][0]
+        self.assertEqual(lights["acquired_count"], 1)
+
+    def test_inf_hfr_st_dev_rejected(self):
+        plan = _plan()
+        rows = [self._sigma_row(float("inf"))]
+        lights = plan_progress(plan, rows, max_hfr_st_dev=0.6)["light"][0]
+        self.assertEqual(lights["acquired_count"], 0)
+
+    def test_calibration_unaffected_by_hfr_st_dev(self):
+        plan = _plan()
+        rows = [
+            _row(image_type="FLAT", filter_name="LP", duration="5.0", target=None),
+            _row(image_type="DARK", duration="60.0", target=None),
+            _row(image_type="BIAS", target=None),
+        ]
+        prog = plan_progress(plan, rows, max_hfr_st_dev=0.001)
+        self.assertEqual(prog["flat"][0]["acquired_count"], 1)
+        self.assertEqual(prog["dark"][0]["acquired_count"], 1)
+        self.assertEqual(prog["bias"][0]["acquired_count"], 1)
+
 
 class PlanWithRemainingTest(unittest.TestCase):
     def test_reduces_and_drops_completed(self):

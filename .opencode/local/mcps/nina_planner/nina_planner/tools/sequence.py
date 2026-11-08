@@ -30,10 +30,10 @@ async def load_sequence(
 
     The list composes ONE sequence: a single Start area, one Target area holding each step's containers in list order, and one End area that always stows — one bounded 3-minute "On Safe" wait, then park (or home) the mount and warm the camera. An EMPTY list (the default) is therefore the STOW: an empty Target area plus that closing End area. There is no `stow`, `park`, `warm`, or `unpark` action — every action is plan-backed, and `load_sequence()` with no arguments is the teardown.
 
-    Every entry is one `request` object: `action`, plus `variant` (how the action runs), `plan` (path to the observation-plan JSON file), `pointing_index`, `mode`, and the optional quality thresholds.
+    Every entry is one `request` object: `action`, plus `variant` (how the action runs), `plan` (path to the observation-plan JSON file), `pointing_index`, and `mode`. Quality thresholds are NOT request fields — they live in the plan file's `quality` section, so this tool and `get_plan_progress` always count the same frames.
 
     `action` decides WHAT gets built from `request.plan`, which every action requires:
-    - `light` / `dark` / `bias` / `flat` build that frame sequence. `pointing_index` (1-based, optional, default 1 when omitted) selects which pointing of the plan to load; it applies to lights only. Calibration (dark/bias/flat) is plan-level: its remaining is computed for the whole plan, not per pointing, so a calibration request must omit `pointing_index` — passing one is rejected. Lights embed the attribution token in the target name so each pointing's frames are attributed independently: `_{base_plan_id}_` for a single-pointing plan (shared with the plan's calibration), `_{base_plan_id}-{pointing_index}_` per pane for a mosaic. Light loads require `$$TARGETNAME$$` in the active profile's FilePattern for attribution. In the default `remaining` mode the sequence only acquires frames still needed (total minus frames already attributed to this plan/pointing in the imaging metadata); if nothing remains it reports the plan as complete and loads nothing — except when a calibration window has expired with frames still missing, where it reports the expired deficit (and still loads nothing, since no frame shot now could be credited) rather than "complete". max_hfr and/or min_detected_stars exclude light frames failing quality thresholds from the acquired count. Pass `mode="full"` to acquire the entire plan again. A full-mode load of a group that is already complete appends a warning naming the frame count, because nothing downstream can verify the outcome afterwards: `get_plan_progress` reports the plan `complete: true` whether the re-shoot delivered every frame or a handful, since its acquired counts are cumulative across runs. Check what actually landed with `audit_plans` and the per-date frame folders after a full-mode run.
+    - `light` / `dark` / `bias` / `flat` build that frame sequence. `pointing_index` (1-based, optional, default 1 when omitted) selects which pointing of the plan to load; it applies to lights only. Calibration (dark/bias/flat) is plan-level: its remaining is computed for the whole plan, not per pointing, so a calibration request must omit `pointing_index` — passing one is rejected. Lights embed the attribution token in the target name so each pointing's frames are attributed independently: `_{base_plan_id}_` for a single-pointing plan (shared with the plan's calibration), `_{base_plan_id}-{pointing_index}_` per pane for a mosaic. Light loads require `$$TARGETNAME$$` in the active profile's FilePattern for attribution. In the default `remaining` mode the sequence only acquires frames still needed (total minus frames already attributed to this plan/pointing in the imaging metadata); if nothing remains it reports the plan as complete and loads nothing — except when a calibration window has expired with frames still missing, where it reports the expired deficit (and still loads nothing, since no frame shot now could be credited) rather than "complete". The plan's `quality` section (`max_hfr`, `max_hfr_st_dev`, `min_detected_stars`, `max_guiding_rms_arcsec` — all optional, defaulting to no filtering) excludes light frames failing those thresholds from the acquired count, fail-closed: a frame missing an enabled metric does not count. Pass `mode="full"` to acquire the entire plan again. A full-mode load of a group that is already complete appends a warning naming the frame count, because nothing downstream can verify the outcome afterwards: `get_plan_progress` reports the plan `complete: true` whether the re-shoot delivered every frame or a handful, since its acquired counts are cumulative across runs. Check what actually landed with `audit_plans` and the per-date frame folders after a full-mode run.
 
     `variant` decides HOW an action runs and is scoped to it — it is validated against the action, and a bad pairing fails naming the entry:
     - `flat` REQUIRES `dawn` (morning twilight — waits for dawn) or `dusk` (evening twilight — waits for sunset).
@@ -93,7 +93,17 @@ async def _full_mode_note(
         rows = await metadata.read_metadata()
     except (RuntimeError, FileNotFoundError):
         return ""
-    progress = plan_progress(plan, rows, pointing_index=pointing_index, now=now)
+    # Same thresholds as the remaining-mode count beside this warning (the
+    # plan's `quality` section), so "already complete" here means exactly
+    # what remaining mode would have concluded — otherwise the warning and
+    # the count it reasons about could disagree.
+    progress = plan_progress(
+        plan,
+        rows,
+        pointing_index=pointing_index,
+        **plan_utils.quality_kwargs(plan),
+        now=now,
+    )
     if any(item["remaining_count"] > 0 for item in progress[group]):
         return ""
     return (
@@ -200,9 +210,7 @@ async def _load_many(requests: list[SequenceRequest]) -> str:
                 plan,
                 await rows(),
                 pointing_index=pointing_index,
-                max_hfr=request.max_hfr,
-                min_detected_stars=request.min_detected_stars,
-                max_guiding_rms_arcsec=request.max_guiding_rms_arcsec,
+                **plan_utils.quality_kwargs(plan),
                 now=await now(),
             )
             items = progress[group]

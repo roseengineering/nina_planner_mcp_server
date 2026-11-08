@@ -77,27 +77,33 @@ class SequenceRequest(BaseModel):
             "this plan/pointing; 'full' acquires the whole plan again."
         ),
     )
-    max_hfr: float | None = Field(
-        default=None,
-        description=(
-            "Exclude light frames with HFR above this value from the acquired "
-            "count in 'remaining' mode."
-        ),
-    )
-    min_detected_stars: int | None = Field(
-        default=None,
-        description=(
-            "Exclude light frames detected with fewer stars than this from "
-            "the acquired count in 'remaining' mode."
-        ),
-    )
-    max_guiding_rms_arcsec: float | None = Field(
-        default=None,
-        description=(
-            "Exclude light frames guided above this RMS from the acquired "
-            "count in 'remaining' mode."
-        ),
-    )
+
+    # Quality thresholds are NOT request fields: they live in the plan file's
+    # `quality` section, so load_sequence and get_plan_progress always agree
+    # about what counts. pydantic's default is to IGNORE unknown keys, which
+    # here would be the worst outcome — an old caller passing max_hfr would
+    # silently get unfiltered counts — so the legacy names are rejected with
+    # the migration path instead.
+    @model_validator(mode="before")
+    @classmethod
+    def _reject_legacy_quality_keys(cls, data: object) -> object:
+        legacy = (
+            "max_hfr",
+            "max_hfr_st_dev",
+            "min_detected_stars",
+            "max_guiding_rms_arcsec",
+        )
+        if isinstance(data, dict):
+            present = [key for key in legacy if key in data]
+            if present:
+                raise ValueError(
+                    f"{', '.join(present)} — quality thresholds are no longer "
+                    "passed to load_sequence. Set them in the plan file's "
+                    '`quality` section instead (e.g. "quality": {"max_hfr": '
+                    "2.5}); every tool reading that plan then applies them "
+                    "consistently."
+                )
+        return data
 
     @model_validator(mode="after")
     def _check_variant(self) -> "SequenceRequest":

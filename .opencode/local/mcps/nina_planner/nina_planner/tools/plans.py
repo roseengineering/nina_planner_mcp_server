@@ -95,7 +95,7 @@ async def get_frame_stats(image_type: str | None = None) -> dict[str, Any]:
 
 @mcp.tool()
 async def write_plan_file(plan: ObservationPlan) -> str:
-    """Validates and writes an observation plan to a JSON file for later use by load_sequence. The plan defines one or more target pointings (RA/Dec/PA, optional label), acquisition intent, light and calibration frames, batching, cooling, autofocus, guiding, and observing constraints. This tool only creates the plan file; it does not load or start a sequence."""
+    """Validates and writes an observation plan to a JSON file for later use by load_sequence. The plan defines one or more target pointings (RA/Dec/PA, optional label), acquisition intent, light and calibration frames, batching, cooling, autofocus, guiding, observing constraints, and the optional light-frame `quality` thresholds that load_sequence and get_plan_progress apply when counting its frames. This tool only creates the plan file; it does not load or start a sequence."""
     profile = await equipment_tools.get_site_profile()
     await plan_utils.validate_filters(plan, profile)
     plan_utils.validate_position_angle(plan, profile)
@@ -150,19 +150,14 @@ async def write_mosaic_plan(
 
 
 @mcp.tool()
-async def get_plan_progress(
-    file_path: str,
-    max_hfr: float | None = None,
-    min_detected_stars: int | None = None,
-    max_guiding_rms_arcsec: float | None = None,
-) -> dict[str, Any]:
+async def get_plan_progress(file_path: str) -> dict[str, Any]:
     """Per-frame-type acquisition progress for every pointing of an observation-plan JSON: each exposure group's `total_count` (from the plan), `acquired_count` (attributed from ImageMetaData.csv), `remaining_count`, and `deficit_count` (raw total − acquired, never window-adjusted). Call before load_sequence to decide what still needs acquiring; one plan per call — use audit_plans for a whole-project sweep.
 
     Lights are attributed via the underscore-delimited plan id in the recorded path (`_{base_plan_id}_`, `_{base_plan_id}-{pointing_index}_` per mosaic pane; no target-name fallback); flats match type+filter, darks/bias type+exposure, and calibration counts only within `calibration_window_days` of the earliest attributed light, on either side of it. Calibration groups therefore carry `window_open` and `window_end`: inside the window `remaining_count` is total − acquired; outside it reads 0, because no frame shot now could ever be credited, while `acquired_count` stays truthful — raise `calibration_window_days` or write a new plan to reopen it. Lights carry neither field.
 
-    Pass `max_hfr`, `min_detected_stars` and/or `max_guiding_rms_arcsec` to exclude light frames failing those thresholds (frames missing the relevant field are excluded when a threshold is set).
+    Light-frame quality thresholds come from the plan file's `quality` section (`max_hfr`, `max_hfr_st_dev`, `min_detected_stars`, `max_guiding_rms_arcsec`), never from this call — the response's `quality` field echoes what was applied, so you can see the active rules without opening the file. A light frame failing an enabled threshold, or missing the metric it needs (NINA writes 0 for unmeasured values), is not counted; with no thresholds set every attributed frame counts, as before. The same section drives load_sequence's remaining-mode count, so the two can never disagree. `audit_plans` deliberately ignores it — it reports what is on disk, not what qualifies.
 
-    Returns `plan_id`, `target`, `pointing_count`, `complete`, `expired_with_deficit`, `overshot`, `warning`, and `pointings[]` — per pane `pointing_index`, `label`, `plan_id`, `complete`, `status` (`complete` / `incomplete` / `expired_with_deficit`) and `frame_types` — so panes can be acquired sequentially. `complete` is decided from acquired counts and window state, NEVER from `remaining_count == 0` alone: a closed window zeroes remaining under a real deficit, and that case is `expired_with_deficit`, whose fix is a raised window or a new plan, never more shooting. `overshot` (with the light rows' `surplus_count`) marks frames beyond `total_count` — acquired counts are cumulative across runs while the plan total is fixed, so a truncated `mode="full"` re-shoot still reads `complete: true`; treat that as "these frames exist", not "the last run succeeded", and verify the latest run with audit_plans. Read-only."""
+    Returns `plan_id`, `target`, `quality`, `pointing_count`, `complete`, `expired_with_deficit`, `overshot`, `warning`, and `pointings[]` — per pane `pointing_index`, `label`, `plan_id`, `complete`, `status` (`complete` / `incomplete` / `expired_with_deficit`) and `frame_types` — so panes can be acquired sequentially. `complete` is decided from acquired counts and window state, NEVER from `remaining_count == 0` alone: a closed window zeroes remaining under a real deficit, and that case is `expired_with_deficit`, whose fix is a raised window or a new plan, never more shooting. `overshot` (with the light rows' `surplus_count`) marks frames beyond `total_count` — acquired counts are cumulative across runs while the plan total is fixed, so a truncated `mode="full"` re-shoot still reads `complete: true`; treat that as "these frames exist", not "the last run succeeded", and verify the latest run with audit_plans. Read-only."""
     plan = await plan_utils.load_plan(file_path)
     rows = await metadata.read_metadata()
     now = datetime.now(UTC).replace(microsecond=0)
@@ -172,9 +167,7 @@ async def get_plan_progress(
             plan,
             rows,
             pointing_index=index,
-            max_hfr=max_hfr,
-            min_detected_stars=min_detected_stars,
-            max_guiding_rms_arcsec=max_guiding_rms_arcsec,
+            **plan_utils.quality_kwargs(plan),
             now=now,
         )
 
@@ -214,6 +207,10 @@ async def get_plan_progress(
     res = {
         "plan_id": plan._base_plan_id(),
         "target": plan.target,
+        # Only the thresholds actually set — `{}` means no filtering. Echoed
+        # because the counts below are meaningless without knowing which rules
+        # produced them, and the caller no longer passes those rules itself.
+        "quality": plan.quality.model_dump(exclude_none=True),
         "pointing_count": len(plan.pointings),
         "complete": complete,
         "expired_with_deficit": expired_any,

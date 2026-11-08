@@ -143,6 +143,7 @@ def _quality_accepted(
     max_hfr: float | None,
     min_detected_stars: int | None,
     max_guiding_rms_arcsec: float | None = None,
+    max_hfr_st_dev: float | None = None,
 ) -> bool:
     # Sentinel contract: NINA serializes
     # unmeasured ASCOM values as 0 in ImageMetaData.csv, so under an *active*
@@ -179,6 +180,22 @@ def _quality_accepted(
         except (TypeError, ValueError):
             return False
         if not math.isfinite(rms) or rms == 0 or rms > max_guiding_rms_arcsec:
+            return False
+    if max_hfr_st_dev is not None:
+        # HFR sigma: the spread of per-star HFR across the frame. mean HFR
+        # can pass while sigma is bad — a frame whose stars are *unevenly*
+        # deformed (a guiding spike mid-exposure, tilt, back-focus error,
+        # flexure) reads an acceptable average over a field of partly ruined
+        # stars, which max_hfr alone waves through. Same sentinel contract as
+        # max_hfr: 0 is "not measured", never a passing reading.
+        raw_sigma = row.get("hfr_st_dev")
+        if raw_sigma is None or raw_sigma == "":
+            return False
+        try:
+            sigma = float(raw_sigma)
+        except (TypeError, ValueError):
+            return False
+        if not math.isfinite(sigma) or sigma == 0 or sigma > max_hfr_st_dev:
             return False
     return True
 
@@ -274,6 +291,7 @@ def _row_matches(
     max_hfr: float | None = None,
     min_detected_stars: int | None = None,
     max_guiding_rms_arcsec: float | None = None,
+    max_hfr_st_dev: float | None = None,
     max_age_days: int | None = None,
     session_start: datetime | None = None,
 ) -> bool:
@@ -289,7 +307,7 @@ def _row_matches(
         ):
             return False
         return _quality_accepted(
-            row, max_hfr, min_detected_stars, max_guiding_rms_arcsec
+            row, max_hfr, min_detected_stars, max_guiding_rms_arcsec, max_hfr_st_dev
         )
     return _within_age(row, max_age_days, session_start)
 
@@ -353,6 +371,7 @@ def _select_matching(
     max_hfr: float | None = None,
     min_detected_stars: int | None = None,
     max_guiding_rms_arcsec: float | None = None,
+    max_hfr_st_dev: float | None = None,
     max_age_days: int | None = None,
     session_start: datetime | None = None,
 ) -> list[dict[str, Any]]:
@@ -376,6 +395,7 @@ def _select_matching(
             max_hfr=max_hfr,
             min_detected_stars=min_detected_stars,
             max_guiding_rms_arcsec=max_guiding_rms_arcsec,
+            max_hfr_st_dev=max_hfr_st_dev,
             max_age_days=max_age_days,
             session_start=session_start,
         )
@@ -458,13 +478,18 @@ def plan_progress(
     max_hfr: float | None = None,
     min_detected_stars: int | None = None,
     max_guiding_rms_arcsec: float | None = None,
+    max_hfr_st_dev: float | None = None,
     now: datetime | None = None,
 ) -> dict[str, list[dict[str, Any]]]:
     """Acquired/remaining counts per exposure group for one pointing.
 
     Lights count by attribution (plan id in the file path) plus the optional
-    quality thresholds. Calibration (flat/dark/bias) is anchored to the
-    earliest attributed light, and is reported in two parts:
+    quality thresholds. The thresholds are always PASSED IN by the caller:
+    this function never reads the plan's ``quality`` section itself, which is
+    what keeps ``audit_plans`` and the archive free of it — they call this
+    with no thresholds and get a pure "what is on disk" count. Calibration
+    (flat/dark/bias) is anchored to the earliest attributed light, and is
+    reported in two parts:
 
     * ``acquired_count`` — frames shot inside ``calibration_window_days`` of
       that anchor, on either side of it. Always truthful, whether or not the
@@ -558,6 +583,7 @@ def plan_progress(
                 max_hfr=max_hfr,
                 min_detected_stars=min_detected_stars,
                 max_guiding_rms_arcsec=max_guiding_rms_arcsec,
+                max_hfr_st_dev=max_hfr_st_dev,
                 max_age_days=plan.calibration_window_days,
                 session_start=session_start,
             )

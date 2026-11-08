@@ -1,6 +1,7 @@
 import json
 import re
 from pathlib import Path
+from typing import Any
 
 import anyio
 
@@ -84,3 +85,25 @@ async def load_plan(file_path: str) -> ObservationPlan:
     async with await anyio.open_file(path, "r", encoding="utf-8") as f:
         data = json.loads(await f.read())
     return ObservationPlan.model_validate(data)
+
+
+def quality_kwargs(plan: ObservationPlan) -> dict[str, Any]:
+    """The plan's light-frame quality thresholds as ``plan_progress`` kwargs.
+
+    The single place a plan's ``quality`` section becomes counting rules, so
+    every tool that counts this plan's frames (``load_sequence`` in remaining
+    mode, ``get_plan_progress``) applies exactly the same thresholds without
+    a caller repeating them — and so a *new* threshold field can never be
+    wired into one tool and forgotten in another.
+
+    Callers that must NOT filter — ``audit_plans`` and the archive, which
+    answer "what is on disk" rather than "what counts" — simply do not call
+    this.
+    """
+    q = plan.quality
+    return {
+        "max_hfr": q.max_hfr,
+        "max_hfr_st_dev": q.max_hfr_st_dev,
+        "min_detected_stars": q.min_detected_stars,
+        "max_guiding_rms_arcsec": q.max_guiding_rms_arcsec,
+    }

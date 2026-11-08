@@ -86,6 +86,52 @@ class ConstraintsConfig(StrictModel):
     )
 
 
+class QualityConfig(StrictModel):
+    """Optional light-frame quality thresholds for the progress tools.
+
+    These are the ONLY place quality thresholds live: ``load_sequence`` and
+    ``get_plan_progress`` read them from the plan file, so every tool that
+    counts this plan's frames applies the same rules without a caller having
+    to repeat them. There is deliberately no per-call override — one value,
+    one source of truth, and the two tools can never disagree about what
+    counts.
+
+    All four default to ``None`` (no filtering): a plan without a ``quality``
+    section behaves exactly as one written before this field existed, and a
+    threshold is only ever active because someone set it deliberately.
+
+    Lights only. Calibration frames (flat/dark/bias) have no star quality and
+    are matched by filter, exposure and the calibration window alone, so
+    nothing here applies to them.
+
+    Fail-closed when active: a light frame missing the relevant field (or
+    carrying NINA's ``0`` for an unmeasured value) does NOT count toward the
+    plan's ``total_count`` — otherwise a plan could be marked complete on
+    frames nobody measured.
+    """
+
+    max_hfr: float | None = Field(
+        default=None,
+        description="Exclude light frames with HFR above this value.",
+    )
+    max_hfr_st_dev: float | None = Field(
+        default=None,
+        description=(
+            "Exclude light frames whose per-star HFR spread (HFR sigma) is "
+            "above this value — catches uneven star shapes from a guiding "
+            "spike, tilt or flexure that an acceptable mean HFR hides."
+        ),
+    )
+    min_detected_stars: int | None = Field(
+        default=None,
+        description="Exclude light frames detected with fewer stars than this.",
+    )
+    max_guiding_rms_arcsec: float | None = Field(
+        default=None,
+        description="Exclude light frames guided above this RMS (arcsec).",
+    )
+
+
 # --- Root Plan ---
 
 
@@ -138,6 +184,9 @@ class ObservationPlan(StrictModel):
     constraints: ConstraintsConfig = Field(default_factory=ConstraintsConfig)
     autofocus: AutofocusConfig = Field(default_factory=AutofocusConfig)
     guiding: GuidingConfig = Field(default_factory=GuidingConfig)
+    # Light-frame quality thresholds, read by load_sequence and
+    # get_plan_progress only — see QualityConfig. Default is "no filtering".
+    quality: QualityConfig = Field(default_factory=QualityConfig)
 
     # exposures
     light_frames: list[LightExposurePlan] = Field(

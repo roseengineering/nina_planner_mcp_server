@@ -1176,6 +1176,103 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
             "window_open", result["pointings"][0]["frame_types"]["light"][0]
         )
 
+    @staticmethod
+    def _quality_light_rows(hfrs):
+        """Light rows attributed to plan-test123, one per HFR value."""
+        return [
+            {
+                "image_type": "LIGHT",
+                "frame_type": "LIGHT",
+                "filter_name": "L",
+                "duration": "60.0",
+                "file_path": f"C:/NINA/LIGHT/M31 _plan-test123__60.00s_{i:04d}.fits",
+                "exposure_start_utc": datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
+                "hfr": str(hfr),
+                "detected_stars": "25",
+            }
+            for i, hfr in enumerate(hfrs, start=1)
+        ]
+
+    @staticmethod
+    def _quality_plan_dict(**extra):
+        plan_dict = {
+            "plan_id": "plan-test123",
+            "target": "M31",
+            "pointings": [{"ra_hours": 5.0, "dec_deg": 10.0}],
+            "light_frames": [
+                {
+                    "filter_name": "L",
+                    "exposure_time_seconds": 60.0,
+                    "total_count": 2,
+                }
+            ],
+            "flat_frames": [{"filter_name": "L", "total_count": 1}],
+            "dark_frames": [{"exposure_time_seconds": 60.0, "total_count": 1}],
+            "bias_frames": [{"total_count": 1}],
+        }
+        plan_dict.update(extra)
+        return plan_dict
+
+    async def test_get_plan_progress_applies_plan_quality(self):
+        """The plan's `quality` section — not a call argument — filters lights.
+
+        Two attributed lights, one over the plan's max_hfr: only the good one
+        counts, so the plan reports a deficit it still needs to acquire.
+        """
+        from nina_planner.server import get_plan_progress
+
+        plan_dict = self._quality_plan_dict(quality={"max_hfr": 2.5})
+
+        with tempfile.TemporaryDirectory() as tmp:
+            plan_path = Path(tmp) / "plan.json"
+            plan_path.write_text(json.dumps(plan_dict))
+
+            with patch(
+                "nina_planner.metadata.read_metadata",
+                AsyncMock(return_value=self._quality_light_rows([1.5, 4.0])),
+            ):
+                result = await get_plan_progress(str(plan_path))
+        light = result["pointings"][0]["frame_types"]["light"][0]
+        self.assertEqual(light["acquired_count"], 1)
+        self.assertEqual(light["remaining_count"], 1)
+        # The active thresholds ride along, so the counts can be read knowing
+        # which rules produced them.
+        self.assertEqual(result["quality"], {"max_hfr": 2.5})
+
+    async def test_get_plan_progress_without_quality_counts_all(self):
+        """A plan with no `quality` section behaves exactly as before."""
+        from nina_planner.server import get_plan_progress
+
+        with tempfile.TemporaryDirectory() as tmp:
+            plan_path = Path(tmp) / "plan.json"
+            plan_path.write_text(json.dumps(self._quality_plan_dict()))
+
+            with patch(
+                "nina_planner.metadata.read_metadata",
+                AsyncMock(return_value=self._quality_light_rows([1.5, 4.0])),
+            ):
+                result = await get_plan_progress(str(plan_path))
+        light = result["pointings"][0]["frame_types"]["light"][0]
+        # Both lights count — including the one the quality test's threshold
+        # rejects — because nothing is set.
+        self.assertEqual(light["acquired_count"], 2)
+        self.assertEqual(light["remaining_count"], 0)
+        self.assertEqual(result["quality"], {})
+
+    def test_get_plan_progress_takes_no_threshold_arguments(self):
+        """Contract guard: thresholds live in the plan file only.
+
+        Re-adding a parameter here would split the source of truth — the
+        counts would then depend on whether the caller remembered to pass
+        the same values load_sequence got.
+        """
+        import inspect
+
+        from nina_planner.server import get_plan_progress
+
+        params = list(inspect.signature(get_plan_progress).parameters)
+        self.assertEqual(params, ["file_path"])
+
     async def test_get_plan_progress_flags_overshoot_with_warning(self):
         """`complete: true` plus `overshot` is how a truncated mode=full
         re-shoot becomes visible.
@@ -1686,6 +1783,95 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
                 )
         self.assertIn("is complete", result)
         self.assertIn("nothing to load", result)
+
+    async def test_load_sequence_remaining_mode_uses_plan_quality(self):
+        """The plan's `quality` section decides what load_sequence acquires.
+
+        Two lights are attributed to the plan but one fails its max_hfr, so
+        only one counts — remaining mode must ask N.I.N.A. for the missing
+        frame rather than declaring the plan done.
+        """
+        from nina_planner.server import load_sequence
+
+        plan_dict = self._quality_plan_dict(quality={"max_hfr": 2.5})
+
+        with tempfile.TemporaryDirectory() as tmp:
+            plan_path = Path(tmp) / "plan.json"
+            plan_path.write_text(json.dumps(plan_dict))
+
+            with (
+                patch(
+                    "nina_planner.tools.equipment.get_site_profile",
+                    AsyncMock(return_value=self._full_profile()),
+                ),
+                patch(
+                    "nina_planner.tools.equipment._get_site_equipment_status",
+                    AsyncMock(return_value=self._payload_equipment()),
+                ),
+                patch(
+                    "nina_planner.metadata.read_metadata",
+                    AsyncMock(return_value=self._quality_light_rows([1.5, 4.0])),
+                ),
+            ):
+                result = await load_sequence(
+                    [SequenceRequest(plan=str(plan_path), action="light")]
+                )
+        self.assertIn("1 frame(s) to acquire", result)
+        self.assertNotIn("nothing to load", result)
+
+    async def test_load_sequence_without_quality_counts_all(self):
+        """Same rows, no `quality` section: both frames count, nothing to load."""
+        from nina_planner.server import load_sequence
+
+        with tempfile.TemporaryDirectory() as tmp:
+            plan_path = Path(tmp) / "plan.json"
+            plan_path.write_text(json.dumps(self._quality_plan_dict()))
+
+            with (
+                patch(
+                    "nina_planner.tools.equipment.get_site_profile",
+                    AsyncMock(return_value=self._full_profile()),
+                ),
+                patch(
+                    "nina_planner.tools.equipment._get_site_equipment_status",
+                    AsyncMock(return_value=self._payload_equipment()),
+                ),
+                patch(
+                    "nina_planner.metadata.read_metadata",
+                    AsyncMock(return_value=self._quality_light_rows([1.5, 4.0])),
+                ),
+            ):
+                result = await load_sequence(
+                    [SequenceRequest(plan=str(plan_path), action="light")]
+                )
+        self.assertIn("is complete", result)
+        self.assertIn("nothing to load", result)
+
+    def test_load_sequence_request_rejects_legacy_threshold_keys(self):
+        """A threshold passed the old way fails loudly, naming the new home.
+
+        pydantic would otherwise IGNORE the unknown key, which is the one
+        outcome that must not happen: the caller would believe it was
+        filtering while every frame counted.
+        """
+        with self.assertRaises(Exception) as ctx:
+            SequenceRequest(plan="plan.json", action="light", max_hfr=2.5)
+        msg = str(ctx.exception)
+        self.assertIn("max_hfr", msg)
+        self.assertIn("quality", msg)
+
+    def test_load_sequence_request_rejects_each_legacy_key(self):
+        for key in (
+            "max_hfr",
+            "max_hfr_st_dev",
+            "min_detected_stars",
+            "max_guiding_rms_arcsec",
+        ):
+            with self.subTest(key=key):
+                with self.assertRaises(Exception) as ctx:
+                    SequenceRequest(plan="plan.json", action="light", **{key: 1})
+                self.assertIn(key, str(ctx.exception))
+                self.assertIn("plan file", str(ctx.exception))
 
     async def test_load_sequence_read_metadata_fails(self):
         from nina_planner.server import load_sequence

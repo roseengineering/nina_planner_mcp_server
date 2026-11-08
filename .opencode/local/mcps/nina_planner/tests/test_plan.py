@@ -173,3 +173,63 @@ class LoadPlanPlanIdTest(unittest.IsolatedAsyncioTestCase):
             path.write_text(json.dumps(_payload()), encoding="utf-8")
             plan = await load_plan(str(path))
         self.assertEqual(plan.plan_id, "plan-abc123")
+
+
+class QualityConfigTest(unittest.TestCase):
+    """The plan's `quality` section: the one home of light-frame thresholds."""
+
+    def test_defaults_to_no_filtering(self):
+        quality = _plan().quality
+        self.assertIsNone(quality.max_hfr)
+        self.assertIsNone(quality.max_hfr_st_dev)
+        self.assertIsNone(quality.min_detected_stars)
+        self.assertIsNone(quality.max_guiding_rms_arcsec)
+
+    def test_plan_written_before_quality_field_still_loads(self):
+        # No `quality` key at all — every plan file written before this
+        # feature must load and behave exactly as it did.
+        payload = _payload()
+        self.assertNotIn("quality", payload)
+        plan = ObservationPlan.model_validate(payload)
+        self.assertEqual(
+            plan.quality.model_dump(),
+            {
+                "max_hfr": None,
+                "max_hfr_st_dev": None,
+                "min_detected_stars": None,
+                "max_guiding_rms_arcsec": None,
+            },
+        )
+
+    def test_quality_section_round_trips(self):
+        plan = _plan(quality={"max_hfr": 2.5, "max_hfr_st_dev": 0.6})
+        self.assertEqual(plan.quality.max_hfr, 2.5)
+        self.assertEqual(plan.quality.max_hfr_st_dev, 0.6)
+        self.assertIsNone(plan.quality.min_detected_stars)
+        # Round-trip through JSON the way write_plan_file -> load_plan does.
+        again = ObservationPlan.model_validate(json.loads(plan.model_dump_json()))
+        self.assertEqual(again.quality.max_hfr, 2.5)
+        self.assertEqual(again.quality.max_hfr_st_dev, 0.6)
+
+    def test_unknown_quality_key_refused(self):
+        # extra="forbid": a typo'd threshold must not silently mean "off",
+        # or a plan would count frames under rules nobody wrote down.
+        with self.assertRaises(ValidationError) as ctx:
+            _plan(quality={"max_adu": 100})
+        self.assertIn("max_adu", str(ctx.exception))
+
+    def test_quality_value_type_enforced(self):
+        with self.assertRaises(ValidationError):
+            _plan(quality={"max_hfr": "sharp"})
+        with self.assertRaises(ValidationError):
+            _plan(quality={"min_detected_stars": 1.5})
+
+    def test_explicit_plan_id_unaffected_by_quality(self):
+        # The guarantee real plan files lean on: an explicit id is returned
+        # as-is, so adding thresholds to a written plan can never re-derive
+        # its id and orphan the frames already attributed to it.
+        self.assertEqual(
+            _plan(quality={"max_hfr": 2.5})._base_plan_id(),
+            _plan()._base_plan_id(),
+        )
+        self.assertEqual(_plan(quality={"max_hfr": 2.5}).plan_id, "plan-abc123")
