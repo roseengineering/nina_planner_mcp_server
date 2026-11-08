@@ -1812,10 +1812,22 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
                     "nina_planner.metadata.read_metadata",
                     AsyncMock(return_value=self._quality_light_rows([1.5, 4.0])),
                 ),
+                patch(
+                    "nina_planner.client.api_post",
+                    AsyncMock(return_value={}),
+                ) as api_post,
             ):
                 result = await load_sequence(
                     [SequenceRequest(plan=str(plan_path), action="light")]
                 )
+        # Remaining mode must actually ASK N.I.N.A. for the missing frame.
+        # The mocked POST is what proves it, and it keeps this test off the
+        # live API — without it the call went to 127.0.0.1:1888 for real and
+        # the test died on httpx.ConnectError whenever NINA was down.
+        self.assertTrue(
+            api_post.await_args_list, "load_sequence never asked N.I.N.A. to load"
+        )
+        self.assertEqual(api_post.await_args_list[0].args[0], "/sequence/load")
         self.assertIn("1 frame(s) to acquire", result)
         self.assertNotIn("nothing to load", result)
 
