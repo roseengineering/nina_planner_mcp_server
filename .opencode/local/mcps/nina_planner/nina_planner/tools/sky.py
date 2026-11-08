@@ -165,7 +165,7 @@ def _altitudes(
 async def target_altitudes(
     targets: list[dict[str, Any]], hours_ahead: float = 0.0
 ) -> dict[str, Any]:
-    """Computes the altitude and azimuth of each target at the active site's location, sorted highest altitude first, for ranking night-loop candidates. Each target is `{"name": ...}` plus optional J2000 `ra_hours` and `dec_deg`; pass the coordinates carried on a `best_targets` row (pre-verified against SIMBAD) so no network lookup happens. Without coordinates the name is resolved via SIMBAD, which needs internet -- only used for names outside the catalog. `hours_ahead` evaluates a future time (default 0 = now, using this host's clock). Altitude is geometric (no refraction) and only orders candidates — N.I.N.A.'s altitude guards still enforce the floor at runtime. This tool is read-only and takes no action."""
+    """Altitude/azimuth of each target at the active site, sorted highest first. For candidates `best_targets` does not cover -- a PLAN.md named target outside the catalog. Each target: `{"name", "ra_hours"?, "dec_deg"?}`; passing `best_targets` row coords skips the SIMBAD lookup (name-only needs internet). `hours_ahead`: 0 = now. Geometric altitude; N.I.N.A. enforces the floor. Read-only."""
     profile = await equipment_tools.get_site_profile()
     site = profile.site
     when = Time(datetime.now(timezone.utc)) + hours_ahead * u.hour
