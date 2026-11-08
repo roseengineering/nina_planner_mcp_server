@@ -763,7 +763,12 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--dest",
         default=".archive",
-        help="archive directory holding manifests (default: ./.archive)",
+        help=(
+            "archive directory whose manifest.json receipts prove a frame "
+            "was copied out (default: ./.archive — must match the "
+            "directory nina-archive wrote to; a mismatch means nothing "
+            "reads as preserved and purge deletes nothing)"
+        ),
     )
     parser.add_argument(
         "--imaging-root",
