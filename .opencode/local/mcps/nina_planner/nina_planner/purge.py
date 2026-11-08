@@ -762,8 +762,8 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--dest",
-        default="archive",
-        help="archive directory holding manifests (default: ./archive)",
+        default=".archive",
+        help="archive directory holding manifests (default: ./.archive)",
     )
     parser.add_argument(
         "--imaging-root",

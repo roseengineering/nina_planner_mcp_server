@@ -13,7 +13,8 @@ down to a workstation for calibration and stacking::
         LIGHT/*.fits.fz        attributed light frames
         FLAT/  DARK/  BIAS/    matched calibration frames (+ sidecar CSVs)
         JUNK/  ImageMetaData.csv  own-token frames no plan ships into a
-        JUNK/*.fits               type folder (degenerate + uncredited)
+        JUNK/*.fits               type folder (degenerate + uncredited),
+                                  with junk_reason (+ weather for lights)
 
 Frame selection reuses the exact attribution matchers behind
 ``get_plan_progress`` / ``audit_plans`` (``progress.filter_metadata_rows``),
@@ -768,8 +769,8 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--dest",
-        default="archive",
-        help="archive destination directory (default: ./archive)",
+        default=".archive",
+        help="archive destination directory (default: ./.archive)",
     )
     parser.add_argument(
         "--imaging-root",

@@ -1350,5 +1350,28 @@ class MainAsyncTest(unittest.IsolatedAsyncioTestCase):
             self.assertFalse(out_dir.exists())
 
 
+class ArchiveDefaultsTest(unittest.TestCase):
+    """``nina-archive`` and ``nina-purge`` must default to the same ``--dest``.
+
+    Purge only credits frames whose archive folder it can find under
+    ``--dest``, so archiving into one destination and purging against
+    another reports *every* frame as not preserved — the failure mode that
+    used to be reachable because the CLI defaulted to ``archive`` while the
+    shipped configs named ``.archive/`` as ``NINA_ARCHIVE_DEST``. The
+    hidden name is the one to keep: plan discovery and every attribution
+    walk prune dot-directories, so archived ``plan.json`` and
+    ``ImageMetaData.csv`` copies can never be read back as live ones.
+    """
+
+    def test_archive_and_purge_share_the_hidden_default_dest(self):
+        from nina_planner import purge as purge_mod
+
+        archive_dest = archive_mod._build_parser().parse_args([]).dest
+        purge_dest = purge_mod._build_parser().parse_args([]).dest
+        self.assertEqual(archive_dest, ".archive")
+        self.assertEqual(archive_dest, purge_dest)
+        self.assertTrue(archive_dest.startswith("."))
+
+
 if __name__ == "__main__":
     unittest.main()

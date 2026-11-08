@@ -353,11 +353,11 @@ def _plan_files(plan_dir: Path) -> list[Path]:
 
     Plans may live in subfolders (``plans/``, ``archive/``, per-month dirs),
     so discovery recurses — but only through visible, ordinary directories
-    (the ``_walk_visible`` prune: hidden dirs like ``.opencode``/``.venv``
-    and ``node_modules``/``__pycache__`` are never entered; on this project
-    that prunes 476 of 500 JSON files, leaving exactly the observation
-    plans). Directory symlinks are NOT followed (os.walk default), so a
-    symlink cycle can never hang an unattended audit.
+    (the ``_walk_visible`` prune: hidden dirs like ``.opencode``/``.venv``/
+    ``.archive`` and ``node_modules``/``__pycache__`` are never entered; on
+    this project that prunes 476 of 500 JSON files, leaving exactly the
+    observation plans). Directory symlinks are NOT followed (os.walk default),
+    so a symlink cycle can never hang an unattended audit.
 
     Results are sorted (depth, name): if two files carry the same plan id —
     an archived copy next to the live plan — the top-level canonical file
