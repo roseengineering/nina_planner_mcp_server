@@ -35,6 +35,10 @@
     "check_drift_every_n_exposures": 6,
     "max_drift_arcmin": 1.5
   },
+  "quality": {
+    "max_hfr": 2.5,
+    "max_hfr_st_dev": 0.6
+  },
   "light_frames": [
     {
       "filter_name": "LP",
