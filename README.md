@@ -1,4 +1,4 @@
-# 🔭 nina_planner — An Observatory Operator Agent
+# 🔭 nina-planner — An Observatory Operator Agent
 
 ![Banner for repository](banner.png)
 
