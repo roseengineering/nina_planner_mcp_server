@@ -1113,7 +1113,7 @@ class PrivateHelperDefensivePathsTest(unittest.TestCase):
     def test_quality_hfr_zero_sentinel_rejected(self):
         from nina_planner.progress import _quality_accepted
 
-        # NINA writes 0 for unmeasured ASCOM values (see imaging._clean_metric);
+        # NINA writes 0 for unmeasured ASCOM values in ImageMetaData.csv;
         # under an active filter a 0 HFR means "not measured" and must not pass.
         self.assertFalse(_quality_accepted({"hfr": 0}, 5.0, None))
         self.assertFalse(_quality_accepted({"hfr": 0.0}, 5.0, None))

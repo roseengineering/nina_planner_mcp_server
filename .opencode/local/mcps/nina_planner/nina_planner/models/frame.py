@@ -60,8 +60,9 @@ class FrameStats(BaseModel):
     background ADU) are all present, and so a calibration frame is never
     mistaken for a science frame.
 
-    Unlike the ``ImageMetaData.csv`` path (:func:`imaging._clean_metric`), a
-    genuine ``0`` is preserved as ``0`` — ``Stars: 0`` is a real star-count
+    Unlike the ``ImageMetaData.csv`` path — where NINA serializes unmeasured
+    values as ``0``, so a ``0`` there means "not measured" — a genuine ``0``
+    is preserved as ``0`` here: ``Stars: 0`` is a real star-count
     reading (the star-count failure condition), not a missing value. Unmeasured
     values arrive as NaN and are normalized to ``None`` here by the
     ``ascom_*`` helpers, so ``0`` always means a true reading.

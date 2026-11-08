@@ -144,7 +144,7 @@ def _quality_accepted(
     min_detected_stars: int | None,
     max_guiding_rms_arcsec: float | None = None,
 ) -> bool:
-    # Sentinel contract, mirroring imaging._clean_metric: NINA serializes
+    # Sentinel contract: NINA serializes
     # unmeasured ASCOM values as 0 in ImageMetaData.csv, so under an *active*
     # filter a 0 means "not measured" and cannot pass it (a frame whose HFR
     # or guiding RMS was never taken must not count toward acquisition, or a
