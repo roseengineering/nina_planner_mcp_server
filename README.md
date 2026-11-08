@@ -17,39 +17,42 @@
 
 Each table gives a one-line summary; details for the larger tools are in [Tool Details](#-tool-details).
 
-### 📡 Equipment & Telemetry
+### 🔧 Lifecycle & Health
+
+App liveness and event diagnostics.
+
+| Tool | Purpose |
+|---|---|
+| `get_nina_status()` | Lightweight liveness probe (no device probes); never raises on a down NINA. |
+| `start_nina()` | 🚀 Launch NINA into the interactive desktop session. Raises if NINA is already running or the host has no Windows interop. |
+| `stop_nina()` | 🛑 Terminate NINA.exe immediately via `taskkill`. A no-op when NINA is already down. |
+| `get_logs(since=300)` | NINA application log entries from the last `since` seconds, for diagnosing failures. Read-only. |
+| `get_events(since=300)` | Timestamped NINA events from the last `since` seconds, to reconstruct sequence, equipment, safety, imaging, and error activity. Read-only. |
+
+### 🛡️ Rig & Safety
+
+Live hardware, weather, and enclosure monitor.
 
 | Tool | Purpose |
 |---|---|
 | `get_site_equipment_status()` | Live connection, state, measurements, and capabilities of all equipment, plus weather and safety-monitor status. ⚠️ **Not read-only** — it auto-connects devices (see [details](#get_site_equipment_status)). |
 | `get_site_profile()` | Active NINA profile and static configuration: site, optics, camera geometry, filters, plate solvers, image-save path. Read-only. |
-| `get_events(since=300)` | Timestamped NINA events from the last `since` seconds, to reconstruct sequence, equipment, safety, imaging, and error activity. Read-only. |
-| `get_logs(since=300)` | NINA application log entries from the last `since` seconds, for diagnosing failures. Read-only. |
 
-### 🗺️ Planning & Progress
+### 🌌 Sky & Ephemeris
 
-| Tool | Purpose |
-|---|---|
-| `list_plans(project_dir?)` | List every observation plan file in the project directory with its `file`, absolute `path`, `plan_id`, `target`, `intent`, `pointing_count`, and mtime — enumerate plans without globbing. Read-only. |
-| `write_plan_file(plan)` | Validate and write an observation plan JSON file for later use by `load_sequence`. Creates the file only; loads and starts nothing. |
-| `write_mosaic_plan(plan_path, mosaic_csv, output_path?)` | Expand a base plan into a multi-pointing mosaic plan from a Telescopius CSV. Creates the file only. |
-| `get_plan_progress(file_path, max_hfr?, min_detected_stars?, max_guiding_rms_arcsec?)` | Per-frame-type acquired/remaining counts for every pointing of a plan. Use before `load_sequence` to see what still needs acquiring. Read-only. |
-| `audit_plans(plans?, project_dir?, types?, include_orphans=true)` | **Whole-project capture audit in one call**: reconcile plan expectations with CSV attribution (plus the one filesystem fact the CSV cannot hold — `bad` rejects) for every plan into an `all_saved` verdict plus `left_to_do` (including never-shot plans) and `blocked` work lists, and a `never_shot` list of plans with no frames at all. Read-only. |
-| `get_frame_stats(image_type?)` | Live per-frame statistics for the current (most recent) frame, straight from the `image-history` API — the watchdog's own data source (HFR, HFR σ, stars, ADU, guiding RMS, temp, filter, filename). Single-frame only, no history; read-only. |
-
-### 🌌 Sky Calculations
-
-Powered by [astropy](https://www.astropy.org); no NINA connection is needed for `resolve_target`.
+Darkness bounds, catalog targets, and offline coordinates. Powered by [astropy](https://www.astropy.org); no NINA connection is needed for `resolve_target`.
 
 | Tool | Purpose |
 |---|---|
-| `resolve_target(name)` | Resolve a deep-sky object name (e.g. `M31`, `NGC 6960`) to J2000 `ra_hours` / `dec_deg` through a SIMBAD lookup. **Only needed for names not in `dso_catalog.csv`** — catalog coordinates are already SIMBAD-verified and returned on `best_targets` rows. 🌐 Requires internet access; if it fails, skip the target rather than guessing. Read-only. |
-| `target_altitudes(targets, hours_ahead=0.0)` | Altitude/azimuth of each target at the active site, sorted highest first, for ranking candidates. Each target is `{"name": ...}` plus optional `ra_hours` / `dec_deg` (pass the pre-verified values from a `best_targets` row; without them the name is resolved via SIMBAD — needs internet). Read-only. |
 | `sun_times()` | Next sunrise/sunset plus all four twilight boundaries (civil −6°, nautical −12°, astronomical −18°) and the astronomical-darkness window in effect or next to open, with `night_phase` (`evening`/`dark`/`morning`) and `is_dark_now` for end-of-night decisions. Read-only; reads only the site profile. |
 | `moon_times()` | Lunar counterpart to `sun_times()`: `phase` (name, `illumination_fraction`, `waxing`, `elongation_deg`, `age_days`) plus current altitude/azimuth/distance, `moon_up_now`, the next `moonrise`/`moonset` (48 h window), and the next `new_moon`/`first_quarter`/`full_moon`/`last_quarter` instants (~32 d window). Phase instants are geocentric and identical everywhere; rise/set are topocentric for the site. Read-only; offline; reads only the site profile. |
 | `best_targets(min_altitude=30.0, top=10, level, kinds)` | Ranks Messier and bright NGC objects to observe from the active site right now, returning `visible_now` (dark and above the floor now) plus `later_tonight` (peak altitude within astronomical darkness), with `is_dark_now` and surface-brightness-based difficulty filtering. Each row carries pre-verified (SIMBAD-checked) `ra_hours` / `dec_deg` — use them directly for pointing, no `resolve_target` needed, so this works offline. Read-only. |
+| `resolve_target(name)` | Resolve a deep-sky object name (e.g. `M31`, `NGC 6960`) to J2000 `ra_hours` / `dec_deg` through a SIMBAD lookup. **Only needed for names not in `dso_catalog.csv`** — catalog coordinates are already SIMBAD-verified and returned on `best_targets` rows. 🌐 Requires internet access; if it fails, skip the target rather than guessing. Read-only. |
+| `target_altitudes(targets, hours_ahead=0.0)` | Altitude/azimuth of each target at the active site, sorted highest first, for ranking candidates. Each target is `{"name": ...}` plus optional `ra_hours` / `dec_deg` (pass the pre-verified values from a `best_targets` row; without them the name is resolved via SIMBAD — needs internet). Read-only. |
 
-### 🎬 Sequence Management
+### 🎬 Sequencer
+
+Queueing, starting, stopping, and checking runs.
 
 | Tool | Purpose |
 |---|---|
@@ -58,13 +61,25 @@ Powered by [astropy](https://www.astropy.org); no NINA connection is needed for 
 | `stop_sequence()` | Stop the running sequence and wait until NINA reports it stopped. ⚠️ Does **not** stow the scope. |
 | `get_sequence_state(detail)` | Per-step view of the loaded sequence: plan attribution, status, exposure progress, horizon altitude, errors. `detail`: `summary` (default) or `raw` (`/sequence/state`). Read-only. |
 
-### ⚙️ NINA Lifecycle
+### 🗺️ Plan Management
+
+Plan creation and batch reconciliation.
 
 | Tool | Purpose |
 |---|---|
-| `get_nina_status()` | Lightweight liveness probe (no device probes); never raises on a down NINA. |
-| `start_nina()` | 🚀 Launch NINA into the interactive desktop session. Raises if NINA is already running or the host has no Windows interop. |
-| `stop_nina()` | 🛑 Terminate NINA.exe immediately via `taskkill`. A no-op when NINA is already down. |
+| `audit_plans(plans?, project_dir?, types?, include_orphans=true)` | **Whole-project capture audit in one call**: reconcile plan expectations with CSV attribution (plus the one filesystem fact the CSV cannot hold — `bad` rejects) for every plan into an `all_saved` verdict plus `left_to_do` (including never-shot plans) and `blocked` work lists, and a `never_shot` list of plans with no frames at all. Read-only. |
+| `get_plan_progress(file_path, max_hfr?, min_detected_stars?, max_guiding_rms_arcsec?)` | Per-frame-type acquired/remaining counts for every pointing of a plan. Use before `load_sequence` to see what still needs acquiring. Read-only. |
+| `list_plans(project_dir?)` | List every observation plan file in the project directory with its `file`, absolute `path`, `plan_id`, `target`, `intent`, `pointing_count`, and mtime — enumerate plans without globbing. Read-only. |
+| `write_plan_file(plan)` | Validate and write an observation plan JSON file for later use by `load_sequence`. Creates the file only; loads and starts nothing. |
+| `write_mosaic_plan(plan_path, mosaic_csv, output_path?)` | Expand a base plan into a multi-pointing mosaic plan from a Telescopius CSV. Creates the file only. |
+
+### 📈 Telemetry Watchdog
+
+Live HFR/star-count metrics during acquisition.
+
+| Tool | Purpose |
+|---|---|
+| `get_frame_stats(image_type?)` | Live per-frame statistics for the current (most recent) frame, straight from the `image-history` API — the watchdog's own data source (HFR, HFR σ, stars, ADU, guiding RMS, temp, filter, filename). Single-frame only, no history; read-only. |
 
 ## 📖 Tool Details
 
