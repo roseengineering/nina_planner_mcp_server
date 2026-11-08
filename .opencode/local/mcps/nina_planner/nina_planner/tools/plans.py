@@ -589,7 +589,7 @@ def _status_for(
     window_open: bool | None,
     junk: int,
 ) -> str:
-    """First-match-wins audit verdict (see audit_plans' docstring, §3 table).
+    """First-match-wins audit verdict (see audit_plans' docstring, `status` list).
 
     Order matters: the window-closed deficit (EXPIRED) must win over the
     ``remaining == 0`` contract that would otherwise read it as done, and
@@ -835,130 +835,24 @@ async def audit_plans(
     types: list[str] | None = None,
     include_orphans: bool = True,
 ) -> dict[str, Any]:
-    """Audits every observation plan at once: are all captures saved to disk, and what is left to do?
+    """Audits every observation plan in one call: are all captures saved, and what is left to do? Replaces per-plan `get_plan_progress` sweeps.
 
-    One call replaces per-plan get_plan_progress sweeps. Discovery is a LEFT
-    JOIN of ImageMetaData.csv onto the project's plan files: every plan id
-    recorded in a **light** frame's file path drives the audit, and the plan
-    files in ``project_dir`` (or exactly the ``plans`` paths/names given)
-    supply the definitions. Calibration rows deliberately do NOT join:
-    calibration is pool-credited and lands under the shared base token, so
-    letting a dark/flat/bias row reference a plan would hide plans that shot
-    calibration but never a single light — never-shot means no light was
-    ever attributed, judged from light attributions themselves, not from
-    remaining counts. Plan-file discovery is recursive but pruned — directories
-    starting with "." or named ``node_modules``/``__pycache__`` are never
-    searched (see ``_plan_files``), and files order shallowest-first so a
-    top-level plan wins any id tie against an archived copy. Unrelated JSON
-    such as config files is ignored entirely and never becomes an error
-    (use list_plans to enumerate plan files themselves). A plan whose id no
-    recorded frame references — a never-shot plan — is NOT audited (no
-    ``rows``) but is reported: see ``never_shot`` below. Conversely,
-    frames whose recorded plan id no loadable plan file claims
-    are reported under ``errors`` (a plan file was deleted or is corrupt).
-    For each joined plan and each requested frame type it reconciles
-    TWO truth sources and reports them side by side per row:
+    Args: `plans` — exact files/names resolved against `project_dir`; explicit mode audits exactly those files even if the CSV never mentions them, and any load failure among them is an error. Naming a file IS the request to audit it, so `never_shot` stays empty and an unshot plan named there audits as an ordinary row. `project_dir` — default: the project directory; discovery is recursive but pruned, shallowest-first (see `list_plans`). `types` — subset of `light`/`flat`/`dark`/`bias`, case-insensitive. `include_orphans=false` omits `orphans`.
 
-    - ``expected`` — the plan's total_count (per pointing for lights,
-      plan-level for calibration, summed over the type's exposure groups).
-    - ``attributed`` / ``remaining`` — exactly what get_plan_progress
-      reports: lights match the underscore token in the recorded path AND the
-      exposure duration (±0.05s, so degenerate 0s frames never count);
-      calibration is POOLED plan-wide (flats by type+filter, darks by
-      type+exposure, bias by type) inside ± calibration_window_days of the
-      earliest attributed light. While a calibration window is closed,
-      remaining is reported as 0 even when a true deficit exists, so this
-      audit surfaces that case explicitly as EXPIRED.
+    Each plan × type row reconciles two truth sources: `expected` (the plan's `total_count` — per pointing for lights, plan-level for calibration) against `attributed`/`remaining`, exactly what `get_plan_progress` reports (lights match the recorded underscore token AND exposure duration ±0.05s; calibration is pooled plan-wide within `calibration_window_days` of the earliest attributed light, and while that window is closed `remaining` reads 0 even under a true deficit — this audit surfaces that case as EXPIRED). Both come from ImageMetaData.csv, plus the one fact it cannot hold: frames N.I.N.A. rejected via its `BAD_` filename prefix, reported as the light row's `bad`. Calibration rows also carry `own_rows` — how many of that type's frames sit under THIS plan's token rather than the shared pool. Rows and `left_to_do`/`blocked`/`never_shot` entries carry `target` and `intent`; light rows additionally carry the pointing's `label` (mosaic pane like `r2_c3`, or subtitle like `M47 center`); calibration rows carry none (plan-level, `label` empty).
 
-    Both come from ImageMetaData.csv. The filesystem is consulted for exactly
-    one thing the CSV cannot know — frames N.I.N.A. rejected via its ``BAD_``
-    filename prefix (``2026-10-22_04-46-37_L_...fits.fz`` ->
-    ``BAD_2026-10-22_04-46-37_L_...fits.fz``): the CSV row still names the
-    pre-rename file, so a reject never reaches ``attributed``, and the light
-    row's ``bad`` count reports how many were rejected. Calibration rows carry
-    ``own_rows`` — how many of this type's recorded frames sit under THIS
-    plan's own token rather than the shared pool. Hidden directories are
-    never walked anywhere in this tool — neither the CSV reads nor the disk
-    scans — so a share's ``.snapshot``/``.Trashes`` copies can neither
-    double-count rows nor inflate counts.
+    `status` per row, first match wins:
+    - `EXPIRED` — window closed with an uncredited deficit; shooting cannot fix it (raise `calibration_window_days` or write a new plan) → `blocked`.
+    - `NEVER_SHOT` — a light row with zero attributed frames: no run ever delivered one, so the whole ask is untried → `left_to_do`.
+    - `MISSING_FILES` — `remaining > 0`: shoot more, `missing` = `remaining` → `left_to_do`.
+    - `SUSPECT_JUNK` — light/dark rows under half the plan's exposure or 0.01s (Smart-Exposure junk) riding an otherwise-complete set; bias and flats exempt. When junk instead leaves a deficit the status is MISSING_FILES with the junk count as cause.
+    - `POOL_CREDITED` — calibration satisfied from the pool while this plan's `own_rows` fall short: informational, not a gap (so `attributed` may legitimately exceed `own_rows`).
+    - `OVERSHOT` — lights above expected from a full-mode re-run; harmless.
+    - `OK`.
 
-    Because calibration is pooled, ``attributed`` can legitimately exceed a
-    plan's own ``own_rows`` (one bias set credits every plan) — that is
-    POOL_CREDITED, informational, not a gap. There is deliberately no
-    disk-vs-CSV cross-check any more: a frame the Session Metadata plugin
-    never recorded simply does not appear in either source, so it surfaces
-    as an ordinary ``remaining`` deficit. Re-shooting is safe in that case,
-    which is all this audit ever advised.
+    Top level: `all_saved` (false if any row is MISSING_FILES/EXPIRED/NEVER_SHOT/SUSPECT_JUNK, any error, or `never_shot` is non-empty), `totals` (incl. `never_shot` count), `left_to_do` (ONLY what a sequence run can fix — MISSING_FILES and row-level NEVER_SHOT with `missing` = remaining, plus one NEVER_SHOT entry per unshot pointing of a wholly unshot plan), `blocked` (EXPIRED), `never_shot` (loadable plan files no recorded light frame references — the LEFT JOIN's blind spot, since a plan with zero frames has no CSV row; matched on plan id so a rewritten twin of an already-shot plan is not flagged, deduped shallowest-first, carrying `plan_id`/`file`/`target`/`intent`/`pointing_count`/`light_expected`/`written`; empty in explicit mode), `rows` (every plan × type, plus per-pointing light rows for mosaics — `pointing_index` null for single-pointing plans), `orphans` (landing-token directories no current plan claims — deleted plans, the dual of `never_shot`), `errors` (light frames no loadable plan file claims, plus plan files that fail to load *while the CSV references their id*; never fatal to the sweep), and `root` (the imaging directory actually scanned).
 
-    ``status`` per row (first match wins): EXPIRED (window closed with an
-    uncredited deficit — needs a new plan/window, shooting cannot fix it) →
-    NEVER_SHOT (a light row with zero attributed frames — no run ever
-    delivered a frame for this pointing, so the whole ask is untried work;
-    like a whole never-shot plan it is listed in ``left_to_do`` with
-    ``reason: "NEVER_SHOT"``) → MISSING_FILES (remaining > 0 — shoot more;
-    ``missing`` equals ``remaining``) → SUSPECT_JUNK (light/dark rows whose duration is under
-    half the plan's exposure or 0.01s — e.g. 0.00003s Smart Exposure junk —
-    riding alongside a set whose attribution is otherwise complete; bias and
-    flats exempt; when junk instead leaves a deficit the status is
-    MISSING_FILES with the junk count as the cause) → POOL_CREDITED (calibration satisfied from the
-    pool while this plan's own recorded frames fall short) → OVERSHOT (light
-    attributed above expected from full-mode re-runs; harmless) → OK.
-
-    Top level: ``all_saved`` (true iff no row is MISSING_FILES,
-    EXPIRED, NEVER_SHOT or SUSPECT_JUNK, no error was recorded, and
-    ``never_shot`` is empty), ``totals`` (including ``never_shot``, the
-    number of unshot plan files),
-    ``left_to_do`` (ONLY what a sequence run can fix: MISSING_FILES and
-    row-level NEVER_SHOT rows with missing = remaining, plus one NEVER_SHOT
-    entry per unshot pointing of a wholly unshot plan with missing = that
-    pointing's whole light ask),
-    ``blocked`` (EXPIRED — needs plan/window changes),
-    ``never_shot`` (loadable plan files no recorded frame references —
-    matched on plan id, so a rewritten/archived twin of an already-shot
-    plan is not never-shot: its frames exist under the shared id. Written
-    but never imaged, and the audit's dual of ``orphans``, which is frames
-    with no plan file. Plan-level entries carrying ``plan_id``,
-    ``file``, ``target``, ``intent``, ``pointing_count``, ``light_expected``
-    and ``written``; deduped by plan id, shallowest-first. Without these an
-    operator reading only ``left_to_do`` sees a 2-frame deficit where 240
-    frames of never-shot targets also wait — the join's blind spot, since a
-    plan with zero frames has no CSV row to join on), ``rows`` (every
-    plan × type, plus per-pointing light rows for mosaics; single-pointing
-    plans carry pointing_index null), ``orphans`` (landing token directories
-    matching no current plan — from deleted plans), ``errors`` (light
-    frames whose recorded plan id no loadable plan file claims, plus plan
-    files that fail to load *while the CSV references their id*; a load
-    failure nothing references is not an error — never fatal to the sweep),
-    and ``root`` (the imaging directory actually scanned).
-
-    Every row, ``left_to_do``, and ``blocked`` entry carries the plan's
-    ``target`` and ``intent`` (the plan's 2–3 word observation goal), so a
-    consumer can tell two plans for the same target apart — or distinguish
-    an acquisition from, say, a calibration session — without loading the
-    plan files itself. Empty string when a plan leaves ``intent`` unset.
-    (``never_shot`` entries carry both fields too.)
-    Light rows (and light ``left_to_do`` entries, MISSING_FILES and
-    NEVER_SHOT alike) additionally carry the
-    pointing's ``label`` — a mosaic pane name like ``r2_c3``/``Pane 2``, or
-    a single-pointing subtitle like ``M47 center`` — the human handle for
-    what ``pointing_index``/``effective_plan_id`` express numerically, and
-    the segment after ``<target> <intent>`` in the landing directory name.
-    Calibration rows
-    carry no ``label`` (plan-level, like their null pointing_index) even
-    though a single-pointing plan's calibration lands in that same labeled
-    directory; it is the empty string when a pointing's label is unset.
-
-    A missing/unmounted imaging root RAISES (check the site profile's image
-    save path and, on non-Windows hosts, NINA_DRIVE_MOUNT) rather than
-    reporting empty counts — "no frames" and "no mount" must never look
-    alike. ``types`` (case-insensitive) subsets the output rows; ``plans``
-    entries resolve against ``project_dir`` (default: the server's project
-    directory) and bypass CSV discovery — exactly those files are audited
-    even if the CSV never mentions them, and any load failure among them is
-    an error. Naming a file IS the request to audit it, so explicit mode
-    never populates ``never_shot``: an unshot plan named there audits as an
-    ordinary row instead — status NEVER_SHOT, listed in ``left_to_do``.
-    Read-only; makes no N.I.N.A. calls beyond the site profile.
+    A missing/unmounted imaging root RAISES rather than reporting empty counts — "no frames" and "no mount" must never look alike (check the site profile's image save path and, on non-Windows hosts, `NINA_DRIVE_MOUNT`). There is deliberately no disk-vs-CSV cross-check: a frame the Session Metadata plugin never recorded appears in neither source and surfaces as an ordinary MISSING_FILES deficit — rare and safe to re-shoot. Read-only; makes no N.I.N.A. calls beyond the site profile.
     """
     plan_dir = Path(project_dir) if project_dir else config.PROJECT_DIR
     if not plan_dir.is_absolute():
