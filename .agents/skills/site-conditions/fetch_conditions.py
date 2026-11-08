@@ -41,7 +41,7 @@ RE_FORECAST_RANGE = re.compile(
 RE_SKY_QUALITY = re.compile(
     r"Est\. Sky Quality:.*?<strong>([\d.]+)</strong> Magnitude\."
     r".*?<strong>Class (\d+)</strong> Bortle",
-    re.S,
+    re.DOTALL,
 )
 
 # --- per-day blocks --------------------------------------------------------
@@ -51,12 +51,14 @@ RE_ASTRO = re.compile(r"Astro Dark:\s*(\d{2}:\d{2}) - (\d{2}:\d{2})")
 RE_MOON = re.compile(
     r'<span class="fc_moon_phase">([^<]+)</span>.*?'
     r'<span class="fc_moon_percentage">(\d+)%</span>',
-    re.S,
+    re.DOTALL,
 )
 # The hour labels live in their own list BEFORE the detail rows. They are a
 # rolling window starting at the generation hour (02..01), NOT 00..23 -- always
 # read them rather than assuming midnight alignment.
-RE_HOURS = re.compile(r'<div class="fc_hours fc_hour_ratings">\s*<ul>(.*?)</ul>', re.S)
+RE_HOURS = re.compile(
+    r'<div class="fc_hours fc_hour_ratings">\s*<ul>(.*?)</ul>', re.DOTALL
+)
 RE_HOUR_LABEL = re.compile(
     r'<span class="glyphicon glyphicon-time"></span>\s*(\d{2})\s*<span>'
 )
@@ -64,7 +66,7 @@ RE_HOUR_LABEL = re.compile(
 # NOTE: the <li> CLASS here is clearness (fc_cl_0 = 0% clear), while the TEXT is
 # cloud cover. Trust the text only; reading the class inverts every value.
 RE_TOTAL_CLOUDS = re.compile(
-    r"<span>Total Clouds \(% Sky Obscured\)</span>.*?<ul>(.*?)</ul>", re.S
+    r"<span>Total Clouds \(% Sky Obscured\)</span>.*?<ul>(.*?)</ul>", re.DOTALL
 )
 
 # SIGNED on purpose. `(\d+)` returns [] for "-14", not "-14" -- an empty list
@@ -80,7 +82,7 @@ RE_INT_CELL = re.compile(r"<li[^>]*>(-?\d+)</li>")
 #   frost -> <li> is EMPTY, state is in title; and the two states differ in
 #            both class spelling and ATTRIBUTE ORDER (class-then-title at one
 #            site, title-then-class at another), so read attrs as a string.
-RE_LI = re.compile(r"<li\b([^>]*)>(.*?)</li>", re.S)
+RE_LI = re.compile(r"<li\b([^>]*)>(.*?)</li>", re.DOTALL)
 RE_TITLE = re.compile(r'title="([^"]*)"')
 # Speed only. Direction/degrees are deliberately NOT extracted: every threshold
 # and every output line runs on speed, and nothing in this skill consumes a
@@ -247,7 +249,7 @@ def _row_cells(block: str, label: str) -> list[tuple[str, str | None]] | None:
         r'<span class="fc_detail_label"><span>' + label + r"</span></span>"
         r".*?<ul>(.*?)</ul>",
         block,
-        re.S,
+        re.DOTALL,
     )
     if not m:
         return None
@@ -621,8 +623,10 @@ def summarize_conditions(
     unit = data.get("wind_unit") or "mph"
     scope = "astro-dark hours only · " if night_only else ""
     lines = [
-        f"Conditions  ({scope}wind>={max_wind:g}{unit} · precip>={max_precip}% · "
-        f"dew-spread<={min_dew_spread}°C · any frost)"
+        (
+            f"Conditions  ({scope}wind>={max_wind:g}{unit} · precip>={max_precip}% · "
+            f"dew-spread<={min_dew_spread}°C · any frost)"
+        )
     ]
     any_breach = False
     for day in data["days"]:
