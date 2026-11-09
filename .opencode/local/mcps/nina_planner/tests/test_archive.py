@@ -8,7 +8,7 @@ test passes --imaging-root).
 The default plan expects 20 light / 10 flat / 10 dark / 10 bias; seed_full
 writes a complete, self-consistent capture set so the plan passes the
 completeness gate, and per-type knobs remove pieces for the skip tests.
-ArchiveJunkTest covers the ``JUNK/`` diversion: own-token frames no plan
+ArchiveJunkTest covers the ``junk/`` diversion: own-token frames no plan
 ships into a type folder (degenerate captures and real-but-uncredited
 ones) must land in the manifest so nina-purge never reads them as
 "not preserved".
@@ -265,11 +265,17 @@ class ArchiveHappyPathTest(ArchiveBase):
             ("BIAS", 10),
         ):
             files = [
-                p for p in (base / image_type).iterdir() if p.suffix in (".fits", ".fz")
+                p
+                for p in (base / archive_mod._FOLDER_NAMES[image_type]).iterdir()
+                if p.suffix in (".fits", ".fz")
             ]
             self.assertEqual(len(files), expected, image_type)
             # Sidecar CSV sits next to its frames.
-            self.assertTrue((base / image_type / "ImageMetaData.csv").is_file())
+            self.assertTrue(
+                (
+                    base / archive_mod._FOLDER_NAMES[image_type] / "ImageMetaData.csv"
+                ).is_file()
+            )
         # Frames are COPIED: originals still on disk.
         originals = [p for p in self.root.rglob("*.fits") if p.is_file()]
         self.assertEqual(len(originals), 50)
@@ -289,10 +295,10 @@ class ArchiveHappyPathTest(ArchiveBase):
             {"rejected": [], "gone": [], "not_selected": [], "junk": []},
         )
         # archive_path column joins CSV rows to archived files.
-        with (base / "LIGHT" / "ImageMetaData.csv").open(newline="") as handle:
+        with (base / "lights" / "ImageMetaData.csv").open(newline="") as handle:
             rows = list(csv.DictReader(handle))
         self.assertEqual(len(rows), 20)
-        self.assertTrue(rows[0]["archive_path"].startswith("LIGHT/"))
+        self.assertTrue(rows[0]["archive_path"].startswith("lights/"))
         self.assertTrue((base / rows[0]["archive_path"]).is_file())
         # Append-only index has exactly one entry.
         self.assertEqual(len(self.index_lines()), 1)
@@ -433,7 +439,7 @@ class ArchiveHappyPathTest(ArchiveBase):
         base = self.dest / folder
 
         # LIGHT sidecar has joined weather per source folder
-        with (base / "LIGHT" / "ImageMetaData.csv").open(newline="") as handle:
+        with (base / "lights" / "ImageMetaData.csv").open(newline="") as handle:
             rows = list(csv.DictReader(handle))
         self.assertEqual(len(rows), 2)
         row1 = next(r for r in rows if "f1.fits" in r["file_path"])
@@ -446,7 +452,7 @@ class ArchiveHappyPathTest(ArchiveBase):
         self.assertEqual(row2["dew_point"], "9.5")
 
         # DARK sidecar must NOT have weather columns
-        with (base / "DARK" / "ImageMetaData.csv").open(newline="") as handle:
+        with (base / "darks" / "ImageMetaData.csv").open(newline="") as handle:
             dark_rows = list(csv.DictReader(handle))
         self.assertNotIn("cloud_cover", dark_rows[0])
 
@@ -528,7 +534,7 @@ class ArchiveHappyPathTest(ArchiveBase):
         folder = archive_mod._folder_name(self.proj / "m31.json", plan)
         base = self.dest / folder
 
-        with (base / "LIGHT" / "ImageMetaData.csv").open(newline="") as handle:
+        with (base / "lights" / "ImageMetaData.csv").open(newline="") as handle:
             rows = list(csv.DictReader(handle))
         self.assertNotIn("cloud_cover", rows[0])
 
@@ -555,7 +561,7 @@ class ArchiveHappyPathTest(ArchiveBase):
         folder = self.folders()[0]
         base = self.dest / folder
         for image_type in ("LIGHT", "FLAT", "DARK", "BIAS"):
-            for dst in (base / image_type).iterdir():
+            for dst in (base / archive_mod._FOLDER_NAMES[image_type]).iterdir():
                 if dst.suffix != ".fits":
                     continue
                 matches = [p for p in self.root.rglob(dst.name) if p.is_file()]
@@ -742,16 +748,16 @@ class ArchiveAttributionTest(ArchiveBase):
 
         self.assertEqual(code, 0, err)
         base = self.dest / archive_mod._folder_name(self.proj / "m31.json", plan)
-        archived_names = {p.name for p in (base / "LIGHT").iterdir()}
+        archived_names = {p.name for p in (base / "lights").iterdir()}
         self.assertNotIn("stray.fits", archived_names)
         self.assertEqual(len([n for n in archived_names if n.endswith(".fits")]), 20)
 
     def test_dark_outside_window_ships_to_junk_not_dark(self):
         # Plan anchored on 2026-09-21 lights; a dark shot 30 days later is
-        # outside calibration_window_days=7 -> never selected for DARK/,
+        # outside calibration_window_days=7 -> never selected for darks/,
         # never credited, and the plan still reads complete (window-closed
         # semantics). It is still this plan's OWN live frame, so it now
-        # ships to JUNK/ rather than sitting in disk.not_selected and
+        # ships to junk/ rather than sitting in disk.not_selected and
         # holding the landing directory in nina-purge for ever.
         plan = self.seed_full()
         late = self.root / "M31_plan-abc123_" / "2026-10-25" / "DARK"
@@ -777,44 +783,44 @@ class ArchiveAttributionTest(ArchiveBase):
 
         self.assertEqual(code, 0, err)
         base = self.dest / archive_mod._folder_name(self.proj / "m31.json", plan)
-        dark_names = {p.name for p in (base / "DARK").iterdir()}
+        dark_names = {p.name for p in (base / "darks").iterdir()}
         self.assertNotIn(late_file.name, dark_names)
         self.assertEqual(len([n for n in dark_names if n.endswith(".fits")]), 10)
-        # ...but it IS in the folder, under JUNK/ with its reason.
-        self.assertIn(late_file.name, {p.name for p in (base / "JUNK").iterdir()})
+        # ...but it IS in the folder, under junk/ with its reason.
+        self.assertIn(late_file.name, {p.name for p in (base / "junk").iterdir()})
         manifest = json.loads((base / archive_mod._MANIFEST_NAME).read_text())
         # counts.dark counts type-folder frames only: an uncredited frame
-        # must not inflate `archived` above what DARK/ actually holds.
+        # must not inflate `archived` above what darks/ actually holds.
         self.assertEqual(manifest["counts"]["dark"]["archived"], 10)
-        entry = [f for f in manifest["files"] if f["path"] == f"JUNK/{late_file.name}"]
+        entry = [f for f in manifest["files"] if f["path"] == f"junk/{late_file.name}"]
         self.assertEqual(len(entry), 1)
         self.assertEqual(entry[0]["type"], "JUNK")
         self.assertEqual(entry[0]["frame_type"], "DARK")
         self.assertEqual(entry[0]["reason"], "uncredited")
         self.assertEqual(entry[0]["source"], str(late_file))
         # The disk section records the diversion, so nothing is merely
-        # "skipped" any more — the whole point of the JUNK/ invariant.
+        # "skipped" any more — the whole point of the junk/ invariant.
         self.assertEqual(manifest["disk"]["junk"][0]["source"], str(late_file))
         self.assertEqual(manifest["disk"]["junk"][0]["reason"], "uncredited")
         self.assertEqual(manifest["disk"]["not_selected"], [])
         self.assertEqual(manifest["disk"]["rejected"], [])
         self.assertEqual(manifest["disk"]["gone"], [])
-        # file_count counts everything in the folder, JUNK/ included.
+        # file_count counts everything in the folder, junk/ included.
         self.assertEqual(manifest["file_count"], 51)
         # The JUNK sidecar names why each row is there.
-        with (base / "JUNK" / "ImageMetaData.csv").open(newline="") as handle:
+        with (base / "junk" / "ImageMetaData.csv").open(newline="") as handle:
             rows = list(csv.DictReader(handle))
         self.assertEqual(len(rows), 1)
         self.assertEqual(rows[0]["junk_reason"], "uncredited")
-        self.assertEqual(rows[0]["archive_path"], f"JUNK/{late_file.name}")
+        self.assertEqual(rows[0]["archive_path"], f"junk/{late_file.name}")
         self.assertTrue((base / rows[0]["archive_path"]).is_file())
 
 
 class ArchiveJunkTest(ArchiveBase):
-    """Own-token frames no plan ships into a type folder → ``JUNK/``.
+    """Own-token frames no plan ships into a type folder → ``junk/``.
 
     The invariant under test: every live own-token row ends up in
-    ``manifest.files[]`` (type folder or ``JUNK/``), so ``nina-purge``'s
+    ``manifest.files[]`` (type folder or ``junk/``), so ``nina-purge``'s
     ``preserved(F)`` can never be false for one of this plan's own frames —
     the deadlock where two 0.00003s Smart Exposure darks held a finished
     plan's landing directory for ever.
@@ -845,8 +851,8 @@ class ArchiveJunkTest(ArchiveBase):
         return json.loads((base / archive_mod._MANIFEST_NAME).read_text())
 
     def junk_names(self, plan_file: Path, plan: ObservationPlan) -> set[str]:
-        """JUNK/ contents — empty set when the folder was never created."""
-        junk = self.dest / archive_mod._folder_name(plan_file, plan) / "JUNK"
+        """junk/ contents — empty set when the folder was never created."""
+        junk = self.dest / archive_mod._folder_name(plan_file, plan) / "junk"
         return {p.name for p in junk.iterdir()} if junk.is_dir() else set()
 
     def test_degenerate_dark_ships_to_junk(self):
@@ -859,17 +865,17 @@ class ArchiveJunkTest(ArchiveBase):
         base = self.dest / archive_mod._folder_name(self.proj / "m31.json", plan)
         # The type folder still holds exactly the credited set...
         self.assertEqual(
-            len([p for p in (base / "DARK").iterdir() if p.suffix == ".fits"]), 10
+            len([p for p in (base / "darks").iterdir() if p.suffix == ".fits"]), 10
         )
-        # ...and the degenerate frame is in the folder, under JUNK/.
+        # ...and the degenerate frame is in the folder, under junk/.
         self.assertEqual(
-            [p.name for p in (base / "JUNK").iterdir() if p.suffix == ".fits"],
+            [p.name for p in (base / "junk").iterdir() if p.suffix == ".fits"],
             [junk.name],
         )
         manifest = json.loads((base / archive_mod._MANIFEST_NAME).read_text())
         # A worthless frame must not inflate the per-type archived count.
         self.assertEqual(manifest["counts"]["dark"]["archived"], 10)
-        entry = [f for f in manifest["files"] if f["path"] == f"JUNK/{junk.name}"]
+        entry = [f for f in manifest["files"] if f["path"] == f"junk/{junk.name}"]
         self.assertEqual(len(entry), 1)
         self.assertEqual(entry[0]["type"], "JUNK")
         self.assertEqual(entry[0]["frame_type"], "DARK")
@@ -879,12 +885,12 @@ class ArchiveJunkTest(ArchiveBase):
         self.assertEqual(manifest["file_count"], 51)
         self.assertTrue(any("degenerate" in w for w in manifest["warnings"]))
         # The console says where it went, too.
-        self.assertIn("JUNK/", out)
+        self.assertIn("junk/", out)
         self.assertIn("🗑", out)
 
     def test_degenerate_light_ships_to_junk_not_light(self):
         # Lights are selected on their token ALONE, so without the
-        # degenerate filter this 0.00s frame would ship inside LIGHT/ —
+        # degenerate filter this 0.00s frame would ship inside lights/ —
         # exactly where a stacking pipeline would pick it up.
         plan = self.seed_full()
         name = "2026-09-21_05-00-00_L__0.00s_junk.fits"
@@ -908,17 +914,17 @@ class ArchiveJunkTest(ArchiveBase):
         self.assertEqual(code, 0, err)
         base = self.dest / archive_mod._folder_name(self.proj / "m31.json", plan)
         light_names = {
-            p.name for p in (base / "LIGHT").iterdir() if p.suffix == ".fits"
+            p.name for p in (base / "lights").iterdir() if p.suffix == ".fits"
         }
         self.assertEqual(len(light_names), 20)
         self.assertNotIn(junk.name, light_names)
         self.assertEqual(
-            [p.name for p in (base / "JUNK").iterdir() if p.suffix == ".fits"],
+            [p.name for p in (base / "junk").iterdir() if p.suffix == ".fits"],
             [junk.name],
         )
         manifest = json.loads((base / archive_mod._MANIFEST_NAME).read_text())
         self.assertEqual(manifest["counts"]["light"]["archived"], 20)
-        entry = [f for f in manifest["files"] if f["path"] == f"JUNK/{junk.name}"]
+        entry = [f for f in manifest["files"] if f["path"] == f"junk/{junk.name}"]
         self.assertEqual(entry[0]["frame_type"], "LIGHT")
         self.assertEqual(entry[0]["reason"], "degenerate")
         self.assertEqual(manifest["disk"]["not_selected"], [])
@@ -926,7 +932,7 @@ class ArchiveJunkTest(ArchiveBase):
     def test_real_dark_no_group_credits_ships_to_junk_as_uncredited(self):
         # In-window, perfectly real 120s dark — but no group asked for a
         # 120s dark, so it is not selected. Real data, not degenerate:
-        # diverted to JUNK/ with reason "uncredited", never "degenerate".
+        # diverted to junk/ with reason "uncredited", never "degenerate".
         plan = self.seed_full()
         name = "2026-09-21_05-00-00_dark_120.00s.fits"
         path = self.frame("DARK", name, date="2026-09-21")
@@ -947,7 +953,7 @@ class ArchiveJunkTest(ArchiveBase):
 
         self.assertEqual(code, 0, err)
         manifest = self.manifest(self.proj / "m31.json", plan)
-        entry = [f for f in manifest["files"] if f["path"] == f"JUNK/{name}"]
+        entry = [f for f in manifest["files"] if f["path"] == f"junk/{name}"]
         self.assertEqual(len(entry), 1)
         self.assertEqual(entry[0]["reason"], "uncredited")
         self.assertEqual(manifest["disk"]["junk"][0]["reason"], "uncredited")
@@ -956,7 +962,7 @@ class ArchiveJunkTest(ArchiveBase):
     def test_frame_another_plan_ships_is_not_diverted(self):
         # A's late dark (30 days after A's lights) is outside A's window
         # but inside B's, so B's pooled matcher ships it into B's own
-        # DARK/. Diverting it into A's JUNK/ would duplicate a good dark
+        # darks/. Diverting it into A's junk/ would duplicate a good dark
         # and mislabel it, so A leaves it in disk.not_selected — preserved
         # by B's manifest instead.
         plan_a = self.seed_full()
@@ -1030,13 +1036,13 @@ class ArchiveJunkTest(ArchiveBase):
         )
         self.assertEqual(manifest["disk"]["junk"], [])
 
-        # Under --all B archives too, and the dark lands in B's DARK/ —
+        # Under --all B archives too, and the dark lands in B's darks/ —
         # shipped once, by the plan whose window claims it.
         code, _out, err = self.run_cli("--all")
         self.assertEqual(code, 0, err)
         self.assertEqual(len(self.folders()), 2)
         b_base = self.dest / archive_mod._folder_name(self.proj / "m33.json", plan_b)
-        self.assertIn(late.name, {p.name for p in (b_base / "DARK").iterdir()})
+        self.assertIn(late.name, {p.name for p in (b_base / "darks").iterdir()})
         self.assertNotIn(late.name, self.junk_names(self.proj / "m31.json", plan_a))
 
 
@@ -1130,9 +1136,9 @@ class ArchiveErrorPathTest(ArchiveBase):
         # and the sidecar lists only shipped rows.
         self.assertEqual(manifest["counts"]["light"]["archived"], 3)
         self.assertEqual(manifest["file_count"], 9)  # 3 + 2 + 2 + 2
-        lights = [p for p in (base / "LIGHT").iterdir() if p.suffix == ".fits"]
+        lights = [p for p in (base / "lights").iterdir() if p.suffix == ".fits"]
         self.assertEqual(len(lights), 3)
-        with (base / "LIGHT" / "ImageMetaData.csv").open(newline="") as handle:
+        with (base / "lights" / "ImageMetaData.csv").open(newline="") as handle:
             self.assertEqual(len(list(csv.DictReader(handle))), 3)
         self.assertEqual(json.loads(self.index_lines()[0])["missing"], 1)
 
@@ -1163,7 +1169,7 @@ class ArchiveErrorPathTest(ArchiveBase):
         self.assertFalse(manifest["complete"])
         # Never selected, so it is not a "missing" entry either.
         self.assertEqual(manifest["missing"], [])
-        shipped = [p.name for p in (base / "LIGHT").iterdir() if p.suffix == ".fits"]
+        shipped = [p.name for p in (base / "lights").iterdir() if p.suffix == ".fits"]
         self.assertEqual(len(shipped), 19)
         self.assertTrue(all(not name.startswith("BAD_") for name in shipped))
         self.assertEqual(manifest["counts"]["light"]["archived"], 19)
@@ -1446,7 +1452,7 @@ class ArchiveDetailTest(ArchiveBase):
             for p in (
                 self.dest
                 / archive_mod._folder_name(self.proj / "m31.json", plan)
-                / "LIGHT"
+                / "lights"
             ).iterdir()
         }
         self.assertIn("same.fits", lights)
@@ -1503,7 +1509,7 @@ class ArchiveDetailTest(ArchiveBase):
         )
 
         junk = (
-            self.dest / archive_mod._folder_name(self.proj / "m31.json", plan) / "JUNK"
+            self.dest / archive_mod._folder_name(self.proj / "m31.json", plan) / "junk"
         )
         names = {p.name for p in junk.iterdir()}
         self.assertIn("same.fits", names)

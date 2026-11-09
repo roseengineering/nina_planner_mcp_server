@@ -12,7 +12,7 @@ The scenarios mirror the design rule
 ``prunable(F) <=> preserved(F) AND all claiming plans released``:
 unarchived frames held, --all waiver releases, re-opened (archived but
 incomplete-now) plans held until their plan file moves out, pooled
-calibration held by an unarchived plan, BAD_ twins ride, JUNK/-diverted
+calibration held by an unarchived plan, BAD_ twins ride, junk/-diverted
 own-token frames ride once archived, orphans behave, the quarantine hides
 frames from attribution, and --apply never touches the archive
 destination (the rclone staging leg is gone).
@@ -459,7 +459,7 @@ class PurgeReleaseTest(PurgeBase):
 
 
 class PurgeJunkTest(PurgeBase):
-    """The ``JUNK/`` invariant: a degenerate own-token frame stops holding
+    """The ``junk/`` invariant: a degenerate own-token frame stops holding
     its landing directory.
 
     Regression for the deadlock where two 0.00003s Smart Exposure darks
@@ -498,7 +498,7 @@ class PurgeJunkTest(PurgeBase):
         self.assertIn("HOLD", out)
         self.assertIn("not preserved — run nina-archive first", out)
 
-        # After archiving, the junk row IS in the manifest (under JUNK/),
+        # After archiving, the junk row IS in the manifest (under junk/),
         # so the very same directory reads prunable.
         self.assertEqual(self.run_archive(), 0)
         manifest = json.loads(

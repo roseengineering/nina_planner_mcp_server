@@ -60,7 +60,7 @@ def is_junk_row(plan: ObservationPlan, row: dict[str, Any], image_type: str) -> 
 
     A duration that will not parse is NOT junk: the CSV contract can change
     under us, and a parse quirk must never invent junk — the cost of a
-    false positive is a real frame shipped to ``JUNK/`` and deleted with
+    false positive is a real frame shipped to ``junk/`` and deleted with
     the archive's blessing.
     """
     if str(image_type).lower() not in ("light", "dark"):

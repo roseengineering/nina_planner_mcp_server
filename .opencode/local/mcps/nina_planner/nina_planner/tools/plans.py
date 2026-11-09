@@ -516,7 +516,7 @@ def _junk_count(
     The rule itself lives in ``progress.is_junk_row`` (duration below
     ``max(0.01, half the plan's smallest exposure)`` — the 0.00003s Smart
     Exposure dark; bias and flat exempt), shared with ``nina-archive``'s
-    ``JUNK/`` diversion so the audit and the archive can never disagree
+    ``junk/`` diversion so the audit and the archive can never disagree
     about which frames are worthless.
 
     Scope trade-off: a junk *dark* is excluded from ``attributed`` by the

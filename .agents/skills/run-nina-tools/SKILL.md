@@ -30,7 +30,7 @@ Take the **first** branch that applies and use its result for every CLI call in 
 
 3. **Bare `<tool>` on PATH — last.**
    Only if branches 1–2 miss **and** `command -v <tool>` succeeds.
-   It runs, but it may be a **different build than this checkout** (an older `pip` / `uv tool` install). That matters most for `nina-purge`, which deletes frames and plan JSONs, and for an old `nina-archive` that predates `JUNK/` manifest support. Say so when this branch is taken — `⚠ using the PATH copy of <tool> — may not be this checkout's version`.
+   It runs, but it may be a **different build than this checkout** (an older `pip` / `uv tool` install). That matters most for `nina-purge`, which deletes frames and plan JSONs, and for an old `nina-archive` that predates the `junk/` manifest support. Say so when this branch is taken — `⚠ using the PATH copy of <tool> — may not be this checkout's version`.
 
 4. **None of the three → stop.**
    With no `.venv`, no `uv`, and nothing on PATH there is nothing left to fall back to: `uv` is what builds the venv, so the venv cannot appear on its own. Report which link is missing and offer the real remedies — `make install_uv` (rebuilds `.venv`), install `uv` (`brew install uv`), or copy a built `.venv` from another host. Never improvise a `pip install -e` of the project, and never proceed to the later steps of the caller's flow: archive/purge cannot run without a working CLI.

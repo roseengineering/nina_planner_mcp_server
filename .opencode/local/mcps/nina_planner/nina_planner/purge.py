@@ -43,7 +43,7 @@ prunable garbage: they ride with their directory and never block it.
 Own-token frames no plan ships into a type folder — degenerate captures
 (0.00003s Smart Exposure junk) and real but uncredited ones (outside
 every window, an exposure no group asked for) — are archived by
-``nina-archive`` under ``JUNK/`` and listed in the manifest like any
+``nina-archive`` under ``junk/`` and listed in the manifest like any
 other file, so they read ``preserved`` and ride along too; they used to
 sit in ``disk.not_selected`` and hold the directory for ever as "not
 preserved — run nina-archive first". Files no CSV row ever recorded stay

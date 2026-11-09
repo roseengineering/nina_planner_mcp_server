@@ -9,12 +9,20 @@ down to a workstation for calibration and stacking::
         manifest.json          identity, per-type counts, file list, disk
                                report (rejected/gone/not_selected/junk),
                                warnings
-        LIGHT/ImageMetaData.csv   archived light metadata (+ joined weather)
-        LIGHT/*.fits.fz        attributed light frames
-        FLAT/  DARK/  BIAS/    matched calibration frames (+ sidecar CSVs)
-        JUNK/  ImageMetaData.csv  own-token frames no plan ships into a
-        JUNK/*.fits               type folder (degenerate + uncredited),
+        lights/ImageMetaData.csv archived light metadata (+ joined weather)
+        lights/*.fits.fz       attributed light frames
+        flats/  darks/  biases/ matched calibration frames (+ sidecar CSVs)
+        junk/ImageMetaData.csv own-token frames no plan ships into a
+        junk/*.fits              type folder (degenerate + uncredited),
                                   with junk_reason (+ weather for lights)
+
+Folder names are lowercase and plural because Siril's built-in
+preprocessing scripts (``OSC_Preprocessing.ssf`` and friends) read exactly
+four directories out of their working directory — ``lights``, ``darks``,
+``flats``, ``biases`` — and are case-sensitive, so an archived plan folder
+is a Siril working directory as it stands.  The manifest's ``type`` stays
+uppercase: it is N.I.N.A.'s ``ImageType`` verbatim, and only the folder on
+disk is lowercased (``_FOLDER_NAMES``).
 
 Frame selection reuses the exact attribution matchers behind
 ``get_plan_progress`` / ``audit_plans`` (``progress.filter_metadata_rows``),
@@ -38,7 +46,7 @@ the completeness gate, ``--force`` rebuilds an existing folder, ``--dry-run``
 writes nothing.
 
 JUNK diversion (the fix for a purge deadlock): a live row carrying THIS
-plan's token that no plan ships into a type folder is copied to ``JUNK/``
+plan's token that no plan ships into a type folder is copied to ``junk/``
 instead of being skipped, so every such row lands in ``manifest.files[]``
 and reads *preserved* to ``nina-purge``.  Two kinds share the folder with
 the reason kept per file — ``degenerate`` (a capture with no data in it:
@@ -47,9 +55,9 @@ the reason kept per file — ``degenerate`` (a capture with no data in it:
 credited: calibration outside every window, an exposure no group asked for
 — not "extra" frames, just ones this plan cannot place).  A row ANY plan
 selects is left alone, so a pooled dark another plan archives into its own
-``DARK/`` is never duplicated here.  The invariant this buys:
+``darks/`` is never duplicated here.  The invariant this buys:
 **every live own-token row is in the manifest**, either in its type folder
-or in ``JUNK/`` — only a genuine cross-plan claim can still hold a
+or in ``junk/`` — only a genuine cross-plan claim can still hold a
 landing directory.
 
 Copy semantics: each folder is assembled in a hidden ``.<name>.partial``
@@ -60,14 +68,14 @@ append-only log of archived plans.  A selected file that vanishes between
 the metadata read and the copy is skipped and listed under the manifest's
 ``missing`` with a warning (the run still succeeds; a run in which NO
 selected frame could be copied is refused rather than committed empty —
-JUNK copies never rescue such a run).  N.I.N.A. ``BAD_`` rejects never reach
+junk copies never rescue such a run).  N.I.N.A. ``BAD_`` rejects never reach
 the copy loop at all — ``read_imaging_csv`` drops their rows at read time
 (the CSV still names the pre-rename file), so rejects are reported by
 ``audit_plans``' ``bad`` disk count — and mirrored for offline readers as
 the manifest's ``disk.rejected``.  The rest of that row-driven
 classification (``disk.gone`` = recorded once but now nowhere;
 ``disk.not_selected`` = this plan's token, deliberately skipped because
-another plan ships it; ``disk.junk`` = shipped to ``JUNK/`` with its
+another plan ships it; ``disk.junk`` = shipped to ``junk/`` with its
 reason) comes from ``disk_report``: existence probes over CSV records, never
 a directory walk.
 
@@ -101,6 +109,20 @@ from .progress import (
 from .tools.plans import _path_has_id, _plan_files
 
 _ARCHIVE_TYPES = ("LIGHT", "FLAT", "DARK", "BIAS")
+
+# The manifest's ``type`` is N.I.N.A.'s ImageType, uppercase, everywhere in
+# this file; only the DIRECTORY on disk is lowercased, because Siril's
+# built-in preprocessing scripts (OSC_Preprocessing.ssf & co) are
+# case-sensitive and read exactly four folders out of their working
+# directory: lights/, darks/, flats/, biases/.  ``junk/`` is our own — not
+# a Siril input, lowercased only so nothing in a plan folder stands out.
+_FOLDER_NAMES: dict[str, str] = {
+    "LIGHT": "lights",
+    "FLAT": "flats",
+    "DARK": "darks",
+    "BIAS": "biases",
+    "JUNK": "junk",
+}
 _INDEX_NAME = "archive-index.jsonl"
 _MANIFEST_NAME = "manifest.json"
 _PLAN_KEYS = ("pointings", "light_frames", "plan_id")
@@ -320,8 +342,8 @@ def _without_degenerate(
 
     Lights are selected on their token ALONE, so a 0.00003s Smart Exposure
     light is claimed by ``_select_frames`` and would otherwise ship into
-    ``LIGHT/`` — exactly where a stacking pipeline would pick it up.
-    Dropping it here is what lets ``_divert_frames`` send it to ``JUNK/``
+    ``lights/`` — exactly where a stacking pipeline would pick it up.
+    Dropping it here is what lets ``_divert_frames`` send it to ``junk/``
     rather than leaving it in a type folder or in ``disk.not_selected``.
     Calibration can never hit this branch: the ±0.05s exposure matcher
     already refuses a degenerate dark.
@@ -343,7 +365,7 @@ def _divert_frames(
     their landing directory in ``nina-purge`` for ever ("not preserved —
     run nina-archive first"): recorded under this plan's token, live on
     disk, shipped nowhere.  Both kinds are this plan's own frames — neither
-    is surplus to it — so both are archived under ``JUNK/`` with the
+    is surplus to it — so both are archived under ``junk/`` with the
     distinction preserved per file:
 
     - ``degenerate`` — no data in the frame at all
@@ -352,7 +374,7 @@ def _divert_frames(
       every window, an exposure no group asked for.
 
     ``shipped`` is the union of EVERY plan's selection, so a pooled frame
-    another plan archives into its own ``DARK/`` is left alone here — one
+    another plan archives into its own ``darks/`` is left alone here — one
     good dark must not be duplicated into this folder and mislabelled as
     junk.  Own-token scoping is ``_path_has_id`` on the base id (bare,
     pane-suffixed and bracketed forms), exactly ``disk_report``'s, so other
@@ -394,10 +416,10 @@ def disk_report(
     - ``gone`` — a dropped row with no ``BAD_`` twin: recorded once, now
       nowhere on disk (deleted, moved, renamed outside N.I.N.A).  An anomaly,
       so it earns a manifest warning and a console line.
-    - ``junk`` — a live own-token row this run shipped to ``JUNK/`` instead
+    - ``junk`` — a live own-token row this run shipped to ``junk/`` instead
       of a type folder (see ``_divert_frames``), each entry carrying its
       ``reason`` (``degenerate`` / ``uncredited``).  These ARE in the
-      folder — under ``JUNK/`` — which is precisely what makes them read
+      folder — under ``junk/`` — which is precisely what makes them read
       *preserved* to ``nina-purge`` instead of holding the directory.
     - ``not_selected`` — a live own-token row this run did not ship because
       ANOTHER plan's selection ships it (pooled calibration): informational,
@@ -494,7 +516,7 @@ def _archive_one(
     never leaves a folder that looks complete.  ``counts[..]["archived"]`` is
     set HERE from what actually shipped (not from what was selected) and
     counts TYPE-FOLDER frames only — ``divert`` frames ride along under
-    ``JUNK/`` and are tallied separately (``file_count`` includes them; the
+    ``junk/`` and are tallied separately (``file_count`` includes them; the
     per-type ``archived`` numbers must stay comparable to ``expected``).
     ``disk`` (the row-driven rejected/gone/not_selected/junk classification —
     see ``disk_report``) lands in the manifest verbatim.  Raises
@@ -523,7 +545,9 @@ def _archive_one(
     try:
         for image_type in _ARCHIVE_TYPES:
             rows_for_type = selected.get(image_type.lower(), [])
-            type_dir = staging / image_type
+            # Lowercase plural on disk (Siril), uppercase type in the manifest.
+            type_folder = _FOLDER_NAMES[image_type]
+            type_dir = staging / type_folder
             rel_map: dict[str, str] = {}
             kept_rows: list[dict[str, Any]] = []
             used_names: set[str] = set()
@@ -552,7 +576,7 @@ def _archive_one(
                 used_names.add(name)
                 dst = type_dir / name
                 size = _copy_file(src, dst, checksum=checksum)
-                rel_path = f"{image_type}/{name}"
+                rel_path = f"{type_folder}/{name}"
                 rel_map[str(row["file_path"])] = rel_path
                 kept_rows.append(row)
                 manifest_files.append(
@@ -573,12 +597,12 @@ def _archive_one(
                     type_dir / "ImageMetaData.csv", kept_rows, rel_map
                 )
 
-        # JUNK/: the own-token rows no plan ships into a type folder
+        # junk/: the own-token rows no plan ships into a type folder
         # (see _divert_frames).  Same copy/verify/sidecar machinery, one
         # flat folder, and each entry keeps its reason so a reader can tell
         # a worthless frame from merely-uncredited real data.
         if divert:
-            junk_dir = staging / "JUNK"
+            junk_dir = staging / _FOLDER_NAMES["JUNK"]
             rel_map = {}
             used_names = set()
             sidecar_rows: list[dict[str, Any]] = []
@@ -599,7 +623,7 @@ def _archive_one(
                 used_names.add(name)
                 dst = junk_dir / name
                 size = _copy_file(src, dst, checksum=checksum)
-                rel_path = f"JUNK/{name}"
+                rel_path = f"{_FOLDER_NAMES['JUNK']}/{name}"
                 rel_map[str(row["file_path"])] = rel_path
                 sidecar_row = dict(row)
                 sidecar_row["junk_reason"] = reason
@@ -628,7 +652,7 @@ def _archive_one(
             # Selection was non-empty (the CLI checks that earlier), but not
             # one selected file could be copied — committing a folder with a
             # manifest and zero frames would masquerade as an archive.
-            # JUNK copies deliberately do NOT rescue this: a folder holding
+            # junk copies deliberately do NOT rescue this: a folder holding
             # nothing but diverted frames is not an archive of the plan.
             raise ArchiveError(
                 f"none of the {selected_count} selected frame(s) could be "
@@ -669,7 +693,7 @@ def _archive_one(
             degenerate = sum(1 for _row, reason in junk_kept if reason == "degenerate")
             warnings.append(
                 f"{len(junk_kept)} own-token frame(s) no plan ships "
-                f"into a type folder — archived under JUNK/ "
+                f"into a type folder — archived under {_FOLDER_NAMES['JUNK']}/ "
                 f"({degenerate} degenerate, {len(junk_kept) - degenerate} "
                 "uncredited; see disk.junk)"
             )
@@ -682,9 +706,12 @@ def _archive_one(
             )
         manifest = {
             "tool": "nina-archive",
-            # 2 adds JUNK/ (disk.junk + files[].type == "JUNK", with a
-            # per-file reason) — v1 manifests ship nothing outside the four
-            # type folders, so a reader can tell the two layouts apart.
+            # 2 adds the junk diversion (disk.junk + files[].type == "JUNK",
+            # with a per-file reason) — v1 manifests ship nothing outside the
+            # four type folders, so a reader can tell the two apart.  The
+            # version says nothing about FOLDER NAMES: files[].path carries
+            # the lowercase plural Siril wants, files[].type the uppercase
+            # ImageType, and neither is read back to find a file.
             "version": 2,
             "archived_at": datetime.now(UTC).isoformat(timespec="seconds"),
             "plan_file": str(plan_file),
@@ -933,7 +960,7 @@ async def run(args: argparse.Namespace) -> int:
     # another plan already archives a row (pooled calibration), and an
     # incomplete plan's selection answers that too. Degenerate rows are
     # dropped from every selection — they never ship into a type folder,
-    # they ride to JUNK/ instead (see _without_degenerate).
+    # they ride to junk/ instead (see _without_degenerate).
     shipped: set[str] = set()
     selections: list[dict[str, list[dict[str, Any]]]] = []
     for _loaded_file, loaded_plan in loaded:
@@ -962,7 +989,7 @@ async def run(args: argparse.Namespace) -> int:
             )
             continue
 
-        # Own-token rows no plan ships: diverted to JUNK/ so they land in
+        # Own-token rows no plan ships: diverted to junk/ so they land in
         # manifest.files[] and stop holding their directory in nina-purge.
         divert = _divert_frames(plan, rows, shipped)
         # counts[..]["archived"] is set inside _archive_one from what
@@ -1039,7 +1066,7 @@ async def run(args: argparse.Namespace) -> int:
         if record.get("junk"):
             print(
                 f"  🗑 {plan_file.name}: {record['junk']} own-token frame(s) "
-                "no plan ships → JUNK/ (degenerate or uncredited)"
+                "no plan ships → junk/ (degenerate or uncredited)"
             )
         if record.get("missing"):
             print(
