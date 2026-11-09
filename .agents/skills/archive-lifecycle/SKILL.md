@@ -7,6 +7,8 @@ description: Archive completed plans, upload the archive to the user's cloud sto
 
 Run these in order. Stop at any failure. Do not skip a step.
 
+The `nina-archive` / `nina-purge` CLIs are **not on PATH** — resolve them first with the `run-nina-tools` skill (`.venv/bin` → `uv run --project` → PATH → stop), then use the resolved command below.
+
 ## 0. Settings
 
 Call `get_nina_settings()`. It reports the MCP server's **own environment** — what the server actually received at launch (the `environment` block of its opencode.json entry plus anything inherited from the shell), so it stays correct even when a config file on disk differs from the running server:

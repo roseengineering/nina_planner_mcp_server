@@ -14,6 +14,7 @@ You are the automated observatory controller. The observatory runs NINA via the 
 - `safety-interrupt-recovery` — on any new event or interval check: NINA liveness, equipment/safety checks, stowing.
 - `night-loop` — on interval check or `RUN-FINISHED`: pick and start the next target, or end the night.
 - `nina-lifecycle` — start/stop/status of the NINA application.
+- `run-nina-tools` — how to invoke the `nina-*` CLIs (not on PATH): `.venv/bin` → `uv run --project` → PATH copy → stop.
 - `archive-lifecycle` — archive, upload (your own command), verify, then purge; human-gated.
 - `frame-quality-diagnostics` — diagnose AF failures and read per-frame quality (HFR, HFR σ, stars, ADU) when a run degrades; decide whether to escalate or stop.
 - `site-conditions` — 7-day hourly cloud forecast for the site (clearoutside.com) plus Bortle/astro-dark, for start/continue and flat-planning decisions.

@@ -497,6 +497,7 @@ You are the automated observatory controller. The observatory runs NINA via the 
 - `safety-interrupt-recovery` — on any new event or interval check: NINA liveness, equipment/safety checks, stowing.
 - `night-loop` — on interval check or `RUN-FINISHED`: pick and start the next target, or end the night.
 - `nina-lifecycle` — start/stop/status of the NINA application.
+- `run-nina-tools` — how to invoke the `nina-*` CLIs (not on PATH): `.venv/bin` → `uv run --project` → PATH copy → stop.
 - `archive-lifecycle` — archive, upload (your own command), verify, then purge; human-gated.
 - `frame-quality-diagnostics` — diagnose AF failures and read per-frame quality (HFR, HFR σ, stars, ADU) when a run degrades; decide whether to escalate or stop.
 - `site-conditions` — 7-day hourly cloud forecast for the site (clearoutside.com) plus Bortle/astro-dark, for start/continue and flat-planning decisions.
@@ -515,6 +516,7 @@ The detailed procedures `AGENTS.md` defers to live in [.agents/skills/](./.agent
 | [`frame-quality-diagnostics`](./.agents/skills/frame-quality-diagnostics/SKILL.md) | Autofocus failures and per-frame quality telemetry (HFR, HFR σ, stars, ADU). |
 | [`night-loop`](./.agents/skills/night-loop/SKILL.md) | Pick and start the next target, or end the night with a report and a stow. |
 | [`nina-lifecycle`](./.agents/skills/nina-lifecycle/SKILL.md) | Start / stop / status of the NINA application. |
+| [`run-nina-tools`](./.agents/skills/run-nina-tools/SKILL.md) | How to invoke the `nina-*` CLIs — not on PATH: `.venv/bin` first, then `uv run --project`, then a PATH copy, else stop. |
 | [`safety-interrupt-recovery`](./.agents/skills/safety-interrupt-recovery/SKILL.md) | Interrupts, sequence halts, and recovery: liveness, safety, stowing. |
 | [`site-conditions`](./.agents/skills/site-conditions/SKILL.md) | 7-day hourly forecast (cloud, wind, precip, dew/frost, Bortle, astro-dark) — advisory only, never a substitute for `is_safe`. |
 
@@ -533,6 +535,10 @@ Multi-target night loop. Use on an interval check or a `RUN-FINISHED` event to p
 ### ⚙️ `nina-lifecycle`
 
 Check, start, or stop the NINA application via the nina-planner MCP server. Use when NINA may be down or unresponsive, or when `start_nina` / `stop_nina` / `get_nina_status` is needed. `get_nina_status()` is the cheap probe: it reports `running`, `lifecycle_control_available`, and a one-line summary, and `lifecycle_control_available=false` means the MCP server is remote from NINA so it cannot be started or stopped from here.
+
+### 🛠️ `run-nina-tools`
+
+How to invoke the `nina-planner` CLI tools — `nina-archive`, `nina-purge`, `nina-pin-id`, `nina-planner`. Use before running any of them, or when one exits 127 / `command not found`. They are console scripts of the project, **not installed on PATH**, so resolve the command once, first match wins: (1) `.opencode/local/mcps/nina_planner/.venv/bin/<tool>` when executable — this checkout's code, and the only branch that works without `uv` at runtime; (2) `uv run --project .opencode/local/mcps/nina_planner <tool>` when `uv` exists — bootstraps its own env, needs no `.venv`; (3) a bare `<tool>` on PATH — announce `⚠ may not be this checkout's version`, which matters for the frame-and-plan-deleting `nina-purge`; (4) none of the three → stop and offer `make install_uv`, installing `uv`, or copying a built `.venv`. Never `uv tool install` them as a fix. Resolve before the first command rather than per step, so a mid-flow `make clean` cannot make the run purge with a different build than it archived with.
 
 ### 🛟 `safety-interrupt-recovery`
 
