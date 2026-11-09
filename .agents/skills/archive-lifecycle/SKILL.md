@@ -9,13 +9,18 @@ Run these in order. Stop at any failure. Do not skip a step.
 
 ## 0. Settings
 
-Read the `environment` block of `.opencode/opencode.json` (the `nina-planner` MCP entry) — that is where these three live; there is no tool for them:
+Call `get_nina_settings()`. It reports the MCP server's **own environment** — what the server actually received at launch (the `environment` block of its opencode.json entry plus anything inherited from the shell), so it stays correct even when a config file on disk differs from the running server:
 
 - `NINA_ARCHIVE_DEST` — local archive folder (call it `DEST`).
 - `NINA_UPLOAD_CMD` — uploads `DEST` to cloud storage (gcloud, rclone, aws ...).
 - `NINA_VERIFY_CMD` — confirms the upload is complete.
+- `NINA_ENDPOINT` / `NINA_DRIVE_MOUNT` — N.I.N.A. connection and imaging-root mapping; diagnostic only, they gate nothing in this flow.
 
-If any is unset or blank, stop and tell the user which. **Never continue to purge without `NINA_VERIFY_CMD`.** It is the only check that the cloud copy is whole.
+If the tool call itself errors, fall back to reading the `environment` block of `.opencode/opencode.json` (the `nina-planner` MCP entry) — a file snapshot, not the running server's env.
+
+If `ready` is false, stop and tell the user which names are in `missing`. **Never continue to purge without `NINA_VERIFY_CMD`.** It is the only check that the cloud copy is whole.
+
+A missing `NINA_ENDPOINT` or `NINA_DRIVE_MOUNT` never blocks this flow — their defaults apply (`127.0.0.1:1888`, `/mnt/<drive>` on non-Windows hosts). But when the imaging root cannot be resolved or N.I.N.A. cannot be reached, report those names and their defaults to the user from `missing` instead of searching the repo for them.
 
 Never add `--delete`-style flags (`--delete-unmatched-destination-objects`, `aws s3 sync --delete`, `rclone sync` semantics) to an upload command; a stale local folder must never remove cloud files. If the configured command does, warn the user.
 

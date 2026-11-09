@@ -12,6 +12,7 @@ from .tools.lifecycle import get_nina_status, start_nina, stop_nina
 from .tools.plans import (
     audit_plans,
     get_frame_stats,
+    get_nina_settings,
     get_plan_progress,
     list_plans,
     write_mosaic_plan,
@@ -38,6 +39,7 @@ __all__ = [
     "get_events",
     "get_frame_stats",
     "get_logs",
+    "get_nina_settings",
     "get_nina_status",
     "get_plan_progress",
     "get_sequence_state",

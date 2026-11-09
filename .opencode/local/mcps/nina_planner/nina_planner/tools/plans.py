@@ -1,4 +1,5 @@
 import json
+import os
 import re
 from datetime import UTC, datetime
 from pathlib import Path
@@ -1238,6 +1239,45 @@ async def list_plans(project_dir: str | None = None) -> dict[str, Any]:
     res = {"plans": entries, "errors": errors}
     client.log_payload("Plans:", json.dumps(res, indent=2))
     return res
+
+
+_SETTING_NAMES = (
+    "NINA_ARCHIVE_DEST",
+    "NINA_UPLOAD_CMD",
+    "NINA_VERIFY_CMD",
+    "NINA_ENDPOINT",
+    "NINA_DRIVE_MOUNT",
+)
+# Only the archive trio gates the archive flow: NINA_ENDPOINT and
+# NINA_DRIVE_MOUNT have working defaults, so their absence is diagnostic
+# context, never a reason to refuse.
+_ARCHIVE_GATE_NAMES = _SETTING_NAMES[:3]
+
+
+@mcp.tool()
+async def get_nina_settings() -> dict[str, Any]:
+    """Returns this server's N.I.N.A.-related environment as it actually was at launch (the `environment` block of its opencode.json entry plus anything inherited from the shell) — ground truth, unlike re-reading a config file after the server started. Runs nothing and touches no files.
+
+    - ``NINA_ARCHIVE_DEST``: the local folder `nina-archive --dest` writes to (``~`` is expanded).
+    - ``NINA_UPLOAD_CMD``: the user's own command that uploads that folder to cloud storage (gcloud, rclone, aws ...).
+    - ``NINA_VERIFY_CMD``: the user's own command that confirms the upload is complete. Purge must not proceed without it.
+    - ``NINA_ENDPOINT``: where N.I.N.A.'s REST API is reached; when unset the default is ``127.0.0.1:1888``.
+    - ``NINA_DRIVE_MOUNT``: local mount point replacing the drive letter of the profile's ``image_save_path``; when unset it defaults to ``/mnt/<drive>`` on non-Windows hosts — usually wrong on macOS, and the usual cause of `imaging root does not exist or is not a directory … NINA_DRIVE_MOUNT`.
+
+    Returns ``settings`` (name -> value, only those set), ``missing`` (names unset or blank) and ``ready`` (True only when the three archive settings are all set; ``NINA_ENDPOINT``/``NINA_DRIVE_MOUNT`` never gate the archive — they are reported so a root/connection failure can be explained rather than grepped for). Values are returned verbatim because they are the user's own configuration; keep credentials in the cloud tool's own config, not in these variables.
+    """
+    settings = {
+        name: os.environ[name].strip()
+        for name in _SETTING_NAMES
+        if os.environ.get(name, "").strip()
+    }
+    if "NINA_ARCHIVE_DEST" in settings:
+        settings["NINA_ARCHIVE_DEST"] = str(
+            Path(settings["NINA_ARCHIVE_DEST"]).expanduser()
+        )
+    missing = [name for name in _SETTING_NAMES if name not in settings]
+    ready = all(name in settings for name in _ARCHIVE_GATE_NAMES)
+    return {"settings": settings, "missing": missing, "ready": ready}
 
 
 # sequence tools

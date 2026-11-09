@@ -72,6 +72,7 @@ Plan creation and batch reconciliation.
 | `list_plans(project_dir?)` | List every observation plan file in the project directory with its `file`, absolute `path`, `plan_id`, `target`, `intent`, `pointing_count`, and mtime — enumerate plans without globbing. Read-only. |
 | `write_plan_file(plan)` | Validate and write an observation plan JSON file for later use by `load_sequence` — including its optional `quality` thresholds. Creates the file only; loads and starts nothing. |
 | `write_mosaic_plan(plan_path, mosaic_csv, output_path?)` | Expand a base plan into a multi-pointing mosaic plan from a Telescopius CSV. Creates the file only. |
+| `get_nina_settings()` | Read the **running server's** environment — `NINA_ARCHIVE_DEST`, `NINA_UPLOAD_CMD`, `NINA_VERIFY_CMD`, `NINA_ENDPOINT`, `NINA_DRIVE_MOUNT` — as received at launch (config file + shell inheritance). Runs nothing; returns `settings`, `missing`, `ready` (the archive trio gates `ready`; endpoint/drive-mount are diagnostics) for the `archive-lifecycle` skill. |
 
 ### 📈 Telemetry Watchdog
 
@@ -519,7 +520,7 @@ The detailed procedures `AGENTS.md` defers to live in [.agents/skills/](./.agent
 
 ### 🗄️ `archive-lifecycle`
 
-Archive completed plans, upload the archive to the user's cloud storage, verify the upload, then free the imaging root with `nina-purge`. Use when the user asks to archive, back up, upload, or clean up finished imaging sets. Reads `NINA_ARCHIVE_DEST` / `NINA_UPLOAD_CMD` / `NINA_VERIFY_CMD` from `.opencode/opencode.json`'s `environment`, then runs archive → `NINA_UPLOAD_CMD` → `NINA_VERIFY_CMD` → `nina-purge` in order, stopping at any failure; never purges without a verify step.
+Archive completed plans, upload the archive to the user's cloud storage, verify the upload, then free the imaging root with `nina-purge`. Use when the user asks to archive, back up, upload, or clean up finished imaging sets. Runs `get_nina_settings()` → archive → `NINA_UPLOAD_CMD` → `NINA_VERIFY_CMD` → `nina-purge` in order, stopping at any failure; never purges without a verify step.
 
 ### 🩺 `frame-quality-diagnostics`
 
@@ -605,6 +606,8 @@ Configured in the plugin's options configuration. (see [`opencode.json`](#-openc
 ## 🔧 Environment Variables
 
 ### 🖥️ `nina_planner` (MCP server)
+
+Which of these the **running** server actually has is reported at any time by `get_nina_settings()` (`settings` / `missing` / `ready`) — ground truth that also covers the three `archive-lifecycle` inputs `NINA_ARCHIVE_DEST` / `NINA_UPLOAD_CMD` / `NINA_VERIFY_CMD`, which are not listed below. The `environment` block only applies at server launch, and shell-inherited values never appear in any file — so when an error names one of these variables, ask the tool rather than grepping the config.
 
 | Variable | Default | Description |
 |---|---|---|
