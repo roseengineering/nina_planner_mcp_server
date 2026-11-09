@@ -53,15 +53,28 @@ $RUN_PURGE --dest "$DEST"
 
 Resolve **once, before the first command**, not once per step: the venv can disappear under you mid-flow (`make clean` deletes it), and a flow that switches from `.venv` to `uv run` halfway through could purge with a different build than it archived with.
 
-## Makefile equivalents
+## Environment the CLIs read
 
-`make archive`, `make purge` and the other targets depend on `install_uv` (`uv venv --clear && uv sync`), so they always (re)build `.venv` first — but they need `uv` too, so they are **not** a way around a missing `uv`. Extra flags pass through `ARCHIVE_ARGS` / `PURGE_ARGS`:
+`nina-archive` and `nina-purge` take two settings from the **process environment** — they read no config file of their own:
+
+| Var | Meaning | Default when unset |
+|---|---|---|
+| `NINA_ENDPOINT` | `host:port` of N.I.N.A.'s REST API — probed to read the site profile (the imaging root) | `127.0.0.1:1888` |
+| `NINA_DRIVE_MOUNT` | non-Windows mapping for the drive letter in the profile's image save path | `/mnt/<drive>` (usually wrong on macOS) |
+
+Get the live values from `get_nina_settings()` (the MCP server's own env — config file + launch inheritance, so it stays right even when a config file on disk differs from the running server) and prefix **every** invocation with the ones that are set:
 
 ```bash
-make archive ARCHIVE_ARGS="--dry-run --checksum"
-make purge   PURGE_ARGS=""
+NINA_ENDPOINT=… NINA_DRIVE_MOUNT=… $RUN_ARCHIVE --dest "$DEST" --dry-run
 ```
+
+If they are `missing`, the defaults apply untouched — correct on a host where N.I.N.A. listens on `127.0.0.1:1888`, wrong for a remote N.I.N.A. Passing these prefixes does not change which resolution branch above is used.
 
 ## When the CLI runs but still fails
 
-A working invocation is not a working run. `nina-archive` and `nina-purge` both read the live imaging root from N.I.N.A.'s site profile; with N.I.N.A. down they stop with `✗ cannot resolve the imaging root … Is NINA running?`. That is a **separate** problem from invocation — fix it with `--imaging-root <path>` or by starting N.I.N.A. on its own host, not by changing how you launch the tool.
+A working invocation is not a working run. `nina-archive` and `nina-purge` both read the live imaging root from N.I.N.A.'s site profile; when that probe fails they stop with `✗ cannot resolve the imaging root … Is NINA running?`. **That message cannot tell you which probe failed**, so check two things before acting:
+
+1. `get_nina_status()` — is the API answering at `NINA_ENDPOINT`?
+2. `get_nina_settings().missing` — is `NINA_ENDPOINT` set at all? Unset means the CLI probed the `127.0.0.1:1888` default regardless of where N.I.N.A. actually lives.
+
+The failures have different fixes: a **wrong/missing endpoint** → pass the set values as env prefixes (section above); a **down API** → start N.I.N.A. on its own host; a **known root path** → skip the probe entirely with `--imaging-root <path>`. None of these is fixed by changing the branch chain.
