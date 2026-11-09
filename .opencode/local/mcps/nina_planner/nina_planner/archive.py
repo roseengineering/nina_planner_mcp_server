@@ -16,13 +16,22 @@ down to a workstation for calibration and stacking::
         junk/*.fits              type folder (degenerate + uncredited),
                                   with junk_reason (+ weather for lights)
 
-Folder names are lowercase and plural because Siril's built-in
-preprocessing scripts (``OSC_Preprocessing.ssf`` and friends) read exactly
-four directories out of their working directory — ``lights``, ``darks``,
-``flats``, ``biases`` — and are case-sensitive, so an archived plan folder
-is a Siril working directory as it stands.  The manifest's ``type`` stays
-uppercase: it is N.I.N.A.'s ``ImageType`` verbatim, and only the folder on
-disk is lowercased (``_FOLDER_NAMES``).
+Folder names are lowercase and plural (``_FOLDER_NAMES``), chosen as
+the intersection of what the readers need rather than a preference for
+any one of them.  Every header-driven stacker — PixInsight's WBPP,
+Astro Pixel Processor, DeepSkyStacker — ignores directory names and
+sorts on the FITS ``IMAGETYP`` header (with ``FILTER``, ``EXPTIME``,
+``GAIN``, ``DATE-OBS``), so a folder name cannot break those: they sort
+these frames the same whatever the directories are called.  The one
+reader that does depend on the name is Siril's built-in preprocessing
+scripts (``OSC_Preprocessing.ssf`` and friends) — literal batch scripts
+(``cd biases``, …) that neither scan subdirectories nor parse
+``IMAGETYP`` and read exactly four case-sensitive directories:
+``lights``, ``darks``, ``flats``, ``biases``.  Matching those costs the
+header-driven tools nothing and makes an archived plan folder a Siril
+working directory as it stands.  The manifest's ``type`` stays
+uppercase: it is N.I.N.A.'s ``ImageType`` verbatim, and only the folder
+on disk is lowercased.
 
 Frame selection reuses the exact attribution matchers behind
 ``get_plan_progress`` / ``audit_plans`` (``progress.filter_metadata_rows``),

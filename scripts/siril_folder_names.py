@@ -3,9 +3,14 @@
 
 Siril's built-in preprocessing scripts (``OSC_Preprocessing.ssf`` and
 friends) are case-sensitive and read exactly four directories out of their
-working directory: ``lights``, ``darks``, ``flats``, ``biases``.  An
-archived plan folder is meant to *be* a Siril working directory, so those
-are the names it has to use.  ``nina-archive`` used to write ``LIGHT/``,
+working directory: ``lights``, ``darks``, ``flats``, ``biases``.  Those
+are the names ``nina-archive`` now writes, as the intersection of the two
+readers rather than a preference for either: every header-driven stacker
+(PixInsight's WBPP, Astro Pixel Processor, DeepSkyStacker) ignores
+directory names and sorts on the FITS ``IMAGETYP`` header, so they sort
+these frames the same whatever the folders are called, while an archived
+plan folder is a Siril working directory as it stands — no rename pass
+first.  ``nina-archive`` used to write ``LIGHT/``,
 ``FLAT/``, ``DARK/``, ``BIAS/`` and ``JUNK/``; the code now writes the
 lowercase plural names (``nina_planner.archive._FOLDER_NAMES``), and this
 script fixes archives that were built before that.
