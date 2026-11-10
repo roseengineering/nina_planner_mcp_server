@@ -84,7 +84,22 @@ async def load_plan(file_path: str) -> ObservationPlan:
         path = config.PROJECT_DIR / path
     async with await anyio.open_file(path, "r", encoding="utf-8") as f:
         data = json.loads(await f.read())
-    return ObservationPlan.model_validate(data)
+    plan = ObservationPlan.model_validate(data)
+    # On-disk invariant: a plan file always carries its pointings. The one
+    # shape that validates with zero — `mosaic` + empty pointings — is
+    # write_plan_file's INPUT form, never its output (it expands before
+    # writing), so finding it here means the file was hand-edited and never
+    # expanded. Refuse every consumer rather than let the oddities through:
+    # get_plan_progress would read it as complete:true with nothing to
+    # shoot, audit_plans would report no work at all, and only a light load
+    # would fail (calibration never indexes pointings).
+    if not plan.pointings:
+        raise ValueError(
+            f"{file_path}: plan has no pointings — its mosaic block was "
+            "never expanded; re-run write_plan_file with this mosaic to "
+            "regenerate the file"
+        )
+    return plan
 
 
 def quality_kwargs(plan: ObservationPlan) -> dict[str, Any]:

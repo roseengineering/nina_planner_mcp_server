@@ -175,6 +175,55 @@ class LoadPlanPlanIdTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(plan.plan_id, "plan-abc123")
 
 
+class LoadPlanPointingsTest(unittest.IsolatedAsyncioTestCase):
+    """On disk a plan file always carries its pointings.
+
+    The `mosaic`-block-only shape is write_plan_file's INPUT form (it
+    expands before writing), never a loadable file — so a file found in
+    that state was hand-edited and never expanded, and every consumer must
+    refuse it instead of reading 0 pointings as "complete".
+    """
+
+    MOSAIC = {
+        "center_ra_hours": 20.981667,
+        "center_dec_deg": 44.33,
+        "coverage_width_arcmins": 130.0,
+        "coverage_height_arcmins": 86.0,
+    }
+
+    async def _load(self, payload):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "plan.json"
+            path.write_text(json.dumps(payload), encoding="utf-8")
+            return await load_plan(str(path))
+
+    async def test_never_expanded_mosaic_file_refused_at_load(self):
+        with self.assertRaises(ValueError) as ctx:
+            await self._load(_payload(pointings=[], mosaic=self.MOSAIC))
+        msg = str(ctx.exception)
+        self.assertIn("never expanded", msg)
+        self.assertIn("write_plan_file", msg)
+
+    async def test_expanded_mosaic_file_loads(self):
+        # What write_plan_file actually writes: pointings AND the provenance
+        # block together — must pass the guard unchanged.
+        plan = await self._load(
+            _payload(
+                pointings=[{"ra_hours": 20.9, "dec_deg": 44.3, "label": "r1_c1"}],
+                mosaic={**self.MOSAIC, "cols": 2, "rows": 2},
+            )
+        )
+        self.assertEqual(len(plan.pointings), 1)
+        self.assertEqual(plan.mosaic.cols, 2)
+
+    async def test_pointing_less_file_without_mosaic_still_refused_by_model(self):
+        # The other pointing-less shape never reaches the guard: the model
+        # validator refuses it first, with its own guidance message.
+        with self.assertRaises(ValidationError) as ctx:
+            await self._load(_payload(pointings=[]))
+        self.assertIn("mosaic", str(ctx.exception))
+
+
 class QualityConfigTest(unittest.TestCase):
     """The plan's `quality` section: the one home of light-frame thresholds."""
 

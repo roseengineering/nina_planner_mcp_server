@@ -1743,6 +1743,14 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
             # attributes independently via _{plan_id}-{pointing_index}_.
             self.assertTrue(data["plan_id"].startswith("plan-"))
 
+            # End to end: the written file passes the load-time pointing
+            # guard (plan files always carry their pointings).
+            from nina_planner.plan_utils import load_plan
+
+            loaded = await load_plan(str(written[0]))
+            self.assertEqual(len(loaded.pointings), 4)
+            self.assertEqual(loaded.mosaic.cols, 2)
+
     async def test_write_plan_file_mosaic_missing_optics_raises(self):
         # No guessed FOV: a mosaic sized against missing optics would be
         # sized wrong, so every missing value is named instead.
