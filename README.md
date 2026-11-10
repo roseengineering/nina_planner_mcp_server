@@ -679,6 +679,8 @@ $ opencode --server http://127.0.0.1:4096
 
 ## 📱 Setting up Telegram
 
+![telegram chat](res/telegram.png)
+
 [`@grinev/opencode-telegram-bot`](https://github.com/grinev/opencode-telegram-bot) bridges Telegram to a local opencode server, so the same agent that runs the observatory runs from your phone: plan a night, load and start a sequence, stop a run, check safety — and every `nina-notify` wake shows up in the chat. A Telegram chat is just an ordinary opencode session, so [`nina_notify_arm`](#-nina-notify--opencode-v2-autonomous-plugin) can pin the wakes to the session behind it.
 
 It needs **two processes, both kept running in the background** for as long as you want to chat:
