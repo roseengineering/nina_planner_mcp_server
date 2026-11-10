@@ -15,7 +15,6 @@ from .tools.plans import (
     get_nina_settings,
     get_plan_progress,
     list_plans,
-    write_mosaic_plan,
     write_plan_file,
 )
 from .tools.sequence import (
@@ -60,7 +59,6 @@ __all__ = [
     "stop_sequence",
     "sun_times",
     "target_altitudes",
-    "write_mosaic_plan",
     "write_plan_file",
 ]
 

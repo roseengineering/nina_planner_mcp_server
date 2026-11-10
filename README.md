@@ -70,8 +70,7 @@ Plan creation and batch reconciliation.
 | `audit_plans(plans?, project_dir?, types?, include_orphans=true)` | **Whole-project capture audit in one call**: reconcile plan expectations with CSV attribution (plus the one filesystem fact the CSV cannot hold — `bad` rejects) for every plan into an `all_saved` verdict plus `left_to_do` (including never-shot plans) and `blocked` work lists, and a `never_shot` list of plans with no frames at all. Read-only. |
 | `get_plan_progress(file_path)` | Per-frame-type acquired/remaining counts for every pointing of a plan, applying the plan's `quality` thresholds. Use before `load_sequence` to see what still needs acquiring. Read-only. |
 | `list_plans(project_dir?)` | Enumerates every observation plan file inside the project directory with its `file`, absolute `path`, `plan_id`, `target`, `intent`, `pointing_count`, and mtime.  Read-only. |
-| `write_plan_file(plan)` | Validate and write an observation plan JSON file for later use by `load_sequence` — including its optional `quality` thresholds. Creates the file only; loads and starts nothing. |
-| `write_mosaic_plan(plan_path, mosaic_csv, output_path?)` | Expand a base plan into a multi-pointing mosaic plan from a Telescopius CSV. Creates the file only. |
+| `write_plan_file(plan)` | Validate and write an observation plan JSON file for later use by `load_sequence` — including its optional `quality` thresholds, and a `mosaic` block whose pointings are derived from the coverage you ask for (see [Mosaic block](#-mosaic-block)). Creates the file only; loads and starts nothing. |
 | `get_nina_settings()` | Read the **running server's** environment — `NINA_ARCHIVE_DEST`, `NINA_UPLOAD_CMD`, `NINA_VERIFY_CMD`, `NINA_ENDPOINT`, `NINA_DRIVE_MOUNT` — as received at launch (config file + shell inheritance). Runs nothing; returns `settings`, `missing`, `ready` (the archive trio gates `ready`; endpoint/drive-mount are diagnostics) for the `archive-lifecycle` skill. |
 
 ### 📈 Telemetry Watchdog
@@ -111,9 +110,7 @@ Returns N.I.N.A.'s live per-frame statistics for the **current (most recently ca
 
 Validates and writes an observation plan to a JSON file. The plan defines one or more target pointings (RA/Dec/PA, optional label), acquisition intent, light and calibration frames, batching, cooling, autofocus, guiding, and observing constraints. See [The Observation Plan](#-the-observation-plan).
 
-### `write_mosaic_plan`
-
-Expands a base observation plan into a multi-pointing mosaic plan from a Telescopius-formatted mosaic CSV (see [Mosaic CSV format](#-mosaic-csv-format)). The base plan supplies every setting except the pointings, which are replaced wholesale by one pointing per CSV row. Writes `<target>_<intent>_mosaic_<timestamp>.json` in the project directory unless `output_path` is given.
+For a mosaic, pass a `mosaic` block **instead of** `pointings` and the grid is derived at write time (see [Mosaic block](#-mosaic-block)); the response reports the derived `cols×rows`, pane FOV, step, and achieved vs requested coverage. Written to `<target>_<intent>_<timestamp>.json` in the project directory.
 
 ### `get_plan_progress`
 
@@ -280,7 +277,8 @@ An example json plan:
 | `intent` | no | 2-3 words describing the goal |
 | `plan_id` | no | Stable identifier stamped on write. Used for frame attribution; when absent, a deterministic hash of plan content is used. Must be empty or ASCII letters, digits, `.` and `-` only: `_` is the attribution-token delimiter, and N.I.N.A. rewrites other characters when it puts `$$TARGETNAME$$` into the file path, so an id outside that charset is refused at write and at load rather than silently never matching its frames. |
 | `description` | no | Explanation of the observation plan, including rationale, exposure goals, equipment, or sky constraints. |
-| `pointings` | **yes** | One or more pointing objects. Each requires `ra_hours` (J2000 RA in hours, `[0, 24)`) and `dec_deg` (J2000 declination in degrees, `[-90, +90]`). Optional `label` is shown in the N.I.N.A. target name; `position_angle_deg` is rotator PA in degrees east of north, `[0, 360)`. If omitted, `0` is sent to N.I.N.A., leaving the rotator at its current/synced position. Optional `row` and `column` are nonnegative mosaic metadata not sent to N.I.N.A. |
+| `pointings` | **yes** (unless `mosaic`) | One or more pointing objects — may be omitted entirely when a `mosaic` block is given (or passed as `[]`; both spellings hash to the same `plan_id`). Each requires `ra_hours` (J2000 RA in hours, `[0, 24)`) and `dec_deg` (J2000 declination in degrees, `[-90, +90]`). Optional `label` is shown in the N.I.N.A. target name; `position_angle_deg` is rotator PA in degrees east of north, `[0, 360)`. If omitted, `0` is sent to N.I.N.A., leaving the rotator at its current/synced position. Optional `row` and `column` are nonnegative mosaic metadata not sent to N.I.N.A. |
+| `mosaic` | no | Mosaic specification as an alternative to `pointings` — see [Mosaic block](#-mosaic-block). Inputs: `center_ra_hours` (J2000, `[0, 24)`), `center_dec_deg` (`[-90, +90]`), `coverage_width_arcmins` / `coverage_height_arcmins` (the footprint to cover, arcmins, both `> 0`), optional `overlap_pct` (default `20`, `(0, 100)`) and `pa_deg` (default `0`, `[0, 360)`). `write_plan_file` derives `cols`/`rows` from the profile's optics and stamps them plus `pane_fov_arcmins` back onto the block; when `pointings` is also present the pointings are the authority. |
 | `batch_size` | no | Exposures per batch; defaults to `5`. Set to `0` to disable batching. |
 | `calibration_window_days` | no | Defaults to `7` (minimum `1`). Calibration frames count only when taken within this many days before or after the earliest attributed light. After the window closes, remaining calibration is reported as `0`. |
 | `cooler` | no | Cooler settings: `on` defaults to `true`; `setpoint_celsius` defaults to `-10` and must be in `[-40, 30]`. |
@@ -292,25 +290,25 @@ An example json plan:
 | `dark_frames` | **yes** | Nonempty list of dark exposure specs, each with `exposure_time_seconds` (greater than zero) and `total_count` (at least `1`). |
 | `bias_frames` | **yes** | Nonempty list of bias exposure specs, each with `total_count` (at least `1`). |
 
-### 📊 Mosaic CSV format
+### 📊 Mosaic block
 
-For `write_mosaic_plan`, use a Telescopius-formatted CSV with these nine columns in this order:
+Instead of listing `pointings`, a plan may carry a `mosaic` block: state the center and the sky footprint to cover, and `write_plan_file` derives the cols × rows grid from the rig's own optics. No Telescopius CSV, no pane arithmetic.
 
-[plans/mosaic.csv](./plans/mosaic.csv)
-```csv plans/mosaic.csv
-Pane, RA, DEC, Position Angle (East), Pane width (arcmins), Pane height (arcmins), Overlap, Row, Column
-Pane 1, 0hr 56' 01", 45º 51' 18", 0.00, 309.00, 205.80, 10%, 1, 1
-Pane 2, 0hr 29' 28", 45º 51' 18", 0.00, 309.00, 205.80, 10%, 1, 2
-Pane 3, 0hr 55' 22", 42º 46' 13", 0.00, 309.00, 205.80, 10%, 2, 1
-Pane 4, 0hr 30' 07", 42º 46' 13", 0.00, 309.00, 205.80, 10%, 2, 2
-Pane 5, 0hr 54' 47", 39º 41' 07", 0.00, 309.00, 205.80, 10%, 3, 1
-Pane 6, 0hr 30' 42", 39º 41' 07", 0.00, 309.00, 205.80, 10%, 3, 2
-Pane 7, 0hr 54' 15", 36º 36' 00", 0.00, 309.00, 205.80, 10%, 4, 1
-Pane 8, 0hr 31' 14", 36º 36' 00", 0.00, 309.00, 205.80, 10%, 4, 2
+```json
+"mosaic": {
+  "center_ra_hours": 20.981667,
+  "center_dec_deg": 44.33,
+  "coverage_width_arcmins": 130.0,
+  "coverage_height_arcmins": 86.0,
+  "overlap_pct": 20.0,
+  "pa_deg": 0.0
+}
 ```
 
-Each row becomes a `Pointing`: RA/DEC are parsed server-side (sexagesimal like `0hr 56' 01"` / `45º 51' 18"` or decimal), `Pane` becomes the `label`, and `Row`/`Column` are stored as `row`/`column` metadata (N.I.N.A. does not use them — they are kept for ordering, labeling, and later mosaic assembly). The base plan's `plan_id` is cleared so the mosaic gets its own content-derived id; each pane is attributed independently via `_{plan_id}-{pointing_index}_`.
-
+- **Inputs:** `center_ra_hours` / `center_dec_deg` (J2000 mosaic center), `coverage_width_arcmins` / `coverage_height_arcmins` — the footprint the grid must span on each axis, measured in the grid frame *before* `pa_deg` rotation; round up to the target's full extent (a `best_targets` row's `major_arcmin`/`minor_arcmin` is exactly this), `overlap_pct` (default `20`, in `(0, 100)`), and `pa_deg` (default `0`).
+- **Derivation:** the pane FOV comes from the active profile's optics (`2·atan(sensor / 2·focal_length)`); a missing focal length, pixel size or camera dimension fails loudly by name — a mosaic sized against a guessed FOV would be sized wrong. Each axis is sized with `ceil`, so the grid **always covers** the request: it may over-cover by up to one pane, never leave a gap at the target's edge. The response reports `cols×rows`, pane FOV, step, and achieved vs requested coverage.
+- **The written file holds both:** the expanded `pointings` (labels `r{row}_c{col}`, `row`/`column` metadata, each pane attributed independently via `_{plan_id}-{pointing_index}_`) **and** the block with derived `cols` / `rows` / `pane_fov_arcmins` stamped back as a record of what was planned. `pointings` is the authority — nothing re-derives on read, and the content-derived `plan_id` covers the final content.
+- **1×1:** coverage that fits inside a single pane derives a 1×1 plan that behaves exactly like an ordinary single-pointing plan (bare plan id, calibration sharing its folder). The response warns, because this is usually a units mistake — degrees passed where arcmins were expected.
 - 🚫 **No rotator:** every pane's `position_angle_deg` must be `0`. Any nonzero PA fails loudly, since PA can't be enforced without a rotator.
 - **Acquiring panes:** query `get_plan_progress(file_path)` to see which panes still need frames, then load the first incomplete pane with `load_sequence(request=[{"plan": file_path, "action": "light", "pointing_index": N, "mode": "remaining"}])` and `start_sequence()`. Repeat pane by pane across the night; when the top-level `complete` is true, the mosaic is done — and if `expired_with_deficit` is true instead, the lights may well be fine and only the calibration window needs raising or a new plan (see [`get_plan_progress`](#get_plan_progress)).
 
@@ -372,7 +370,7 @@ nina-pin-id --dry-run plan1.json plan2.json                   # report only, wri
 - ⏭️ **Idempotent:** a plan that already carries an id (pinned or hand-written) prints `already pinned: <id>` and is left byte-for-byte untouched — an explicit id is never overwritten.
 - ♻️ **Edit freely afterwards:** raise a group's `total_count`, add more lights, reword the intent — the id stays put, so frames attributed before the pin stay attributed after it and `nina-archive --force` rebuilds the same `<stem>__<plan-id>` folder.
 - ⚠️ **Pin BEFORE editing:** once a blank-id plan is edited its old hash cannot be recomputed; it survives only in an archive folder name or in frame paths (they contain `_<plan_id>_`).
-- 🖥️ **CLI only:** this is a human-side tool — plans written by `write_plan_file` / `write_mosaic_plan` are stamped with an explicit id at creation, so the agent never needs to pin. There is no MCP tool for it.
+- 🖥️ **CLI only:** this is a human-side tool — plans written by `write_plan_file` are stamped with an explicit id at creation, so the agent never needs to pin. There is no MCP tool for it.
 - 🚪 **Exit codes:** `0` pinned (or already pinned / dry run), `1` a plan could not be loaded or written, `2` bad arguments — chainable, e.g. `nina-pin-id plan.json && <edit>`.
 
 ## 🧹 `nina-purge` — Retire Archived Frames
@@ -484,7 +482,7 @@ _None — catalog only._
 
 ## 📁 Project directory
 
-Plan JSON files, `PLAN.md`, and `PROGRESS.md` live in the *project directory*. Relative paths (e.g. a `plan=` entry in `PLAN.md`, or `mosaic_csv`) resolve against it, and the project directory is simply the server process's working directory: opencode starts local MCP servers in the workspace, and the launch command uses `uv run --project` rather than `uv --directory` — `--directory` chdirs into `.opencode/local/mcps/nina_planner`, which would make relative paths resolve inside `.opencode/` instead of the project.
+Plan JSON files, `PLAN.md`, and `PROGRESS.md` live in the *project directory*. Relative paths (e.g. a `plan=` entry in `PLAN.md`) resolve against it, and the project directory is simply the server process's working directory: opencode starts local MCP servers in the workspace, and the launch command uses `uv run --project` rather than `uv --directory` — `--directory` chdirs into `.opencode/local/mcps/nina_planner`, which would make relative paths resolve inside `.opencode/` instead of the project.
 
 ## 🤖 `AGENTS.md` — Agent Instructions
 

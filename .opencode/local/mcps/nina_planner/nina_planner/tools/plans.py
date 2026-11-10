@@ -15,7 +15,8 @@ from ..imaging import (
 )
 from ..models.frame import FrameStats
 from ..models.plan import ObservationPlan
-from ..mosaic import load_pointings
+from ..models.profile import ObservatoryProfile
+from ..mosaic import grid_size, pane_fov_arcmins, plan_mosaic
 from ..progress import (
     _light_target_matches,
     group_verdict,
@@ -94,10 +95,90 @@ async def get_frame_stats(image_type: str | None = None) -> dict[str, Any]:
 # plan tools
 
 
+def _expand_mosaic(
+    plan: ObservationPlan, profile: ObservatoryProfile
+) -> tuple[ObservationPlan, dict[str, Any]]:
+    """Derive a mosaic plan's pointings from its ``mosaic`` block.
+
+    The pane FOV comes from the profile's optics (never a guess — a missing
+    value raises from ``pane_fov_arcmins``), the grid is sized per axis by
+    ``grid_size`` (``ceil``, so it always covers the request), the pointings
+    are built symmetric about the center, and the derived cols/rows/pane FOV
+    are stamped back onto the block as provenance. Returns the expanded plan
+    plus a summary of the derivation for the tool's response.
+    """
+    mosaic = plan.mosaic
+    assert mosaic is not None  # guarded by the caller
+    pane_w, pane_h = pane_fov_arcmins(profile.optics)
+    cols, rows = grid_size(
+        mosaic.coverage_width_arcmins,
+        mosaic.coverage_height_arcmins,
+        pane_w,
+        pane_h,
+        mosaic.overlap_pct,
+    )
+    overlap_fraction = 1.0 - mosaic.overlap_pct / 100.0
+    # grid_size works in arcmins (the model's units); the sky math in
+    # plan_mosaic works in degrees.
+    step_w_deg = (pane_w / 60.0) * overlap_fraction
+    step_h_deg = (pane_h / 60.0) * overlap_fraction
+    pointings = plan_mosaic(
+        mosaic.center_ra_hours,
+        mosaic.center_dec_deg,
+        cols,
+        rows,
+        step_w_deg,
+        step_h_deg,
+        mosaic.pa_deg,
+    )
+    stamped = mosaic.model_copy(
+        update={
+            "cols": cols,
+            "rows": rows,
+            "pane_fov_arcmins": (round(pane_w, 3), round(pane_h, 3)),
+        }
+    )
+    expanded = plan.model_copy(update={"pointings": pointings, "mosaic": stamped})
+    summary: dict[str, Any] = {
+        "cols": cols,
+        "rows": rows,
+        "pane_w": pane_w,
+        "pane_h": pane_h,
+        "step_w": pane_w * overlap_fraction,
+        "step_h": pane_h * overlap_fraction,
+        # What n panes actually span: pane + (n - 1) * step.
+        "achieved_w": pane_w + (cols - 1) * pane_w * overlap_fraction,
+        "achieved_h": pane_h + (rows - 1) * pane_h * overlap_fraction,
+        # What was asked for, so the response never re-reads the block.
+        "requested_w": mosaic.coverage_width_arcmins,
+        "requested_h": mosaic.coverage_height_arcmins,
+    }
+    return expanded, summary
+
+
 @mcp.tool()
 async def write_plan_file(plan: ObservationPlan) -> str:
-    """Validates and writes an observation plan to a JSON file for later use by load_sequence. The plan defines one or more target pointings (RA/Dec/PA, optional label), acquisition intent, light and calibration frames, batching, cooling, autofocus, guiding, observing constraints, and the optional light-frame `quality` thresholds that load_sequence and get_plan_progress apply when counting its frames. This tool only creates the plan file; it does not load or start a sequence."""
+    """Validates and writes an observation plan to a JSON file for later use by load_sequence. The plan defines one or more target pointings (RA/Dec/PA, optional label), acquisition intent, light and calibration frames, batching, cooling, autofocus, guiding, observing constraints, and the optional light-frame `quality` thresholds that load_sequence and get_plan_progress apply when counting its frames. This tool only creates the plan file; it does not load or start a sequence.
+
+    Mosaics: pass a `mosaic` block INSTEAD of `pointings` — give `center_ra_hours`/`center_dec_deg`, the sky footprint to cover as `coverage_width_arcmins`/`coverage_height_arcmins` (measured in the grid frame before `pa_deg` rotation; round up to the target's full extent), plus optional `overlap_pct` (default 20) and `pa_deg` (default 0). write_plan_file then reads the pane FOV from the active profile's optics (loud error if focal length, pixel size or camera dimensions are missing — no guessed FOV), derives cols x rows per axis with ceil so the grid ALWAYS covers at least the requested footprint (it may over-cover by up to one pane, never under-cover), expands it into pointings labeled `r{row}_c{col}`, and stamps the derived `cols`/`rows`/`pane_fov_arcmins` back onto the mosaic block as provenance. The written file holds both the block and the expanded pointings; `pointings` is the authority and nothing re-derives on read. A coverage that fits in one pane yields a 1x1 plan that behaves like an ordinary single-pointing plan. The response reports the derived grid, pane FOV, step and achieved coverage. With no rotator every pane's PA must be 0 (refused loudly otherwise)."""
     profile = await equipment_tools.get_site_profile()
+    grid_note = ""
+    if plan.mosaic is not None and not plan.pointings:
+        plan, grid = _expand_mosaic(plan, profile)
+        grid_note = (
+            f": mosaic {grid['cols']}x{grid['rows']} "
+            f"({len(plan.pointings)} pointings), "
+            f"pane FOV {grid['pane_w']:.1f}'x{grid['pane_h']:.1f}', "
+            f"step {grid['step_w']:.1f}'x{grid['step_h']:.1f}', "
+            f"covers {grid['achieved_w']:.1f}'x{grid['achieved_h']:.1f}' "
+            f"(requested {grid['requested_w']:.1f}'x"
+            f"{grid['requested_h']:.1f}')"
+        )
+        if grid["cols"] == 1 and grid["rows"] == 1:
+            grid_note += (
+                " — WARNING: 1x1 grid, the requested coverage fits inside a "
+                "single pane; check the coverage units (arcmins, not degrees)"
+            )
     await plan_utils.validate_filters(plan, profile)
     plan_utils.validate_position_angle(plan, profile)
     if not plan.plan_id:
@@ -108,46 +189,7 @@ async def write_plan_file(plan: ObservationPlan) -> str:
     path = config.PROJECT_DIR / filename
     async with await anyio.open_file(path, "w", encoding="utf-8") as f:
         await f.write(plan.model_dump_json(indent=2))
-    return f"Plan successfully written to {path}"
-
-
-@mcp.tool()
-async def write_mosaic_plan(
-    plan_path: str,
-    mosaic_csv: str,
-    output_path: str | None = None,
-) -> str:
-    """Expands a base observation plan into a multi-pointing mosaic plan from a Telescopius-formatted mosaic CSV. The base plan supplies every setting except the pointings (target, intent, exposure groups, calibration, cooler, autofocus, guiding, constraints); its pointings are replaced wholesale by one pointing per CSV row. The CSV must follow the Telescopius export layout — nine columns in the fixed order `Pane`, `RA`, `DEC`, `Position Angle (East)`, `Pane width (arcmins)`, `Pane height (arcmins)`, `Overlap`, `Row`, `Column` — and RA must be hours in the range [0, 24) (sexagesimal like `0hr 56' 01"` or decimal hours); a non-matching header or an out-of-range RA rejects the whole file rather than wrapping it. `row`/`column` are stored on each pointing as metadata (N.I.N.A. does not consume them). The base plan's `plan_id` is cleared so the mosaic gets its own content-derived id, and each pane is attributed independently via `_{plan_id}-{pointing_index}_` when run with `load_sequence(request=[{"plan": <plan_path>, "pointing_index": N}])`. With no rotator, every pane's `position_angle_deg` must be 0; any nonzero PA fails loudly. Writes `<target>_<intent>_mosaic_<timestamp>.json` in the project directory unless `output_path` is given. This tool only creates the plan file; it does not load or start a sequence."""
-    base = await plan_utils.load_plan(plan_path)
-    csv_path = Path(mosaic_csv)
-    if not csv_path.is_absolute():
-        csv_path = config.PROJECT_DIR / csv_path
-    pointings = load_pointings(csv_path)
-    plan = base.model_copy(update={"pointings": pointings, "plan_id": ""})
-    profile = await equipment_tools.get_site_profile()
-    await plan_utils.validate_filters(plan, profile)
-    plan_utils.validate_position_angle(plan, profile)
-    if not plan.plan_id:
-        plan = plan.model_copy(update={"plan_id": plan._base_plan_id()})
-
-    if output_path:
-        path = Path(output_path)
-        if not path.is_absolute():
-            path = config.PROJECT_DIR / path
-    else:
-        timestamp = datetime.now(tz=UTC).astimezone().strftime("%Y%m%dT%H%M%S")
-        filename = (
-            f"{plan_utils.sanitize_filename(plan.target.lower())}_"
-            f"{plan_utils.sanitize_filename(plan.intent.lower())}_mosaic_{timestamp}.json"
-        )
-        filename = filename.replace(" ", "-")
-        path = config.PROJECT_DIR / filename
-
-    async with await anyio.open_file(path, "w", encoding="utf-8") as f:
-        await f.write(plan.model_dump_json(indent=2))
-    return (
-        f"Mosaic plan successfully written to {path}: {len(plan.pointings)} pointing(s)"
-    )
+    return f"Plan successfully written to {path}{grid_note}"
 
 
 @mcp.tool()

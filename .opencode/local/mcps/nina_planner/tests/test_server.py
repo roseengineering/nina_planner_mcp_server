@@ -1661,153 +1661,216 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(result["expired_with_deficit"])
         self.assertIsNone(result["warning"])
 
-    def _write_mosaic_source(self, directory: Path, *, pa: float = 0.0, rows: int = 2):
-        directory.mkdir(parents=True, exist_ok=True)
-        plan_path = directory / "base.json"
-        plan_path.write_text(
-            json.dumps(
-                {
-                    "target": "Veil Nebula",
-                    "intent": "Widefield supernova remnant",
-                    "plan_id": "plan-base123",
-                    "pointings": [{"ra_hours": 20.85, "dec_deg": 31.22}],
-                    "light_frames": [
-                        {
-                            "filter_name": "L",
-                            "exposure_time_seconds": 60.0,
-                            "total_count": 2,
-                        }
-                    ],
-                    "flat_frames": [
-                        {
-                            "filter_name": "L",
-                            "total_count": 1,
-                        }
-                    ],
-                    "dark_frames": [{"exposure_time_seconds": 60.0, "total_count": 1}],
-                    "bias_frames": [{"total_count": 1}],
-                }
-            )
-        )
-        header = (
-            "Pane, RA, DEC, Position Angle (East), Pane width (arcmins), "
-            "Pane height (arcmins), Overlap, Row, Column"
-        )
-        lines = [header]
-        for i in range(1, rows + 1):
-            lines.append(
-                f"Pane {i}, 0hr {55 + i:02d}' 00\", 45º 51' 18\", {pa:.2f}, "
-                f"309.00, 205.80, 10%, 1, {i}"
-            )
-        csv_path = directory / "mosaic.csv"
-        csv_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
-        return plan_path, csv_path
+    def _mosaic_plan(self, *, pa: float = 0.0, coverage=(100.0, 60.0)):
+        """A plan that asks write_plan_file to derive its grid from coverage.
 
-    async def test_write_mosaic_plan_creates_multi_pointing_file(self):
-        from nina_planner.server import write_mosaic_plan
+        Coverage 100'x60' against the `_full_profile` rig (64.63'x43.09'
+        panes, 20% overlap -> 51.70'x34.47' steps) derives exactly 2x2.
+        """
+        return ObservationPlan(
+            target="NGC 7000",
+            intent="North America Nebula",
+            pointings=[],
+            mosaic={
+                "center_ra_hours": 20.981667,
+                "center_dec_deg": 44.33,
+                "coverage_width_arcmins": coverage[0],
+                "coverage_height_arcmins": coverage[1],
+                "overlap_pct": 20.0,
+                "pa_deg": pa,
+            },
+            light_frames=[
+                {"filter_name": "L", "exposure_time_seconds": 60.0, "total_count": 2}
+            ],
+            flat_frames=[{"filter_name": "L", "total_count": 1}],
+            dark_frames=[{"exposure_time_seconds": 60.0, "total_count": 1}],
+            bias_frames=[{"total_count": 1}],
+        )
 
+    async def test_write_plan_file_mosaic_derives_grid_from_coverage(self):
+        from nina_planner.server import write_plan_file
+
+        plan = self._mosaic_plan()
         with tempfile.TemporaryDirectory() as tmp:
-            src = Path(tmp) / "src"
-            out = Path(tmp) / "out"
-            out.mkdir()
-            plan_path, csv_path = self._write_mosaic_source(src)
+            project_dir = Path(tmp)
             with (
-                patch("nina_planner.config.PROJECT_DIR", out),
+                patch("nina_planner.config.PROJECT_DIR", project_dir),
                 patch(
                     "nina_planner.tools.equipment.get_site_profile",
                     AsyncMock(return_value=self._full_profile()),
                 ),
             ):
-                result = await write_mosaic_plan(str(plan_path), str(csv_path))
+                result = await write_plan_file(plan)
 
-            self.assertIn("Mosaic plan successfully written to", result)
-            self.assertIn("2 pointing(s)", result)
-            written = list(out.glob("*.json"))
+            # The response reports the derived grid and what it covers.
+            self.assertIn("mosaic 2x2 (4 pointings)", result)
+            self.assertIn("pane FOV", result)
+            self.assertIn("covers", result)
+            self.assertNotIn("WARNING", result)
+
+            written = list(project_dir.glob("*.json"))
             self.assertEqual(len(written), 1)
             data = json.loads(written[0].read_text())
-            self.assertEqual(len(data["pointings"]), 2)
-            self.assertEqual(data["pointings"][0]["label"], "Pane 1")
-            self.assertEqual(data["pointings"][0]["row"], 1)
-            self.assertEqual(data["pointings"][1]["column"], 2)
-            self.assertNotEqual(data["plan_id"], "plan-base123")
-            self.assertTrue(data["plan_id"])
 
-    async def test_write_mosaic_plan_relative_paths_resolve_under_project_dir(self):
-        # A caller (or the CLI habit) naming files by name only: the CSV,
-        # the base plan and the output all root at PROJECT_DIR, never at the
-        # process cwd — a relative output must land in the project dir.
-        from nina_planner.server import write_mosaic_plan
+            # Expanded pointings: r{row}_c{col}, 1-based, row-major, and the
+            # centers sit around the requested mosaic center.
+            self.assertEqual(len(data["pointings"]), 4)
+            self.assertEqual(
+                [p["label"] for p in data["pointings"]],
+                ["r1_c1", "r1_c2", "r2_c1", "r2_c2"],
+            )
+            self.assertEqual(
+                [(p["row"], p["column"]) for p in data["pointings"]],
+                [(1, 1), (1, 2), (2, 1), (2, 2)],
+            )
+            for p in data["pointings"]:
+                self.assertAlmostEqual(p["dec_deg"], 44.33, delta=1.0)
+                self.assertAlmostEqual(p["ra_hours"], 20.981667, delta=0.15)
 
+            # Provenance stamped back: derived cols/rows + the pane FOV the
+            # grid was sized against (the profile's rig, in arcmins).
+            self.assertEqual(data["mosaic"]["cols"], 2)
+            self.assertEqual(data["mosaic"]["rows"], 2)
+            self.assertAlmostEqual(
+                data["mosaic"]["pane_fov_arcmins"][0], 64.63, places=2
+            )
+            self.assertAlmostEqual(
+                data["mosaic"]["pane_fov_arcmins"][1], 43.09, places=2
+            )
+
+            # Content-derived id, as every plan gets (the old mosaic flow
+            # cleared the base id for the same reason): each pane then
+            # attributes independently via _{plan_id}-{pointing_index}_.
+            self.assertTrue(data["plan_id"].startswith("plan-"))
+
+    async def test_write_plan_file_mosaic_missing_optics_raises(self):
+        # No guessed FOV: a mosaic sized against missing optics would be
+        # sized wrong, so every missing value is named instead.
+        from nina_planner.server import write_plan_file
+
+        profile = self._full_profile().model_copy(update={"optics": OpticalTrainInfo()})
+        plan = self._mosaic_plan()
         with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            plan_path, csv_path = self._write_mosaic_source(root)
             with (
-                patch("nina_planner.config.PROJECT_DIR", root),
-                patch(
-                    "nina_planner.tools.equipment.get_site_profile",
-                    AsyncMock(return_value=self._full_profile()),
-                ),
-            ):
-                result = await write_mosaic_plan(
-                    plan_path.name,
-                    csv_path.name,
-                    output_path="mosaic_out.json",
-                )
-
-            self.assertIn("2 pointing(s)", result)
-            written = root / "mosaic_out.json"
-            self.assertTrue(written.is_file())
-            data = json.loads(written.read_text())
-            self.assertEqual(len(data["pointings"]), 2)
-
-    async def test_write_mosaic_plan_zero_pa_without_rotator_ok(self):
-        from nina_planner.server import write_mosaic_plan
-
-        profile = self._full_profile()
-        profile = profile.model_copy(
-            update={
-                "equipment": profile.equipment.model_copy(update={"has_rotator": False})
-            }
-        )
-        with tempfile.TemporaryDirectory() as tmp:
-            src = Path(tmp) / "src"
-            out = Path(tmp) / "out"
-            out.mkdir()
-            plan_path, csv_path = self._write_mosaic_source(src, pa=0.0)
-            with (
-                patch("nina_planner.config.PROJECT_DIR", out),
-                patch(
-                    "nina_planner.tools.equipment.get_site_profile",
-                    AsyncMock(return_value=profile),
-                ),
-            ):
-                result = await write_mosaic_plan(str(plan_path), str(csv_path))
-            self.assertIn("2 pointing(s)", result)
-
-    async def test_write_mosaic_plan_nonzero_pa_without_rotator_raises(self):
-        from nina_planner.server import write_mosaic_plan
-
-        profile = self._full_profile()
-        profile = profile.model_copy(
-            update={
-                "equipment": profile.equipment.model_copy(update={"has_rotator": False})
-            }
-        )
-        with tempfile.TemporaryDirectory() as tmp:
-            src = Path(tmp) / "src"
-            out = Path(tmp) / "out"
-            out.mkdir()
-            plan_path, csv_path = self._write_mosaic_source(src, pa=90.0)
-            with (
-                patch("nina_planner.config.PROJECT_DIR", out),
+                patch("nina_planner.config.PROJECT_DIR", Path(tmp)),
                 patch(
                     "nina_planner.tools.equipment.get_site_profile",
                     AsyncMock(return_value=profile),
                 ),
                 self.assertRaises(ValueError) as ctx,
             ):
-                await write_mosaic_plan(str(plan_path), str(csv_path))
+                await write_plan_file(plan)
+            msg = str(ctx.exception)
+            self.assertIn("focal_length_mm", msg)
+            self.assertIn("pixel_size_microns", msg)
+            # Nothing written: the failure happens before the file is created.
+            self.assertEqual(list(Path(tmp).glob("*.json")), [])
+
+    async def test_write_plan_file_mosaic_zero_pa_without_rotator_ok(self):
+        from nina_planner.server import write_plan_file
+
+        profile = self._full_profile().model_copy(
+            update={
+                "equipment": self._full_profile().equipment.model_copy(
+                    update={"has_rotator": False}
+                )
+            }
+        )
+        plan = self._mosaic_plan(pa=0.0)
+        with tempfile.TemporaryDirectory() as tmp:
+            with (
+                patch("nina_planner.config.PROJECT_DIR", Path(tmp)),
+                patch(
+                    "nina_planner.tools.equipment.get_site_profile",
+                    AsyncMock(return_value=profile),
+                ),
+            ):
+                result = await write_plan_file(plan)
+            self.assertIn("mosaic 2x2 (4 pointings)", result)
+
+    async def test_write_plan_file_mosaic_nonzero_pa_without_rotator_raises(self):
+        # PA can't be enforced without a rotator, so the expanded panes
+        # fail loudly exactly as the old CSV flow did.
+        from nina_planner.server import write_plan_file
+
+        profile = self._full_profile().model_copy(
+            update={
+                "equipment": self._full_profile().equipment.model_copy(
+                    update={"has_rotator": False}
+                )
+            }
+        )
+        plan = self._mosaic_plan(pa=90.0)
+        with tempfile.TemporaryDirectory() as tmp:
+            with (
+                patch("nina_planner.config.PROJECT_DIR", Path(tmp)),
+                patch(
+                    "nina_planner.tools.equipment.get_site_profile",
+                    AsyncMock(return_value=profile),
+                ),
+                self.assertRaises(ValueError) as ctx,
+            ):
+                await write_plan_file(plan)
             self.assertIn("no rotator", str(ctx.exception))
+            self.assertEqual(list(Path(tmp).glob("*.json")), [])
+
+    async def test_write_plan_file_mosaic_single_pane_warns(self):
+        # A coverage that fits inside one pane derives 1x1 — the classic
+        # symptom of degrees passed where arcmins were expected — so the
+        # response warns, and the plan behaves as an ordinary
+        # single-pointing plan (bare id shared with its calibration).
+        from nina_planner.server import write_plan_file
+
+        plan = self._mosaic_plan(coverage=(5.0, 5.0))
+        with tempfile.TemporaryDirectory() as tmp:
+            project_dir = Path(tmp)
+            with (
+                patch("nina_planner.config.PROJECT_DIR", project_dir),
+                patch(
+                    "nina_planner.tools.equipment.get_site_profile",
+                    AsyncMock(return_value=self._full_profile()),
+                ),
+            ):
+                result = await write_plan_file(plan)
+            self.assertIn("1x1", result)
+            self.assertIn("WARNING", result)
+            self.assertIn("arcmins, not degrees", result)
+
+            [written] = project_dir.glob("*.json")
+            data = json.loads(written.read_text())
+            self.assertEqual(len(data["pointings"]), 1)
+            self.assertEqual(data["mosaic"]["cols"], 1)
+            self.assertEqual(data["mosaic"]["rows"], 1)
+            loaded = ObservationPlan.model_validate(data)
+            self.assertEqual(loaded.effective_plan_id(1), loaded._base_plan_id())
+
+    async def test_write_plan_file_mosaic_with_pointings_passes_through(self):
+        # Both present means the pointings are already expanded: they are
+        # the authority, nothing re-derives, and the stamp stays as it was.
+        from nina_planner.models.pointing import Pointing
+        from nina_planner.server import write_plan_file
+
+        plan = self._mosaic_plan()
+        plan = plan.model_copy(
+            update={"pointings": [Pointing(ra_hours=1.5, dec_deg=-2.25)]}
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            project_dir = Path(tmp)
+            with (
+                patch("nina_planner.config.PROJECT_DIR", project_dir),
+                patch(
+                    "nina_planner.tools.equipment.get_site_profile",
+                    AsyncMock(return_value=self._full_profile()),
+                ),
+            ):
+                result = await write_plan_file(plan)
+            self.assertNotIn("mosaic 2x2", result)
+            [written] = project_dir.glob("*.json")
+            data = json.loads(written.read_text())
+            self.assertEqual(len(data["pointings"]), 1)
+            self.assertEqual(data["pointings"][0]["ra_hours"], 1.5)
+            self.assertEqual(data["pointings"][0]["dec_deg"], -2.25)
+            self.assertIsNone(data["mosaic"]["cols"])
 
     async def test_get_plan_progress_all_pointings(self):
         from nina_planner.server import get_plan_progress

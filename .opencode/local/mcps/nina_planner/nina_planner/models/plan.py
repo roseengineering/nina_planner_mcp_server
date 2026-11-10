@@ -2,7 +2,7 @@ import hashlib
 import json
 import re
 
-from pydantic import Field, field_validator
+from pydantic import Field, field_validator, model_validator
 
 from .pointing import Pointing
 from .strict import StrictModel
@@ -135,6 +135,92 @@ class QualityConfig(StrictModel):
 # --- Root Plan ---
 
 
+class MosaicConfig(StrictModel):
+    """How to derive a mosaic's pointings — intent in, grid recorded out.
+
+    The caller states WHAT to cover (``center`` + ``coverage`` in arcmins)
+    and how much panes may overlap; the tool derives HOW (cols x rows) from
+    the rig's pane field of view at write time and stamps the decision back
+    into ``cols``/``rows``/``pane_fov_arcmins`` as a record of what was
+    actually planned. Those three are therefore ``None`` on input and never
+    drive expansion — an expanded plan's ``pointings`` are the authority.
+
+    ``coverage`` is measured in the grid frame BEFORE ``pa_deg`` rotation:
+    it is the footprint the pane rectangle must span on each axis, and the
+    grid is sized per axis with ``ceil`` so it always covers at least this
+    much (over-covering by up to one pane rather than leaving a gap).
+    """
+
+    center_ra_hours: float = Field(
+        ge=0.0,
+        lt=24.0,
+        description="J2000 right ascension of the mosaic center in hours [0, 24).",
+    )
+    center_dec_deg: float = Field(
+        ge=-90.0,
+        le=90.0,
+        description="J2000 declination of the mosaic center in degrees.",
+    )
+    coverage_width_arcmins: float = Field(
+        gt=0.0,
+        description=(
+            "Sky width the mosaic must cover, in arcminutes, across the grid "
+            "(columns axis, before position-angle rotation). Round up to the "
+            "target's full extent — the grid may over-cover but never "
+            "under-covers it."
+        ),
+    )
+    coverage_height_arcmins: float = Field(
+        gt=0.0,
+        description=(
+            "Sky height the mosaic must cover, in arcminutes, down the grid "
+            "(rows axis, before position-angle rotation)."
+        ),
+    )
+    overlap_pct: float = Field(
+        default=20.0,
+        gt=0.0,
+        lt=100.0,
+        description="Overlap between adjacent panes as a percent of one pane.",
+    )
+    pa_deg: float = Field(
+        default=0.0,
+        ge=0.0,
+        lt=360.0,
+        description=(
+            "Position angle of the grid in degrees east of north; rotates "
+            "the footprint about the center. Refused downstream unless the "
+            "profile has a rotator."
+        ),
+    )
+    # --- stamped by write_plan_file after expansion (provenance only) ---
+    cols: int | None = Field(
+        default=None,
+        ge=1,
+        description=(
+            "Derived column count — stamped by write_plan_file when it "
+            "expands the mosaic, never supplied by the caller."
+        ),
+    )
+    rows: int | None = Field(
+        default=None,
+        ge=1,
+        description=(
+            "Derived row count — stamped by write_plan_file when it "
+            "expands the mosaic, never supplied by the caller."
+        ),
+    )
+    pane_fov_arcmins: tuple[float, float] | None = Field(
+        default=None,
+        description=(
+            "The rig's single-pane field of view (width, height) in "
+            "arcminutes, snapshotted from the profile when the mosaic was "
+            "expanded — stamped by write_plan_file, never supplied by the "
+            "caller."
+        ),
+    )
+
+
 class ObservationPlan(StrictModel):
     target: str = Field(default="", description="catalog designation")
     intent: str = Field(
@@ -157,10 +243,26 @@ class ObservationPlan(StrictModel):
         ),
     )
     pointings: list[Pointing] = Field(
-        min_length=1,
+        default_factory=list,
         description=(
             "One or more target pointings (RA/Dec/PA, optional label) to image. "
-            "Each pointing of a plan is loaded separately by pointing_index."
+            "Each pointing of a plan is loaded separately by pointing_index. "
+            "May be empty — or omitted entirely — only when a `mosaic` block "
+            "is present, in which case write_plan_file expands it into "
+            "pointings on write; once expanded (any written file) the "
+            "pointings are the authority and the mosaic block is provenance."
+        ),
+    )
+    mosaic: MosaicConfig | None = Field(
+        default=None,
+        description=(
+            "Optional mosaic specification: instead of listing pointings, "
+            "give the center and the sky footprint to cover "
+            "(coverage_*_arcmins) plus overlap/PA, and write_plan_file "
+            "derives the cols x rows grid from the profile's optics, "
+            "expands it into `pointings`, and stamps the derived cols/rows/"
+            "pane FOV back here. Omit for an ordinary single- or "
+            "multi-pointing plan given explicitly."
         ),
     )
     batch_size: int = Field(
@@ -219,6 +321,24 @@ class ObservationPlan(StrictModel):
             "as action='dark')."
         ),
     )
+
+    @model_validator(mode="after")
+    def _pointings_or_mosaic(self) -> "ObservationPlan":
+        """A plan carries pointings, or a mosaic to derive them from — not neither.
+
+        Empty ``pointings`` with no ``mosaic`` would be a plan that points
+        nowhere, so it is refused here rather than surfacing later as a
+        sequence with nothing to slew to. The reverse (both present) is
+        legal and means the pointings are already expanded: they are the
+        authority, the mosaic block is provenance, and nothing re-derives.
+        """
+        if not self.pointings and self.mosaic is None:
+            raise ValueError(
+                "a plan needs at least one pointing, or a `mosaic` block "
+                "(center + coverage) for write_plan_file to expand into "
+                "pointings"
+            )
+        return self
 
     @field_validator("plan_id")
     @classmethod

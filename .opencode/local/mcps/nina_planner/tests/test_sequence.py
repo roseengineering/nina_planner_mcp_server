@@ -354,8 +354,9 @@ class PointingIndexValidationTest(unittest.TestCase):
     def test_empty_pointings_raises_value_error_not_index_error(self):
         """An empty pointings list reports a range error, not IndexError.
 
-        ObservationPlan forbids the empty list (min_length=1); clearing it
-        directly is what reaches this defensive branch."""
+        ObservationPlan forbids the empty list (no mosaic block to derive
+        pointings from); clearing it directly is what reaches this defensive
+        branch."""
         from sequence_helpers import build_sequence_lights
 
         from nina_planner.sequence import sequence_deepsky
@@ -759,9 +760,9 @@ class SequenceBuildersTest(unittest.TestCase):
         list builds cleanly — no bare IndexError — and falls back to the
         decorative 0/0 coordinates with the plan-level token.
 
-        ObservationPlan forbids the empty list (min_length=1); clearing it
-        directly is what reaches this defensive branch in
-        sequence_calibration."""
+        ObservationPlan forbids the empty list (no mosaic block to derive
+        pointings from); clearing it directly is what reaches this defensive
+        branch in sequence_calibration."""
         from sequence_helpers import build_sequence_darks, build_sequence_flats
 
         plan = self._plan()

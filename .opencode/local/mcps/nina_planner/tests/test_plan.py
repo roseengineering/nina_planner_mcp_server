@@ -233,3 +233,110 @@ class QualityConfigTest(unittest.TestCase):
             _plan()._base_plan_id(),
         )
         self.assertEqual(_plan(quality={"max_hfr": 2.5}).plan_id, "plan-abc123")
+
+
+class MosaicBlockTest(unittest.TestCase):
+    """The `mosaic` block: a plan may carry a grid to derive instead of
+    pointings — and once expanded, the pointings are the authority."""
+
+    MOSAIC = {
+        "center_ra_hours": 20.981667,
+        "center_dec_deg": 44.33,
+        "coverage_width_arcmins": 130.0,
+        "coverage_height_arcmins": 86.0,
+    }
+
+    def test_mosaic_without_pointings_is_valid(self):
+        plan = _plan(pointings=[], mosaic=self.MOSAIC)
+        self.assertEqual(plan.pointings, [])
+        self.assertEqual(plan.mosaic.coverage_width_arcmins, 130.0)
+        # Defaults the caller did not have to state.
+        self.assertEqual(plan.mosaic.overlap_pct, 20.0)
+        self.assertEqual(plan.mosaic.pa_deg, 0.0)
+        # Derived fields are None until write_plan_file stamps them, so a
+        # caller-supplied value is never what drives expansion... but the
+        # field exists and refuses nonsense (extra=forbid + Field bounds).
+        self.assertIsNone(plan.mosaic.cols)
+        self.assertIsNone(plan.mosaic.rows)
+        self.assertIsNone(plan.mosaic.pane_fov_arcmins)
+
+    def test_empty_pointings_without_mosaic_refused(self):
+        # A plan that points nowhere is refused at construction, not later
+        # as a sequence with nothing to slew to.
+        with self.assertRaises(ValidationError) as ctx:
+            _plan(pointings=[])
+        self.assertIn("mosaic", str(ctx.exception))
+
+    def test_omitted_pointings_with_mosaic_is_valid(self):
+        # The natural form: give the mosaic, say nothing about pointings.
+        # pydantic fills [] before serialization, so the content hash — and
+        # therefore the plan_id — is identical to writing "pointings": []
+        # explicitly; neither spelling can drift an id.
+        payload = _payload()
+        del payload["pointings"]
+        payload["mosaic"] = self.MOSAIC
+        plan = ObservationPlan.model_validate(payload)
+        self.assertEqual(plan.pointings, [])
+        self.assertEqual(
+            plan._base_plan_id(),
+            _plan(pointings=[], mosaic=self.MOSAIC)._base_plan_id(),
+        )
+
+    def test_omitted_pointings_without_mosaic_names_the_fix(self):
+        # Omitting the key with no mosaic gets the same guidance as an
+        # explicit [] — the message names the two ways to point the plan,
+        # not just that the field is missing.
+        payload = _payload()
+        del payload["pointings"]
+        with self.assertRaises(ValidationError) as ctx:
+            ObservationPlan.model_validate(payload)
+        self.assertIn("mosaic", str(ctx.exception))
+
+    def test_mosaic_and_pointings_together_load_and_pointings_win(self):
+        # What every written mosaic file looks like: it must load, and the
+        # expanded pointings are the authority — nothing re-derives.
+        plan = _plan(
+            mosaic={
+                **self.MOSAIC,
+                "cols": 3,
+                "rows": 2,
+                "pane_fov_arcmins": (64.628, 43.086),
+            }
+        )
+        self.assertEqual(len(plan.pointings), 1)  # the payload's pointing
+        self.assertEqual(plan.mosaic.cols, 3)
+        self.assertEqual(plan.mosaic.pane_fov_arcmins, (64.628, 43.086))
+        again = ObservationPlan.model_validate(json.loads(plan.model_dump_json()))
+        self.assertEqual(again.pointings, plan.pointings)
+        self.assertEqual(again.mosaic.cols, 3)
+
+    def test_mosaic_field_bounds(self):
+        bad = [
+            {"center_ra_hours": 24.0},  # hours are [0, 24)
+            {"center_dec_deg": 91.0},
+            {"coverage_width_arcmins": 0.0},
+            {"coverage_height_arcmins": -5.0},
+            {"overlap_pct": 100.0},
+            {"overlap_pct": 0.0},  # must actually overlap
+            {"pa_deg": 360.0},
+            {"cols": 0},  # stamp is >= 1 too
+        ]
+        for override in bad:
+            with self.subTest(override=override):
+                with self.assertRaises(ValidationError):
+                    _plan(pointings=[], mosaic={**self.MOSAIC, **override})
+
+    def test_unknown_mosaic_key_refused(self):
+        # extra="forbid": a typo'd field must not silently be ignored, or
+        # the mosaic would cover something other than what was written.
+        with self.assertRaises(ValidationError) as ctx:
+            _plan(pointings=[], mosaic={**self.MOSAIC, "ovrlap_pct": 20.0})
+        self.assertIn("ovrlap_pct", str(ctx.exception))
+
+    def test_mosaic_requires_center_and_coverage(self):
+        for missing in ("center_ra_hours", "center_dec_deg", "coverage_width_arcmins"):
+            with self.subTest(missing=missing):
+                mosaic = dict(self.MOSAIC)
+                del mosaic[missing]
+                with self.assertRaises(ValidationError):
+                    _plan(pointings=[], mosaic=mosaic)
