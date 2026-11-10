@@ -1,6 +1,6 @@
 # 🔭 nina-planner — An Observatory Operator Agent
 
-![Banner for repository](banner.png)
+![Banner for repository](res/banner.png)
 
 `nina_planner` is an MCP tool server for N.I.N.A. (Nighttime Imaging 'N' Astronomy).  The separate events `nina-notify` plugin is OpenCode-specific.  The focus is on building, executing, and monitoring multi-target sequence runs from observation plans.
 
@@ -46,8 +46,8 @@ Darkness bounds, catalog targets, and offline coordinates. Powered by [astropy](
 |---|---|
 | `sun_times()` | Next sunrise/sunset plus all four twilight boundaries (civil −6°, nautical −12°, astronomical −18°) and the astronomical-darkness window in effect or next to open, with `night_phase` (`evening`/`dark`/`morning`) and `is_dark_now` for end-of-night decisions. Read-only; reads only the site profile. |
 | `moon_times()` | Lunar counterpart to `sun_times()`: `phase` (name, `illumination_fraction`, `waxing`, `elongation_deg`, `age_days`) plus current altitude/azimuth/distance, `moon_up_now`, the next `moonrise`/`moonset` (48 h window), and the next `new_moon`/`first_quarter`/`full_moon`/`last_quarter` instants (~32 d window). Phase instants are geocentric and identical everywhere; rise/set are topocentric for the site. Read-only; offline; reads only the site profile. |
-| `best_targets(min_altitude=30.0, top=10, level, kinds)` | Ranks Messier and bright NGC objects to observe from the active site right now, returning `visible_now` (dark and above the floor now) plus `later_tonight` (peak altitude within astronomical darkness), with `is_dark_now` and surface-brightness-based difficulty filtering. Each row carries pre-verified (SIMBAD-checked) `ra_hours` / `dec_deg` — use them directly for pointing, no `resolve_target` needed, so this works offline. Read-only. |
-| `resolve_target(name)` | Resolve a deep-sky object name (e.g. `M31`, `NGC 6960`) to J2000 `ra_hours` / `dec_deg` through a SIMBAD lookup. **Only needed for names not in `dso_catalog.csv`** — catalog coordinates are already SIMBAD-verified and returned on `best_targets` rows. 🌐 Requires internet access; if it fails, skip the target rather than guessing. Read-only. |
+| `best_targets(min_altitude=30.0, top=10, level, kinds)` | Ranks Messier and bright NGC objects from the Pensack 500 list to observe, returning `visible_now` (dark and above the floor now) plus `later_tonight` (peak altitude within astronomical darkness), with `is_dark_now` and surface-brightness-based difficulty filtering. Each row carries pre-verified (SIMBAD-checked) `ra_hours` / `dec_deg` — use them directly for pointing, no `resolve_target` needed, so this works offline.  Read-only. |
+| `resolve_target(name)` | Resolve a deep-sky object name (e.g. `M31`, `NGC 6960`) to J2000 `ra_hours` / `dec_deg` through a SIMBAD lookup. 🌐 Requires internet access. Read-only. |
 | `target_altitudes(targets, hours_ahead=0.0)` | Altitude/azimuth of each target at the active site, sorted highest first, for ranking candidates. Each target is `{"name": ...}` plus optional `ra_hours` / `dec_deg` (pass the pre-verified values from a `best_targets` row; without them the name is resolved via SIMBAD — needs internet). Read-only. |
 
 ### 🎬 Sequencer
@@ -69,7 +69,7 @@ Plan creation and batch reconciliation.
 |---|---|
 | `audit_plans(plans?, project_dir?, types?, include_orphans=true)` | **Whole-project capture audit in one call**: reconcile plan expectations with CSV attribution (plus the one filesystem fact the CSV cannot hold — `bad` rejects) for every plan into an `all_saved` verdict plus `left_to_do` (including never-shot plans) and `blocked` work lists, and a `never_shot` list of plans with no frames at all. Read-only. |
 | `get_plan_progress(file_path)` | Per-frame-type acquired/remaining counts for every pointing of a plan, applying the plan's `quality` thresholds. Use before `load_sequence` to see what still needs acquiring. Read-only. |
-| `list_plans(project_dir?)` | List every observation plan file in the project directory with its `file`, absolute `path`, `plan_id`, `target`, `intent`, `pointing_count`, and mtime — enumerate plans without globbing. Read-only. |
+| `list_plans(project_dir?)` | Enumerates every observation plan file inside the project directory with its `file`, absolute `path`, `plan_id`, `target`, `intent`, `pointing_count`, and mtime.  Read-only. |
 | `write_plan_file(plan)` | Validate and write an observation plan JSON file for later use by `load_sequence` — including its optional `quality` thresholds. Creates the file only; loads and starts nothing. |
 | `write_mosaic_plan(plan_path, mosaic_csv, output_path?)` | Expand a base plan into a multi-pointing mosaic plan from a Telescopius CSV. Creates the file only. |
 | `get_nina_settings()` | Read the **running server's** environment — `NINA_ARCHIVE_DEST`, `NINA_UPLOAD_CMD`, `NINA_VERIFY_CMD`, `NINA_ENDPOINT`, `NINA_DRIVE_MOUNT` — as received at launch (config file + shell inheritance). Runs nothing; returns `settings`, `missing`, `ready` (the archive trio gates `ready`; endpoint/drive-mount are diagnostics) for the `archive-lifecycle` skill. |
@@ -503,6 +503,7 @@ You are the automated observatory controller. The observatory runs NINA via the 
 - You are woken only by milestones, faults, safety changes, the interval check, and sustained quality problems. Routine telemetry (per-frame image saves, guider, autofocus) is **not** pushed to you — every wake prompt names a `get_events(since=…)` window covering the quiet gap, so read it before deciding. `QUALITY-WATCHDOG: …` in a wake means frame quality degraded and held. Device connect/disconnect events wake **only while a sequence is running**; if you hear nothing about a device, that is by design, not a missed event.
 - **Trust `dso_catalog.csv` coordinates — no SIMBAD confirmation needed.** Every position in the built-in catalog (`best_targets` rows carry `ra_hours`/`dec_deg`) was pre-verified against SIMBAD, so point directly from them: never call `resolve_target` for a catalog object, and never block on the network to "confirm" them — this keeps the whole night loop working when the internet is down. `resolve_target` is only for a name *outside* the catalog; if that lookup fails, skip the target and pick another instead of guessing coordinates.
 - **Arm the notifier first.** Your first action in a fresh controller session: call `nina_notify_check`; if `effectiveTarget` is not this session, call `nina_notify_arm` — it pins this session (other sessions' prompts then cannot re-target the wakes) and sends a confirmation through the real delivery path. Run `nina_notify_test` once before leaving the night unattended (fires a test wake through the real path, changes no pin), and re-arm after creating any new controller session. A `staleWhileSequenceRunning: true` in `nina_notify_check` means the N.I.N.A. event socket dropped silently — verify with `get_events` before trusting the quiet. Note the naming: bare **"status" is the N.I.N.A. API probe** — `get_nina_status` (liveness) / `get_site_equipment_status` (equipment) from nina-planner — while the **notifier's pipeline** is `nina_notify_check`. Ask for "notify check"/"is the notifier healthy?" when you mean the latter.
+- You will use emojis liberally to communicate status updates, milestones, and emotional context as things happen.
 
 ## Detailed procedures live in `.agents/skills/`:
 - `safety-interrupt-recovery` — on any new event or interval check: NINA liveness, equipment/safety checks, stowing.
@@ -512,9 +513,6 @@ You are the automated observatory controller. The observatory runs NINA via the 
 - `archive-lifecycle` — archive, upload (your own command), verify, then purge; human-gated.
 - `frame-quality-diagnostics` — diagnose AF failures and read per-frame quality (HFR, HFR σ, stars, ADU) when a run degrades; decide whether to escalate or stop.
 - `site-conditions` — 7-day hourly cloud forecast for the site (clearoutside.com) plus Bortle/astro-dark, for start/continue and flat-planning decisions.
-
-## Emoji Communication Guidelines
-- You will use emojis liberally to communicate status updates, milestones, and emotional context as things happen.
 ```
 
 ## 🧠 `.agents/skills` — Agent Skills
