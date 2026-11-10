@@ -131,7 +131,7 @@ Returns per-frame-type acquisition progress for every pointing of an observation
 
 `list_plans(project_dir?)`
 
-Returns `{"plans": [...], "errors": [...]}` — one entry per plan JSON in the project directory (default: the server's working directory) with `file`, absolute `path`, `plan_id`, `target`, `intent`, `pointing_count`, and `written` (mtime, ISO-8601 local with offset). Unparseable JSON files are reported per file under `errors` instead of failing the call, and a relative `project_dir` resolves against the project directory. Use it to enumerate plans without globbing; `audit_plans` shares the same discovery.
+Returns `{"plans": [...], "errors": [...]}` — one entry per plan JSON in the project directory (default: the server's working directory) with `file`, absolute `path`, `plan_id`, `target`, `intent`, `pointing_count`, and `written` (mtime, ISO-8601 local with offset). Unparseable JSON files are reported per file under `errors` instead of failing the call, and a relative `project_dir` resolves against the project directory. Use it to enumerate plans; `audit_plans` shares the same discovery.
 
 ### `audit_plans`
 
