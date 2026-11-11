@@ -57,8 +57,8 @@ from .nodes import (
 ## LISTS
 #
 # A `request` list composes its steps into one Target area under a single
-# End area that always stows (park, then warm) — or, for an empty list, is
-# the whole sequence, making the empty list the stow (see
+# End area that always parks then warms — or, for an empty list, is
+# the whole sequence, making the empty list the park (see
 # build_sequence_many). A non-empty run is bracketed by RUN-STARTING in
 # the Start area and RUN-FINISHED at the head of the End area, the one
 # event that proves every step has run (see _sequence_with_steps).
@@ -71,8 +71,8 @@ def build_sequence_many(
 
     A single Start area, a single Target area holding every step's containers
     in the order given (from ``target_payload_*``), and a single End area
-    that always stows — park, then warm — so the night ends parked no matter
-    what ran, and an empty payload list is the stow itself.
+    that always parks then warms, so the night ends parked no matter
+    what ran, and an empty payload list is the park itself.
 
     The run is bracketed by ``RUN-STARTING: N steps`` in the Start area and
     ``RUN-FINISHED: N steps complete`` at the head of the End area; ``N``

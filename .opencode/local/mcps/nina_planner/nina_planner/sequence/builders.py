@@ -7,7 +7,6 @@ from .instructions import (
     connect_all_equipment,
     cool_camera,
     end_instruction,
-    home_scope,
     loop_for_iterations,
     loop_until_dawn,
     loop_until_dusk,
@@ -197,13 +196,11 @@ def sequence_cool_camera(
 
 
 def sequence_park_scope(equipment: ObservatoryEquipment) -> list[dict[str, Any]]:
-    return (
-        [park_scope()]
-        if equipment.mount and equipment.mount.can_park
-        else (
-            [home_scope()] if equipment.mount and equipment.mount.can_find_home else []
-        )
-    )
+    # Park only. `Find home` is never emitted: home points the scope straight
+    # down with the lens open, so it does not protect the optics — on the
+    # Seestar park reaches the same position with the lens closed. A mount
+    # that cannot park is rejected at load time (see tools/sequence.py).
+    return [park_scope()] if equipment.mount and equipment.mount.can_park else []
 
 
 def sequence_unpark_scope(equipment: ObservatoryEquipment) -> list[dict[str, Any]]:
@@ -317,19 +314,19 @@ def sequence_end(
     equipment: ObservatoryEquipment, *, step_count: int = 0
 ) -> dict[str, Any]:
     # close observatory for the night:
-    # wait out one bounded "On Safe" pass, then stow the telescope and warm
+    # wait out one bounded "On Safe" pass, then park the telescope and warm
     # the camera. The wait is a single 3-minute iteration gated on the safety
     # monitor, so it is skipped entirely when the enclosure is already closed
     # and never idles until sunrise (see test_end_area_waits_three_minutes_*).
     # Equipment connects in the Start area (see _sequence_with_steps) and
-    # again here before park, so the stow is self-contained even if the
+    # again here before park, so the park is self-contained even if the
     # run never connected.
     #
     # With steps behind it, the very first instruction announces the finished
     # run: the End area is reached only when the Target area has nothing
     # left, so this fires before the wait and before park — while the night
     # can still be re-planned. An empty request passes step_count=0 and stays
-    # silent, so a stow never reads as a finished run. The park and the warm
+    # silent, so a park never reads as a finished run. The park and the warm
     # are each bracketed by their own event so the log shows exactly when
     # the scope went away and when it is safe to open the dome.
     delay_minutes = 3
@@ -337,7 +334,7 @@ def sequence_end(
     return container_end(
         [
             container_sequential(
-                name="Stow Telescope",
+                name="Park Telescope",
                 instructions=(
                     head
                     + [
@@ -345,16 +342,16 @@ def sequence_end(
                             name="On Safe",
                             conditions=[loop_while_safe(), loop_for_iterations(1)],
                             instructions=[
-                                send_event(f"PRESTOW-DELAY: {delay_minutes} min"),
+                                send_event(f"PREPARK-DELAY: {delay_minutes} min"),
                                 wait_for_timespan(delay_minutes * 60),
                             ],
                         ),
-                        send_event("STOW-STARTING"),
+                        send_event("PARK-STARTING"),
                         connect_all_equipment(),
                     ]
                     + sequence_park_scope(equipment)
                     + sequence_warm_camera(equipment)
-                    + [send_event("STOW-FINISHED")]
+                    + [send_event("PARK-FINISHED")]
                 ),
             )
         ]
@@ -367,7 +364,7 @@ def _sequence_with_steps(
     """Assemble Start / Target / End around an ordered run of steps.
 
     ``step_count`` (> 0) brackets the run: ``RUN-STARTING`` in the Start
-    area and ``RUN-FINISHED`` at the head of the End area. Zero — the stow,
+    area and ``RUN-FINISHED`` at the head of the End area. Zero — the park,
     or a request list whose entries all produced no steps — emits neither.
     The Target area holds the steps and nothing else, so its contents stay
     exactly the run's steps.

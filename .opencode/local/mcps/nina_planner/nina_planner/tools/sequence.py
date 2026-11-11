@@ -21,14 +21,14 @@ from . import equipment as equipment_tools
 
 @mcp.tool()
 async def load_sequence(
-    # The empty list is the API (it means stow) and is never mutated.
+    # The empty list is the API (it means park) and is never mutated.
     request: list[SequenceRequest] = [],  # noqa: B006
 ) -> str:
     """Loads a sequence with safety guardrails — it never starts it; call start_sequence() to begin acquisition.
 
     `request` is a LIST of SequenceRequest objects composing a whole night into a single N.I.N.A. sequence. It defaults to an empty list.
 
-    The list composes ONE sequence: a single Start area, one Target area holding each step's containers in list order, and one End area that always stows — one bounded 3-minute "On Safe" wait, then park (or home) the mount and warm the camera. An EMPTY list (the default) is therefore the STOW: an empty Target area plus that closing End area. There is no `stow`, `park`, `warm`, or `unpark` action — every action is plan-backed, and `load_sequence()` with no arguments is the teardown.
+    The list composes ONE sequence: a single Start area, one Target area holding each step's containers in list order, and one End area that always parks — one bounded 3-minute "On Safe" wait, then park the mount and warm the camera. An EMPTY list (the default) is therefore the PARK: an empty Target area plus that closing End area. There is no `park`, `warm`, or `unpark` action — every action is plan-backed, and `load_sequence()` with no arguments is the teardown.
 
     Every entry is one `request` object: `action`, plus `variant` (how the action runs), `plan` (path to the observation-plan JSON file), `pointing_index`, and `mode`. Quality thresholds are NOT request fields — they live in the plan file's `quality` section, so this tool and `get_plan_progress` always count the same frames.
 
@@ -40,13 +40,13 @@ async def load_sequence(
     - `dark` and `bias` take `wheel` (default — park the wheel on the profile's `Dark` filter slot), `cover` (close the motorized cover — e.g. a flip-flat — around the exposures, then reopen it so a later step never shoots through a closed cover), or `shutter` (expose without moving the filter wheel, relying on the camera's shutter). The variant is capability-checked at load: `wheel` needs a configured filter wheel with a `Dark` slot, `cover` a configured flat device reporting open/close support, `shutter` a camera reporting HasShutter. A variant the rig cannot perform fails naming the reason and the variants it supports — the default is checked the same way, so an omitted variant never silently picks another method.
     - `light` takes no variant.
 
-    Steps run in order as the sequence reaches them; a step carrying its own wait conditions (lights, flats) waits, or is skipped when its window has passed, without blocking the steps behind it, so list order controls timing. Entries already complete in `remaining` mode are skipped and reported; if every entry is complete, nothing is sent to N.I.N.A. Profile, equipment, and metadata are fetched once per call, one POST carries the whole sequence, and a validation failure names its 0-based position (`request[1]: ...`). A mount reporting neither `can_park` nor `can_find_home` — or no mount at all — is rejected as soon as a sequence would load: the End area could not stow it, and the wait stages that park first would leave it unparked. An all-complete list sends nothing and so needs no stow, and loads without that error.
+    Steps run in order as the sequence reaches them; a step carrying its own wait conditions (lights, flats) waits, or is skipped when its window has passed, without blocking the steps behind it, so list order controls timing. Entries already complete in `remaining` mode are skipped and reported; if every entry is complete, nothing is sent to N.I.N.A. Profile, equipment, and metadata are fetched once per call, one POST carries the whole sequence, and a validation failure names its 0-based position (`request[1]: ...`). A mount that cannot park — or no mount at all — is rejected as soon as a sequence would load: the End area could not park it, and the wait stages that park first would leave it unparked. An all-complete list sends nothing and so needs no park, and loads without that error.
 
     Fails if a sequence is already running — NINA's own error is reported; call stop_sequence() first."""
     if not isinstance(request, list):
         raise ValueError(
             "`request` must be a list of SequenceRequest objects "
-            f"(it defaults to an empty list = stow), got {type(request).__name__}."
+            f"(it defaults to an empty list = park), got {type(request).__name__}."
         )
     requests: list[SequenceRequest] = []
     for i, item in enumerate(request):
@@ -121,11 +121,11 @@ async def _load_many(requests: list[SequenceRequest]) -> str:
     reference clock are fetched once for the whole list; and a failure names
     the 0-based position of the entry that caused it (``request[1]: ...``).
     Entries already complete in ``remaining`` mode contribute no payload, so
-    a fully-complete list never POSTs. An empty list is the stow: no steps at
-    all, just the stow End area. Every list's End area stows (park, then
-    warm), so the night ends parked no matter what ran (see load_sequence) —
-    which is why a mount that can neither park nor home is rejected at the
-    point a sequence would load: that stow would silently do nothing.
+    a fully-complete list never POSTs. An empty list is the park: no steps at
+    all, just the park End area. Every list's End area parks (then warms), so
+    the night ends parked no matter what ran (see load_sequence) — which is
+    why a mount that cannot park is rejected at the point a sequence would
+    load: that park would silently do nothing.
     """
     state: dict[str, Any] = {}
 
@@ -308,29 +308,27 @@ async def _load_many(requests: list[SequenceRequest]) -> str:
 
     if requests:
         lines.append("")
-    # The empty list is the stow: no steps, but the End area still parks (or
-    # homes) then warms, so it always loads.
+    # The empty list is the park: no steps, but the End area still parks then
+    # warms, so it always loads.
     if any(payloads) or not requests:
         # Guard at the point a sequence really is sent: every load — the
-        # empty stow included — ends with the End-area park (or home), and
-        # sequence_park_scope emits nothing when the mount can neither, so
+        # empty park included — ends with the End-area park, and
+        # sequence_park_scope emits nothing when the mount cannot park, so
         # the wait stages that park first (wait for dusk/dawn, the safetynet,
         # wait for object) would sit unparked through a long wait while the
-        # End area announces a stow around a no-op. A stow that silently does
+        # End area announces a park around a no-op. A park that silently does
         # nothing is worse than an error. It is checked here rather than up
         # front so a fully-complete list — nothing sent, no End area — stays a
         # clean "Nothing to load".
         eq = await equipment()
         mount = eq.mount
         can_park = bool(mount and mount.can_park)
-        can_home = bool(mount and mount.can_find_home)
-        if not (can_park or can_home):
+        if not can_park:
             raise ValueError(
-                "Mount can neither park nor home "
-                f"(can_park={can_park}, can_find_home={can_home}) — nothing to "
-                "stow: the End area would announce STOW-STARTING/"
-                "STOW-FINISHED around an instruction list that does nothing. "
-                "Nothing was loaded."
+                f"Mount cannot park (can_park={can_park}) — nothing to park: "
+                "the End area would announce PARK-STARTING/PARK-FINISHED "
+                "around an instruction list that does nothing. Nothing was "
+                "loaded."
             )
         await client.load_sequence_payload(build_sequence_many(eq, payloads))
         if requests:
@@ -340,7 +338,7 @@ async def _load_many(requests: list[SequenceRequest]) -> str:
             )
         else:
             lines.append(
-                "`stow` sequence loaded (empty request list) — call "
+                "`park` sequence loaded (empty request list) — call "
                 "start_sequence() to begin."
             )
     else:
@@ -353,7 +351,7 @@ async def _load_many(requests: list[SequenceRequest]) -> str:
 
 @mcp.tool()
 async def stop_sequence() -> str:
-    """Stops the currently running NINA sequence immediately, leaving the telescope where it currently is — it does not stow the scope. Use for an urgent halt, to interrupt a stuck/looping sequence, or when the running sequence isn't what you wanted. If you then want to stow for the night, load `load_sequence()` (empty list = stow) and start it. `load_sequence` refuses to load while a sequence is running, so call this first and wait — it returns once NINA reports the sequencer has actually stopped. Avoid stopping an in-progress teardown during the stow maneuver unless safety requires it, since interrupting mid-slew can leave the scope in an unsafe position."""
+    """Stops the currently running NINA sequence immediately, leaving the telescope where it currently is — it does not park the scope. Use for an urgent halt, to interrupt a stuck/looping sequence, or when the running sequence isn't what you wanted. If you then want to park for the night, load `load_sequence()` (empty list = park) and start it. `load_sequence` refuses to load while a sequence is running, so call this first and wait — it returns once NINA reports the sequencer has actually stopped. Avoid stopping an in-progress teardown during the park maneuver unless safety requires it, since interrupting mid-slew can leave the scope in an unsafe position."""
     await client.stop_running_sequence_and_wait()
     return "Sequence stopped."
 

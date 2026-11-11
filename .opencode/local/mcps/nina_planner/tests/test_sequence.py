@@ -58,7 +58,7 @@ def _profile() -> ObservatoryProfile:
     )
 
 
-def _stow_equipment() -> ObservatoryEquipment:
+def _park_equipment() -> ObservatoryEquipment:
     """The best case for the teardown builders: a mount that can park and a
     camera that can cool."""
     return ObservatoryEquipment(
@@ -410,11 +410,6 @@ class JsonTemplateBuildersTest(unittest.TestCase):
 
         self._assert_clr_type(park_scope(), "ParkScope")
 
-    def test_home_scope(self):
-        from nina_planner.sequence import home_scope
-
-        self._assert_clr_type(home_scope(), "FindHome")
-
     # ---- camera ----
 
     def test_warm_camera(self):
@@ -622,8 +617,8 @@ class SequenceBuildersTest(unittest.TestCase):
         return _profile()
 
     def test_build_sequence_teardown(self):
-        """The stow (an empty request list): the three sequence areas, with
-        stowing and warming carried by the End area."""
+        """The park (an empty request list): the three sequence areas, with
+        parking and warming carried by the End area."""
         from nina_planner.sequence import build_sequence_many
 
         result = build_sequence_many(ObservatoryEquipment(), [])
@@ -631,10 +626,10 @@ class SequenceBuildersTest(unittest.TestCase):
         areas = [item.get("Name") for item in result["Items"]["$values"]]
         self.assertEqual(areas, ["Start Sequence", "Target Sequence", "End Sequence"])
 
-    def test_build_sequence_stow_parks_then_warms(self):
-        from sequence_helpers import build_sequence_stow
+    def test_build_sequence_park_parks_then_warms(self):
+        from sequence_helpers import build_sequence_park
 
-        result = build_sequence_stow(_stow_equipment())
+        result = build_sequence_park(_park_equipment())
 
         end = _items(result)[-1]
         self.assertEqual(
@@ -643,8 +638,8 @@ class SequenceBuildersTest(unittest.TestCase):
         self.assertEqual(
             _find_items(end, "WarmCamera"), _find_items(result, "WarmCamera")
         )
-        self.assertTrue(_find_items(result, "ParkScope"), "stow parks (or homes)")
-        self.assertTrue(_find_items(result, "WarmCamera"), "stow then warms")
+        self.assertTrue(_find_items(result, "ParkScope"), "park parks (or homes)")
+        self.assertTrue(_find_items(result, "WarmCamera"), "park then warms")
 
     def test_build_sequence_darks(self):
         from sequence_helpers import build_sequence_darks
@@ -1179,7 +1174,10 @@ class SequenceBehaviorTest(unittest.TestCase):
         self.assertGreaterEqual(len(parks), 1)
         self.assertEqual(homes, [])
 
-    def test_lights_safetynet_uses_find_home_when_only_can_find_home(self):
+    def test_lights_safetynet_emits_no_park_when_mount_cannot_park(self):
+        """No park, and never a `Find home` fallback: home is gone, so a
+        mount that cannot park simply gets no telescope instruction here —
+        load_sequence rejects such a mount before anything is sent."""
         plan = self._plan()
         mount = MountDevice(
             connected=True,
@@ -1192,9 +1190,9 @@ class SequenceBehaviorTest(unittest.TestCase):
         parks = _find_items(result, "ParkScope")
         homes = _find_items(result, "FindHome, NINA.Sequencer")
         self.assertEqual(parks, [])
-        self.assertGreaterEqual(len(homes), 1)
+        self.assertEqual(homes, [])
 
-    def test_lights_safetynet_with_no_mount_omits_park_and_home(self):
+    def test_lights_safetynet_with_no_mount_emits_no_park(self):
         plan = self._plan()
         eq = ObservatoryEquipment(mount=None)
         result = build_sequence_lights(plan, equipment=eq, profile=_profile())
@@ -1287,7 +1285,7 @@ class SequenceBehaviorTest(unittest.TestCase):
             "wait for object before image object",
         )
 
-    def test_lights_parks_with_find_home_when_mount_cannot_park(self):
+    def test_lights_wait_for_object_omits_park_when_mount_cannot_park(self):
         plan = self._plan()
         mount = MountDevice(
             connected=True, name="m", can_park=False, can_find_home=True
@@ -1297,7 +1295,7 @@ class SequenceBehaviorTest(unittest.TestCase):
 
         obj_wait = _find_named(result, "Wait For Object")[0]
         self.assertEqual(_find_items(obj_wait, "ParkScope"), [])
-        self.assertEqual(len(_find_items(obj_wait, "FindHome, NINA.Sequencer")), 1)
+        self.assertEqual(_find_items(obj_wait, "FindHome, NINA.Sequencer"), [])
 
     def test_lights_waits_for_dusk_and_object_do_not_block_on_safety_monitor(self):
         """Wait For Dusk and Wait For Object do not gate on the safety monitor
@@ -1343,10 +1341,10 @@ class SequenceBehaviorTest(unittest.TestCase):
         self.assertGreaterEqual(len(_find_items(img[0], "SafetyMonitorCondition")), 1)
         self.assertGreaterEqual(len(_find_items(img[0], "WaitUntilSafe")), 1)
 
-    def test_end_area_waits_three_minutes_then_stows_and_warms(self):
+    def test_end_area_waits_three_minutes_then_parks_and_warms(self):
         """The End area waits out one bounded "On Safe" pass — a single
         3-minute iteration gated on the safety monitor — then announces and
-        performs the stow: park, then warm. Bounded matters: a teardown
+        performs the park, then the warm. Bounded matters: a teardown
         sequence completes within that one pass (immediately when the
         enclosure is already closed) instead of idling until sunrise, so
         "nothing running" stays an unambiguous state."""
@@ -1359,13 +1357,13 @@ class SequenceBehaviorTest(unittest.TestCase):
         # The wait lives in a nested container; the End area itself has none.
         self.assertEqual(end["Conditions"]["$values"], [], "End must not wait")
 
-        stow = _items(end)
-        self.assertEqual(len(stow), 1, "the End area is one stow container")
-        self.assertEqual(stow[0]["Name"], "Stow Telescope")
-        self.assertIn("SequentialContainer", stow[0]["$type"])
+        park = _items(end)
+        self.assertEqual(len(park), 1, "the End area is one park container")
+        self.assertEqual(park[0]["Name"], "Park Telescope")
+        self.assertIn("SequentialContainer", park[0]["$type"])
 
         containers = _find_items(end, "SequentialContainer")
-        self.assertEqual(len(containers), 2, "stow + its waiting container")
+        self.assertEqual(len(containers), 2, "park + its waiting container")
         wait = next(c for c in containers if c["Name"] == "On Safe")
         wait_types = [c["$type"] for c in wait["Conditions"]["$values"]]
         self.assertEqual(len(wait_types), 2, "safety gate + bounded loop")
@@ -1384,14 +1382,14 @@ class SequenceBehaviorTest(unittest.TestCase):
         self.assertEqual([w["Time"] for w in waits], [3 * 60], "one 3-minute pass")
 
         # Neither container carries a safety condition of its own — the
-        # single gate lives inside the wait container — and the stow warms
-        # only after waiting, announcing, connecting and parking. The stow
+        # single gate lives inside the wait container — and the park warms
+        # only after waiting, announcing, connecting. The park
         # re-connects here (the Start area also connects) so it is
         # self-contained even if the run never connected.
         self.assertEqual(len(_find_items(end, "SafetyMonitorCondition")), 1)
-        order = [item.get("$type", "") for item in stow[0]["Items"]["$values"]]
+        order = [item.get("$type", "") for item in park[0]["Items"]["$values"]]
         self.assertEqual(
-            len(order), 6, "wait, stow-starting, connect, park, warm, stow-finished"
+            len(order), 6, "wait, park-starting, connect, park, warm, park-finished"
         )
         self.assertIn("SequentialContainer", order[0])
         self.assertIn("SendEventInstruction", order[1])
@@ -1399,23 +1397,26 @@ class SequenceBehaviorTest(unittest.TestCase):
         self.assertIn("ParkScope", order[3])
         self.assertIn("WarmCamera", order[4])
         self.assertIn("SendEventInstruction", order[5])
-        stow_messages = [
+        park_messages = [
             item["Message"]
-            for item in stow[0]["Items"]["$values"]
+            for item in park[0]["Items"]["$values"]
             if "SendEventInstruction" in item.get("$type", "")
         ]
-        self.assertEqual(stow_messages, ["STOW-STARTING", "STOW-FINISHED"])
+        self.assertEqual(park_messages, ["PARK-STARTING", "PARK-FINISHED"])
         self.assertEqual(
             [i["Message"] for i in wait["Items"]["$values"] if "Message" in i],
-            ["PRESTOW-DELAY: 3 min"],
+            ["PREPARK-DELAY: 3 min"],
             "the wait announces itself",
         )
 
-    def test_end_area_stow_is_capability_driven(self):
+    def test_end_area_parks_only_when_mount_can_park(self):
+        """Park is the only closing maneuver: `can_park=True` gets exactly one
+        ParkScope, anything else gets nothing — there is no `Find home`
+        fallback, so an unparkable mount is caught at load time instead."""
         from nina_planner.sequence import sequence_end
 
         can_park = MountDevice(connected=True, name="m", can_park=True)
-        home_only = MountDevice(
+        unparkable = MountDevice(
             connected=True, name="m", can_park=False, can_find_home=True
         )
 
@@ -1423,13 +1424,13 @@ class SequenceBehaviorTest(unittest.TestCase):
         self.assertEqual(len(_find_items(parked, "ParkScope")), 1)
         self.assertEqual(_find_items(parked, "FindHome, NINA.Sequencer"), [])
 
-        homed = sequence_end(ObservatoryEquipment(mount=home_only))
-        self.assertEqual(_find_items(homed, "ParkScope"), [])
-        self.assertEqual(len(_find_items(homed, "FindHome, NINA.Sequencer")), 1)
+        nothing = sequence_end(ObservatoryEquipment(mount=unparkable))
+        self.assertEqual(_find_items(nothing, "ParkScope"), [])
+        self.assertEqual(_find_items(nothing, "FindHome, NINA.Sequencer"), [])
 
-        stowed = sequence_end(ObservatoryEquipment(mount=None))
-        self.assertEqual(_find_items(stowed, "ParkScope"), [])
-        self.assertEqual(_find_items(stowed, "FindHome, NINA.Sequencer"), [])
+        bare = sequence_end(ObservatoryEquipment(mount=None))
+        self.assertEqual(_find_items(bare, "ParkScope"), [])
+        self.assertEqual(_find_items(bare, "FindHome, NINA.Sequencer"), [])
 
     def test_end_area_warms_only_when_camera_has_cooler(self):
         from nina_planner.sequence import sequence_end
@@ -1784,15 +1785,15 @@ class RoundRobinEdgeCasesTest(unittest.TestCase):
 class BuildSequenceManyTest(unittest.TestCase):
     """A list of requests becomes one sequence: every payload's containers
     land in a single Target area, in order, under an End area that always
-    stows — and an empty payload list is exactly the stow."""
+    parks — and an empty payload list is exactly the park."""
 
     @staticmethod
     def _end_types(result: dict) -> list[str]:
         """``$type`` of every teardown step: the End area holds a single
-        ``Stow Telescope`` container, whose children do the stowing."""
+        ``Park Telescope`` container, whose children do the parking."""
         end = _items(result)[2]["Items"]["$values"]
-        if [i.get("Name") for i in end] != ["Stow Telescope"]:
-            raise AssertionError(f"End area must be the stow, got {end}")
+        if [i.get("Name") for i in end] != ["Park Telescope"]:
+            raise AssertionError(f"End area must be the park, got {end}")
         return [i["$type"] for i in end[0]["Items"]["$values"]]
 
     def test_flattens_payloads_into_one_target_area_in_order(self):
@@ -1802,7 +1803,7 @@ class BuildSequenceManyTest(unittest.TestCase):
             target_payload_lights,
         )
 
-        equipment = _stow_equipment()
+        equipment = _park_equipment()
         plan = _plan()
         payloads = [
             target_payload_lights(plan, equipment, _profile()),
@@ -1830,10 +1831,10 @@ class BuildSequenceManyTest(unittest.TestCase):
         self.assertTrue(any("ParkScope" in t for t in end_types), "End parks")
         self.assertTrue(any("WarmCamera" in t for t in end_types), "End warms")
 
-    def test_still_stows_when_a_payload_is_empty(self):
+    def test_still_parks_when_a_payload_is_empty(self):
         from nina_planner.sequence import build_sequence_many
 
-        equipment = _stow_equipment()
+        equipment = _park_equipment()
         result = build_sequence_many(equipment, [[]])
         self.assertEqual(_items(result)[1]["Items"]["$values"], [])
         end_types = self._end_types(result)
@@ -1850,7 +1851,7 @@ class BuildSequenceManyTest(unittest.TestCase):
             target_payload_lights,
         )
 
-        equipment = _stow_equipment()
+        equipment = _park_equipment()
         plan = _plan()
         payloads = [
             target_payload_lights(plan, equipment, _profile()),
@@ -1864,10 +1865,10 @@ class BuildSequenceManyTest(unittest.TestCase):
         start_items = start["Items"]["$values"]
         self.assertIn("ConnectAllEquipment", start_items[0]["$type"])
         self.assertEqual(start_items[1]["Message"], "RUN-STARTING: 3 steps")
-        stow = end["Items"]["$values"]
-        self.assertEqual([i["Name"] for i in stow], ["Stow Telescope"])
+        park = end["Items"]["$values"]
+        self.assertEqual([i["Name"] for i in park], ["Park Telescope"])
         self.assertEqual(
-            stow[0]["Items"]["$values"][0]["Message"],
+            park[0]["Items"]["$values"][0]["Message"],
             "RUN-FINISHED: 3 steps complete",
         )
         # The bracket wraps the run rather than joining it: the Target area
@@ -1877,7 +1878,7 @@ class BuildSequenceManyTest(unittest.TestCase):
             [m for m in _event_messages(target) if m.startswith("RUN-")], []
         )
         # RUN-FINISHED precedes the bounded wait and the park.
-        self.assertIn("SendEventInstruction", stow[0]["Items"]["$values"][0]["$type"])
+        self.assertIn("SendEventInstruction", park[0]["Items"]["$values"][0]["$type"])
 
     def test_step_count_counts_only_entries_that_produced_steps(self):
         from nina_planner.sequence import (
@@ -1885,7 +1886,7 @@ class BuildSequenceManyTest(unittest.TestCase):
             target_payload_lights,
         )
 
-        equipment = _stow_equipment()
+        equipment = _park_equipment()
         payloads = [
             [],  # e.g. an entry already complete in `remaining` mode
             target_payload_lights(_plan(), equipment, _profile()),
@@ -1896,12 +1897,12 @@ class BuildSequenceManyTest(unittest.TestCase):
         self.assertIn("RUN-STARTING: 1 step", messages)
         self.assertIn("RUN-FINISHED: 1 step complete", messages)
 
-    def test_stow_and_empty_entries_emit_no_run_events(self):
-        """A stow must never read as a finished run — the agent would
+    def test_park_and_empty_entries_emit_no_run_events(self):
+        """A park must never read as a finished run — the agent would
         re-plan immediately after being told to close down."""
         from nina_planner.sequence import build_sequence_many
 
-        equipment = _stow_equipment()
+        equipment = _park_equipment()
         for result in (
             build_sequence_many(equipment, []),
             build_sequence_many(equipment, [[]]),
@@ -1909,7 +1910,7 @@ class BuildSequenceManyTest(unittest.TestCase):
             self.assertEqual(
                 [m for m in _event_messages(result) if m.startswith("RUN-")],
                 [],
-                "stow-equivalent sequences must not bracket a run",
+                "park-equivalent sequences must not bracket a run",
             )
 
     def test_darks_target_area_holds_the_container_directly(self):
@@ -1917,7 +1918,7 @@ class BuildSequenceManyTest(unittest.TestCase):
         payload form is a plain list, so the wrapper is gone."""
         from sequence_helpers import build_sequence_darks
 
-        result = build_sequence_darks(_plan(), _stow_equipment(), _profile())
+        result = build_sequence_darks(_plan(), _park_equipment(), _profile())
         children = _items(result)[1]["Items"]["$values"]
         self.assertEqual(len(children), 1)
         self.assertIn("DeepSkyObjectContainer", children[0]["$type"])

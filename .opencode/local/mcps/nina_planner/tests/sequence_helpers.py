@@ -17,7 +17,7 @@ from nina_planner.sequence import (
 )
 
 
-def build_sequence_stow(equipment: ObservatoryEquipment) -> dict[str, Any]:
+def build_sequence_park(equipment: ObservatoryEquipment) -> dict[str, Any]:
     return build_sequence_many(equipment, [])
 
 

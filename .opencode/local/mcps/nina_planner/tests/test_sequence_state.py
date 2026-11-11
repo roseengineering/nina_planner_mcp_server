@@ -65,7 +65,7 @@ class ProjectSequenceStateTests(unittest.TestCase):
         self.assertEqual(out["steps"], [])
 
     def test_step_without_an_exposure_node_has_none_exposure(self):
-        # A step that never takes an exposure (a pure wait/stow step, or a
+        # A step that never takes an exposure (a pure wait/park step, or a
         # target area whose items have not been expanded yet) must report
         # exposure=None rather than inventing zeros for the summary.
         state = [
@@ -74,7 +74,7 @@ class ProjectSequenceStateTests(unittest.TestCase):
                 "Status": "FINISHED",
                 "Items": [
                     {
-                        "Name": "Stow",
+                        "Name": "Park",
                         "Status": "FINISHED",
                         "Target": {"TargetName": "M31 _plan-1234567890ab_"},
                         "Items": [],

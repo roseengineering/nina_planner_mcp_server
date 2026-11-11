@@ -56,9 +56,9 @@ Queueing, starting, stopping, and checking runs.
 
 | Tool | Purpose |
 |---|---|
-| `load_sequence(request=[...])` | Load a sequence for the whole night with safety guardrails. 💤 **Never starts it.** **Every** loaded sequence ends with the stow — an empty list is just that stow with no steps in front of it. See [details](#load_sequence). |
+| `load_sequence(request=[...])` | Load a sequence for the whole night with safety guardrails. 💤 **Never starts it.** **Every** loaded sequence ends with the park — an empty list is just that park with no steps in front of it. See [details](#load_sequence). |
 | `start_sequence()` | Start the currently loaded sequence immediately. Use after `load_sequence()`. ▶️ |
-| `stop_sequence()` | Stop the running sequence and wait until NINA reports it stopped. ⚠️ Does **not** stow the scope. |
+| `stop_sequence()` | Stop the running sequence and wait until NINA reports it stopped. ⚠️ Does **not** park the scope. |
 | `get_sequence_state(detail)` | Per-step view of the loaded sequence: plan attribution, status, exposure progress, horizon altitude, errors. `detail`: `summary` (default) or `raw` (`/sequence/state`). Read-only. |
 
 ### 🗺️ Plan Management
@@ -85,7 +85,9 @@ Live HFR/star-count metrics during acquisition.
 
 ### `get_site_equipment_status`
 
-Returns the current connection, operating state, measurements, and capabilities of active observatory equipment (mount, camera, focuser, guider, filter wheel, rotator, dome, switches), including weather and safety-monitor status (whether the enclosure is open and it is safe to unpark) and mount capabilities (`can_park`, `can_find_home`) that determine how the scope can be stowed. Use for live operational and safety checks.
+Returns the current connection, operating state, measurements, and capabilities of active observatory equipment (mount, camera, focuser, guider, filter wheel, rotator, dome, switches), including weather and safety-monitor status (whether the enclosure is open and it is safe to unpark), and mount capabilities (`can_park`, the only way a sequence can park the scope — `can_find_home` is reported as telemetry and is never used). Use for live operational and safety checks.
+
+> 🅿️ **Park is the only closing maneuver (Seestar firmware, 2026-11):** `Park Scope` sends the mount to its parking position **and closes the lens** — that is the real, optics-protecting move. `Find home` is **never emitted**: it only points the scope straight down and **leaves the lens open**, so it is not equivalent — and a mount reporting `can_park=false` is rejected at load time (`cannot park`) rather than homed, since there is no home fallback left. The flip side of a lens-closing park: it is no longer a harmless reposition, so every mid-run park→unpark cycle — safety wait, wait-for-dusk, wait-for-object, flats — depends on `UnparkScope` reopening the lens before the next exposure. Near-zero Mean ADU, zero stars, or repeated plate-solve/centering failures right after a park point at the lens, not at the mount. **Capabilities are baked into a sequence when it is loaded**: after anything that changes `can_park` (firmware update, driver swap), re-run `load_sequence` — a sequence loaded earlier keeps the instructions it was built with.
 
 > ⚠️ **Side effect:** unlike the other telemetry tools, this call is **not read-only**. It connects any device that is present but disconnected. If any device is mid-connect the call errors; retry after a few seconds.
 
@@ -157,9 +159,9 @@ Answers **"are all my targets' captures saved to disk, and what is left to do?"*
 
 Loads a sequence with safety guardrails — 💤 it **never starts it**; call `start_sequence()` to begin. ⚠️ Fails if a sequence is already running — call `stop_sequence()` first.
 
-`request` is a **list** of request objects composing one N.I.N.A. sequence for the whole night: a single Start area, one Target area holding each step's containers in list order, and one End area that always stows — one bounded 3-minute "On Safe" wait, then park (or home) the mount and warm the camera.
+`request` is a **list** of request objects composing one N.I.N.A. sequence for the whole night: a single Start area, one Target area holding each step's containers in list order, and one End area that always parks — one bounded 3-minute "On Safe" wait, then park (or home) the mount and warm the camera.
 
-🅿️ **The stow is unconditional: every sequence `load_sequence` builds ends with that same End area**, whatever the request contains — a full night's target list, a single dark set, or nothing at all. So the night always finishes parked and warmed no matter what ran; the request list only decides what happens *before* the stow. **An empty list (the default) is simply the stow with an empty Target area** — there is no `stow`/`park`/`warm`/`unpark` action, and `load_sequence()` with no arguments is the teardown.
+🅿️ **The park is unconditional: every sequence `load_sequence` builds ends with that same End area**, whatever the request contains — a full night's target list, a single dark set, or nothing at all. So the night always finishes parked and warmed no matter what ran; the request list only decides what happens *before* the park. **An empty list (the default) is simply the park with an empty Target area** — there is no `park`/`park`/`warm`/`unpark` action, and `load_sequence()` with no arguments is the teardown.
 
 | Field | Description |
 |---|---|
@@ -181,7 +183,7 @@ Behavior:
 
 ### `stop_sequence`
 
-For an urgent halt or a stuck sequence. ⚠️ The scope is left where it is. To stow afterward, `load_sequence()` (empty list) and start it. Avoid interrupting an in-progress stow unless safety requires it, since stopping mid-slew can leave the scope in an unsafe position.
+For an urgent halt or a stuck sequence. ⚠️ The scope is left where it is. To park afterward, `load_sequence()` (empty list) and start it. Avoid interrupting an in-progress park unless safety requires it, since stopping mid-slew can leave the scope in an unsafe position.
 
 ### `get_nina_status`
 
@@ -410,10 +412,12 @@ nina-purge --purge                            # actually delete the quarantine
    **Only three classes of event ever wake the agent**, because N.I.N.A. already runs routine work itself — autofocus, dithering and drift correction are its own internal triggers, so reporting them to the agent buys nothing:
 
    - **Milestones** — sequence lifecycle (`RUN-STARTING`/`RUN-FINISHED`/`SEQUENCE-STARTING`/`SEQUENCE-FINISHED`) and per-target transitions (`TS-NEWTARGETSTART`): the observation queue needs evaluating — transit checks, altitude limits, next target dispatch.
-   - **Faults** — failures (`ERROR`/`FAIL`/`EXCEPTION`/`ABORT`/`INTERRUPT`/`CRITICAL`/`TIMEOUT`, which catches `CAMERA-DOWNLOAD-TIMEOUT`) and link loss (`OFFLINE`/`DISCONNECT`/`LOST`/`EMERGENCY`): the agent diagnoses the root cause and selects a fallback. The tokens are matched as substrings, so `PRESTOW-DELAY` is caught by `STOW`.
-   - **Safety** — safety state (`SAFE`/`UNSAFE`/`SAFETY`/`WEATHER`/`DOME`/`ROOF`) and mount/stow (`MOUNT*`/`STOW*`/`PRESTOW-*`): stow or stand down.
+   - **Faults** — failures (`ERROR`/`FAIL`/`EXCEPTION`/`ABORT`/`INTERRUPT`/`CRITICAL`/`TIMEOUT`, which catches `CAMERA-DOWNLOAD-TIMEOUT`) and link loss (`OFFLINE`/`DISCONNECT`/`LOST`/`EMERGENCY`): the agent diagnoses the root cause and selects a fallback. The tokens are matched as substrings, so `PREPARK-DELAY` is caught by `PARK`.
+   - **Safety** — safety state (`SAFE`/`UNSAFE`/`SAFETY`/`WEATHER`/`DOME`/`ROOF`) and mount/park (`MOUNT*`/`PARK*`/`PREPARK-*`): park or stand down.
 
    Two demotions came out of that same 16h sample of real events (476 events → 45 matched the regex → but only 11 of the 24 coalesced prompts actually carried a milestone, fault or safety change): **`MOUNT-CENTER` never wakes** — it is the slew/settle centering the mount performs itself on every acquisition, and it alone produced 8 wake events — and **device link events wake only while a sequence is running**. N.I.N.A. cycles every device at session start and teardown, which produced the other 29 of 45 wake events, and a link change is only operationally interesting while something is imaging. That gate is seeded from `GET /v2/api/sequence/json` at startup (using the same any-node-`RUNNING` rule as the MCP server, so the two never disagree) and maintained from `RUN-*`/`SEQUENCE-*` events; a seed failure leaves it wake-worthy, the safe default. Safety *state* changes (`SAFETY-CHANGED`) match neither rule and always wake. Replaying the same 476 events through the new rules gives **7 prompts instead of 24 — every one a genuine milestone, fault or safety change.**
+
+   A third demotion was added later: **`MOUNT-HOMED` never wakes.** No sequence emits `Find home` any more (park is the only closing maneuver), so a home comes only from the survey scripts and manual operation — it fired 7 times in one 24h sample. `MOUNT-PARKED` / `MOUNT-UNPARKED` stay wake-worthy: they are the real "scope went away / came back" milestones, and park/unpark are what drive the lens.
 
    Wakes are coalesced over a 250ms window, so a burst of *distinct* fault events costs the agent **one** prompt instead of one per event; safety still lands essentially instantly, since an agent wake already takes seconds.
 
@@ -495,7 +499,7 @@ Tells the agent it runs an observatory.
 You are the automated observatory controller. The observatory runs NINA via the nina-planner MCP server.
 
 ## Always-on rules:
-- `is_safe=false` (enclosure closed) or weather violations mean: scope stowed, if not by the NINA sequence then by you, and no **sky-dependent** acquisition (lights, dawn/dusk sky flats) may start or resume until it clears. **Darks and biases are exempt** — they need no open sky: the step parks the scope and cuts light at the camera (`Dark` slot / cover / shutter), so a `dark` or `bias` load may be started with the roof closed.
+- `is_safe=false` (enclosure closed) or weather violations mean: scope parked, if not by the NINA sequence then by you, and no **sky-dependent** acquisition (lights, dawn/dusk sky flats) may start or resume until it clears. **Darks and biases are exempt** — they need no open sky: the step parks the scope and cuts light at the camera (`Dark` slot / cover / shutter), so a `dark` or `bias` load may be started with the roof closed.
 - The `site-conditions` forecast (clearoutside.com) is **advisory for planning only**: it may inform whether to start a night, which target to pick, or when to schedule dawn/dusk flats, but it never gates acquisition. `is_safe` and the weather device remain the only inputs that start, stop or resume sky-dependent work — a forecast is never a reason to resume a sequence that safety stopped. It needs the network: on failure, log it and carry on with `get_site_equipment_status` + `sun_times`, never stall the night on it.
 - Append a timestamped entry to `PROGRESS.md` after each action; never edit `PLAN.md` (the user's living wishlist). The entry header is **host-local ISO-8601 carrying its UTC offset** — `## 2026-11-05T09:39:10-05:00` — never bare UTC `…Z`. That is the same form `get_events`/`get_logs` timestamps and the `nina-notify` plugin log already use, so a header matches the local event stamps quoted in its own body; the offset is what keeps it unambiguous across a DST change and across hosts. Older `…Z` headers are history — leave them.
 - You are woken only by milestones, faults, safety changes, the interval check, and sustained quality problems. Routine telemetry (per-frame image saves, guider, autofocus) is **not** pushed to you — every wake prompt names a `get_events(since=…)` window covering the quiet gap, so read it before deciding. `QUALITY-WATCHDOG: …` in a wake means frame quality degraded and held. Device connect/disconnect events wake **only while a sequence is running**; if you hear nothing about a device, that is by design, not a missed event.
@@ -504,7 +508,7 @@ You are the automated observatory controller. The observatory runs NINA via the 
 - You will use emojis liberally to communicate status updates, milestones, and emotional context as things happen.
 
 ## Detailed procedures live in `.agents/skills/`:
-- `safety-interrupt-recovery` — on any new event or interval check: NINA liveness, equipment/safety checks, stowing.
+- `safety-interrupt-recovery` — on any new event or interval check: NINA liveness, equipment/safety checks, parking.
 - `night-loop` — on interval check or `RUN-FINISHED`: pick and start the next target, or end the night.
 - `nina-lifecycle` — start/stop/status of the NINA application.
 - `run-nina-tools` — how to invoke the `nina-*` CLIs (not on PATH): `.venv/bin` → `uv run --project` → PATH copy → stop.
@@ -521,10 +525,10 @@ The detailed procedures `AGENTS.md` defers to live in [.agents/skills/](./.agent
 |---|---|
 | [`archive-lifecycle`](./.agents/skills/archive-lifecycle/SKILL.md) | Archive → upload → verify → purge finished imaging sets, human-gated. |
 | [`frame-quality-diagnostics`](./.agents/skills/frame-quality-diagnostics/SKILL.md) | Autofocus failures and per-frame quality telemetry (HFR, HFR σ, stars, ADU). |
-| [`night-loop`](./.agents/skills/night-loop/SKILL.md) | Pick and start the next target, or end the night with a report and a stow. |
+| [`night-loop`](./.agents/skills/night-loop/SKILL.md) | Pick and start the next target, or end the night with a report and a park. |
 | [`nina-lifecycle`](./.agents/skills/nina-lifecycle/SKILL.md) | Start / stop / status of the NINA application. |
 | [`run-nina-tools`](./.agents/skills/run-nina-tools/SKILL.md) | How to invoke the `nina-*` CLIs — not on PATH: `.venv/bin` first, then `uv run --project`, then a PATH copy, else stop. |
-| [`safety-interrupt-recovery`](./.agents/skills/safety-interrupt-recovery/SKILL.md) | Interrupts, sequence halts, and recovery: liveness, safety, stowing. |
+| [`safety-interrupt-recovery`](./.agents/skills/safety-interrupt-recovery/SKILL.md) | Interrupts, sequence halts, and recovery: liveness, safety, parking. |
 | [`site-conditions`](./.agents/skills/site-conditions/SKILL.md) | 7-day hourly forecast (cloud, wind, precip, dew/frost, Bortle, astro-dark) — advisory only, never a substitute for `is_safe`. |
 
 ### 🗄️ `archive-lifecycle`
@@ -537,7 +541,7 @@ Diagnose autofocus failures and read per-frame quality telemetry (HFR, HFR σ, d
 
 ### 🌙 `night-loop`
 
-Multi-target night loop. Use on an interval check or a `RUN-FINISHED` event to pick the next target from `PLAN.md`, load and start its sequence (single or mosaic), or end the night with a date-stamped `report_<YYYY-MM-DD>.md` and a stow. Safety checks come from the `safety-interrupt-recovery` skill; `PLAN.md` stays the user's wishlist and is never edited by the agent.
+Multi-target night loop. Use on an interval check or a `RUN-FINISHED` event to pick the next target from `PLAN.md`, load and start its sequence (single or mosaic), or end the night with a date-stamped `report_<YYYY-MM-DD>.md` and a park. Safety checks come from the `safety-interrupt-recovery` skill; `PLAN.md` stays the user's wishlist and is never edited by the agent.
 
 ### ⚙️ `nina-lifecycle`
 
@@ -549,7 +553,7 @@ How to invoke the `nina-planner` CLI tools — `nina-archive`, `nina-purge`, `ni
 
 ### 🛟 `safety-interrupt-recovery`
 
-Handle automated safety interrupts, sequence halts, and recovery on a new event or interval check. Use to verify NINA is up, check equipment/safety/weather, stow the scope, or decide whether to start a plan or stow. `is_safe=false` gates sky-dependent work (lights, dawn/dusk sky flats) only — darks and biases need no open sky and may still be started with the enclosure closed.
+Handle automated safety interrupts, sequence halts, and recovery on a new event or interval check. Use to verify NINA is up, check equipment/safety/weather, park the scope, or decide whether to start a plan or park. `is_safe=false` gates sky-dependent work (lights, dawn/dusk sky flats) only — darks and biases need no open sky and may still be started with the enclosure closed.
 
 ### 🌤️ `site-conditions`
 

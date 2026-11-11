@@ -56,7 +56,7 @@ Practical rule: an AF failure costs a few minutes and almost never costs the tar
 | NGC 1981 | **8** | **3+ failures** |
 | NGC 2264 | 14–35 | 2 failures, then success |
 
-- Do **not** attribute it to a broken solver, a stale star database, or "first solve after stow" — the stow theory was tested and disproven when NGC 1981 failed after a 2h45m stow while NGC 884/M45 solved first-try from a tracking mount.
+- Do **not** attribute it to a broken solver, a stale star database, or "first solve after park" — the park theory was tested and disproven when NGC 1981 failed after a 2h45m park while NGC 884/M45 solved first-try from a tracking mount.
 - Under `ContinueOnError` centering is skipped and the target still images; only framing precision is lost. Mount goto proved arcmin-accurate across 150 uncentered frames on a prior night, so it is safe to let it proceed.
 - **A 45–65° false-positive sync is a separate, recurring quirk**: solve #1 returns a solution far from the true pointing (e.g. 64.9° off), NINA syncs and re-slews, and solves #2–3 converge (18′58″ → 7′21″). Self-correcting; costs 2–3 solves. Not a reason to intervene.
 

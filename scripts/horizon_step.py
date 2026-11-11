@@ -8,12 +8,12 @@ against the mount's own Alt/Az readback, corrected once).
 
     python3 scripts/horizon_step.py                 # 15 deg steps, alt 15
     python3 scripts/horizon_step.py --alt 5 --az-step 30
-    python3 scripts/horizon_step.py --start 180 --home-at-end
+    python3 scripts/horizon_step.py --start 180 --park-at-end
 
 At each stop:
     <Enter>  next azimuth          b / p   previous azimuth
-    <number> jump to that azimuth  h       home (stow) now
-    q        quit (stows if --home-at-end)
+    <number> jump to that azimuth  h       park now
+    q        quit (parks if --park-at-end)
 """
 
 from __future__ import annotations
@@ -25,7 +25,7 @@ import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-import horizon_pan as hp  # noqa: E402
+import horizon_pan as hp
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -57,9 +57,9 @@ def main(argv: list[str] | None = None) -> int:
         " (auto-advance for screenshots; default 5)",
     )
     ap.add_argument(
-        "--home-at-end",
+        "--park-at-end",
         action="store_true",
-        help="stow via Find-home when the loop ends or is quit",
+        help="park the mount (closes the lens) when the loop ends or is quit",
     )
     args = ap.parse_args(argv)
 
@@ -81,7 +81,7 @@ def main(argv: list[str] | None = None) -> int:
     print(
         f"  {len(azs)} azimuths from {azs[0]:g} step {args.az_step:g} at alt"
         f" {args.alt:g}  (epoch {args.epoch})\n"
-        "   <Enter>=next  b=back  <number>=jump  h=home  q=quit\n"
+        "   <Enter>=next  b=back  <number>=jump  h=park  q=quit\n"
     )
 
     def stop(idx: int) -> tuple[float, float, float]:
@@ -124,14 +124,14 @@ def main(argv: list[str] | None = None) -> int:
             if ans in ("b", "p", "prev", "-"):
                 i -= 1
                 continue
-            if ans in ("h", "home"):
-                hp.home_mount(nina)
+            if ans in ("h", "park"):
+                hp.park_mount(nina)
                 return 0
             if ans:
                 try:
                     want = float(ans)
                 except ValueError:
-                    print("      ? Enter=next b=back number=jump h=home q=quit")
+                    print("      ? Enter=next b=back number=jump h=park q=quit")
                     continue
                 j = min(
                     range(len(azs)),
@@ -143,13 +143,13 @@ def main(argv: list[str] | None = None) -> int:
     except KeyboardInterrupt:
         print("\n  interrupted.")
     finally:
-        if args.home_at_end:
-            hp.home_mount(nina)
+        if args.park_at_end:
+            hp.park_mount(nina)
         else:
             m = hp.mount_info(nina)
             print(
-                f"  left parked at alt={m.get('Altitude')} az={m.get('Azimuth')}"
-                " (NOT stowed - pass --home-at-end to stow)"
+                f"  left at alt={m.get('Altitude')} az={m.get('Azimuth')}"
+                " (NOT parked - pass --park-at-end to park)"
             )
     return 0
 

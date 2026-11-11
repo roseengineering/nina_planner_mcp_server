@@ -166,7 +166,7 @@ async def _get_site_equipment_status(
 
 @mcp.tool()
 async def get_site_equipment_status() -> ObservatoryEquipment:
-    """Returns the current connection, operating state, measurements, and capabilities of active observatory equipment, including weather and safety-monitor status (whether the enclosure is open and it is safe to unpark), and mount capabilities (`can_park`, `can_find_home`) that determine how the scope can be stowed. Use it for live operational and safety checks. Auto-connects any device that is present but disconnected; if any device is mid-connect the call errors and should be retried after a few seconds. This is N.I.N.A. API state only — the nina-notify wake pipeline (pin target, event-socket health) is `nina_notify_check`, a different tool."""
+    """Returns the current connection, operating state, measurements, and capabilities of active observatory equipment, including weather and safety-monitor status (whether the enclosure is open and it is safe to unpark), and mount capabilities (`can_park`, the only way a sequence can park the scope — `can_find_home` is reported as telemetry and is never used). Use it for live operational and safety checks. Auto-connects any device that is present but disconnected; if any device is mid-connect the call errors and should be retried after a few seconds. This is N.I.N.A. API state only — the nina-notify wake pipeline (pin target, event-socket health) is `nina_notify_check`, a different tool."""
     profile = await get_site_profile()
     equipment = await _get_site_equipment_status(profile)
     client.log_payload("Equipment:", equipment.model_dump_json(indent=2))

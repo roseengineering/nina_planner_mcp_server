@@ -53,7 +53,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 DEFAULT_ENDPOINT = os.environ.get("NINA_ENDPOINT", "127.0.0.1:1888")
 DEFAULT_TARGET_NAME = "horizon_survey"
@@ -122,7 +122,7 @@ class Nina:
 
 def precess_to_j2000(ra_deg: float, dec_deg: float) -> tuple[float, float]:
     """IAU-1976 precession, of-date -> J2000 (sub-arcsecond over decades)."""
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     years = (now.year + now.timetuple().tm_yday / 365.25) - 2000.0
     t = years / 100.0
     zeta = (2306.2181 * t + 0.30188 * t * t + 0.017998 * t**3) / 3600.0
@@ -193,7 +193,7 @@ def sun_altaz(
     lat_deg: float, lon_deg: float, when: datetime | None = None
 ) -> tuple[float, float]:
     """Low-precision solar position (NOAA-style); ~0.3 deg is plenty for a guard."""
-    when = when or datetime.now(timezone.utc)
+    when = when or datetime.now(UTC)
     jd = when.timestamp() / 86400.0 + 2440587.5
     n = jd - 2451545.0
     L = (280.460 + 0.9856474 * n) % 360.0
@@ -454,6 +454,32 @@ def mount_info(nina: Nina) -> dict:
     return nina.get("/equipment/mount/info") or {}
 
 
+def unpark_mount(nina: Nina) -> bool:
+    """Unpark if the mount reports AtPark - the Alpaca API refuses to slew a
+    parked mount (409 ``Mount parked``), so every slew path needs this first.
+
+    Returns True when the mount is clear of park (or reports no park state),
+    False if it is still parked after polling - the caller must not slew.
+    """
+    mm = mount_info(nina)
+    if not mm.get("AtPark"):
+        return True
+    print("  mount is parked - unparking ...")
+    try:
+        nina.get("/equipment/mount/unpark", timeout=60.0)
+    except NinaError as exc:
+        print(f"  ! unpark failed ({exc})")
+        return False
+    for _ in range(40):
+        mm = mount_info(nina)
+        if not mm.get("AtPark"):
+            print(f"  ✓ unparked: alt={mm.get('Altitude')} az={mm.get('Azimuth')}")
+            return True
+        time.sleep(0.75)
+    print("  ! still reports AtPark after unpark - NOT slewing")
+    return False
+
+
 def slew_to(
     nina: Nina, alt: float, az: float, lat: float, lst: float, epoch: str, settle: float
 ) -> tuple[float, float, float, float, float]:
@@ -463,6 +489,8 @@ def slew_to(
     The *actual* values are what get recorded, so epoch slop only shifts where
     we think we aimed - never what the .hrz claims.
     """
+    if not unpark_mount(nina):
+        raise NinaError("mount is parked - slew refused (unpark failed)")
     ra, dec = altaz_to_radece(alt, az, lat, lst, epoch)
     nina.get(
         "/equipment/mount/slew",
@@ -562,23 +590,32 @@ def capture_frame(nina: Nina, args, target_name: str, preview_path: str | None) 
 capture_frame._last_date = ""
 
 
-def home_mount(nina: Nina) -> None:
-    """Stow via Find-home (the Seestar reports CanPark=false), polling to confirm."""
-    print("  homing (stowing) the mount ...")
+def park_mount(nina: Nina) -> None:
+    """Park the mount - on the Seestar this closes the lens - polling to confirm.
+
+    ``Find home`` is never used: home only points the scope straight down and
+    leaves the lens open, so it is not a closing maneuver. A mount reporting
+    ``CanPark=false`` is left alone and reported - there is no fallback.
+    """
+    mm = mount_info(nina)
+    if not mm.get("CanPark"):
+        print("  ! mount reports CanPark=false - left where it is (no fallback)")
+        return
+    print("  parking the mount ...")
     try:
-        nina.get("/equipment/mount/home", timeout=60.0)
+        nina.get("/equipment/mount/park", timeout=60.0)
         mm = mount_info(nina)
         for _ in range(60):
-            if mm.get("AtHome") and not mm.get("Slewing"):
+            if mm.get("AtPark") and not mm.get("Slewing"):
                 break
             time.sleep(3)
             mm = mount_info(nina)
         print(
-            f"  ✓ stowed: alt={mm.get('Altitude')} az={mm.get('Azimuth')}"
-            f" AtHome={mm.get('AtHome')} Slewing={mm.get('Slewing')}"
+            f"  ✓ parked: alt={mm.get('Altitude')} az={mm.get('Azimuth')}"
+            f" AtPark={mm.get('AtPark')} Slewing={mm.get('Slewing')}"
         )
     except NinaError as exc:
-        print(f"  ! homing failed ({exc}) - STOW THE MOUNT MANUALLY")
+        print(f"  ! parking failed ({exc}) - PARK THE MOUNT MANUALLY")
 
 
 def cmd_pan(args) -> int:
@@ -802,8 +839,8 @@ def cmd_pan(args) -> int:
             "\n  stopped by user - manifest saved; re-run the same command"
             " to resume where it left off."
         )
-        if args.home_at_end:
-            home_mount(nina)
+        if args.park_at_end:
+            park_mount(nina)
         return 130
 
     # ---- pass B: refine the crossing inside each bracket -----------------
@@ -829,9 +866,9 @@ def cmd_pan(args) -> int:
             threshold,
         )
 
-    # ---- stow on the way out (night runs are unattended) ----------------
-    if args.home_at_end:
-        home_mount(nina)
+    # ---- park on the way out (night runs are unattended) ----------------
+    if args.park_at_end:
+        park_mount(nina)
 
     frames = manifest["frames"]
     print(f"\n  ✓ {len(frames)} frames surveyed into {manifest_path}")
@@ -1272,9 +1309,10 @@ def main(argv: list[str] | None = None) -> int:
         help="skip the coordinate-epoch calibration slew",
     )
     p_pan.add_argument(
-        "--home-at-end",
+        "--park-at-end",
         action="store_true",
-        help="home (stow) the mount when the survey finishes or is interrupted",
+        help="park the mount (closes the lens) when the survey finishes"
+        " or is interrupted",
     )
     p_pan.add_argument(
         "--sun-sep",

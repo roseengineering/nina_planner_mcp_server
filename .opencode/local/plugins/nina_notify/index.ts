@@ -72,8 +72,12 @@ function toJSONL(value: unknown): string {
 // The waking set covers three of the four event classes:
 //   milestones  RUN-*/SEQUENCE-* and TS-NEWTARGETSTART -> evaluate the queue
 //   faults      failures, aborts, timeouts and link loss -> diagnose + recover
-//   safety      SAFE/UNSAFE/WEATHER/DOME/ROOF -> stow or stand down
+//   safety      SAFE/UNSAFE/WEATHER/DOME/ROOF -> park or stand down
 // External alerts (transient broker / GCN) are not wired up yet.
+//
+// Both `STOW` and `PARK` are in the token list: the builders emit PARK-* /
+// PREPARK-*, but a sequence that was loaded before the rename still emits
+// STOW-* / PRESTOW-* until it is reloaded, and it must keep waking.
 //
 // A fourth lane exists: `RECOVERY:` wakes are injected once per dispose/init
 // cycle by reconcileGap() when N.I.N.A. events landed while this plugin was
@@ -82,7 +86,7 @@ function toJSONL(value: unknown): string {
 // Verified 2026-11-06: a backdated 6h25m mark produced exactly one wake
 // enumerating the run-end events missed that morning, then went quiet.
 const IMMEDIATE_EVENT =
-  /SAFETY|SAFE|UNSAFE|WEATHER|DOME|ROOF|RUN-(STARTING|FINISHED)|SEQUENCE-(STARTING|FINISHED)|TS-NEWTARGETSTART|STOW|MOUNT|OFFLINE|DISCONNECT|LOST|EMERGENCY|ERROR|FAIL|EXCEPTION|ABORT|INTERRUPT|CRITICAL|TIMEOUT/i;
+  /SAFETY|SAFE|UNSAFE|WEATHER|DOME|ROOF|RUN-(STARTING|FINISHED)|SEQUENCE-(STARTING|FINISHED)|TS-NEWTARGETSTART|STOW|PARK|MOUNT|OFFLINE|DISCONNECT|LOST|EMERGENCY|ERROR|FAIL|EXCEPTION|ABORT|INTERRUPT|CRITICAL|TIMEOUT/i;
 
 // Two demotions keep the waking set honest, both derived from 16h of real
 // N.I.N.A. events (476 total -> 45 matched the regex above -> but only 11 of
@@ -92,6 +96,12 @@ const IMMEDIATE_EVENT =
 //   ROUTINE_OVERRIDE — matches a wake token yet is housekeeping. MOUNT-CENTER
 //     is the slew/settle centering the mount performs itself on every
 //     acquisition, and it alone produced 8 of the 45 wake events.
+//     MOUNT-HOMED is the mount answering its Find-home routine: no sequence
+//     emits `Find home` any more (park is the only closing maneuver), so it
+//     comes only from the survey scripts and manual operation — 7 times in
+//     the 24h before this demotion. MOUNT-PARKED / MOUNT-UNPARKED stay
+//     immediate: they are the real "scope went away / came back" milestones
+//     and park/unpark now drive the lens.
 //   LINK_EVENT — every `…-CONNECTED` / `…-DISCONNECTED` device event (a
 //     substring match catches both spellings). N.I.N.A. cycles its devices at
 //     session start and teardown, which produced 29 of the 45 wake events, and
@@ -99,7 +109,7 @@ const IMMEDIATE_EVENT =
 //     imaging — so these wake only while a sequence is running. Safety *state*
 //     changes (`SAFETY-CHANGED`) contain neither token and always wake, as do
 //     the per-device failures that carry ERROR/FAIL/LOST.
-const ROUTINE_OVERRIDE = /MOUNT-CENTER/i;
+const ROUTINE_OVERRIDE = /MOUNT-CENTER|MOUNT-HOMED/i;
 const LINK_EVENT = /CONNECTED/i;
 
 function eventText(value: unknown): string {
@@ -555,7 +565,7 @@ export default Plugin.define({
       }
 
       // Run endings and safety changes lead the list — they are what the
-      // wrap-up and the stow decision hang on.
+      // wrap-up and the park decision hang on.
       const rank = (name: string) =>
         /RUN-FINISHED|SEQUENCE-FINISHED/.test(name)
           ? 0

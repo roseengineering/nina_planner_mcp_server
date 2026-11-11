@@ -51,7 +51,7 @@ class FakeNinaTest(unittest.IsolatedAsyncioTestCase):
         )
         return stack
 
-    async def test_stow_loads_over_http_without_starting(self):
+    async def test_park_loads_over_http_without_starting(self):
         fake = FakeNina()
         with fake.installed(), self._patched():
             await load_sequence([])
@@ -111,24 +111,27 @@ class FakeNinaTest(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(fake.posts, ["/sequence/load", "/sequence/load"])
 
-    async def test_unstowable_mount_never_reaches_nina(self):
+    async def test_unparkable_mount_never_reaches_nina(self):
         fake = FakeNina()
         with (
             fake.installed(),
             self._patched(_equipment(can_park=False, can_find_home=False)),
-            self.assertRaisesRegex(ValueError, "nothing to stow"),
+            self.assertRaisesRegex(ValueError, "nothing to park"),
         ):
             await load_sequence([])
         self.assertEqual(fake.requests, [])
 
-    async def test_stow_end_area_homes_when_mount_cannot_park(self):
+    async def test_park_rejected_even_when_the_mount_can_home(self):
+        """`can_find_home` is telemetry only: home is not a fallback, so a
+        mount that cannot park is rejected instead of being homed."""
         fake = FakeNina()
-        with fake.installed(), self._patched(_equipment(False, True)):
+        with (
+            fake.installed(),
+            self._patched(_equipment(False, True)),
+            self.assertRaisesRegex(ValueError, "nothing to park"),
+        ):
             await load_sequence([])
-
-        end = repr(_end_area(fake.loaded))
-        self.assertIn("FindHome", end)
-        self.assertNotIn("ParkScope", end)
+        self.assertEqual(fake.requests, [])
 
 
 if __name__ == "__main__":

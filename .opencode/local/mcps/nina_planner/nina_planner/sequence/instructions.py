@@ -19,10 +19,6 @@ def park_scope() -> dict[str, Any]:
     return _child("NINA.Sequencer.SequenceItem.Telescope.ParkScope, NINA.Sequencer")
 
 
-def home_scope() -> dict[str, Any]:
-    return _child("NINA.Sequencer.SequenceItem.Telescope.FindHome, NINA.Sequencer")
-
-
 def warm_camera() -> dict[str, Any]:
     return _child("NINA.Sequencer.SequenceItem.Camera.WarmCamera, NINA.Sequencer") | {
         "Duration": 0,
@@ -384,7 +380,7 @@ def run_starting_event(step_count: int) -> dict[str, Any]:
     """Announce the composed run, before its first step runs.
 
     Lives in the Start area, so the Target area keeps holding the steps and
-    nothing else. Not emitted for an empty run (the stow).
+    nothing else. Not emitted for an empty run (the park).
     """
     return send_event(f"RUN-STARTING: {_step_word(step_count)}")
 
@@ -400,7 +396,7 @@ def run_finished_event(step_count: int) -> dict[str, Any]:
     re-selection point. It fires before the bounded "On Safe" wait and before
     parking, while there is still night left to plan with.
 
-    An empty request (the stow) has no steps and never emits it, so a stow
+    An empty request (the park) has no steps and never emits it, so a park
     can never be mistaken for a finished run.
     """
     return send_event(f"RUN-FINISHED: {_step_word(step_count)} complete")

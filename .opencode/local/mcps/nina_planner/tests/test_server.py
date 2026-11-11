@@ -48,22 +48,22 @@ def _target_items(payload: dict) -> list[dict]:
     return target["Items"]["$values"]
 
 
-def _end_stow_items(payload: dict) -> list[dict]:
+def _end_park_items(payload: dict) -> list[dict]:
     """The teardown instructions of a root sequence's End area.
 
-    The End area itself holds exactly one child — the ``Stow Telescope``
+    The End area itself holds exactly one child — the ``Park Telescope``
     container — and the wait, connect, park/home and warm instructions live
     one level deeper inside it.
     """
     root = payload["Items"]["$values"]
     end = next(i for i in root if "EndAreaContainer" in str(i.get("$type", "")))
-    stow = end["Items"]["$values"]
-    if len(stow) != 1 or stow[0].get("Name") != "Stow Telescope":
+    park = end["Items"]["$values"]
+    if len(park) != 1 or park[0].get("Name") != "Park Telescope":
         raise AssertionError(
-            f"End area must hold one 'Stow Telescope' container, got "
-            f"{[i.get('Name') for i in stow]}"
+            f"End area must hold one 'Park Telescope' container, got "
+            f"{[i.get('Name') for i in park]}"
         )
-    return stow[0]["Items"]["$values"]
+    return park[0]["Items"]["$values"]
 
 
 class ConvertToMetTest(unittest.TestCase):
@@ -601,7 +601,7 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
     def _equipment(
         can_park: bool = True, can_find_home: bool = False, has_cooler: bool = True
     ) -> ObservatoryEquipment:
-        """Equipment for the plan-less actions: stowable mount, cooler camera."""
+        """Equipment for the plan-less actions: parkable mount, cooler camera."""
         return ObservatoryEquipment(
             mount=MountDevice(
                 connected=True,
@@ -616,9 +616,9 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
 
     @staticmethod
     def _payload_equipment() -> ObservatoryEquipment:
-        """Equipment for the payload tests: the stowable mount and nothing else.
+        """Equipment for the payload tests: the parkable mount and nothing else.
 
-        load_sequence only sends a sequence a mount can actually stow — every
+        load_sequence only sends a sequence a mount can actually park — every
         list ends with the End-area park — so a bare ``ObservatoryEquipment()``
         (no mount reported) is now rejected at load. These tests are about what
         the plan builds into the payload, so they carry just the mount the
@@ -2904,8 +2904,8 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result, "Sequence started.")
         api_get.assert_awaited_once_with("/sequence/start")
 
-    async def test_load_sequence_empty_list_stows_without_starting(self):
-        """The default (and only) stow: no arguments loads the closing
+    async def test_load_sequence_empty_list_parks_without_starting(self):
+        """The default (and only) park: no arguments loads the closing
         sequence — empty Target area, End area parks then warms — but never
         starts it."""
         with patch(
@@ -2914,29 +2914,28 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
         ):
             result, api_post = await self._load_list([])
 
-        self.assertIn("`stow` sequence loaded", result)
+        self.assertIn("`park` sequence loaded", result)
         self.assertIn("start_sequence()", result)
         path, payload = api_post.await_args.args
         self.assertEqual(path, "/sequence/load")
         areas = payload["Items"]["$values"]
         self.assertEqual(areas[1]["Items"]["$values"], [], "empty target area")
-        end_types = [i["$type"] for i in _end_stow_items(payload)]
+        end_types = [i["$type"] for i in _end_park_items(payload)]
         self.assertTrue(any("ParkScope" in t for t in end_types), "End parks")
         self.assertTrue(any("WarmCamera" in t for t in end_types), "End warms")
 
-    async def test_load_sequence_stow_homes_when_mount_cannot_park(self):
-        """Capability-driven stow, end to end: no park, so Find Home instead."""
-        _, api_post = await self._load_list(
-            [], equipment=self._equipment(can_park=False, can_find_home=True)
-        )
+    async def test_load_sequence_rejects_a_mount_that_cannot_park(self):
+        """No park, no fallback: `can_park=false` is rejected outright even
+        when the mount reports `can_find_home=true`, and nothing is POSTed."""
+        with self.assertRaises(ValueError) as ctx:
+            await self._load_list(
+                [], equipment=self._equipment(can_park=False, can_find_home=True)
+            )
+        self.assertIn("cannot park", str(ctx.exception))
+        self.assertIn("nothing to park", str(ctx.exception))
 
-        _, payload = api_post.await_args.args
-        end_types = [i["$type"] for i in _end_stow_items(payload)]
-        self.assertFalse(any("ParkScope" in t for t in end_types))
-        self.assertTrue(any("FindHome" in t for t in end_types), "End homes")
-
-    async def test_load_sequence_stow_is_safe_gated_and_not_a_run(self):
-        """The stow waits one bounded, safety-gated pass in its End area and
+    async def test_load_sequence_park_is_safe_gated_and_not_a_run(self):
+        """The park waits one bounded, safety-gated pass in its End area and
         carries no RUN-* bracket, so it never reads as a finished run."""
         _, api_post = await self._load_list([])
 
@@ -2948,7 +2947,7 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(text.count("LoopCondition"), 1)
         self.assertEqual(text.count("WaitForTimeSpan"), 1)
 
-    async def test_stow_without_a_stowable_mount_sends_nothing(self):
+    async def test_park_without_a_parkable_mount_sends_nothing(self):
         from nina_planner.server import load_sequence
 
         api_post = AsyncMock(return_value={})
@@ -2969,19 +2968,19 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
             await load_sequence([])
         api_post.assert_not_awaited()
 
-    async def test_stow_requires_a_stowable_mount(self):
+    async def test_park_requires_a_parkable_mount(self):
         with self.assertRaises(ValueError) as ctx:
             await self._load_list(
                 [], equipment=self._equipment(can_park=False, can_find_home=False)
             )
-        self.assertIn("neither park nor home", str(ctx.exception))
-        self.assertIn("nothing to stow", str(ctx.exception))
+        self.assertIn("cannot park", str(ctx.exception))
+        self.assertIn("nothing to park", str(ctx.exception))
 
-    async def test_load_sequence_with_an_unstowable_mount_sends_nothing(self):
-        """The stow guardrail is the sequence guardrail: every loaded list
-        ends with the End-area stow, so a mount that can neither park nor
-        home fails a real plan exactly as it fails the empty stow — before
-        anything reaches N.I.N.A."""
+    async def test_load_sequence_with_an_unparkable_mount_sends_nothing(self):
+        """The park guardrail is the sequence guardrail: every loaded list
+        ends with the End-area park, so a mount that cannot park fails a
+        real plan exactly as it fails the empty park — before anything
+        reaches N.I.N.A."""
         from nina_planner.server import load_sequence
 
         api_post = AsyncMock(return_value={})
@@ -3011,14 +3010,14 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
                     [SequenceRequest(plan=str(plan_path), action="light")]
                 )
 
-        self.assertIn("neither park nor home", str(ctx.exception))
-        self.assertIn("nothing to stow", str(ctx.exception))
+        self.assertIn("cannot park", str(ctx.exception))
+        self.assertIn("nothing to park", str(ctx.exception))
         self.assertIn("Nothing was loaded", str(ctx.exception))
         api_post.assert_not_awaited()
 
     async def test_load_sequence_with_no_mount_reported_sends_nothing(self):
-        """NINA reporting no Mount is the same rejection, stow or plan: with
-        nothing that can park, the End-area stow is a no-op, and there is no
+        """NINA reporting no Mount is the same rejection, park or plan: with
+        nothing that can park, the End-area park is a no-op, and there is no
         scope sitting unparked through the wait stages either."""
         from nina_planner.server import load_sequence
 
@@ -3040,15 +3039,15 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
                 ),
                 patch("nina_planner.client.api_post", api_post),
             ):
-                with self.assertRaises(ValueError) as stow_ctx:
+                with self.assertRaises(ValueError) as park_ctx:
                     await load_sequence([])
                 with self.assertRaises(ValueError) as plan_ctx:
                     await load_sequence(
                         [SequenceRequest(plan=str(plan_path), action="light")]
                     )
 
-        for ctx in (stow_ctx, plan_ctx):
-            self.assertIn("nothing to stow", str(ctx.exception))
+        for ctx in (park_ctx, plan_ctx):
+            self.assertIn("nothing to park", str(ctx.exception))
             self.assertIn("Nothing was loaded", str(ctx.exception))
         api_post.assert_not_awaited()
 
@@ -3143,7 +3142,7 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
 
     async def test_load_sequence_list_composes_one_sequence(self):
         """One list, one sequence: a single Start/Target/End with one deep-sky
-        container per step, in list order, and an End that stows."""
+        container per step, in list order, and an End that parks."""
         with tempfile.TemporaryDirectory() as tmp:
             plan_path = Path(tmp) / "plan.json"
             plan_path.write_text(json.dumps(self._list_plan_dict()))
@@ -3166,7 +3165,7 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn("_plan-test123-1_", steps[0]["Target"]["TargetName"])
         self.assertIn("_plan-test123-2_", steps[1]["Target"]["TargetName"])
 
-        end_types = [i["$type"] for i in _end_stow_items(payload)]
+        end_types = [i["$type"] for i in _end_park_items(payload)]
         self.assertTrue(any("ParkScope" in t for t in end_types), "End parks")
         self.assertTrue(any("WarmCamera" in t for t in end_types), "End warms")
 
@@ -3217,10 +3216,10 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn("Nothing to load", result)
         self.assertNotIn("start_sequence()", result)
 
-    async def test_load_sequence_all_complete_needs_no_stow(self):
+    async def test_load_sequence_all_complete_needs_no_park(self):
         """Nothing sent means nothing guarded: with every entry complete the
-        load POSTs no sequence, so an unstowable mount is only an error when
-        a sequence — and its End-area stow — would actually load."""
+        load POSTs no sequence, so an unparkable mount is only an error when
+        a sequence — and its End-area park — would actually load."""
         with tempfile.TemporaryDirectory() as tmp:
             plan_path = Path(tmp) / "plan.json"
             plan_path.write_text(json.dumps(self._list_plan_dict()))
@@ -3235,12 +3234,12 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn("is complete", result)
         self.assertIn("Nothing to load", result)
 
-    async def test_load_sequence_stow_action_is_rejected(self):
-        """There is no stow action — an empty request list is the stow."""
+    async def test_load_sequence_park_action_is_rejected(self):
+        """There is no park action — an empty request list is the park."""
         from nina_planner.server import load_sequence
 
         with self.assertRaises(ValueError) as ctx:
-            await load_sequence([{"action": "stow"}])
+            await load_sequence([{"action": "park"}])
         message = str(ctx.exception)
         self.assertIn("request[0]", message)
         self.assertIn("action", message)

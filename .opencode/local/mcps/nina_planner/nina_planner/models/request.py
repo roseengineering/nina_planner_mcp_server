@@ -4,7 +4,7 @@ from pydantic import BaseModel, Field, model_validator
 
 # Everything load_sequence understands: the four plan-backed frame sequences.
 # Every action builds from a plan — there are no plan-less actions, and an
-# empty request list is the stow (the composed sequence's End area parks and
+# empty request list is the park (the composed sequence's End area parks and
 # warms behind whatever steps ran, or on its own for an empty list).
 Action = Literal[
     "light",
