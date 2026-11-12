@@ -1,0 +1,18 @@
+version: 2
+updates:
+  # Keeps astral-sh/setup-uv and other GitHub Actions up to date
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+
+  # Keeps your Python dependencies (pyproject.toml and uv.lock) up to date
+  - package-ecosystem: "uv"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    groups:
+      python-dependencies:
+        patterns:
+          - "*"
+
