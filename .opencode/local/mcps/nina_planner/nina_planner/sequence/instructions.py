@@ -420,3 +420,59 @@ def end_instruction(name: str) -> dict[str, Any]:
     return _child(
         "NINA.Plugin.SequencerPlus.EndInstructionSet, NINA.Plugin.SequencerPlus"
     ) | {"InstructionSetName": name}
+
+
+def declare_variable(name: str, value: str) -> dict[str, Any]:
+    return _child(
+        "NINA.Plugin.SequencerPlus.SetVariable, NINA.Plugin.SequencerPlus"
+    ) | {"Identifier": name, "OriginalDefinition": value}
+
+
+def set_variable(name: str, value: str) -> dict[str, Any]:
+    return _child(
+        "NINA.Plugin.SequencerPlus.ResetVariable, NINA.Plugin.SequencerPlus"
+    ) | {
+        "Variable": name,
+        "Expr": _child("NINA.Plugin.SequencerPlus.Expr, NINA.Plugin.SequencerPlus")
+        | {"Expression": value, "Type": "Any"},
+    }
+
+
+def loop_while(value: str) -> dict[str, Any]:
+    return _child("NINA.Plugin.SequencerPlus.LoopWhile, NINA.Plugin.SequencerPlus") | {
+        "PredicateExpr": _child(
+            "NINA.Plugin.SequencerPlus.Expr, NINA.Plugin.SequencerPlus"
+        )
+        | {"Expression": value, "Type": "Any"}
+    }
+
+
+def initialize_array(value: str) -> dict[str, Any]:
+    return _child(
+        "NINA.Plugin.SequencerPlus.InitializeArray, NINA.Plugin.SequencerPlus"
+    ) | {
+        "NameExpr": _child("NINA.Plugin.SequencerPlus.Expr, NINA.Plugin.SequencerPlus")
+        | {"Expression": value, "Type": "Any"}
+    }
+
+
+def get_array(name: str, index: int, value: str) -> dict[str, Any]:
+    return _child("NINA.Plugin.SequencerPlus.GetArray, NINA.Plugin.SequencerPlus") | {
+        "NameExpr": _child("NINA.Plugin.SequencerPlus.Expr, NINA.Plugin.SequencerPlus")
+        | {"Expression": name, "Type": "Any"},
+        "IExpr": _child("NINA.Plugin.SequencerPlus.Expr, NINA.Plugin.SequencerPlus")
+        | {"Expression": index, "Type": "Any"},
+        "VExpr": _child("NINA.Plugin.SequencerPlus.Expr, NINA.Plugin.SequencerPlus")
+        | {"Expression": value, "Type": "Any"},
+    }
+
+
+def put_array(name: str, index: int, value: str) -> dict[str, Any]:
+    return _child("NINA.Plugin.SequencerPlus.PutArray, NINA.Plugin.SequencerPlus") | {
+        "NameExpr": _child("NINA.Plugin.SequencerPlus.Expr, NINA.Plugin.SequencerPlus")
+        | {"Expression": name, "Type": "Any"},
+        "IExpr": _child("NINA.Plugin.SequencerPlus.Expr, NINA.Plugin.SequencerPlus")
+        | {"Expression": index, "Type": "Any"},
+        "VExpr": _child("NINA.Plugin.SequencerPlus.Expr, NINA.Plugin.SequencerPlus")
+        | {"Expression": value, "Type": "Any"},
+    }
