@@ -19,6 +19,7 @@ from astropy.time import Time
 
 from .. import dso_catalog
 from ..app import mcp
+from ..horizon import Horizon
 from . import equipment as equipment_tools
 
 # --- name resolution --------------------------------------------------------
@@ -129,11 +130,15 @@ def _altitudes(
     lon_deg: float,
     elevation_m: float,
     when: Time,
+    horizon: Horizon | None = None,
+    min_altitude: float = 0.0,
+    horizon_offset_degrees: float = 2.0,
 ) -> list[dict[str, Any]]:
     location = EarthLocation(
         lat=lat_deg * u.deg, lon=lon_deg * u.deg, height=elevation_m * u.m
     )
     frame = AltAz(obstime=when, location=location)
+    horizon = horizon or Horizon()
     results: list[dict[str, Any]] = []
     for target in targets:
         name = str(target.get("name", ""))
@@ -151,11 +156,20 @@ def _altitudes(
                     f"resolved: {e}"
                 ) from e
         altaz = coord.transform_to(frame)
+        alt = float(altaz.alt.deg)
+        az = float(altaz.az.deg)
+        # The floor N.I.N.A.'s two loop conditions enforce together: above
+        # the custom horizon + offset AND at/above min_altitude.
+        horizon_deg = horizon.altitude_at(az)
+        floor = max(min_altitude, horizon_deg + horizon_offset_degrees)
         results.append(
             {
                 "name": name,
-                "alt_deg": round(float(altaz.alt.deg), 1),
-                "az_deg": round(float(altaz.az.deg), 1),
+                "alt_deg": round(alt, 1),
+                "az_deg": round(az, 1),
+                "horizon_deg": round(horizon_deg, 1),
+                "clearance_deg": round(alt - horizon_deg, 1),
+                "above_floor": alt >= floor,
             }
         )
     return sorted(results, key=lambda r: -r["alt_deg"])
@@ -163,9 +177,12 @@ def _altitudes(
 
 @mcp.tool()
 async def target_altitudes(
-    targets: list[dict[str, Any]], hours_ahead: float = 0.0
+    targets: list[dict[str, Any]],
+    hours_ahead: float = 0.0,
+    min_altitude: float = 0.0,
+    horizon_offset_degrees: float = 2.0,
 ) -> dict[str, Any]:
-    """Altitude/azimuth of each target at the active site, sorted highest first. For candidates `best_targets` does not cover -- a PLAN.md named target outside the catalog. Each target: `{"name", "ra_hours"?, "dec_deg"?}`; passing `best_targets` row coords skips the SIMBAD lookup (name-only needs internet). `hours_ahead`: 0 = now. Geometric altitude; N.I.N.A. enforces the floor. Read-only."""
+    """Altitude/azimuth of each target at the active site, sorted highest first. For candidates `best_targets` does not cover -- a PLAN.md named target outside the catalog. Each target: `{"name", "ra_hours"?, "dec_deg"?}`; passing `best_targets` row coords skips the SIMBAD lookup (name-only needs internet). `hours_ahead`: 0 = now. `min_altitude` (default 0) plus `horizon_offset_degrees` (default 2, the plan-constraint default) define the floor: each row carries `horizon_deg` (the profile's custom skyline at that azimuth, 0° when none), `clearance_deg` (alt − horizon), and `above_floor` (`alt >= max(min_altitude, horizon + offset)` -- the same floor N.I.N.A.'s `Loop while Altitude Above Horizon` + altitude conditions enforce, so a target with `above_floor: false` is one the sequence would park on). Pass the plan's `min_altitude` to gate on it. Read-only."""
     profile = await equipment_tools.get_site_profile()
     site = profile.site
     when = Time(datetime.now(timezone.utc)) + hours_ahead * u.hour
@@ -176,8 +193,17 @@ async def target_altitudes(
         site.longitude_deg,
         site.elevation_m,
         when,
+        profile.horizon,
+        min_altitude,
+        horizon_offset_degrees,
     )
-    return {"time_utc": when.utc.isot, "targets": rows}
+    return {
+        "time_utc": when.utc.isot,
+        "min_altitude": min_altitude,
+        "horizon_offset_degrees": horizon_offset_degrees,
+        "custom_horizon": profile.horizon.is_custom,
+        "targets": rows,
+    }
 
 
 # --- difficulty ranking (see best_targets) -----------------------------------
@@ -625,16 +651,26 @@ def _rank_catalog(
     level: str | None,
     kinds: list[str] | None,
     top: int,
+    horizon: Horizon | None = None,
+    horizon_offset_degrees: float = 2.0,
 ) -> dict[str, Any]:
     """Rank catalog objects by altitude over the next 12 hours and difficulty.
 
     Pure helper around astropy so it is unit-testable without N.I.N.A.
     Returns visible-now rows (sorted by score) plus later-tonight rows
-    (objects that will climb above min_altitude later this night).
+    (objects that will climb above the floor later this night).
+
+    The floor is N.I.N.A.'s, not a bare geometric angle: an object counts
+    only where ``alt >= max(min_altitude, horizon(az) + offset)`` -- the
+    conjunction of the sequence's custom-horizon loop condition and its
+    altitude condition. Each dark sample is judged against the horizon at
+    *that sample's* azimuth, since both the object and the skyline are
+    azimuth-dependent over a night.
     """
     location = EarthLocation(
         lat=lat_deg * u.deg, lon=lon_deg * u.deg, height=elevation_m * u.m
     )
+    horizon = horizon or Horizon()
     coords = SkyCoord(
         [d.ra_hours for d in catalog] * u.hourangle,
         [d.dec_deg for d in catalog] * u.deg,
@@ -662,6 +698,9 @@ def _rank_catalog(
         alts.append([float(a) for a in altaz.alt.deg])
         azs.append([float(a) for a in altaz.az.deg])
 
+    def _floor(az: float) -> float:
+        return max(min_altitude, horizon.altitude_at(az) + horizon_offset_degrees)
+
     visible: list[dict[str, Any]] = []
     later: list[dict[str, Any]] = []
     for idx, obj in enumerate(catalog):
@@ -678,12 +717,18 @@ def _rank_catalog(
             continue
         alt_now = alts[0][idx]
         # Peak within astronomical darkness only (dark_idx indexes the
-        # 30-minute samples that fall below the sun-altitude gate).
-        night_alts = [alts[i][idx] for i in dark_idx]
-        peak_alt = max(night_alts)
-        peak_at = times[dark_idx[night_alts.index(peak_alt)]]
-        if peak_alt < min_altitude:
+        # 30-minute samples that fall below the sun-altitude gate) -- and
+        # only samples where the object clears the floor at its own
+        # azimuth, so a peak behind the tree line is not "tonight's best".
+        clearing = [
+            (alts[i][idx], i) for i in dark_idx if alts[i][idx] >= _floor(azs[i][idx])
+        ]
+        if not clearing:
             continue  # never clears the floor while dark tonight
+        # key= keeps the FIRST peak sample on a tie, matching the old
+        # list.index() behavior that peak_utc relied on.
+        peak_alt, peak_i = max(clearing, key=lambda p: p[0])
+        peak_at = times[peak_i]
         easiness = _easiness(metric, compact)
         if fov_deg is not None and not compact:
             large = obj.major_arcmin / 60.0 > max(fov_deg)
@@ -704,11 +749,13 @@ def _rank_catalog(
             ),
             "alt_deg": round(alt_now, 1),
             "az_deg": round(azs[0][idx], 1),
+            "horizon_deg": round(horizon.altitude_at(azs[0][idx]), 1),
+            "clearance_deg": round(alt_now - horizon.altitude_at(azs[0][idx]), 1),
             "peak_alt_deg": round(peak_alt, 1),
             "peak_utc": peak_at.utc.isot,
             "large_for_field": large,
         }
-        if is_dark_now and alt_now >= min_altitude:
+        if is_dark_now and alt_now >= _floor(azs[0][idx]):
             row["score"] = round(
                 100.0 * (0.5 * max(0.0, min(alt_now, 90.0)) / 90.0 + 0.5 * easiness),
                 1,
@@ -737,14 +784,15 @@ async def best_targets(
     top: int = 10,
     level: str | None = None,
     kinds: list[str] | None = None,
+    horizon_offset_degrees: float = 2.0,
 ) -> dict[str, Any]:
     """Ranks the Messier/bright-NGC catalog objects worth observing from the active site right now, each classified beginner/intermediate/advanced — "what should I look at tonight" with no star atlas. Tuned for EAA (short-subframe / live-stack).
 
     Difficulty comes from SURFACE BRIGHTNESS, not integrated magnitude: objects are modeled as ellipses, mu = mag + 2.5*log10(area in arcmin^2), because magnitude alone ranks diffuse M33 (mag 5.7) as easier than concentrated M57 (mag 8.8) — backwards. Compact objects (major axis under 5 arcmin: planetaries, compact globulars) bucket by integrated mag instead, since their light is concentrated anyway. Levels: "beginner" (shows well in short stacks, suburban skies), "intermediate", "advanced" (needs dark skies / long integration).
 
-    Args: `min_altitude` (default 30, the usual PLAN.md floor) gates both now and tonight's peak; `top` caps each list (default 10); `level` filters to one difficulty; `kinds` filters by type — "galaxy", "globular", "open", "pn", "bn", "snr", "cloud".
+    Args: `min_altitude` (default 30, the usual PLAN.md floor) and `horizon_offset_degrees` (default 2, the plan-constraint default) define the floor together with the profile's custom horizon: an object counts only where `alt >= max(min_altitude, horizon(az) + offset)` — exactly what N.I.N.A.'s loop conditions enforce, so `visible_now` never contains a target the sequence would park on; `top` caps each list (default 10); `level` filters to one difficulty; `kinds` filters by type — "galaxy", "globular", "open", "pn", "bn", "snr", "cloud".
 
-    Returns `visible_now` (dark now and above the floor at this moment, sorted by a 0-100 score blending current altitude and easiness), `later_tonight` (peak altitude reached WITHIN astronomical darkness — sun below −18° — over the next 12 hours, carrying `peak_utc`/`peak_alt_deg` for scheduling; daytime and twilight peaks are never reported), and `is_dark_now` (when false, `visible_now` is empty and every row lands in `later_tonight`). Rows carry `surface_brightness` (mag/arcmin²), `large_for_field` (wider than the profile's field of view — mosaic/framing care), and `ra_hours`/`dec_deg` verified against SIMBAD: safe to point from directly, no `resolve_target` call and no network — use `resolve_target` only for a name outside this catalog. Read-only; no N.I.N.A. calls beyond reading the site profile. Site twilight boundaries come from `sun_times`."""
+    Returns `visible_now` (dark now and above the floor at this moment, sorted by a 0-100 score blending current altitude and easiness), `later_tonight` (peak altitude reached WITHIN astronomical darkness — sun below −18° — over the next 12 hours while also clearing that sample's floor, carrying `peak_utc`/`peak_alt_deg` for scheduling; daytime and twilight peaks are never reported), and `is_dark_now` (when false, `visible_now` is empty and every row lands in `later_tonight`). Rows carry `surface_brightness` (mag/arcmin²), `large_for_field` (wider than the profile's field of view — mosaic/framing care), `horizon_deg`/`clearance_deg` (the custom skyline at the row's azimuth and how far the object clears it), and `ra_hours`/`dec_deg` verified against SIMBAD: safe to point from directly, no `resolve_target` call and no network — use `resolve_target` only for a name outside this catalog. Read-only; no N.I.N.A. calls beyond reading the site profile (which includes the custom horizon). Site twilight boundaries come from `sun_times`."""
     if level is not None and level not in ("beginner", "intermediate", "advanced"):
         raise ValueError(
             f"level must be beginner, intermediate, or advanced, got {level!r}"
@@ -758,6 +806,8 @@ async def best_targets(
         lambda: {
             "time_utc": when.utc.isot,
             "min_altitude": min_altitude,
+            "horizon_offset_degrees": horizon_offset_degrees,
+            "custom_horizon": profile.horizon.is_custom,
             **_rank_catalog(
                 list(dso_catalog.CATALOG),
                 when,
@@ -769,6 +819,8 @@ async def best_targets(
                 level,
                 kinds,
                 top,
+                profile.horizon,
+                horizon_offset_degrees,
             ),
         }
     )

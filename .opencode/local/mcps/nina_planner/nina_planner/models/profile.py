@@ -5,6 +5,7 @@ from typing import Self
 
 from pydantic import BaseModel, computed_field, model_validator
 
+from ..horizon import Horizon
 from ..imaging import windows_to_local
 
 
@@ -87,6 +88,10 @@ class ObservatoryProfile(BaseModel):
     image_save_path: str
     file_pattern: str | None = None
     equipment: EquipmentConfig
+    # The profile's custom horizon (empty points = flat 0 deg). Read from
+    # GET /profile/horizon by get_site_profile; planning tools use it so
+    # their altitude floor matches what N.I.N.A.'s loop conditions enforce.
+    horizon: Horizon = Horizon()
 
     @computed_field  # type: ignore[prop-decorator]
     @property

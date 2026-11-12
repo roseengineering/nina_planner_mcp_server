@@ -36,7 +36,7 @@ Live hardware, weather, and enclosure monitor.
 | Tool | Purpose |
 |---|---|
 | `get_site_equipment_status()` | Live connection, state, measurements, and capabilities of all equipment, plus weather and safety-monitor status. ⚠️ **Not read-only** — it auto-connects devices (see [details](#get_site_equipment_status)). |
-| `get_site_profile()` | Active NINA profile and static configuration: site, optics, camera geometry, filters, plate solvers, image-save path. Read-only. |
+| `get_site_profile()` | Active NINA profile and static configuration: site, optics, camera geometry, filters, plate solvers, image-save path, and the custom horizon (`horizon`: `file_path`, `is_custom`, sorted `[azimuth, altitude]` points; `is_custom: false` = flat 0°). Read-only. |
 
 ### 🌌 Sky & Ephemeris
 
@@ -46,9 +46,9 @@ Darkness bounds, catalog targets, and offline coordinates. Powered by [astropy](
 |---|---|
 | `sun_times()` | Next sunrise/sunset plus all four twilight boundaries (civil −6°, nautical −12°, astronomical −18°) and the astronomical-darkness window in effect or next to open, with `night_phase` (`evening`/`dark`/`morning`) and `is_dark_now` for end-of-night decisions. Read-only; reads only the site profile. |
 | `moon_times()` | Lunar counterpart to `sun_times()`: `phase` (name, `illumination_fraction`, `waxing`, `elongation_deg`, `age_days`) plus current altitude/azimuth/distance, `moon_up_now`, the next `moonrise`/`moonset` (48 h window), and the next `new_moon`/`first_quarter`/`full_moon`/`last_quarter` instants (~32 d window). Phase instants are geocentric and identical everywhere; rise/set are topocentric for the site. Read-only; offline; reads only the site profile. |
-| `best_targets(min_altitude=30.0, top=10, level, kinds)` | Ranks Messier and bright NGC objects from the Pensack 500 list to observe, returning `visible_now` (dark and above the floor now) plus `later_tonight` (peak altitude within astronomical darkness), with `is_dark_now` and surface-brightness-based difficulty filtering. Each row carries pre-verified (SIMBAD-checked) `ra_hours` / `dec_deg` — use them directly for pointing, no `resolve_target` needed, so this works offline.  Read-only. |
+| `best_targets(min_altitude=30.0, top=10, level, kinds, horizon_offset_degrees=2.0)` | Ranks Messier and bright NGC objects from the Pensack 500 list to observe, returning `visible_now` (dark and above the floor now) plus `later_tonight` (peak altitude within astronomical darkness that also clears the floor), with `is_dark_now` and surface-brightness-based difficulty filtering. The floor is horizon-aware — `alt >= max(min_altitude, horizon(az) + offset)` using the profile's custom horizon, so `visible_now` never contains a target N.I.N.A. would park on; rows carry `horizon_deg`/`clearance_deg`. Each row carries pre-verified (SIMBAD-checked) `ra_hours` / `dec_deg` — use them directly for pointing, no `resolve_target` needed, so this works offline.  Read-only. |
 | `resolve_target(name)` | Resolve a deep-sky object name (e.g. `M31`, `NGC 6960`) to J2000 `ra_hours` / `dec_deg` through a SIMBAD lookup. 🌐 Requires internet access. Read-only. |
-| `target_altitudes(targets, hours_ahead=0.0)` | Altitude/azimuth of each target at the active site, sorted highest first, for ranking candidates. Each target is `{"name": ...}` plus optional `ra_hours` / `dec_deg` (pass the pre-verified values from a `best_targets` row; without them the name is resolved via SIMBAD — needs internet). Read-only. |
+| `target_altitudes(targets, hours_ahead=0.0, min_altitude=0.0, horizon_offset_degrees=2.0)` | Altitude/azimuth of each target at the active site, sorted highest first, for ranking candidates. Each target is `{"name", ...}` plus optional `ra_hours` / `dec_deg` (pass the pre-verified values from a `best_targets` row; without them the name is resolved via SIMBAD — needs internet). Rows carry `horizon_deg` (the profile's custom skyline at that azimuth), `clearance_deg` (alt − horizon), and `above_floor` (`alt >= max(min_altitude, horizon + offset)` — the floor N.I.N.A.'s loop conditions enforce; pass the plan's `min_altitude` to gate on it). Read-only. |
 
 ### 🎬 Sequencer
 
@@ -94,6 +94,8 @@ Returns the current connection, operating state, measurements, and capabilities 
 ### `get_site_profile`
 
 `image_save_path` is the raw Windows path from the profile; `local_image_save_path` is the derived path usable on this host (the drive letter is mapped through `NINA_DRIVE_MOUNT`, default `/mnt/<drive>`, on Linux/WSL/macOS; unchanged on Windows) and is the one to use for local file access. Use `get_site_equipment_status` for live equipment state.
+
+The profile also carries its **custom horizon** in `horizon`: `file_path` (the `.hrz` file from Options → General → Astrometry), `points` (sorted `[azimuth, altitude]` degree pairs from N.I.N.A.'s `GET /profile/horizon`), and `is_custom` (`false` when no horizon file is configured — the flat 0° default, exactly as N.I.N.A. treats it). The skyline tools (`best_targets`, `target_altitudes`) read it from here, so their altitude floor is the same one N.I.N.A.'s `Loop while Altitude Above Horizon` conditions enforce; a horizon endpoint failure degrades to the flat default rather than failing the profile read.
 
 ### `get_events` / `get_logs`
 
@@ -284,7 +286,7 @@ An example json plan:
 | `batch_size` | no | Exposures per batch; defaults to `5`. Set to `0` to disable batching. |
 | `calibration_window_days` | no | Defaults to `7` (minimum `1`). Calibration frames count only when taken within this many days before or after the earliest attributed light. After the window closes, remaining calibration is reported as `0`. |
 | `cooler` | no | Cooler settings: `on` defaults to `true`; `setpoint_celsius` defaults to `-10` and must be in `[-40, 30]`. |
-| `constraints` | no | `min_altitude` defaults to `30` degrees and must be in `[0, 90]`; `horizon_offset_degrees` defaults to `2` and must be in `[0, 10]`. |
+| `constraints` | no | `min_altitude` defaults to `30` degrees and must be in `[0, 90]`; `horizon_offset_degrees` defaults to `2` and must be in `[0, 10]`. Together with the profile's custom horizon they form the floor N.I.N.A. enforces on both sides: the sequence's loop conditions require `alt >= horizon(az) + horizon_offset_degrees` **and** `alt >= min_altitude`, and the planning tools (`best_targets`, `target_altitudes`) apply the same `max(...)` so they never disagree with what the sequence will do. |
 | `autofocus` | no | `reference_filter_name` defaults to `"L"`; `hfr_increase_sample_size` to `3`; `hfr_increase_threshold_percent` to `15`; `every_n_exposures` to `10`; and `threshold_celsius` to `1`. Numeric values must be greater than zero. |
 | `guiding` | no | `dither_every_n_exposures` defaults to `2`; `check_drift_every_n_exposures` to `6`; and `max_drift_arcmin` to `1.5`. Numeric values must be greater than zero. |
 | `light_frames` | **yes** | Nonempty list of light exposure specs, each with `filter_name`, `exposure_time_seconds` (greater than zero), and `total_count` (at least `1`). |

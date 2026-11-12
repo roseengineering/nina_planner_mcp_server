@@ -9,6 +9,7 @@ from astropy.coordinates import EarthLocation, SkyCoord
 from astropy.time import Time
 
 from nina_planner import dso_catalog
+from nina_planner.horizon import Horizon
 from nina_planner.tools import sky
 
 
@@ -743,6 +744,187 @@ class BestTargetsValidationTest(unittest.TestCase):
 
         with self.assertRaises(ValueError):
             asyncio.run(sky.best_targets(level="expert"))
+
+
+class HorizonGatingTest(unittest.TestCase):
+    """Planning tools apply N.I.N.A.'s horizon-aware floor, not bare altitude."""
+
+    def test_altitudes_rows_carry_skyline_and_clearance(self):
+        # Flat 40 deg skyline everywhere: every row reports horizon 40 and
+        # clearance = alt - 40, and above_floor follows max(min_alt, 42).
+        horizon = Horizon(points=[(0.0, 40.0), (180.0, 40.0)])
+        rows = sky._altitudes(
+            [
+                {"name": "high", "ra_hours": 0.0, "dec_deg": 45.0},
+                {"name": "low", "ra_hours": 12.0, "dec_deg": -60.0},
+            ],
+            45.0,
+            -75.0,
+            100.0,
+            Time("2026-10-18T02:00:00"),
+            horizon,
+            0.0,
+            2.0,
+        )
+        by_name = {r["name"]: r for r in rows}
+        for row in rows:
+            self.assertEqual(row["horizon_deg"], 40.0)
+            self.assertAlmostEqual(
+                row["clearance_deg"], row["alt_deg"] - 40.0, places=1
+            )
+        self.assertGreater(by_name["high"]["alt_deg"], 42.0)
+        self.assertTrue(by_name["high"]["above_floor"])
+        self.assertFalse(by_name["low"]["above_floor"])
+
+    def test_min_altitude_raises_the_floor(self):
+        horizon = Horizon(points=[(0.0, 40.0), (180.0, 40.0)])
+        # alt ~45 clears horizon+2 (42) but not min_altitude 50.
+        targets = [{"name": "polaris", "ra_hours": 2.53, "dec_deg": 89.26}]
+        when = Time("2026-10-18T02:00:00")
+        rows = sky._altitudes(targets, 45.0, -75.0, 100.0, when, horizon, 50.0, 2.0)
+        self.assertFalse(rows[0]["above_floor"])
+        rows = sky._altitudes(targets, 45.0, -75.0, 100.0, when, horizon, 0.0, 2.0)
+        self.assertTrue(rows[0]["above_floor"])
+
+    def test_flat_horizon_reports_zero_and_geometric_clearance(self):
+        rows = sky._altitudes(
+            [{"name": "polaris", "ra_hours": 2.53, "dec_deg": 89.26}],
+            45.0,
+            -75.0,
+            100.0,
+            Time("2026-10-18T02:00:00"),
+        )
+        self.assertEqual(rows[0]["horizon_deg"], 0.0)
+        self.assertAlmostEqual(rows[0]["clearance_deg"], rows[0]["alt_deg"], places=1)
+
+    @staticmethod
+    def _catalog(when, lat, lon):
+        lst = float(when.sidereal_time("apparent", longitude=lon).hour)
+
+        def obj(name, ra_hours, dec, mag=8.0, major=10.0, minor=10.0):
+            return dso_catalog.Dso(name, name, "open", ra_hours, dec, mag, major, minor)
+
+        return [
+            obj("up", lst, 60.0),  # culminating now, peaks at 75 deg
+            obj("rising", (lst + 6.0) % 24.0, 45.0),  # peaks at zenith later
+        ]
+
+    def test_peak_never_clearing_the_skyline_is_excluded(self):
+        # Flat 76 deg skyline: floor is 78, "up" peaks at 75 and can never
+        # clear it, while "rising" still transits the zenith above it.
+        when = Time("2026-10-18T02:00:00")
+        horizon = Horizon(points=[(0.0, 76.0), (180.0, 76.0)])
+        rows = sky._rank_catalog(
+            self._catalog(when, 45.0, -75.0),
+            when,
+            45.0,
+            -75.0,
+            100.0,
+            30.0,
+            None,
+            None,
+            None,
+            10,
+            horizon,
+            2.0,
+        )
+        names = [r["name"] for r in rows["visible_now"] + rows["later_tonight"]]
+        self.assertNotIn("up", names)
+        self.assertIn("rising", [r["name"] for r in rows["later_tonight"]])
+        rising = next(r for r in rows["later_tonight"] if r["name"] == "rising")
+        self.assertGreaterEqual(rising["peak_alt_deg"], 78.0)
+
+    def test_currently_blocked_target_lands_in_later_tonight(self):
+        # An object at alt ~59.6, az ~44 (east) under an 88 deg eastern
+        # wall: not visible now (floor ~68), but its meridian passage in
+        # the north (skyline 44) clears, so it is still schedulable.
+        when = Time("2026-10-18T02:00:00")
+        lst = float(when.sidereal_time("apparent", longitude=-75.0).hour)
+        blocked = dso_catalog.Dso(
+            "blocked", "blocked", "open", (lst + 3.0) % 24.0, 60.0, 8.0, 10.0, 10.0
+        )
+        horizon = Horizon(points=[(90.0, 88.0), (270.0, 0.0)])
+        rows = sky._rank_catalog(
+            [blocked],
+            when,
+            45.0,
+            -75.0,
+            100.0,
+            30.0,
+            None,
+            None,
+            None,
+            10,
+            horizon,
+            2.0,
+        )
+        self.assertEqual(rows["visible_now"], [])
+        self.assertEqual([r["name"] for r in rows["later_tonight"]], ["blocked"])
+        row = rows["later_tonight"][0]
+        # Reported horizon/clearance describe the current (blocked) position.
+        self.assertGreater(row["horizon_deg"], row["alt_deg"])
+        self.assertLess(row["clearance_deg"], 0)
+        self.assertGreaterEqual(row["peak_alt_deg"], 60.0)
+
+    def test_flat_horizon_matches_the_old_geometric_behavior(self):
+        # With no custom horizon the floor collapses to min_altitude, so
+        # results must equal a plain geometric run.
+        when = Time("2026-10-18T02:00:00")
+        catalog = self._catalog(when, 45.0, -75.0)
+        args = (when, 45.0, -75.0, 100.0, 30.0, None, None, None, 10)
+        geometric = sky._rank_catalog(catalog, *args)
+        with_flat = sky._rank_catalog(catalog, *args, Horizon(), 2.0)
+        self.assertEqual(geometric, with_flat)
+
+    def test_best_targets_forwards_the_profile_horizon(self):
+        import asyncio
+
+        from nina_planner.models.profile import (
+            EquipmentConfig,
+            ObservatoryProfile,
+            OpticalTrainInfo,
+            SiteLocationInfo,
+        )
+
+        profile = ObservatoryProfile(
+            profile_name="Test",
+            profile_id="abc",
+            site=SiteLocationInfo(
+                latitude_deg=45.0, longitude_deg=-75.0, elevation_m=100.0
+            ),
+            optics=OpticalTrainInfo(),
+            filters=[],
+            image_save_path="C:\\NINA",
+            file_pattern=None,
+            equipment=EquipmentConfig(
+                has_mount=False,
+                has_camera=False,
+                has_focuser=False,
+                has_filter_wheel=False,
+                has_guider=False,
+                has_rotator=False,
+                has_dome=False,
+                has_weather=False,
+                has_safety_monitor=False,
+                has_switch=False,
+                has_flat_device=False,
+            ),
+            horizon=Horizon(points=[(0.0, 76.0), (180.0, 76.0)]),
+        )
+        extended = dso_catalog.Dso("Big", "Big", "open", 10.0, 60.0, 8.0, 60.0, 60.0)
+        with (
+            patch(
+                "nina_planner.tools.equipment.get_site_profile",
+                AsyncMock(return_value=profile),
+            ),
+            patch("nina_planner.dso_catalog.CATALOG", (extended,)),
+        ):
+            out = asyncio.run(sky.best_targets())
+        # "Big" peaks at 75 under a 78 floor: never clears, never listed.
+        self.assertTrue(out["custom_horizon"])
+        self.assertEqual(out["horizon_offset_degrees"], 2.0)
+        self.assertEqual(out["visible_now"], [])
+        self.assertEqual(out["later_tonight"], [])
 
 
 class ToolWrapperTest(unittest.TestCase):

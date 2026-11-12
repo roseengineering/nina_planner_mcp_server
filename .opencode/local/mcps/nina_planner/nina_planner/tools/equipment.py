@@ -5,6 +5,7 @@ from typing import Any, cast
 
 from .. import client
 from ..app import mcp
+from ..horizon import fetch_horizon
 from ..models.observatory import ObservatoryEquipment
 from ..models.profile import (
     EquipmentConfig,
@@ -175,7 +176,7 @@ async def get_site_equipment_status() -> ObservatoryEquipment:
 
 @mcp.tool()
 async def get_site_profile() -> ObservatoryProfile:
-    """Returns the active NINA observatory profile and static configuration, including site location, optics, camera geometry, filters, plate solvers, and image-save path. `image_save_path` is the raw Windows path from the profile; `local_image_save_path` is the derived path usable on this host (drive letter mapped through NINA_DRIVE_MOUNT, default `/mnt/<drive>`, on Linux/WSL; unchanged on Windows) and is the one to use for local file access. Use get_site_equipment_status for live equipment state. This tool is read-only and takes no action."""
+    """Returns the active NINA observatory profile and static configuration, including site location, optics, camera geometry, filters, plate solvers, image-save path, and the profile's custom horizon (`horizon`: `file_path`, `is_custom`, and `points` as sorted [azimuth, altitude] degree pairs — `is_custom: false` means the flat 0° default). `image_save_path` is the raw Windows path from the profile; `local_image_save_path` is the derived path usable on this host (drive letter mapped through NINA_DRIVE_MOUNT, default `/mnt/<drive>`, on Linux/WSL; unchanged on Windows) and is the one to use for local file access. Use `get_site_equipment_status` for live equipment state. This tool is read-only and takes no action."""
     raw = await client.api_get("/profile/show?active=true")
 
     astrometry = raw.get("AstrometrySettings", {})
@@ -281,6 +282,10 @@ async def get_site_profile() -> ObservatoryProfile:
         image_save_path=image_file.get("FilePath", ""),
         file_pattern=image_file.get("FilePattern"),
         equipment=equipment,
+        # Second API call, best effort: fetch_horizon degrades to the flat
+        # default when the endpoint is absent, so a profile read never fails
+        # because of the skyline.
+        horizon=await fetch_horizon(str(astrometry.get("HorizonFilePath") or "")),
     )
     client.log_payload("Profile:", profile.model_dump_json(indent=2))
     return profile
