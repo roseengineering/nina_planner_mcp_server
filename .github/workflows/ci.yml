@@ -17,8 +17,8 @@ jobs:
     env:
       VIRTUAL_ENV: ${{ github.workspace }}/.venv
     steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v5
+      - uses: actions/checkout@v6
+      - uses: astral-sh/setup-uv@v10
       - name: Create venv and install
         run: |
           uv venv --python ${{ matrix.python-version }} "$VIRTUAL_ENV"

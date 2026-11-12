@@ -1,6 +1,6 @@
 # 🔭 nina-planner — An Observatory Operator Agent
 
-![Banner for repository](res/banner.png)
+![Banner for repository](scripts/banner.png)
 
 `nina_planner` is an MCP tool server for N.I.N.A. (Nighttime Imaging 'N' Astronomy).  The separate events `nina-notify` plugin is OpenCode-specific.  The focus is on building, executing, and monitoring multi-target sequence runs from observation plans.
 
@@ -683,7 +683,7 @@ $ opencode --server http://127.0.0.1:4096
 
 ## 📱 Setting up Telegram
 
-![telegram chat](res/telegram.png)
+![telegram chat](scripts/telegram.png)
 
 [`@grinev/opencode-telegram-bot`](https://github.com/grinev/opencode-telegram-bot) bridges Telegram to a local opencode server, so the same agent that runs the observatory runs from your phone: plan a night, load and start a sequence, stop a run, check safety — and every `nina-notify` wake shows up in the chat. A Telegram chat is just an ordinary opencode session, so [`nina_notify_arm`](#-nina-notify--opencode-v2-autonomous-plugin) can pin the wakes to the session behind it.
 
