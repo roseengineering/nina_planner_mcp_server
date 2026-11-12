@@ -1172,12 +1172,34 @@ class SequenceBehaviorTest(unittest.TestCase):
         parks = _find_items(result, "ParkScope")
         homes = _find_items(result, "FindHome, NINA.Sequencer")
         self.assertGreaterEqual(len(parks), 1)
+        # Home is extra, not a park fallback: exactly one, in Image Object and
+        # ahead of set_tracking(0) so the rate is normalized after it.
+        self.assertEqual(len(homes), 1)
+        obj = _find_named(result, "Image Object")[0]
+        telescope = [
+            i["$type"].split(",")[0].split(".")[-1]
+            for i in _find_items(obj, "Telescope.")
+        ]
+        self.assertIn("FindHome", telescope)
+        self.assertIn("SetTracking", telescope)
+        self.assertLess(telescope.index("FindHome"), telescope.index("SetTracking"))
+
+    def test_lights_home_omitted_when_mount_cannot_find_home(self):
+        plan = self._plan()
+        mount = MountDevice(
+            connected=True, name="m", can_park=True, can_find_home=False
+        )
+        eq = ObservatoryEquipment(mount=mount)
+        result = build_sequence_lights(plan, equipment=eq, profile=_profile())
+        homes = _find_items(result, "FindHome, NINA.Sequencer")
+        parks = _find_items(result, "ParkScope")
         self.assertEqual(homes, [])
+        self.assertGreaterEqual(len(parks), 1)
 
     def test_lights_safetynet_emits_no_park_when_mount_cannot_park(self):
-        """No park, and never a `Find home` fallback: home is gone, so a
-        mount that cannot park simply gets no telescope instruction here —
-        load_sequence rejects such a mount before anything is sent."""
+        """No park for a mount that cannot park — load_sequence rejects it
+        before anything is sent. `Find home` is independent of that guard: it
+        is gated on `can_find_home` alone, so it still appears here."""
         plan = self._plan()
         mount = MountDevice(
             connected=True,
@@ -1190,7 +1212,7 @@ class SequenceBehaviorTest(unittest.TestCase):
         parks = _find_items(result, "ParkScope")
         homes = _find_items(result, "FindHome, NINA.Sequencer")
         self.assertEqual(parks, [])
-        self.assertEqual(homes, [])
+        self.assertEqual(len(homes), 1)
 
     def test_lights_safetynet_with_no_mount_emits_no_park(self):
         plan = self._plan()

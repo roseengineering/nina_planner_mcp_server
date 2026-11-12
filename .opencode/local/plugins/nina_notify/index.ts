@@ -96,12 +96,12 @@ const IMMEDIATE_EVENT =
 //   ROUTINE_OVERRIDE — matches a wake token yet is housekeeping. MOUNT-CENTER
 //     is the slew/settle centering the mount performs itself on every
 //     acquisition, and it alone produced 8 of the 45 wake events.
-//     MOUNT-HOMED is the mount answering its Find-home routine: no sequence
-//     emits `Find home` any more (park is the only closing maneuver), so it
-//     comes only from the survey scripts and manual operation — 7 times in
-//     the 24h before this demotion. MOUNT-PARKED / MOUNT-UNPARKED stay
-//     immediate: they are the real "scope went away / came back" milestones
-//     and park/unpark now drive the lens.
+//     MOUNT-HOMED is the mount answering its Find-home routine: a sequence
+//     emits `Find home` only in a lights step (ahead of `set_tracking`), so
+//     most homes still come from the survey scripts and manual operation —
+//     7 times in the 24h before this demotion. MOUNT-PARKED / MOUNT-UNPARKED
+//     stay immediate: they are the real "scope went away / came back"
+//     milestones.
 //   LINK_EVENT — every `…-CONNECTED` / `…-DISCONNECTED` device event (a
 //     substring match catches both spellings). N.I.N.A. cycles its devices at
 //     session start and teardown, which produced 29 of the 45 wake events, and

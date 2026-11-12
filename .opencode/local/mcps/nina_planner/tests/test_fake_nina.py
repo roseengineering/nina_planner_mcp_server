@@ -122,8 +122,10 @@ class FakeNinaTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(fake.requests, [])
 
     async def test_park_rejected_even_when_the_mount_can_home(self):
-        """`can_find_home` is telemetry only: home is not a fallback, so a
-        mount that cannot park is rejected instead of being homed."""
+        """`can_find_home` is not a park fallback: a mount that cannot park is
+        rejected at load time instead of being homed, even when it can home.
+        (Home still appears in a lights step — sequence_home_scope — but never
+        to rescue this guard.)"""
         fake = FakeNina()
         with (
             fake.installed(),

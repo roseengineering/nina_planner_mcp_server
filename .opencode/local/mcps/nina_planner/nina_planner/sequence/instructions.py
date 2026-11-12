@@ -19,6 +19,15 @@ def park_scope() -> dict[str, Any]:
     return _child("NINA.Sequencer.SequenceItem.Telescope.ParkScope, NINA.Sequencer")
 
 
+def home_scope() -> dict[str, Any]:
+    # Homing is a calibration: the mount drives its axes to a known physical
+    # reference point — the home position — re-syncing its sensors so the
+    # position readout can be trusted again. It takes ~30 s and is what
+    # restores that trust after the mount loses sync (power outage, bump,
+    # driver restart).
+    return _child("NINA.Sequencer.SequenceItem.Telescope.FindHome, NINA.Sequencer")
+
+
 def warm_camera() -> dict[str, Any]:
     return _child("NINA.Sequencer.SequenceItem.Camera.WarmCamera, NINA.Sequencer") | {
         "Duration": 0,
@@ -43,7 +52,9 @@ def stop_guiding() -> dict[str, Any]:
 
 
 def set_tracking(mode: int) -> dict[str, Any]:
-    # ascom mode: 0=Sidereal, 1=Lunar, 2=Solar, 3=King
+    # ASCOM tracking modes (per GET /equipment/mount/tracking in
+    # scripts/api_spec.yaml): 0=Sidereal, 1=Lunar, 2=Solar, 3=King,
+    # 4=Stopped.
     return _child(
         "NINA.Sequencer.SequenceItem.Telescope.SetTracking, NINA.Sequencer"
     ) | {

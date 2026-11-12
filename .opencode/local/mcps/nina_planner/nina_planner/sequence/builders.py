@@ -7,6 +7,7 @@ from .instructions import (
     connect_all_equipment,
     cool_camera,
     end_instruction,
+    home_scope,
     loop_for_iterations,
     loop_until_dawn,
     loop_until_dusk,
@@ -196,11 +197,26 @@ def sequence_cool_camera(
 
 
 def sequence_park_scope(equipment: ObservatoryEquipment) -> list[dict[str, Any]]:
-    # Park only. `Find home` is never emitted: home points the scope straight
-    # down with the lens open, so it does not protect the optics — on the
-    # Seestar park reaches the same position with the lens closed. A mount
-    # that cannot park is rejected at load time (see tools/sequence.py).
+    # Park only: home is not a fallback for it. Park is the closing maneuver —
+    # the scope goes to its parked position for the night — while homing is a
+    # sensor calibration (see sequence_home_scope), not a way to close up. A
+    # mount that cannot park is rejected at load time (see tools/sequence.py).
     return [park_scope()] if equipment.mount and equipment.mount.can_park else []
+
+
+def sequence_home_scope(equipment: ObservatoryEquipment) -> list[dict[str, Any]]:
+    # Homing is a calibration: the mount drives its axes to a known physical
+    # reference point — the home position — re-syncing its sensors so the
+    # position readout can be trusted again (~30 s). It is what restores that
+    # trust after the mount loses sync (power outage, bump, driver restart),
+    # which is exactly when a slew/center would otherwise be slewing from a
+    # fiction. Emitted at the start of a lights step, ahead of set_tracking(0)
+    # so the rate is normalized after it. The order is an API constraint, not
+    # a style choice: GET /equipment/mount/home answers 409 "Mount parked"
+    # (scripts/api_spec.yaml), so sequence_unpark_scope must run first. Gated
+    # on can_find_home alone: it is extra, not a park fallback, and the
+    # load-time guard still rejects a mount that cannot park.
+    return [home_scope()] if equipment.mount and equipment.mount.can_find_home else []
 
 
 def sequence_unpark_scope(equipment: ObservatoryEquipment) -> list[dict[str, Any]]:

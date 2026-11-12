@@ -9,6 +9,7 @@ from .builders import (
     sequence_calibration,
     sequence_cool_camera,
     sequence_deepsky,
+    sequence_home_scope,
     sequence_park_scope,
     sequence_safetynet,
     sequence_smart_exposure,
@@ -250,6 +251,9 @@ def target_payload_lights(
                         sequence_cool_camera(plan, equipment)
                         + sequence_unpark_scope(equipment)
                     )
+                    # home first: re-reference the mount, then set_tracking(0)
+                    # normalizes the rate before the slew/center and guiding.
+                    + sequence_home_scope(equipment)
                     + [
                         set_tracking(0),
                         switch_filter(reference_filter_name, reference_filter_position),
