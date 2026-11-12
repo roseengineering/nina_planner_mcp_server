@@ -1,4 +1,8 @@
+# Sample Script I use to install a background service for OpenCode on macOS
+# This sets up a LaunchAgent plist for the service and ensures it runs at load
+# It also configures environment variables and program arguments for the service
 # WorkingDirectory sets where /new starts a new session
+# Run this script in the directory where you want the service to use as its working directory   
 service=local.opencode
 cat <<EOF > ~/Library/LaunchAgents/$service.plist
 <?xml version="1.0" encoding="UTF-8"?>
