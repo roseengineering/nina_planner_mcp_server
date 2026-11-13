@@ -66,8 +66,9 @@ function toJSONL(value: unknown): string {
 // per-frame `IMAGE-*` saves, guider/autofocus chatter and anything unrecognized
 // are deliberately NOT prompted. Nothing is buffered here either: N.I.N.A.
 // keeps its own event history server-side (`get_events` -> GET
-// /v2/api/event-history), so every wake prompt tells the agent the exact
-// `since=` window to read instead.
+// /v2/api/event-history), so every wake prompt ends with a compact
+// `[get_events(since=N) · M routine events waiting]` tail naming the exact
+// window to read instead (see contextHint below).
 //
 // The waking set covers three of the four event classes:
 //   milestones  RUN-*/SEQUENCE-* and TS-NEWTARGETSTART -> evaluate the queue
@@ -234,17 +235,25 @@ export default Plugin.define({
     let lastWakeAt = startedAt;
     let routineSinceWake = 0;
 
-    // How far back the agent should read N.I.N.A.'s own event history. Capped
-    // at 60s so a fresh instance never asks for a zero-width window.
+    // Compact tail on every wake: the exact `get_events` window covering the
+    // quiet gap, plus how much unread routine traffic sits in it. `since` is
+    // capped at 60s so a fresh instance never asks for a zero-width window.
+    //
+    // Deliberately a tag, not prose — the old ~50-token sentence repeated
+    // what `.opencode/rules/AGENTS.md` already states once, permanently, in
+    // the system prompt ("routine telemetry is not pushed to you"), and it
+    // cost that much on every single wake. The `since=` number is kept
+    // because it is the one fact the agent cannot derive: `Date.now() -
+    // lastWakeAt`, invisible from the payload (the socket carries event
+    // NAMES only, no timestamps). The count is rendered even at 0 — "0
+    // routine events waiting" tells the agent there is nothing unread, so it
+    // can skip the call entirely instead of paying for a tool round-trip.
+    // The old `get_logs(since=…)` pointer is gone with the prose; the skills
+    // already tell the agent when diagnostics are worth reading.
     function contextHint(sinceSeconds: number): string {
-      const waiting =
-        routineSinceWake > 0
-          ? ` (${routineSinceWake} routine events since your last wake)`
-          : "";
       return (
-        `\n\nRoutine telemetry is not pushed to you — N.I.N.A. keeps it server-side. ` +
-        `Call \`get_events(since=${sinceSeconds})\` to read the last ${sinceSeconds}s of it${waiting}; ` +
-        `add \`get_logs(since=${sinceSeconds})\` when you need diagnostics.`
+        `\n\n[get_events(since=${sinceSeconds})` +
+        ` · ${routineSinceWake} routine events waiting]`
       );
     }
 
@@ -889,8 +898,9 @@ export default Plugin.define({
         return;
       }
 
-      // Counted for the wake digest, then dropped. N.I.N.A. retains it in
-      // /v2/api/event-history, which get_events() already reads.
+      // Counted for the wake tail (`N routine events waiting`), then dropped.
+      // N.I.N.A. retains it in /v2/api/event-history, which get_events()
+      // already reads.
       routineSinceWake++;
       // IMAGE-SAVE only: it is the moment a frame becomes a history record,
       // and this rig emits no IMAGE-PREPARED at all (0 of 476 sampled events)
