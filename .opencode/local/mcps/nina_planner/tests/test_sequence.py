@@ -1636,6 +1636,48 @@ class SequenceBehaviorTest(unittest.TestCase):
                 "the step still announces itself",
             )
 
+    def test_darks_emit_one_group_per_plan_entry_in_list_order(self):
+        """No round-robin for darks/bias: every plan entry becomes its own
+        group with its own count, in list order.
+
+        ``batch_size`` is deliberately ignored here — there is nothing to
+        batch or interleave — so the default of 5 must not leak in and split
+        these entries the way it does lights.
+        """
+        from sequence_helpers import build_sequence_darks
+
+        plan = self._plan(
+            dark_frames=[
+                {"exposure_time_seconds": 60.0, "total_count": 2},
+                {"exposure_time_seconds": 120.0, "total_count": 3},
+            ],
+            bias_frames=[{"total_count": 4}, {"total_count": 5}],
+        )
+        self.assertEqual(plan.batch_size, 5)
+        for bias, expected in (
+            (False, [(2, 60.0), (3, 120.0)]),
+            # a bias has no exposure_time_seconds: the camera's shutter
+            # decides, so the group reads 0
+            (True, [(4, 0), (5, 0)]),
+        ):
+            result = build_sequence_darks(
+                plan,
+                equipment=ObservatoryEquipment(),
+                profile=_profile(),
+                bias=bias,
+            )
+            groups = _find_items(result, "Imaging.SmartExposure, NINA.Sequencer")
+            got = [
+                (
+                    g["Conditions"]["$values"][0]["Iterations"],
+                    _find_items(g, "Imaging.TakeExposure, NINA.Sequencer")[0][
+                        "ExposureTime"
+                    ],
+                )
+                for g in groups
+            ]
+            self.assertEqual(got, expected, "bias" if bias else "darks")
+
     def test_darks_with_bias_flag_uses_bias_image_type(self):
         from sequence_helpers import build_sequence_darks
 
