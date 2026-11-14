@@ -4,10 +4,13 @@ from ..models.observatory import ObservatoryEquipment
 from ..models.plan import ObservationPlan
 from ..models.profile import ObservatoryProfile
 from .builders import (
+    COUNT_ARRAY,
+    COUNT_VARIABLE,
     _sequence_with_steps,
     _validated_pointing,
     sequence_calibration,
     sequence_cool_camera,
+    sequence_count_exposure,
     sequence_deepsky,
     sequence_home_scope,
     sequence_park_scope,
@@ -20,7 +23,9 @@ from .builders import (
 )
 from .instructions import (
     close_cover,
+    declare_variable,
     end_instruction,
+    initialize_array,
     loop_until_dawn,
     loop_until_meridian,
     loop_until_sun_altitude_above,
@@ -28,6 +33,7 @@ from .instructions import (
     loop_while_above_altitude,
     loop_while_above_horizon,
     open_cover,
+    put_array,
     run_autofocus,
     set_tracking,
     sky_flats,
@@ -158,137 +164,6 @@ def target_payload_darks(
     ]
 
 
-## LIGHTS
-
-
-def target_payload_lights(
-    plan: ObservationPlan,
-    equipment: ObservatoryEquipment,
-    profile: ObservatoryProfile,
-    *,
-    pointing_index: int = 1,
-) -> list[dict[str, Any]]:
-    """The Target-area content of a lights step.
-
-    One deep-sky container carrying its dusk/object/cool safetynets, imaging
-    conditions, and triggers. Each safetynet unparks as needed, so a lights
-    step follows a parked gap (or parked darks) without extra help.
-    """
-    pointing = _validated_pointing(plan, pointing_index)
-    reference_filter_name = plan.autofocus.reference_filter_name
-    reference_filter_position = profile.filter_position(reference_filter_name)
-    name_object = "Wait For Object"
-
-    return [
-        sequence_deepsky(
-            plan=plan,
-            pointing_index=pointing_index,
-            instructions=[
-                # wait for dusk: if not dusk, park scope and wait for dusk; otherwise skip to next container
-                sequence_wait_until_dusk(equipment),
-                # wait for object: if already in view, break out immediately; else park scope and wait until in view
-                container_sequential(
-                    name=name_object,
-                    conditions=[
-                        loop_until_dawn(),
-                        loop_until_meridian(),
-                    ],
-                    instructions=[
-                        # in view: bail out of Wait For Object without parking or waiting
-                        container_sequential(
-                            name="Break If in View",
-                            conditions=[
-                                loop_while_above_horizon(
-                                    plan.constraints.horizon_offset_degrees
-                                ),
-                                loop_while_above_altitude(
-                                    plan.constraints.min_altitude
-                                ),
-                            ],
-                            instructions=[end_instruction(name_object)],
-                        ),
-                    ]
-                    # out of view: park (or home) while waiting for object to rise
-                    + sequence_park_scope(equipment)
-                    + [
-                        wait_until_above_horizon(
-                            plan.constraints.horizon_offset_degrees
-                        ),
-                        wait_until_above_altitude(plan.constraints.min_altitude),
-                    ],
-                ),
-                # image object if still in view
-                sequence_safetynet(
-                    name="Image Object",
-                    equipment=equipment,
-                    conditions=[
-                        loop_until_dawn(),
-                        loop_while_above_horizon(
-                            plan.constraints.horizon_offset_degrees
-                        ),
-                        loop_while_above_altitude(plan.constraints.min_altitude),
-                    ],
-                    triggers=[
-                        trigger_meridian_flip(),
-                        trigger_center_after_drift(
-                            after_exposures=plan.guiding.check_drift_every_n_exposures,
-                            distance_arcmin=plan.guiding.max_drift_arcmin,
-                        ),
-                        trigger_autofocus_after_filter_change(),
-                        trigger_autofocus_after_exposures(
-                            plan.autofocus.every_n_exposures
-                        ),
-                        trigger_autofocus_after_temperature_change(
-                            plan.autofocus.threshold_celsius
-                        ),
-                        trigger_autofocus_after_hfr_increase(
-                            samples=plan.autofocus.hfr_increase_sample_size,
-                            amount=plan.autofocus.hfr_increase_threshold_percent,
-                        ),
-                        trigger_restore_guiding(),
-                    ],
-                    instructions=(
-                        sequence_cool_camera(plan, equipment)
-                        + sequence_unpark_scope(equipment)
-                    )
-                    # home first: re-reference the mount, then set_tracking(0)
-                    # normalizes the rate before the slew/center and guiding.
-                    + sequence_home_scope(equipment)
-                    + [
-                        set_tracking(0),
-                        switch_filter(reference_filter_name, reference_filter_position),
-                    ]
-                    + [
-                        slew_and_center()
-                        if pointing.position_angle_deg is None
-                        else slew_center_and_rotate()
-                    ]
-                    + [
-                        run_autofocus(),
-                        start_guiding(),
-                    ]
-                    + [
-                        sequence_smart_exposure(
-                            count=d[0],
-                            exposure=d[1],
-                            filter_name=d[2],
-                            # plan.light_frames' filter_name is required by
-                            # the model; _round_robin types it optional
-                            # because it also serves darks/bias, which have
-                            # none.
-                            filter_position=profile.filter_position(cast(str, d[2])),
-                            dither=plan.guiding.dither_every_n_exposures,
-                            image_type="LIGHT",
-                        )
-                        for d in _round_robin(plan.light_frames, plan.batch_size)
-                    ]
-                    + [stop_guiding()],
-                ),
-            ],
-        )
-    ]
-
-
 ## FLATS
 
 
@@ -350,6 +225,165 @@ def target_payload_flats(
                         for d in _round_robin(plan.flat_frames, reverse=dusk)
                         if d[2] is not None
                     ],
+                ),
+            ],
+        )
+    ]
+
+
+## LIGHTS
+
+
+def target_payload_lights(
+    plan: ObservationPlan,
+    equipment: ObservatoryEquipment,
+    profile: ObservatoryProfile,
+    *,
+    pointing_index: int = 1,
+) -> list[dict[str, Any]]:
+    """The Target-area content of a lights step.
+
+    One deep-sky container carrying its dusk/object/cool safetynets, imaging
+    conditions, and triggers. Each safetynet unparks as needed, so a lights
+    step follows a parked gap (or parked darks) without extra help.
+
+    The exposure groups spend a countdown array rather than trusting their
+    loop condition: that condition restarts with the container, so an
+    interrupted ``Image Object`` would shoot every group from the top again,
+    while the array keeps what is still owed (see
+    ``sequence_count_exposure``).
+    """
+    pointing = _validated_pointing(plan, pointing_index)
+    reference_filter_name = plan.autofocus.reference_filter_name
+    reference_filter_position = profile.filter_position(reference_filter_name)
+    name_object = "Wait For Object"
+    # One pass feeds both halves of the countdown: cell i is primed with the
+    # frames group i still owes, and group i is the one that reads cell i.
+    # They cannot be built independently, because batch_size > 1 splits one
+    # frame's exposures across several groups.
+    exposure_groups = _round_robin(plan.light_frames, plan.batch_size)
+
+    return [
+        sequence_deepsky(
+            plan=plan,
+            pointing_index=pointing_index,
+            instructions=[
+                # wait for dusk: if not dusk, park scope and wait for dusk; otherwise skip to next container
+                sequence_wait_until_dusk(equipment),
+                # wait for object: if already in view, break out immediately; else park scope and wait until in view
+                container_sequential(
+                    name=name_object,
+                    conditions=[
+                        loop_until_dawn(),
+                        loop_until_meridian(),
+                    ],
+                    instructions=[
+                        # in view: bail out of Wait For Object without parking or waiting
+                        container_sequential(
+                            name="Break If in View",
+                            conditions=[
+                                loop_while_above_horizon(
+                                    plan.constraints.horizon_offset_degrees
+                                ),
+                                loop_while_above_altitude(
+                                    plan.constraints.min_altitude
+                                ),
+                            ],
+                            instructions=[end_instruction(name_object)],
+                        ),
+                    ]
+                    # out of view: park (or home) while waiting for object to rise
+                    + sequence_park_scope(equipment)
+                    + [
+                        wait_until_above_horizon(
+                            plan.constraints.horizon_offset_degrees
+                        ),
+                        wait_until_above_altitude(plan.constraints.min_altitude),
+                    ],
+                ),
+                # prime the countdown before the safetynet that spends it:
+                # declare the variable the reads resolve against, create the
+                # array, then fill one cell per exposure group.
+                declare_variable(COUNT_VARIABLE, "0"),
+                initialize_array(COUNT_ARRAY),
+                *[
+                    put_array(COUNT_ARRAY, index, str(count))
+                    for index, (count, _, _) in enumerate(exposure_groups)
+                ],
+                # image object if still in view
+                sequence_safetynet(
+                    name="Image Object",
+                    equipment=equipment,
+                    conditions=[
+                        loop_until_dawn(),
+                        loop_while_above_horizon(
+                            plan.constraints.horizon_offset_degrees
+                        ),
+                        loop_while_above_altitude(plan.constraints.min_altitude),
+                    ],
+                    triggers=[
+                        trigger_meridian_flip(),
+                        trigger_center_after_drift(
+                            after_exposures=plan.guiding.check_drift_every_n_exposures,
+                            distance_arcmin=plan.guiding.max_drift_arcmin,
+                        ),
+                        trigger_autofocus_after_filter_change(),
+                        trigger_autofocus_after_exposures(
+                            plan.autofocus.every_n_exposures
+                        ),
+                        trigger_autofocus_after_temperature_change(
+                            plan.autofocus.threshold_celsius
+                        ),
+                        trigger_autofocus_after_hfr_increase(
+                            samples=plan.autofocus.hfr_increase_sample_size,
+                            amount=plan.autofocus.hfr_increase_threshold_percent,
+                        ),
+                        trigger_restore_guiding(),
+                    ],
+                    instructions=(
+                        sequence_cool_camera(plan, equipment)
+                        + sequence_unpark_scope(equipment)
+                        # home first: re-reference the mount, then set_tracking(0)
+                        # normalizes the rate before the slew/center and guiding.
+                        + sequence_home_scope(equipment)
+                        + [
+                            set_tracking(0),
+                            switch_filter(
+                                reference_filter_name, reference_filter_position
+                            ),
+                        ]
+                        + [
+                            slew_and_center()
+                            if pointing.position_angle_deg is None
+                            else slew_center_and_rotate()
+                        ]
+                        + [
+                            run_autofocus(),
+                            start_guiding(),
+                        ]
+                        + [
+                            instruction
+                            for index, (count, exposure, filter_name) in enumerate(
+                                exposure_groups
+                            )
+                            for instruction in sequence_count_exposure(
+                                index=index,
+                                count=count,
+                                exposure=exposure,
+                                filter_name=filter_name,
+                                # plan.light_frames' filter_name is required by
+                                # the model; _round_robin types it optional
+                                # because it also serves darks/bias, which have
+                                # none.
+                                filter_position=profile.filter_position(
+                                    cast(str, filter_name)
+                                ),
+                                dither=plan.guiding.dither_every_n_exposures,
+                                image_type="LIGHT",
+                            )
+                        ]
+                        + [stop_guiding()]
+                    ),
                 ),
             ],
         )

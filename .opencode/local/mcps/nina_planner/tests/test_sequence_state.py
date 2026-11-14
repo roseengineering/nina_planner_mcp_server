@@ -64,6 +64,64 @@ class ProjectSequenceStateTests(unittest.TestCase):
         out = project_sequence_state([])
         self.assertEqual(out["steps"], [])
 
+    def test_countdown_group_exposure_is_read_structurally(self):
+        """Lights groups are named after the countdown, not "Smart Exposure".
+
+        The summary therefore finds the group by structure — an iteration
+        condition over a ``Take Exposure`` in the same container — instead of
+        by N.I.N.A.'s ``Smart Exposure_Container`` name alone.
+        """
+        state = [
+            {
+                "Name": "Target Sequence_Container",
+                "Status": "RUNNING",
+                "Items": [
+                    {
+                        "Name": "Deep Sky Target Sequence_Container",
+                        "Status": "RUNNING",
+                        "Target": {"TargetName": "M31 - core _plan-1234567890ab_"},
+                        "Items": [
+                            {
+                                "Name": (
+                                    "5 x 60 sec exposures using `L` filter_Container"
+                                ),
+                                "Status": "RUNNING",
+                                "Conditions": [
+                                    {
+                                        "Name": "Loop For Iterations_Condition",
+                                        "Iterations": 5,
+                                        "CompletedIterations": 2,
+                                    },
+                                    {"Name": "Loop while_Condition"},
+                                ],
+                                "Items": [
+                                    {
+                                        "Name": "Switch Filter",
+                                        "Filter": {"_name": "L"},
+                                    },
+                                    {
+                                        "Name": "Take Exposure",
+                                        "ImageType": "LIGHT",
+                                        "ExposureTime": 60.0,
+                                        "Gain": 100,
+                                        "Offset": 50,
+                                        "Binning": {"X": 1, "Y": 1},
+                                    },
+                                ],
+                            }
+                        ],
+                    }
+                ],
+            }
+        ]
+        out = project_sequence_state(state)
+        step = out["steps"][0]
+        self.assertEqual(step["frame_type"], "LIGHT")
+        self.assertEqual(step["exposure"]["seconds"], 60.0)
+        self.assertEqual(step["exposure"]["filter"], "L")
+        self.assertEqual(step["exposure"]["total"], 5)
+        self.assertEqual(step["exposure"]["completed"], 2)
+
     def test_step_without_an_exposure_node_has_none_exposure(self):
         # A step that never takes an exposure (a pure wait/park step, or a
         # target area whose items have not been expanded yet) must report

@@ -798,6 +798,15 @@ class SequenceBuildersTest(unittest.TestCase):
             self.assertEqual(target["TargetName"], "M31 _plan-test123_")
 
 
+def _nodes(d: Any) -> list[dict]:
+    """Every dict in the tree, in document order."""
+    if isinstance(d, dict):
+        return [d] + [x for v in d.values() for x in _nodes(v)]
+    if isinstance(d, list):
+        return [x for v in d for x in _nodes(v)]
+    return []
+
+
 def _find_items(d: Any, type_substring: str) -> list[dict]:
     """Recursively find all dicts whose $type contains the given substring."""
     out = []
@@ -829,6 +838,37 @@ def _find_named(d: Any, name: str) -> list[dict]:
 
 def _deepsky_targets(seq: dict) -> list[dict]:
     return _find_items(seq, "DeepSkyObjectContainer")
+
+
+def _kind(node: dict) -> str:
+    return node["$type"].split(",")[0].split(".")[-1]
+
+
+def _countdown_groups(seq: dict) -> list[dict]:
+    """The lights exposure groups: containers bounded by the array countdown.
+
+    Each carries a ``LoopWhile`` condition (``n > 0``) next to its loop
+    condition — that pairing is what tells them apart from every other
+    container in the sequence (the end area's pre-park delay loops too, but
+    on ``loop_while_safe`` alone).
+    """
+    return [
+        n
+        for n in _nodes(seq)
+        if isinstance(n.get("Conditions"), dict)
+        and any("PredicateExpr" in c for c in n["Conditions"].get("$values", []))
+    ]
+
+
+def _lights_head(seq: dict) -> list[dict]:
+    """The lights container's direct children ahead of ``Image Object``.
+
+    Priming (declare → initialize → one cell per exposure group) runs there,
+    before the safetynet whose reads spend it.
+    """
+    items = _deepsky_targets(seq)[0]["Items"]["$values"]
+    image_object = next(i for i in items if i.get("Name") == "Image Object")
+    return items[: items.index(image_object)]
 
 
 def _items(seq: dict) -> list[dict]:
@@ -1142,26 +1182,118 @@ class SequenceBehaviorTest(unittest.TestCase):
         self.assertTrue(any(w["Data"]["Offset"] == 5.0 for w in waits))
         self.assertTrue(any(a["Data"]["Offset"] == 45.0 for a in alts))
 
-    def test_lights_uses_smart_exposure_with_filter_and_dither(self):
+    def test_lights_exposure_group_counts_down_through_an_array(self):
+        """A group is bounded twice: by its batch count and by its cell.
+
+        The loop condition restarts with the container, so an interrupted
+        ``Image Object`` would shoot every group from the top again — the
+        array is what remembers what is still owed.
+        """
         plan = self._plan()
         result = build_sequence_lights(
             plan, equipment=ObservatoryEquipment(), profile=_profile()
         )
-        smart = _find_items(result, "Imaging.SmartExposure, NINA.Sequencer")
-        self.assertEqual(len(smart), 1)
-        # count -> the LoopCondition inside the SmartExposure container
-        conditions = smart[0]["Conditions"]["$values"]
-        self.assertEqual(len(conditions), 1)
-        self.assertEqual(conditions[0]["Iterations"], 3)
-        # filter -> the SwitchFilter instruction inside the container
-        switches = _find_items(smart[0], "FilterWheel.SwitchFilter, NINA.Sequencer")
-        self.assertEqual(len(switches), 1)
-        self.assertEqual(switches[0]["Filter"]["_name"], "L")
-        # dither -> the native DitherAfterExposures trigger
-        dithers = _find_items(smart[0], "Guider.DitherAfterExposures, NINA.Sequencer")
+        # declare → initialize → one cell, straight ahead of Image Object,
+        # so the reads inside the safetynet resolve against all three.
+        head = _lights_head(result)
+        self.assertEqual(
+            [_kind(i) for i in head][-3:],
+            ["SetVariable", "InitializeArray", "PutArray"],
+        )
+        declare, initialize, cell = head[-3:]
+        self.assertEqual(declare["Identifier"], "n")
+        self.assertEqual(declare["OriginalDefinition"], "0")
+        # the array name is an expression that must evaluate to a string
+        self.assertEqual(initialize["NameExpr"]["Expression"], "'count'")
+        self.assertEqual(
+            (cell["IExpr"]["Expression"], cell["VExpr"]["Expression"]), ("0", "3")
+        )
+
+        # the group loops on its count AND on `n > 0`: a spent cell skips it
+        (group,) = _countdown_groups(result)
+        conditions = group["Conditions"]["$values"]
+        loop = next(c for c in conditions if "Iterations" in c)
+        while_ = next(c for c in conditions if "PredicateExpr" in c)
+        self.assertEqual(loop["Iterations"], 3)
+        self.assertEqual(while_["PredicateExpr"]["Expression"], "n > 0")
+
+        # with the filter switch and the exposure behind it…
+        switches = _find_items(group, "FilterWheel.SwitchFilter, NINA.Sequencer")
+        self.assertEqual([s["Filter"]["_name"] for s in switches], ["L"])
+        takes = _find_items(group, "Imaging.TakeExposure, NINA.Sequencer")
+        self.assertEqual(
+            [(t["ExposureTime"], t["ImageType"]) for t in takes], [(60.0, "LIGHT")]
+        )
+        # …and the countdown step: read the cell before the group (its first
+        # condition check needs a value), then expose, decrement, re-read.
+        self.assertEqual(
+            [
+                r["VExpr"]["Expression"]
+                for r in _find_items(result, "SequencerPlus.GetArray")
+            ],
+            ["n", "n"],
+        )
+        self.assertEqual(len(_find_items(group, "SequencerPlus.GetArray")), 1)
+        decrement = _find_items(group, "SequencerPlus.PutArray")
+        self.assertEqual(len(decrement), 1)
+        self.assertEqual(
+            (decrement[0]["IExpr"]["Expression"], decrement[0]["VExpr"]["Expression"]),
+            ("0", "n-1"),
+        )
+
+        # dither -> the native DitherAfterExposures trigger on the group
+        dithers = _find_items(group, "Guider.DitherAfterExposures, NINA.Sequencer")
         self.assertEqual(len(dithers), 1)
         self.assertEqual(
             dithers[0]["AfterExposures"], plan.guiding.dither_every_n_exposures
+        )
+
+    def test_lights_countdown_cells_match_the_round_robin_groups(self):
+        """``batch_size > 1`` splits one frame's exposures across several
+        groups, so the cells come from the same round-robin pass the groups
+        do: cell ``i`` is what group ``i`` reads."""
+        plan = self._plan(
+            light_frames=[
+                {"filter_name": "L", "exposure_time_seconds": 60.0, "total_count": 5},
+                {"filter_name": "R", "exposure_time_seconds": 30.0, "total_count": 5},
+            ],
+            batch_size=2,
+        )
+        profile = _profile().model_copy(
+            update={
+                "filters": [
+                    FilterInfo(name="L", position=3),
+                    FilterInfo(name="Dark", position=4),
+                    FilterInfo(name="R", position=5),
+                ]
+            }
+        )
+        result = build_sequence_lights(
+            plan, equipment=ObservatoryEquipment(), profile=profile
+        )
+        # L2 R2 L2 R2 L1 R1 → six groups, six cells, in that order
+        head = _lights_head(result)
+        self.assertEqual(
+            [_kind(i) for i in head][-8:],
+            ["SetVariable", "InitializeArray"] + ["PutArray"] * 6,
+        )
+        cells = [i for i in head if _kind(i) == "PutArray"]
+        self.assertEqual(
+            [(c["IExpr"]["Expression"], c["VExpr"]["Expression"]) for c in cells],
+            [("0", "2"), ("1", "2"), ("2", "2"), ("3", "2"), ("4", "1"), ("5", "1")],
+        )
+        groups = _countdown_groups(result)
+        self.assertEqual(len(groups), 6)
+        self.assertEqual(
+            [
+                next(
+                    c["Iterations"]
+                    for c in g["Conditions"]["$values"]
+                    if "Iterations" in c
+                )
+                for g in groups
+            ],
+            [2, 2, 2, 2, 1, 1],
         )
 
     def test_lights_safetynet_wraps_with_park_scope_when_mount_can_park(self):

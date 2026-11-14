@@ -47,22 +47,51 @@ def _issues(node: Any) -> tuple[list[str], list[str]]:
     return failed, preflight
 
 
+def _exposure_group(step: dict[str, Any]) -> dict[str, Any] | None:
+    """The node whose loop condition counts this step's exposures.
+
+    N.I.N.A. names it after the container — ``Smart Exposure_Container`` for
+    the SmartExposure instruction, ``<count> x <exposure> sec …_Container``
+    for a countdown group (``sequence_count_exposure``) — so the name alone
+    only covers one of them. Fall back to the structure the summary reads:
+    a container carrying an iteration condition over a ``Take Exposure``.
+    """
+    named = _find(step, "Smart Exposure_Container")
+    if named is not None:
+        return named
+    return next(
+        (
+            node
+            for node in _walk(step)
+            if isinstance(node.get("Conditions"), list)
+            and any(
+                "Iterations" in c or "CompletedIterations" in c
+                for c in node["Conditions"]
+                if isinstance(c, dict)
+            )
+            and _find(node, "Take Exposure") is not None
+        ),
+        None,
+    )
+
+
 def _exposure(step: dict[str, Any]) -> dict[str, Any] | None:
-    smart = _find(step, "Smart Exposure_Container")
-    take = _find(step, "Take Exposure")
-    if smart is None and take is None:
+    group = _exposure_group(step)
+    take = _find(group, "Take Exposure") if group else None
+    take = take or _find(step, "Take Exposure")
+    if group is None and take is None:
         return None
     # Node-level Iterations means "completed" here but "total" in /sequence/json;
     # the loop condition is the only unambiguous source.
     loop: dict[str, Any] = next(
         (
             c
-            for c in (smart or {}).get("Conditions") or []
+            for c in (group or {}).get("Conditions") or []
             if "Iterations" in c or "CompletedIterations" in c
         ),
         {},
     )
-    flt = (_find(smart, "Switch Filter") or {}).get("Filter") if smart else None
+    flt = (_find(group, "Switch Filter") or {}).get("Filter") if group else None
     binning = (take or {}).get("Binning") or {}
     return {
         "seconds": (take or {}).get("ExposureTime"),

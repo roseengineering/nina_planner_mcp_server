@@ -51,8 +51,17 @@ class GeneratedSequenceContract(unittest.TestCase):
 
     def test_light_step_has_what_the_summary_reads(self):
         (step,) = _target_steps(self._build(build_sequence_lights))
+        # Lights count down through a Sequencer+ array (no SmartExposure), so
+        # the summary reads the group's own loop condition instead.
         self.assertLessEqual(
-            {"SmartExposure", "WaitForAltitude", "SendEventInstruction"}, _types(step)
+            {
+                "TakeExposure",
+                "LoopCondition",
+                "SwitchFilter",
+                "WaitForAltitude",
+                "SendEventInstruction",
+            },
+            _types(step),
         )
 
     def test_dark_step_has_smart_exposure(self):
