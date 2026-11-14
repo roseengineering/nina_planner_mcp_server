@@ -1,6 +1,7 @@
 import asyncio
 import math
 import unittest
+from datetime import datetime, timezone
 from unittest.mock import AsyncMock, patch
 
 import numpy as np
@@ -975,10 +976,19 @@ class ToolWrapperTest(unittest.TestCase):
             {"name": "M31", "ra_hours": 0.71, "dec_deg": 41.27},
             {"name": "south", "ra_hours": 0.0, "dec_deg": -60.0},
         ]
-        with patch(
-            "nina_planner.tools.equipment.get_site_profile",
-            AsyncMock(return_value=self._profile()),
+        # target_altitudes reads the wall clock, and M31 is only above the
+        # horizon for part of the day -- an "is it up" assertion against real
+        # now fails for ~4h every day (2026-11-14: 12:20-16:05 UTC), so freeze
+        # it at the same instant AltitudesTest uses: M31 +68, south -16.
+        frozen = datetime(2026, 10, 18, 2, 0, 0, tzinfo=timezone.utc)
+        with (
+            patch(
+                "nina_planner.tools.equipment.get_site_profile",
+                AsyncMock(return_value=self._profile()),
+            ),
+            patch.object(sky, "datetime") as clock,
         ):
+            clock.now.return_value = frozen
             out = asyncio.run(sky.target_altitudes(targets))
         # Coordinates given → no resolver, no network; highest altitude first.
         self.assertEqual([r["name"] for r in out["targets"]], ["M31", "south"])
