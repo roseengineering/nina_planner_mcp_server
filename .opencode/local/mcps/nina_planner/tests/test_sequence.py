@@ -1615,6 +1615,27 @@ class SequenceBehaviorTest(unittest.TestCase):
         takes = _find_items(smart[0], "Imaging.TakeExposure, NINA.Sequencer")
         self.assertTrue(all(t["ImageType"] == "DARK" for t in takes))
 
+    def test_darks_announce_no_exposing_events(self):
+        """The group names itself for the N.I.N.A. UI instead of bracketing
+        itself with EXPOSING-* events — lights stopped emitting those with
+        the countdown, and a bracket one step family emits while the other
+        does not is worse than none. The step itself stays bracketed."""
+        from sequence_helpers import build_sequence_darks
+
+        for bias in (False, True):
+            result = build_sequence_darks(
+                self._plan(),
+                equipment=ObservatoryEquipment(),
+                profile=_profile(),
+                bias=bias,
+            )
+            messages = _event_messages(result)
+            self.assertEqual([m for m in messages if m.startswith("EXPOSING")], [])
+            self.assertTrue(
+                [m for m in messages if m.startswith("ACQUISITION-STARTING")],
+                "the step still announces itself",
+            )
+
     def test_darks_with_bias_flag_uses_bias_image_type(self):
         from sequence_helpers import build_sequence_darks
 

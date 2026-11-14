@@ -242,11 +242,18 @@ def sequence_smart_exposure(
     filter_position: int | None = None,
     dither: int = 0,
 ) -> dict[str, Any]:
-    name = _exposure_group_name(count, exposure, filter_name)
+    """One exposure group, wrapped in a container named for the N.I.N.A. UI.
+
+    Deliberately carries no ``EXPOSING-*`` events: lights stopped emitting
+    them with the countdown (their counts come from the plan, not from what
+    actually ran, so after a resume they overstate it), and a bracket one
+    step family emits while the other does not is worse than none. The step
+    is still bracketed by ``ACQUISITION-*``, and every frame is logged as it
+    saves.
+    """
     return container_sequential(
-        name=name,
+        name=_exposure_group_name(count, exposure, filter_name),
         instructions=[
-            send_event(f"EXPOSING-STARTING: {name}"),
             smart_exposure(
                 count=count,
                 exposure=exposure,
@@ -255,7 +262,6 @@ def sequence_smart_exposure(
                 filter_position=filter_position,
                 dither=dither,
             ),
-            send_event(f"EXPOSING-FINISHED: {name}"),
         ],
     )
 
