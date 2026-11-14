@@ -6,19 +6,25 @@ from ..models.pointing import Pointing
 from .instructions import (
     connect_all_equipment,
     cool_camera,
+    dither_after_exposures,
     end_instruction,
+    get_array,
     home_scope,
     loop_for_iterations,
     loop_until_dawn,
     loop_until_dusk,
     loop_until_sunrise,
     loop_until_sunset,
+    loop_while_expression,
     loop_while_safe,
     park_scope,
+    put_array,
     run_finished_event,
     run_starting_event,
     send_event,
     smart_exposure,
+    switch_filter,
+    take_exposure,
     unpark_scope,
     wait_for_timespan,
     wait_if_sun_altitude_above,
@@ -223,6 +229,11 @@ def sequence_unpark_scope(equipment: ObservatoryEquipment) -> list[dict[str, Any
     return [unpark_scope()] if equipment.mount and equipment.mount.can_park else []
 
 
+def _exposure_group_name(count: int, exposure: float, filter_name: str | None) -> str:
+    fltr = "(Current)" if filter_name is None else filter_name
+    return f"{count} x {exposure} sec exposures using `{fltr}` filter"
+
+
 def sequence_smart_exposure(
     count: int,
     exposure: float,
@@ -231,12 +242,18 @@ def sequence_smart_exposure(
     filter_position: int | None = None,
     dither: int = 0,
 ) -> dict[str, Any]:
-    fltr = "(Current)" if filter_name is None else filter_name
-    name = f"{count} x {exposure} sec exposures using `{fltr}` filter"
+    """One exposure group, wrapped in a container named for the N.I.N.A. UI.
+
+    Deliberately carries no ``EXPOSING-*`` events: lights stopped emitting
+    them with the countdown (their counts come from the plan, not from what
+    actually ran, so after a resume they overstate it), and a bracket one
+    step family emits while the other does not is worse than none. The step
+    is still bracketed by ``ACQUISITION-*``, and every frame is logged as it
+    saves.
+    """
     return container_sequential(
-        name=name,
+        name=_exposure_group_name(count, exposure, filter_name),
         instructions=[
-            send_event(f"EXPOSING-STARTING: {name}"),
             smart_exposure(
                 count=count,
                 exposure=exposure,
@@ -245,9 +262,68 @@ def sequence_smart_exposure(
                 filter_position=filter_position,
                 dither=dither,
             ),
-            send_event(f"EXPOSING-FINISHED: {name}"),
         ],
     )
+
+
+# Sequencer+ expression spellings for the lights countdown (see
+# sequence_count_exposure). The array name is read back through
+# Expr.StringValue, so it must be a string *literal*; the countdown variable
+# is referenced bare, because Get into Array resolves its result variable
+# with a raw symbol lookup and `n > 0` has to evaluate as an expression.
+COUNT_ARRAY = "'count'"
+COUNT_VARIABLE = "n"
+
+
+def sequence_count_exposure(
+    index: int,
+    count: int,
+    exposure: float,
+    image_type: str,
+    filter_name: str | None = None,
+    filter_position: int | None = None,
+    dither: int = 0,
+) -> list[dict[str, Any]]:
+    """One exposure group bounded by the batch count *and* a countdown.
+
+    ``loop_for_iterations(count)`` caps the group at the frames it was asked
+    for; the ``n > 0`` predicate reads cell ``index`` of the countdown array,
+    so a group whose cell is already spent is skipped instead of re-shot.
+    Both matter because they survive different things: the loop condition
+    restarts whenever the container does, while the array outlives it —
+    ``Image Object`` is a safetynet that exits (object below the horizon,
+    unsafe) and re-enters, and on re-entry the loop would start over from
+    ``count`` without the array.
+
+    The cell is decremented and re-read after every exposure, so the next
+    condition check sees the new remainder. Callers prime the cells once per
+    run, before the safetynet: ``declare_variable`` + ``initialize_array`` +
+    one ``put_array`` per group, where cell ``i`` and group ``i`` come from
+    the same round-robin pass (see ``target_payload_lights``).
+    """
+    return [
+        get_array(COUNT_ARRAY, index, COUNT_VARIABLE),
+        container_sequential(
+            name=_exposure_group_name(count, exposure, filter_name),
+            conditions=[
+                loop_for_iterations(count),
+                loop_while_expression(f"{COUNT_VARIABLE} > 0"),
+            ],
+            triggers=[dither_after_exposures(dither)] if dither is not None else [],
+            instructions=(
+                (
+                    [switch_filter(filter_name, filter_position)]
+                    if filter_name is not None
+                    else []
+                )
+                + [take_exposure(exposure, image_type)]
+                + [
+                    put_array(COUNT_ARRAY, index, f"{COUNT_VARIABLE}-1"),
+                    get_array(COUNT_ARRAY, index, COUNT_VARIABLE),
+                ]
+            ),
+        ),
+    ]
 
 
 def sequence_wait_until_sunset(equipment: ObservatoryEquipment) -> dict[str, Any]:

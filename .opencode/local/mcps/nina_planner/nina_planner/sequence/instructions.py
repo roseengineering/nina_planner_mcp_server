@@ -423,56 +423,78 @@ def end_instruction(name: str) -> dict[str, Any]:
 
 
 def declare_variable(name: str, value: str) -> dict[str, Any]:
+    """Define a Sequencer+ variable — the symbol every later read resolves to.
+
+    A ``Get into Array`` finds its result variable with a raw symbol lookup
+    (``Symbol.FindSymbol(VExpr.Expression, parent)``), so the variable must
+    already exist: without this the read fails with "Result Variable is not
+    defined". ``value`` is the initial value expression, evaluated when this
+    instruction runs.
+    """
     return _child(
         "NINA.Plugin.SequencerPlus.SetVariable, NINA.Plugin.SequencerPlus"
     ) | {"Identifier": name, "OriginalDefinition": value}
 
 
-def set_variable(name: str, value: str) -> dict[str, Any]:
-    return _child(
-        "NINA.Plugin.SequencerPlus.ResetVariable, NINA.Plugin.SequencerPlus"
-    ) | {
-        "Variable": name,
-        "Expr": _child("NINA.Plugin.SequencerPlus.Expr, NINA.Plugin.SequencerPlus")
-        | {"Expression": value, "Type": "Any"},
-    }
+def loop_while_expression(expression: str) -> dict[str, Any]:
+    """Loop while ``expression`` is true.
 
-
-def loop_while(value: str) -> dict[str, Any]:
+    ``expression`` is an expression (``n > 0``), not a quoted string: a quoted
+    literal evaluates to its own text, which is never ``0`` and so never
+    ends the loop.
+    """
     return _child("NINA.Plugin.SequencerPlus.LoopWhile, NINA.Plugin.SequencerPlus") | {
         "PredicateExpr": _child(
             "NINA.Plugin.SequencerPlus.Expr, NINA.Plugin.SequencerPlus"
         )
-        | {"Expression": value, "Type": "Any"}
+        | {"Expression": expression, "Type": "Any"}
     }
 
 
-def initialize_array(value: str) -> dict[str, Any]:
+def initialize_array(name: str) -> dict[str, Any]:
+    """Create (or empty) a Sequencer+ array.
+
+    ``name`` is an *expression*, and the array instructions read it back
+    through ``Expr.StringValue`` — so it has to evaluate to a string, i.e. a
+    quoted literal (``'count'``), not a bare identifier.
+    """
     return _child(
         "NINA.Plugin.SequencerPlus.InitializeArray, NINA.Plugin.SequencerPlus"
     ) | {
         "NameExpr": _child("NINA.Plugin.SequencerPlus.Expr, NINA.Plugin.SequencerPlus")
-        | {"Expression": value, "Type": "Any"}
+        | {"Expression": name, "Type": "Any"}
     }
 
 
-def get_array(name: str, index: int, value: str) -> dict[str, Any]:
+def get_array(name: str, index: int, variable: str) -> dict[str, Any]:
+    """Read ``array[index]`` into a variable.
+
+    ``variable`` is a raw symbol name, not an expression: the plugin looks it
+    up verbatim with ``Symbol.FindSymbol``, so it must equal the
+    ``Identifier`` of a ``declare_variable`` already in scope — ``n``, never
+    ``"n"``.
+    """
     return _child("NINA.Plugin.SequencerPlus.GetArray, NINA.Plugin.SequencerPlus") | {
         "NameExpr": _child("NINA.Plugin.SequencerPlus.Expr, NINA.Plugin.SequencerPlus")
         | {"Expression": name, "Type": "Any"},
         "IExpr": _child("NINA.Plugin.SequencerPlus.Expr, NINA.Plugin.SequencerPlus")
-        | {"Expression": index, "Type": "Any"},
+        | {"Expression": str(index), "Type": "Any"},
         "VExpr": _child("NINA.Plugin.SequencerPlus.Expr, NINA.Plugin.SequencerPlus")
-        | {"Expression": value, "Type": "Any"},
+        | {"Expression": variable, "Type": "Any"},
     }
 
 
 def put_array(name: str, index: int, value: str) -> dict[str, Any]:
+    """Write ``value`` into ``array[index]``.
+
+    ``value`` is an expression — a literal count (``'5'``) or a countdown
+    step (``n-1``) — not a raw value.
+    """
     return _child("NINA.Plugin.SequencerPlus.PutArray, NINA.Plugin.SequencerPlus") | {
         "NameExpr": _child("NINA.Plugin.SequencerPlus.Expr, NINA.Plugin.SequencerPlus")
         | {"Expression": name, "Type": "Any"},
         "IExpr": _child("NINA.Plugin.SequencerPlus.Expr, NINA.Plugin.SequencerPlus")
-        | {"Expression": index, "Type": "Any"},
+        | {"Expression": str(index), "Type": "Any"},
         "VExpr": _child("NINA.Plugin.SequencerPlus.Expr, NINA.Plugin.SequencerPlus")
         | {"Expression": value, "Type": "Any"},
     }
