@@ -101,6 +101,12 @@ def _azalt_coordinates(az: float, alt: float) -> dict[str, Any]:
 def _round_robin(
     exposures: list[Any], batch_size: int = 0, reverse: bool = False
 ) -> list[tuple[int, float, str | None]]:
+    # Callers: lights, where batch_size interleaves one frame's exposures
+    # across several groups, and flats, where reverse shoots the list
+    # backwards at dusk. Darks/bias are deliberately NOT round-robined —
+    # they have nothing to batch or reorder, so they read their plan
+    # entries directly (see target_payload_darks).
+    #
     # The exposure element is unused by the flat callers: FlatExposurePlan
     # carries no exposure_time_seconds (N.I.N.A.'s SkyFlat chooses it), so it
     # falls back to 0 and sky_flats() only ever reads count and filter.

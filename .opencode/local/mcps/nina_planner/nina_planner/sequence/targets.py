@@ -121,38 +121,32 @@ def target_payload_darks(
 
     def instructions() -> list[dict[str, Any]]:
         image_type = "BIAS" if bias else "DARK"
-        frames = _round_robin(plan.bias_frames if bias else plan.dark_frames)
+        # One group per plan entry, in list order: darks/bias have nothing
+        # to batch or reorder, so they are not round-robined at all.
+        frames = plan.bias_frames if bias else plan.dark_frames
+        # Only the wheel variant cuts the light with the Dark filter slot;
+        # cover and shutter leave the wheel untouched, and a filter_name of
+        # None omits the SwitchFilter entirely.
+        dark_filter = "Dark" if variant == "wheel" else None
+        dark_position = profile.filter_position(dark_filter) if dark_filter else None
+        exposures = [
+            sequence_smart_exposure(
+                count=f.total_count,
+                # BiasExposurePlan carries no exposure_time_seconds — a bias
+                # is exposed by the camera's own shutter — so it reads 0.
+                exposure=getattr(f, "exposure_time_seconds", 0),
+                image_type=image_type,
+                filter_name=dark_filter,
+                filter_position=dark_position,
+            )
+            for f in frames
+        ]
         base = sequence_park_scope(equipment) + sequence_cool_camera(plan, equipment)
         if variant == "cover":
-            return (
-                base
-                + [close_cover()]
-                + [
-                    sequence_smart_exposure(
-                        count=d[0], exposure=d[1], image_type=image_type
-                    )
-                    for d in frames
-                ]
-                + [open_cover()]
-            )
-        if variant == "shutter":
-            return base + [
-                sequence_smart_exposure(
-                    count=d[0], exposure=d[1], image_type=image_type
-                )
-                for d in frames
-            ]
-        dark_filter = "Dark"
-        return base + [
-            sequence_smart_exposure(
-                count=d[0],
-                exposure=d[1],
-                filter_name=dark_filter,
-                filter_position=profile.filter_position(dark_filter),
-                image_type=image_type,
-            )
-            for d in frames
-        ]
+            return base + [close_cover()] + exposures + [open_cover()]
+        # wheel and shutter differ only in how the light is cut, which is
+        # settled above: neither wraps the exposures in anything.
+        return base + exposures
 
     return [
         sequence_calibration(
