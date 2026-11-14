@@ -102,7 +102,8 @@ class _Exp:
 
 
 class RoundRobinBatchingTest(unittest.TestCase):
-    """Covers lines 121-126 in sequence.py: the _round_robin algorithm."""
+    """Covers the ``_round_robin`` batching algorithm in ``sequence/nodes.py``
+    — the one grouping left in the generator, used by lights only."""
 
     def test_unbatched_emits_full_sequence(self):
         """batch_size=0 → unbatched: emits the full count for each filter."""
@@ -140,14 +141,6 @@ class RoundRobinBatchingTest(unittest.TestCase):
                 (1, 60.0, "R"),
             ],
         )
-
-    def test_reverse_flag_reverses_output(self):
-        from nina_planner.sequence import _round_robin
-
-        exps = [_Exp("L", 60.0, 4), _Exp("R", 60.0, 4)]
-        forward = _round_robin(exps, batch_size=2, reverse=False)
-        backward = _round_robin(exps, batch_size=2, reverse=True)
-        self.assertEqual(backward, list(reversed(forward)))
 
 
 class ContainerDefaultsTest(unittest.TestCase):
@@ -1904,6 +1897,43 @@ class SequenceBehaviorTest(unittest.TestCase):
         dusk_order = [s["Filter"]["_name"] for s in dusk_switches]
         self.assertEqual(dusk_order, ["Ha", "B", "G", "R", "L"])
 
+    def test_flats_emit_one_group_per_plan_entry_in_shoot_order(self):
+        """Flats are not round-robined either: one SkyFlat per plan entry, in
+        shoot order — list order at dawn, reversed at dusk — and
+        ``plan.batch_size`` is ignored, since batching is a lights concern."""
+        from sequence_helpers import build_sequence_flats
+
+        plan = self._plan(
+            flat_frames=[
+                {"filter_name": "L", "total_count": 4},
+                {"filter_name": "Ha", "total_count": 7},
+            ]
+        )
+        self.assertEqual(plan.batch_size, 5)
+        profile = _profile()
+        profile.filters = [
+            FilterInfo(name=n, position=i) for i, n in enumerate(["L", "Ha", "Dark"])
+        ]
+        for dusk, expected in (
+            (False, [("L", 4), ("Ha", 7)]),
+            (True, [("Ha", 7), ("L", 4)]),
+        ):
+            result = build_sequence_flats(
+                plan,
+                equipment=ObservatoryEquipment(),
+                profile=profile,
+                dusk=dusk,
+            )
+            groups = _find_items(result, "FlatDevice.SkyFlat")
+            got = [
+                (
+                    _find_items(g, "FilterWheel.SwitchFilter")[0]["Filter"]["_name"],
+                    _find_items(g, "Conditions.LoopCondition")[0]["Iterations"],
+                )
+                for g in groups
+            ]
+            self.assertEqual(got, expected, "dusk" if dusk else "dawn")
+
 
 class CoordinateHelpersTest(unittest.TestCase):
     """The radec/coord helpers aren't directly imported elsewhere; cover them
@@ -1983,19 +2013,6 @@ class RoundRobinEdgeCasesTest(unittest.TestCase):
                 (2, 60.0, "L"),
                 (1, 60.0, "L"),
             ],
-        )
-
-    def test_exposure_without_filter_attribute_yields_none(self):
-        from nina_planner.sequence import _round_robin
-
-        @dataclass
-        class _NoFilter:
-            exposure_time_seconds: float = 30.0
-            total_count: int = 4
-
-        self.assertEqual(
-            _round_robin([_NoFilter()], batch_size=0),
-            [(4, 30.0, None)],
         )
 
 
