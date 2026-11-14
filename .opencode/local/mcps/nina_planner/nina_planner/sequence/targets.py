@@ -1,4 +1,4 @@
-from typing import Any, cast
+from typing import Any
 
 from ..models.observatory import ObservatoryEquipment
 from ..models.plan import ObservationPlan
@@ -179,6 +179,11 @@ def target_payload_flats(
             sequence_wait_until_dawn(equipment),
         ]
     )
+    # Filter order: dawn shoots flat_frames in list order as written (broadband
+    # first while twilight is dim, narrowband last as sky brightens); dusk
+    # shoots it reversed (narrowband first while sky is bright, broadband
+    # last as it fades).
+    flats = list(reversed(plan.flat_frames)) if dusk else plan.flat_frames
 
     return [
         sequence_calibration(
@@ -208,16 +213,11 @@ def target_payload_flats(
                     ]
                     + [
                         sky_flats(
-                            count=d[0],
-                            filter_name=d[2],
-                            filter_position=profile.filter_position(d[2]),
+                            count=f.total_count,
+                            filter_name=f.filter_name,
+                            filter_position=profile.filter_position(f.filter_name),
                         )
-                        # Filter order: dawn shoots list order as written (broadband first
-                        # while twilight is dim, narrowband last as sky brightens); dusk
-                        # shoots reversed (narrowband first while sky is bright, broadband
-                        # last as it fades).
-                        for d in _round_robin(plan.flat_frames, reverse=dusk)
-                        if d[2] is not None
+                        for f in flats
                     ],
                 ),
             ],
@@ -365,13 +365,7 @@ def target_payload_lights(
                                 count=count,
                                 exposure=exposure,
                                 filter_name=filter_name,
-                                # plan.light_frames' filter_name is required by
-                                # the model; _round_robin types it optional
-                                # because it also serves darks/bias, which have
-                                # none.
-                                filter_position=profile.filter_position(
-                                    cast(str, filter_name)
-                                ),
+                                filter_position=profile.filter_position(filter_name),
                                 dither=plan.guiding.dither_every_n_exposures,
                                 image_type="LIGHT",
                             )

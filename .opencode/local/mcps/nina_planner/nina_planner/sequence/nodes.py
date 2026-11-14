@@ -1,6 +1,8 @@
 import os
 from typing import Any
 
+from ..models.plan import LightExposurePlan
+
 NINA_FLATS_ALTITUDE = float(os.environ.get("NINA_FLATS_ALTITUDE", "80"))
 NINA_FLATS_AZIMUTH_DAWN = float(os.environ.get("NINA_FLATS_AZIMUTH_DAWN", "270"))
 NINA_FLATS_AZIMUTH_DUSK = float(os.environ.get("NINA_FLATS_AZIMUTH_DUSK", "90"))
@@ -99,36 +101,34 @@ def _azalt_coordinates(az: float, alt: float) -> dict[str, Any]:
 
 
 def _round_robin(
-    exposures: list[Any], batch_size: int = 0, reverse: bool = False
-) -> list[tuple[int, float, str | None]]:
-    # Callers: lights, where batch_size interleaves one frame's exposures
-    # across several groups, and flats, where reverse shoots the list
-    # backwards at dusk. Darks/bias are deliberately NOT round-robined —
-    # they have nothing to batch or reorder, so they read their plan
-    # entries directly (see target_payload_darks).
-    #
-    # The exposure element is unused by the flat callers: FlatExposurePlan
-    # carries no exposure_time_seconds (N.I.N.A.'s SkyFlat chooses it), so it
-    # falls back to 0 and sky_flats() only ever reads count and filter.
+    exposures: list[LightExposurePlan], batch_size: int = 0
+) -> list[tuple[int, float, str]]:
+    """Split every light frame's exposures into batches, interleaved across
+    the frames: L5/R5 at ``batch_size=2`` → L2 R2 L2 R2 L1 R1.
+
+    This is the only grouping left in the generator, and it exists for one
+    caller — lights, where ``plan.batch_size`` decides how many exposures of
+    one filter are shot before moving to the next. Darks, bias and flats
+    have nothing to batch or reorder, so they read their plan entries
+    directly, one group each (see ``target_payload_darks`` /
+    ``target_payload_flats``); the tuple is always a light frame's
+    (count, exposure, filter).
+    """
+    groups: list[tuple[int, float, str]] = []
     current_count = 0
-    result = []
     while True:
         done = True
         for d in exposures:
-            filter_name = d.filter_name if hasattr(d, "filter_name") else None
-            exposure_time_seconds = (
-                d.exposure_time_seconds if hasattr(d, "exposure_time_seconds") else 0
-            )
             count = min(d.total_count - current_count, batch_size)
             if batch_size == 0 or len(exposures) == 1:
-                result.append((d.total_count, exposure_time_seconds, filter_name))
+                groups.append((d.total_count, d.exposure_time_seconds, d.filter_name))
             elif count > 0:
-                result.append((count, exposure_time_seconds, filter_name))
+                groups.append((count, d.exposure_time_seconds, d.filter_name))
                 done = False
         if done:
             break
         current_count += batch_size
-    return list(reversed(result)) if reverse else result
+    return groups
 
 
 ### containers
