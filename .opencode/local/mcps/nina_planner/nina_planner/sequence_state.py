@@ -47,36 +47,53 @@ def _issues(node: Any) -> tuple[list[str], list[str]]:
     return failed, preflight
 
 
-def _exposure_group(step: dict[str, Any]) -> dict[str, Any] | None:
-    """The node whose loop condition counts this step's exposures.
+def _counts_exposures(node: dict[str, Any]) -> bool:
+    """True for a container whose loop condition counts this step's exposures.
+
+    Only exposure groups carry ``LoopCondition.Iterations`` (or the
+    ``CompletedIterations`` spelling), so within a step the structural test is
+    unambiguous: the other condition types — ``TimeCondition``,
+    ``AboveHorizonCondition``, ``AltitudeCondition``,
+    ``SafetyMonitorCondition`` — never match.
+    """
+    return (
+        isinstance(node.get("Conditions"), list)
+        and any(
+            "Iterations" in c or "CompletedIterations" in c
+            for c in node["Conditions"]
+            if isinstance(c, dict)
+        )
+        and _find(node, "Take Exposure") is not None
+    )
+
+
+def _exposure_groups(step: dict[str, Any]) -> list[dict[str, Any]]:
+    """Every node whose loop condition counts this step's exposures, in walk order.
 
     N.I.N.A. names it after the container — ``Smart Exposure_Container`` for
     the SmartExposure instruction, ``Exposure Group_Container`` for a
     countdown group (``sequence_count_exposure``) — so the name alone only
-    covers one of them. Fall back to the structure the summary reads:
-    a container carrying an iteration condition over a ``Take Exposure``.
+    covers one of them: the named container is tried first, then *all*
+    structural matches are collected rather than the first one, because a
+    step built with ``batch_size`` owes its frames across several groups
+    (``L×5 + LP×3`` at batch 2 is five groups, not one).
     """
     named = _find(step, "Smart Exposure_Container")
-    if named is not None:
-        return named
-    return next(
-        (
-            node
-            for node in _walk(step)
-            if isinstance(node.get("Conditions"), list)
-            and any(
-                "Iterations" in c or "CompletedIterations" in c
-                for c in node["Conditions"]
-                if isinstance(c, dict)
-            )
-            and _find(node, "Take Exposure") is not None
-        ),
-        None,
-    )
+    structural = [node for node in _walk(step) if _counts_exposures(node)]
+    if named is None:
+        return structural
+    return [named] + [node for node in structural if node is not named]
 
 
-def _exposure(step: dict[str, Any]) -> dict[str, Any] | None:
-    group = _exposure_group(step)
+def _exposure(
+    step: dict[str, Any], group: dict[str, Any] | None = None
+) -> dict[str, Any] | None:
+    """The exposure view of one group; ``group=None`` reads the step's own.
+
+    The ``take`` fallback below is what keeps ``exposure`` meaningful for a
+    step whose group was never expanded (or has none): it is deliberately
+    step-wide, so callers wanting a *particular* group must pass it in.
+    """
     take = _find(group, "Take Exposure") if group else None
     take = take or _find(step, "Take Exposure")
     if group is None and take is None:
@@ -116,11 +133,32 @@ def _horizon(json_step: Any) -> dict[str, Any] | None:
 
 
 def project_sequence_state(state: Any, json_state: Any = None) -> dict[str, Any]:
-    """Build the ``summary`` view. ``json_state`` (``/sequence/json``) is optional."""
-    area = _target_area(state) or {}
+    """Build the ``summary`` view. ``json_state`` (``/sequence/json``) is optional.
+
+    ``parse_error`` is True when a non-empty payload carried no target area:
+    that is a *projection* failure (an area name this code does not
+    recognise), not an empty sequencer, so it is surfaced in ``issues``
+    instead of being raised — a caller reading the summary still gets a dict,
+    and one reading ``issues`` sees why the step list is empty.
+    """
+    area = _target_area(state)
+    parse_error = area is None and bool(state)
+    issues: list[str] = []
+    if parse_error:
+        issues.append(f"target area '{_TARGET_AREA}' not found in /sequence/state")
+    area = area or {}
     json_steps = (_target_area(json_state) or {}).get("Items") or []
+    state_steps = area.get("Items") or []
+    # Horizon data is merged from the other endpoint by index, and neither
+    # endpoint can pair it any better: /sequence/json steps carry no Target
+    # key, so TargetName pairing is impossible, and the step names repeat
+    # (seven identical Deep Sky containers), so name-matching cannot
+    # disambiguate either. The one thing that does hold when the two agree
+    # end to end is the order — so verify the full Name sequence and, on any
+    # mismatch, fail safe to a missing horizon rather than a wrong one.
+    paired = [s.get("Name") for s in json_steps] == [s.get("Name") for s in state_steps]
     steps: list[dict[str, Any]] = []
-    for i, step in enumerate(area.get("Items") or []):
+    for i, step in enumerate(state_steps):
         name = ((step.get("Target") or {}).get("TargetName")) or None
         match = _ATTRIBUTION.search(name or "")
         take = _find(step, "Take Exposure")
@@ -140,6 +178,7 @@ def project_sequence_state(state: Any, json_state: Any = None) -> dict[str, Any]
             and n.get("Status") == "FINISHED"
             and n.get("Message")
         ]
+        groups = _exposure_groups(step)
         steps.append(
             {
                 "index": i,
@@ -153,18 +192,25 @@ def project_sequence_state(state: Any, json_state: Any = None) -> dict[str, Any]
                 "status": step.get("Status"),
                 "phase": running,
                 "issues": failed,
-                "exposure": _exposure(step),
-                "horizon": _horizon(json_steps[i]) if i < len(json_steps) else None,
+                # `exposure` is the FIRST group and must keep meaning exactly
+                # what it always has (tests/test_live.py, README and the tool
+                # docstring all read it as "the step's exposure"); the full
+                # list lives beside it in `exposure_groups`.
+                "exposure": _exposure(step, groups[0] if groups else None),
+                "exposure_groups": [_exposure(step, group) for group in groups],
+                "horizon": _horizon(json_steps[i]) if paired else None,
                 "fired_events": fired,
             }
         )
     failed_all, preflight_all = _issues(state)
+    issues.extend(failed_all)
     return {
         "running": any(n.get("Status") == "RUNNING" for n in _walk(state)),
         "status": area.get("Status"),
         "step_count": len(steps),
         "completed_steps": sum(s["status"] == "FINISHED" for s in steps),
-        "issues": failed_all,
+        "parse_error": parse_error,
+        "issues": issues,
         "preflight_issues": preflight_all,
         "steps": steps,
     }

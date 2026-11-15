@@ -59,7 +59,7 @@ Queueing, starting, stopping, and checking runs.
 | `load_sequence(request=[...])` | Load a sequence for the whole night with safety guardrails. 💤 **Never starts it.** **Every** loaded sequence ends with the park — an empty list is just that park with no steps in front of it. See [details](#load_sequence). |
 | `start_sequence()` | Start the currently loaded sequence immediately. Use after `load_sequence()`. ▶️ |
 | `stop_sequence()` | Stop the running sequence and wait until NINA reports it stopped. ⚠️ Does **not** park the scope. |
-| `get_sequence_state(detail)` | Per-step view of the loaded sequence: plan attribution, status, exposure progress, horizon altitude, errors. `detail`: `summary` (default) or `raw` (`/sequence/state`). Read-only. |
+| `get_sequence_state(detail)` | Per-step view of the loaded sequence: plan attribution, status, exposure progress (`exposure` is the step's first group; `exposure_groups` lists every group, since a batched step owes frames across several), horizon altitude, errors, and a top-level `parse_error` that is true only when the payload's target area was not recognised (reported in `issues`, never raised). `detail`: `summary` (default) or `raw` (`/sequence/state`). Read-only. |
 
 ### 🗺️ Plan Management
 

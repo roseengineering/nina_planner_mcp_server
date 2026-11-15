@@ -1,0 +1,14 @@
+{
+  "target": "Capture",
+  "intent": "fixture capture",
+  "pointings": [{"ra_hours": 5.0, "dec_deg": 10.0}],
+  "batch_size": 2,
+  "light_frames": [
+    {"filter_name": "L", "exposure_time_seconds": 60.0, "total_count": 5},
+    {"filter_name": "LP", "exposure_time_seconds": 30.0, "total_count": 3}
+  ],
+  "flat_frames": [{"filter_name": "L", "total_count": 1}],
+  "dark_frames": [{"exposure_time_seconds": 0.5, "total_count": 1}],
+  "bias_frames": [{"total_count": 1}],
+  "description": "Fixture-capture plan for tests/fixtures/sequence_*_{unrun,finished}.json. Not an observation plan: it lives under .opencode/ (pruned by _walk_visible) so audit_plans never sweeps it up, and its filters must exist in the active N.I.N.A. profile (Dark/L/LP here). L x5 + LP x3 at batch_size=2 exercises every projection branch in one snapshot: 5 structural 'Exposure Group' containers for lights, the Smart Exposure_Container name-shortcut for wheel darks, and a switchless bias (filter null). The 0.5 s single dark keeps the finished-run capture (A2) to seconds."
+}

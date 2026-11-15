@@ -239,7 +239,7 @@ COUNT_VARIABLE = "n"
 # (sequence_count_exposure) and darks/bias (target_payload_darks), so the
 # N.I.N.A. UI reads them alike. Purely a label — the state summary reads a
 # group's structure (its loop condition over a Take Exposure), never this
-# name; see sequence_state._exposure_group.
+# name; see sequence_state._exposure_groups.
 EXPOSURE_GROUP_NAME = "Exposure Group"
 
 
