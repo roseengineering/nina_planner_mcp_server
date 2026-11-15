@@ -362,7 +362,15 @@ def smart_exposure(
         ctype="NINA.Sequencer.SequenceItem.Imaging.SmartExposure, NINA.Sequencer",
         name="Smart Exposure",
         conditions=[loop_for_iterations(count)],
-        triggers=[dither_after_exposures(dither)] if dither else [],
+        # ALWAYS emitted, even for dither=0: N.I.N.A.'s SmartExposure reads
+        # its children positionally — `GetDitherAfterExposures() => Triggers[0]`
+        # — and Validate() calls it unconditionally, so an empty Triggers
+        # collection throws before the first instruction and aborts the whole
+        # run silently (SEQUENCE-STARTING -> FINISHED, step stays CREATED).
+        # AfterExposures=0 is N.I.N.A.'s own "never": Validate only checks the
+        # trigger `if (dither.AfterExposures > 0)`, and darks/bias — which never
+        # dither — have carried this placeholder through every run that worked.
+        triggers=[dither_after_exposures(dither)],
         # No filter_name means leave the wheel untouched: covered darks cut
         # the light with the cover, so there is no SwitchFilter at all.
         instructions=(

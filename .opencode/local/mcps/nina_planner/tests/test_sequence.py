@@ -929,13 +929,14 @@ def _event_messages(seq: dict) -> list[str]:
 
 
 class DitherTriggerTest(unittest.TestCase):
-    """A dither of 0 means "never dither": no trigger at all.
+    """A dither of 0 means "never dither" — for the countdown group.
 
-    Both group builders default ``dither`` to 0, so gating on
-    ``is not None`` would emit ``DitherAfterExposures: 0`` for every caller
-    that never asked for dithering — the darks/bias step, or a lights group
-    built without the plan's value. Gate on the value, as
-    ``instructions.smart_exposure`` does.
+    The two builders differ deliberately. A countdown group is a plain
+    ``SequentialContainer`` with no positional expectations, so gating on the
+    value keeps a meaningless ``DitherAfterExposures: 0`` off it.
+    ``smart_exposure`` cannot: N.I.N.A.'s ``SmartExposure`` reads its children
+    positionally (``Triggers[0]``), so the trigger must exist even when it
+    counts to nothing — see ``test_smart_exposure_always_carries_a_trigger``.
     """
 
     def test_countdown_group_omits_the_trigger_at_zero(self):
@@ -957,16 +958,25 @@ class DitherTriggerTest(unittest.TestCase):
         (dither,) = _find_items(steps, "Guider.DitherAfterExposures, NINA.Sequencer")
         self.assertEqual(dither["AfterExposures"], 4)
 
-    def test_smart_exposure_omits_the_trigger_at_zero(self):
+    def test_smart_exposure_always_carries_a_trigger(self):
+        """``dither=0`` still emits the trigger — N.I.N.A. indexes ``Triggers[0]``.
+
+        ``SmartExposure.GetDitherAfterExposures()`` is ``Triggers[0]`` and
+        ``Validate()`` calls it before it looks at ``AfterExposures``, so an
+        empty ``Triggers`` collection throws out of validation and the whole
+        run aborts before the first instruction: ``SEQUENCE-STARTING`` then
+        ``SEQUENCE-FINISHED`` in the same second with the step still
+        ``CREATED``. ``AfterExposures: 0`` is N.I.N.A.'s own "never"
+        (``Validate()`` only checks it when ``> 0``), which is what makes the
+        placeholder safe to always send.
+        """
         from nina_planner.sequence import smart_exposure
 
-        self.assertEqual(
-            _find_items(
-                smart_exposure(count=5, exposure=60.0, image_type="DARK"),
-                "Guider.DitherAfterExposures, NINA.Sequencer",
-            ),
-            [],
+        (dither,) = _find_items(
+            smart_exposure(count=5, exposure=60.0, image_type="DARK"),
+            "Guider.DitherAfterExposures, NINA.Sequencer",
         )
+        self.assertEqual(dither["AfterExposures"], 0)
 
     def test_smart_exposure_emits_the_trigger_when_asked(self):
         from nina_planner.sequence import smart_exposure
@@ -976,6 +986,26 @@ class DitherTriggerTest(unittest.TestCase):
             "Guider.DitherAfterExposures, NINA.Sequencer",
         )
         self.assertEqual(dither["AfterExposures"], 4)
+
+    def test_smart_exposure_keeps_ninas_positional_child_order(self):
+        """N.I.N.A. reads SmartExposure's children by index, not by type.
+
+        ``Items[0]`` = SwitchFilter, ``Items[1]`` = TakeExposure,
+        ``Conditions[0]`` = LoopCondition, ``Triggers[0]`` =
+        DitherAfterExposures — exactly what its ``ImportingConstructor``
+        builds. Reorder or drop one and validation throws at run time.
+        """
+        from nina_planner.sequence import smart_exposure
+
+        node = smart_exposure(
+            count=5, exposure=60.0, image_type="DARK", filter_name="Dark"
+        )
+        items = node["Items"]["$values"]
+        self.assertIn("FilterWheel.SwitchFilter", items[0]["$type"])
+        self.assertIn("Imaging.TakeExposure", items[1]["$type"])
+        self.assertEqual(len(items), 2)
+        self.assertIn("LoopCondition", node["Conditions"]["$values"][0]["$type"])
+        self.assertIn("DitherAfterExposures", node["Triggers"]["$values"][0]["$type"])
 
 
 class SequenceBehaviorTest(unittest.TestCase):

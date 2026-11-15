@@ -304,34 +304,56 @@ class ProjectSequenceStateTests(unittest.TestCase):
 
 
 class FinishedRunTests(unittest.TestCase):
+    """A real completed run, captured from N.I.N.A.: the darks micro-sequence.
+
+    It replaces the legacy 8-step capture: one 0.5 s dark shot end to end
+    (wheel parked on the Dark slot, one frame saved, then the automatic
+    park). The equipment-dependent assertion this class used to carry — a
+    FAILED autofocus node — has no counterpart in a darks run that finished
+    clean, so the FAILED-node rule lives in
+    ``ProjectSequenceStateTests.test_failed_node_surfaces_at_step_and_root``,
+    which injects its own issue instead of depending on the rig.
+    """
+
     def setUp(self):
         state = json.loads((_F / "sequence_state_finished.json").read_text())
         done = json.loads((_F / "sequence_json_finished.json").read_text())
         self.out = project_sequence_state(state["Response"], done["Response"])
+        (self.step,) = self.out["steps"]
 
-    def test_all_steps_finished_with_full_counts(self):
-        self.assertEqual(self.out["completed_steps"], 8)
+    def test_single_step_finished_with_full_counts(self):
+        self.assertEqual(self.out["step_count"], 1)
+        self.assertEqual(self.out["completed_steps"], 1)
         self.assertEqual(self.out["status"], "FINISHED")
         self.assertFalse(self.out["running"])
-        for step in self.out["steps"]:
-            self.assertEqual(step["exposure"]["completed"], step["exposure"]["total"])
-            self.assertGreater(step["exposure"]["total"], 0)
+        self.assertFalse(self.out["parse_error"])
+
+        exposure = self.step["exposure"]
+        self.assertEqual(self.step["status"], "FINISHED")
+        self.assertGreater(exposure["total"], 0)
+        # a finished run's group has spent every frame it owed
+        self.assertEqual(exposure["completed"], exposure["total"])
+        # …and a step that has groups lists one entry per group, with
+        # `exposure` being that first group
+        self.assertEqual(self.step["exposure_groups"], [exposure])
+        self.assertEqual(exposure["filter"], "Dark")
+        self.assertEqual(exposure["seconds"], 0.5)
+        self.assertEqual(exposure["binning"], "1x1")
+
+        self.assertEqual(self.step["frame_type"], "DARK")
+        self.assertEqual(self.step["plan_id"], next(iter(PLAN_IDS)))
+        self.assertIsNone(self.step["horizon"])
+        self.assertEqual(self.step["issues"], [])
+        # A clean run reports nothing at either level: no FAILED node
+        # anywhere, and no pre-flight validation notes left behind.
+        self.assertEqual(self.out["issues"], [])
+        self.assertEqual(self.out["preflight_issues"], [])
 
     def test_events_fire_once_finished(self):
-        first = self.out["steps"][0]["fired_events"]
+        first = self.step["fired_events"]
         self.assertEqual(len(first), 2)
         self.assertTrue(first[0].startswith("ACQUISITION-STARTING"))
         self.assertTrue(first[1].startswith("ACQUISITION-FINISHED"))
-
-    def test_failed_autofocus_is_a_real_issue(self):
-        self.assertEqual(
-            self.out["steps"][0]["issues"],
-            [
-                "Run Autofocus: Camera not connected",
-                "Run Autofocus: Focuser not connected",
-            ],
-        )
-        self.assertEqual(self.out["steps"][1]["issues"], [])
 
 
 def _nodes(node):
