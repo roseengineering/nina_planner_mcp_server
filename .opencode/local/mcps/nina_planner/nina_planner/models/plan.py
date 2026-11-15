@@ -56,7 +56,14 @@ class AutofocusConfig(StrictModel):
 
 
 class GuidingConfig(StrictModel):
-    dither_every_n_exposures: int = Field(default=2, ge=1)
+    dither_every_n_exposures: int = Field(
+        default=2,
+        ge=0,
+        description=(
+            "Dither after this many exposures. 0 means never dither: the "
+            "group omits its DitherAfterExposures trigger entirely."
+        ),
+    )
     check_drift_every_n_exposures: int = Field(default=6, ge=1)
     max_drift_arcmin: float = Field(default=1.5, gt=0)
 

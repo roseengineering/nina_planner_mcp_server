@@ -51,9 +51,9 @@ def _exposure_group(step: dict[str, Any]) -> dict[str, Any] | None:
     """The node whose loop condition counts this step's exposures.
 
     N.I.N.A. names it after the container — ``Smart Exposure_Container`` for
-    the SmartExposure instruction, ``<count> x <exposure> sec …_Container``
-    for a countdown group (``sequence_count_exposure``) — so the name alone
-    only covers one of them. Fall back to the structure the summary reads:
+    the SmartExposure instruction, ``Exposure Group_Container`` for a
+    countdown group (``sequence_count_exposure``) — so the name alone only
+    covers one of them. Fall back to the structure the summary reads:
     a container carrying an iteration condition over a ``Take Exposure``.
     """
     named = _find(step, "Smart Exposure_Container")

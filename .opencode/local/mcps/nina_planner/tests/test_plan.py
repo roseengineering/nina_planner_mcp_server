@@ -284,6 +284,42 @@ class QualityConfigTest(unittest.TestCase):
         self.assertEqual(_plan(quality={"max_hfr": 2.5}).plan_id, "plan-abc123")
 
 
+class GuidingConfigTest(unittest.TestCase):
+    """The plan's `guiding` section: 0 is a value here, not a typo.
+
+    Only ``dither_every_n_exposures`` accepts 0 — it means "never dither"
+    and the group then omits its trigger. The two drift thresholds still
+    have to be positive, because 0 there would mean "check constantly" /
+    "no drift allowed at all" rather than "off".
+    """
+
+    def test_zero_dither_means_never_dither(self):
+        guiding = _plan(guiding={"dither_every_n_exposures": 0}).guiding
+        self.assertEqual(guiding.dither_every_n_exposures, 0)
+
+    def test_negative_dither_refused(self):
+        with self.assertRaises(ValidationError) as ctx:
+            _plan(guiding={"dither_every_n_exposures": -1})
+        self.assertIn("dither_every_n_exposures", str(ctx.exception))
+
+    def test_drift_thresholds_still_must_be_positive(self):
+        with self.assertRaises(ValidationError):
+            _plan(guiding={"check_drift_every_n_exposures": 0})
+        with self.assertRaises(ValidationError):
+            _plan(guiding={"max_drift_arcmin": 0})
+
+    def test_defaults_unchanged(self):
+        guiding = _plan().guiding
+        self.assertEqual(guiding.dither_every_n_exposures, 2)
+        self.assertEqual(guiding.check_drift_every_n_exposures, 6)
+        self.assertEqual(guiding.max_drift_arcmin, 1.5)
+
+    def test_guiding_round_trips_through_json(self):
+        plan = _plan(guiding={"dither_every_n_exposures": 0})
+        again = ObservationPlan.model_validate(json.loads(plan.model_dump_json()))
+        self.assertEqual(again.guiding.dither_every_n_exposures, 0)
+
+
 class MosaicBlockTest(unittest.TestCase):
     """The `mosaic` block: a plan may carry a grid to derive instead of
     pointings — and once expanded, the pointings are the authority."""

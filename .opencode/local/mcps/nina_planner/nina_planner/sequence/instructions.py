@@ -362,7 +362,7 @@ def smart_exposure(
         ctype="NINA.Sequencer.SequenceItem.Imaging.SmartExposure, NINA.Sequencer",
         name="Smart Exposure",
         conditions=[loop_for_iterations(count)],
-        triggers=[dither_after_exposures(dither)] if dither is not None else [],
+        triggers=[dither_after_exposures(dither)] if dither else [],
         # No filter_name means leave the wheel untouched: covered darks cut
         # the light with the cover, so there is no SwitchFilter at all.
         instructions=(

@@ -873,6 +873,56 @@ def _event_messages(seq: dict) -> list[str]:
     return [e["Message"] for e in _find_items(seq, "SendEventInstruction")]
 
 
+class DitherTriggerTest(unittest.TestCase):
+    """A dither of 0 means "never dither": no trigger at all.
+
+    Both group builders default ``dither`` to 0, so gating on
+    ``is not None`` would emit ``DitherAfterExposures: 0`` for every caller
+    that never asked for dithering — the darks/bias step, or a lights group
+    built without the plan's value. Gate on the value, as
+    ``instructions.smart_exposure`` does.
+    """
+
+    def test_countdown_group_omits_the_trigger_at_zero(self):
+        from nina_planner.sequence import sequence_count_exposure
+
+        steps = sequence_count_exposure(
+            index=0, count=3, exposure=60.0, image_type="LIGHT"
+        )
+        self.assertEqual(
+            _find_items(steps, "Guider.DitherAfterExposures, NINA.Sequencer"), []
+        )
+
+    def test_countdown_group_emits_the_trigger_when_asked(self):
+        from nina_planner.sequence import sequence_count_exposure
+
+        steps = sequence_count_exposure(
+            index=0, count=3, exposure=60.0, image_type="LIGHT", dither=4
+        )
+        (dither,) = _find_items(steps, "Guider.DitherAfterExposures, NINA.Sequencer")
+        self.assertEqual(dither["AfterExposures"], 4)
+
+    def test_smart_exposure_omits_the_trigger_at_zero(self):
+        from nina_planner.sequence import smart_exposure
+
+        self.assertEqual(
+            _find_items(
+                smart_exposure(count=5, exposure=60.0, image_type="DARK"),
+                "Guider.DitherAfterExposures, NINA.Sequencer",
+            ),
+            [],
+        )
+
+    def test_smart_exposure_emits_the_trigger_when_asked(self):
+        from nina_planner.sequence import smart_exposure
+
+        (dither,) = _find_items(
+            smart_exposure(count=5, exposure=60.0, image_type="DARK", dither=4),
+            "Guider.DitherAfterExposures, NINA.Sequencer",
+        )
+        self.assertEqual(dither["AfterExposures"], 4)
+
+
 class SequenceBehaviorTest(unittest.TestCase):
     """Behavioral assertions on generated sequence contents.
 
@@ -1239,6 +1289,21 @@ class SequenceBehaviorTest(unittest.TestCase):
         self.assertEqual(len(dithers), 1)
         self.assertEqual(
             dithers[0]["AfterExposures"], plan.guiding.dither_every_n_exposures
+        )
+
+    def test_lights_plan_that_never_dithers_emits_no_trigger(self):
+        """``dither_every_n_exposures: 0`` means never: no trigger at all.
+
+        The plan accepts 0, and the group must then carry no
+        ``DitherAfterExposures`` node rather than one counting to zero.
+        """
+        plan = self._plan(guiding={"dither_every_n_exposures": 0})
+        result = build_sequence_lights(
+            plan, equipment=ObservatoryEquipment(), profile=_profile()
+        )
+        (group,) = _countdown_groups(result)
+        self.assertEqual(
+            _find_items(group, "Guider.DitherAfterExposures, NINA.Sequencer"), []
         )
 
     def test_lights_countdown_cells_match_the_round_robin_groups(self):
@@ -1670,6 +1735,40 @@ class SequenceBehaviorTest(unittest.TestCase):
                 for g in groups
             ]
             self.assertEqual(got, expected, "bias" if bias else "darks")
+
+    def test_darks_groups_carry_the_lights_group_name(self):
+        """Each dark/bias entry is wrapped in the same-named container lights
+        use, so the N.I.N.A. UI reads both step families alike."""
+        from sequence_helpers import build_sequence_darks
+
+        plan = self._plan(
+            dark_frames=[
+                {"exposure_time_seconds": 60.0, "total_count": 2},
+                {"exposure_time_seconds": 120.0, "total_count": 3},
+            ],
+            bias_frames=[{"total_count": 4}],
+        )
+        lights = build_sequence_lights(
+            plan, equipment=ObservatoryEquipment(), profile=_profile()
+        )
+        self.assertTrue(_find_named(lights, "Exposure Group"), "lights use it")
+        for bias, expected in ((False, 2), (True, 1)):
+            result = build_sequence_darks(
+                plan,
+                equipment=ObservatoryEquipment(),
+                profile=_profile(),
+                bias=bias,
+            )
+            groups = _find_named(result, "Exposure Group")
+            self.assertEqual(len(groups), expected, "bias" if bias else "darks")
+            for group in groups:
+                # The wrapper carries no condition of its own: the count
+                # stays on the SmartExposure inside, which keeps the name
+                # the state summary looks up first
+                # (sequence_state._exposure_group).
+                self.assertEqual(group["Conditions"]["$values"], [])
+                (smart,) = _find_items(group, "Imaging.SmartExposure, NINA.Sequencer")
+                self.assertEqual(smart["Name"], "Smart Exposure")
 
     def test_darks_with_bias_flag_uses_bias_image_type(self):
         from sequence_helpers import build_sequence_darks

@@ -65,11 +65,13 @@ class ProjectSequenceStateTests(unittest.TestCase):
         self.assertEqual(out["steps"], [])
 
     def test_countdown_group_exposure_is_read_structurally(self):
-        """Lights groups are named after the countdown, not "Smart Exposure".
+        """A group's name carries nothing, so the summary reads its shape.
 
-        The summary therefore finds the group by structure — an iteration
-        condition over a ``Take Exposure`` in the same container — instead of
-        by N.I.N.A.'s ``Smart Exposure_Container`` name alone.
+        Production names the group ``Exposure Group`` — no counts, no
+        filter — and the name here is deliberately a third spelling, to
+        pin the reading on structure (an iteration condition over a
+        ``Take Exposure`` in the same container) rather than on
+        N.I.N.A.'s ``Smart Exposure_Container`` name or our own.
         """
         state = [
             {

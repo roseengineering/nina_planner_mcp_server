@@ -22,7 +22,6 @@ from .instructions import (
     run_finished_event,
     run_starting_event,
     send_event,
-    smart_exposure,
     switch_filter,
     take_exposure,
     unpark_scope,
@@ -229,43 +228,6 @@ def sequence_unpark_scope(equipment: ObservatoryEquipment) -> list[dict[str, Any
     return [unpark_scope()] if equipment.mount and equipment.mount.can_park else []
 
 
-def _exposure_group_name(count: int, exposure: float, filter_name: str | None) -> str:
-    fltr = "(Current)" if filter_name is None else filter_name
-    return f"{count} x {exposure} sec exposures using `{fltr}` filter"
-
-
-def sequence_smart_exposure(
-    count: int,
-    exposure: float,
-    image_type: str,
-    filter_name: str | None = None,
-    filter_position: int | None = None,
-    dither: int = 0,
-) -> dict[str, Any]:
-    """One exposure group, wrapped in a container named for the N.I.N.A. UI.
-
-    Deliberately carries no ``EXPOSING-*`` events: lights stopped emitting
-    them with the countdown (their counts come from the plan, not from what
-    actually ran, so after a resume they overstate it), and a bracket one
-    step family emits while the other does not is worse than none. The step
-    is still bracketed by ``ACQUISITION-*``, and every frame is logged as it
-    saves.
-    """
-    return container_sequential(
-        name=_exposure_group_name(count, exposure, filter_name),
-        instructions=[
-            smart_exposure(
-                count=count,
-                exposure=exposure,
-                image_type=image_type,
-                filter_name=filter_name,
-                filter_position=filter_position,
-                dither=dither,
-            ),
-        ],
-    )
-
-
 # Sequencer+ expression spellings for the lights countdown (see
 # sequence_count_exposure). The array name is read back through
 # Expr.StringValue, so it must be a string *literal*; the countdown variable
@@ -273,6 +235,12 @@ def sequence_smart_exposure(
 # with a raw symbol lookup and `n > 0` has to evaluate as an expression.
 COUNT_ARRAY = "'count'"
 COUNT_VARIABLE = "n"
+# The label both step families put on an exposure group: lights
+# (sequence_count_exposure) and darks/bias (target_payload_darks), so the
+# N.I.N.A. UI reads them alike. Purely a label — the state summary reads a
+# group's structure (its loop condition over a Take Exposure), never this
+# name; see sequence_state._exposure_group.
+EXPOSURE_GROUP_NAME = "Exposure Group"
 
 
 def sequence_count_exposure(
@@ -304,12 +272,12 @@ def sequence_count_exposure(
     return [
         get_array(COUNT_ARRAY, index, COUNT_VARIABLE),
         container_sequential(
-            name=_exposure_group_name(count, exposure, filter_name),
+            name=EXPOSURE_GROUP_NAME,
             conditions=[
                 loop_for_iterations(count),
                 loop_while_expression(f"{COUNT_VARIABLE} > 0"),
             ],
-            triggers=[dither_after_exposures(dither)] if dither is not None else [],
+            triggers=[dither_after_exposures(dither)] if dither else [],
             instructions=(
                 (
                     [switch_filter(filter_name, filter_position)]

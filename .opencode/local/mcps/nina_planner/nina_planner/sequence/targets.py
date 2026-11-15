@@ -6,6 +6,7 @@ from ..models.profile import ObservatoryProfile
 from .builders import (
     COUNT_ARRAY,
     COUNT_VARIABLE,
+    EXPOSURE_GROUP_NAME,
     _sequence_with_steps,
     _validated_pointing,
     sequence_calibration,
@@ -15,7 +16,6 @@ from .builders import (
     sequence_home_scope,
     sequence_park_scope,
     sequence_safetynet,
-    sequence_smart_exposure,
     sequence_unpark_scope,
     sequence_wait_until_dawn,
     sequence_wait_until_dusk,
@@ -40,6 +40,7 @@ from .instructions import (
     slew_and_center,
     slew_center_and_rotate,
     slew_to_azalt,
+    smart_exposure,
     start_guiding,
     stop_guiding,
     switch_filter,
@@ -130,14 +131,20 @@ def target_payload_darks(
         dark_filter = "Dark" if variant == "wheel" else None
         dark_position = profile.filter_position(dark_filter) if dark_filter else None
         exposures = [
-            sequence_smart_exposure(
-                count=f.total_count,
-                # BiasExposurePlan carries no exposure_time_seconds — a bias
-                # is exposed by the camera's own shutter — so it reads 0.
-                exposure=getattr(f, "exposure_time_seconds", 0),
-                image_type=image_type,
-                filter_name=dark_filter,
-                filter_position=dark_position,
+            container_sequential(
+                name=EXPOSURE_GROUP_NAME,
+                instructions=[
+                    smart_exposure(
+                        count=f.total_count,
+                        # BiasExposurePlan carries no exposure_time_seconds —
+                        # a bias is exposed by the camera's own shutter — so
+                        # it reads 0.
+                        exposure=getattr(f, "exposure_time_seconds", 0),
+                        image_type=image_type,
+                        filter_name=dark_filter,
+                        filter_position=dark_position,
+                    )
+                ],
             )
             for f in frames
         ]
