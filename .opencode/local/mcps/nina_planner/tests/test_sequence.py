@@ -292,6 +292,61 @@ class ReferenceNormalizationTest(unittest.TestCase):
         self.assertEqual(container["Parent"], {"$ref": "1"})
         self.assertEqual(container["Instructions"][0]["Parent"], {"$ref": "1"})
 
+    def test_sequencer_plus_nodes_lose_their_parent_reference(self):
+        """Plugin nodes are emitted bare; core siblings keep theirs.
+
+        N.I.N.A. evaluates a Sequencer+ node's expressions while applying
+        ``Parent`` — mid-deserialization, when the countdown ``n`` cannot
+        resolve — and the throw drops the node (see ``_add_refs``).
+        """
+        from nina_planner.sequence import _add_refs
+
+        result = _add_refs(
+            {
+                "$id": None,
+                "Parent": None,
+                "Items": [
+                    {
+                        "$id": None,
+                        "$type": (
+                            "NINA.Sequencer.Container.SequentialContainer, "
+                            "NINA.Sequencer"
+                        ),
+                        "Parent": None,
+                        "Items": [
+                            {
+                                "$id": None,
+                                "$type": (
+                                    "NINA.Plugin.SequencerPlus.GetArray, "
+                                    "NINA.Plugin.SequencerPlus"
+                                ),
+                                "Parent": None,
+                            },
+                            {
+                                "$id": None,
+                                "$type": (
+                                    "NINA.Sequencer.SequenceItem.Imaging."
+                                    "TakeExposure, NINA.Sequencer"
+                                ),
+                                "Parent": None,
+                            },
+                        ],
+                    }
+                ],
+            }
+        )
+
+        container = result["Items"][0]
+        plugin, core = container["Items"]
+        # The plugin node keeps its $id (nothing may reference it any more)
+        # but carries no Parent at all — not even null, which would still run
+        # the parent-changed path it throws in.
+        self.assertIn("$id", plugin)
+        self.assertNotIn("Parent", plugin)
+        # The core sibling still points at the container holding it.
+        self.assertEqual(core["Parent"], {"$ref": container["$id"]})
+        self.assertEqual(container["Parent"], {"$ref": "1"})
+
 
 class PointingIndexValidationTest(unittest.TestCase):
     """pointing_index out-of-range on the lights path: both the payload and
@@ -1305,6 +1360,29 @@ class SequenceBehaviorTest(unittest.TestCase):
         self.assertEqual(
             _find_items(group, "Guider.DitherAfterExposures, NINA.Sequencer"), []
         )
+
+    def test_sequencer_plus_nodes_are_emitted_without_a_parent(self):
+        """No plugin node in a built payload carries a Parent back-reference.
+
+        N.I.N.A. evaluates a Sequencer+ node's expressions while applying
+        ``Parent`` — mid-deserialization, before anything has run, when the
+        countdown ``n`` cannot resolve — and the throw drops the node, which
+        for ``LoopWhile`` takes the whole exposure-group container with it:
+        a lights step that would load with empty groups and shoot zero
+        frames. See ``nodes._add_refs`` for the live measurement.
+        """
+        plan = self._plan()
+        result = build_sequence_lights(
+            plan, equipment=ObservatoryEquipment(), profile=_profile()
+        )
+        plugin = _find_items(result, "NINA.Plugin.SequencerPlus.")
+        self.assertTrue(plugin, "expected Sequencer+ nodes in a lights payload")
+        stragglers = sorted({_kind(n) for n in plugin if "Parent" in n})
+        self.assertEqual(stragglers, [], "Sequencer+ nodes still carrying Parent")
+        # Core nodes keep theirs — dropping those is what leaves Issues.
+        takes = _find_items(result, "Imaging.TakeExposure, NINA.Sequencer")
+        self.assertTrue(takes)
+        self.assertTrue(all(t.get("Parent") for t in takes))
 
     def test_lights_countdown_cells_match_the_round_robin_groups(self):
         """``batch_size > 1`` splits one frame's exposures across several

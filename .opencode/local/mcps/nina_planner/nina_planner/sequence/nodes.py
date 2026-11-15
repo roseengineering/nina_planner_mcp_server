@@ -7,6 +7,10 @@ NINA_FLATS_ALTITUDE = float(os.environ.get("NINA_FLATS_ALTITUDE", "80"))
 NINA_FLATS_AZIMUTH_DAWN = float(os.environ.get("NINA_FLATS_AZIMUTH_DAWN", "270"))
 NINA_FLATS_AZIMUTH_DUSK = float(os.environ.get("NINA_FLATS_AZIMUTH_DUSK", "90"))
 
+# The plugin namespace whose nodes we emit without a Parent back-reference;
+# see _add_refs for why.
+_SEQUENCER_PLUS = "NINA.Plugin.SequencerPlus."
+
 
 def _fix_provider(data: dict[str, Any]) -> dict[str, Any]:
     store: dict[str, str] = {}
@@ -31,6 +35,24 @@ def _fix_provider(data: dict[str, Any]) -> dict[str, Any]:
 
 
 def _add_refs(data: dict[str, Any]) -> dict[str, Any]:
+    """Number every node and point each ``Parent`` at the node that holds it.
+
+    Sequencer+ (plugin) nodes are the one exception: their ``Parent`` is
+    dropped instead of filled in. N.I.N.A. evaluates a plugin node's
+    expressions *while applying* ``Parent`` — mid-deserialization, before
+    anything has run, when the countdown variable ``n`` cannot resolve — and
+    the throw surfaces as ``Failed to deserialize sequence entity``
+    (``JsonCreationConverter.ReadJson``), which drops the node. The first
+    casualty is ``LoopWhile`` (``n > 0``), and its failure takes the whole
+    exposure-group container with it, so a lights step loads with empty
+    groups, no ``Take Exposure``, and would shoot zero frames. Measured
+    against the live API: with ``Parent`` kept, 15 errors and 0 of 5 groups
+    intact; stripped here, 0 errors with every group and array op intact.
+    Known cost, not yet proven safe: ``GetArray.Execute`` resolves its result
+    variable through ``Symbol.FindSymbol(name, Parent)``, so only a real run
+    settles the runtime half. Core (``NINA.*``) nodes keep theirs — stripping
+    those is what leaves a node with Issues instead.
+    """
     ident = 0
 
     def fn(data: dict[str, Any], parent: dict[str, Any] | None = None) -> None:
@@ -39,9 +61,12 @@ def _add_refs(data: dict[str, Any]) -> dict[str, Any]:
             ident += 1
             data["$id"] = str(ident)
             if "Parent" in data:
-                data["Parent"] = parent
-                if "Instructions" not in data:
-                    parent = {"$ref": str(ident)}
+                if str(data.get("$type", "")).startswith(_SEQUENCER_PLUS):
+                    data.pop("Parent")
+                else:
+                    data["Parent"] = parent
+                    if "Instructions" not in data:
+                        parent = {"$ref": str(ident)}
         for d in data.values():
             if isinstance(d, dict):
                 fn(d, parent)
