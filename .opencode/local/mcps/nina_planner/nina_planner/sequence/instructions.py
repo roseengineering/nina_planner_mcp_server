@@ -438,6 +438,14 @@ def declare_variable(name: str, value: str) -> dict[str, Any]:
     already exist: without this the read fails with "Result Variable is not
     defined". ``value`` is the initial value expression, evaluated when this
     instruction runs.
+
+    ⚠️ A sequence containing this node (or ``SetGlobalVariable`` — anything
+    derived from the plugin's ``Symbol``) cannot be *started* on the rig as
+    of 2026-11-15: every start aborts before the first instruction,
+    silently (no log entry, step left CREATED), while payloads without a
+    Symbol node run. Verified with both this form and the legacy
+    ``Variable``/``OValueExpr`` aliases, with and without ``Parent``. See
+    PROGRESS.md for the probe matrix.
     """
     return _child(
         "NINA.Plugin.SequencerPlus.SetVariable, NINA.Plugin.SequencerPlus"
