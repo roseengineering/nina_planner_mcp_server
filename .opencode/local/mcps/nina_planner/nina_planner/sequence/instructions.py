@@ -439,31 +439,20 @@ def declare_variable(name: str, value: str) -> dict[str, Any]:
     defined". ``value`` is the initial value expression, evaluated when this
     instruction runs.
 
-    Key order matters — JSON.NET applies keys in document order:
-
-    * ``Identifier`` / ``OriginalDefinition`` must be read while ``Parent``
-      is still null: ``Symbol.Identifier``'s setter stores directly only in
-      that branch, and with ``Parent`` already applied it takes a
-      SymbolCache path that left the name empty — N.I.N.A. then reports
-      "A name and an initial value must be specified" (this node's own
-      ``Validate()`` message), which raises the pre-sequence checklist
-      prompt and makes the countdown variable undefined, so
-      ``LoopWhile(n > 0)`` skips every group.
-    * ``Parent`` must then still be present (it is filled in by
-      ``_add_refs``), because ``Validate()`` short-circuits with
-      ``if (!IsAttachedToRoot()) return true;`` *without setting* ``Issues``,
-      and N.I.N.A.'s start-time ``issues.AddRange(v.Issues)``
-      (``Sequencer.cs:203``) throws on the null and aborts the start.
+    Both properties of this node that the countdown depends on are arranged
+    centrally in ``_add_refs`` rather than here: the node keeps its
+    ``Parent`` (an attached node is one whose ``Validate()`` actually sets
+    ``Issues``, which N.I.N.A.'s start-time ``AddRange`` needs), and being a
+    leaf it gets that ``Parent`` moved **after** ``Identifier`` /
+    ``OriginalDefinition`` — JSON.NET applies keys in document order, and
+    ``Symbol.Identifier``'s Parent-sensitive setter mis-stores the name if
+    ``Parent`` is already set. That single ordering is what left ``n``
+    undefined and broke every lights load/start/run on 2026-11-15; see
+    ``nodes._add_refs`` for the full trail.
     """
-    return {
-        "$id": None,
-        "$type": "NINA.Plugin.SequencerPlus.SetVariable, NINA.Plugin.SequencerPlus",
-        "Identifier": name,
-        "OriginalDefinition": value,
-        # last on purpose — see the docstring; _add_refs only assigns into
-        # this key, which preserves its position.
-        "Parent": None,
-    }
+    return _child(
+        "NINA.Plugin.SequencerPlus.SetVariable, NINA.Plugin.SequencerPlus"
+    ) | {"Identifier": name, "OriginalDefinition": value}
 
 
 def loop_while_expression(expression: str) -> dict[str, Any]:

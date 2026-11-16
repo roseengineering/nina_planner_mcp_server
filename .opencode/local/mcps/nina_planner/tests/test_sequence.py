@@ -1342,9 +1342,9 @@ class SequenceBehaviorTest(unittest.TestCase):
         declare, initialize, cell = head[-3:]
         self.assertEqual(declare["Identifier"], "n")
         self.assertEqual(declare["OriginalDefinition"], "0")
-        # Parent must come LAST: the name is only stored by the setter's
-        # Parent-null branch, and the node must still end up attached for
-        # N.I.N.A.'s start-time validation (see declare_variable).
+        # Parent must come LAST (enforced by the leaf rule in nodes._add_refs):
+        # the name is only stored by the setter's Parent-null branch, and the
+        # node must still end up attached for N.I.N.A.'s start-time validation.
         keys = list(declare)
         self.assertLess(keys.index("Identifier"), keys.index("Parent"))
         self.assertEqual(keys[-1], "Parent")
