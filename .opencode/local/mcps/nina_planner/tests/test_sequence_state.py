@@ -81,11 +81,14 @@ class ProjectSequenceStateTests(unittest.TestCase):
 
     def test_totals_never_zero(self):
         light, dark, bias = self.out["steps"]
-        # The light step reports no exposure today: NINA drops the Sequencer+
-        # `Parent` back-references while loading, which empties its exposure
-        # groups (15 "Failed to deserialize sequence entity" per load). The
-        # projection must report that honestly as `None` rather than invent
-        # zeros — and both calibration steps, which load cleanly, still count.
+        # This legacy fixture froze the pre-fix era: the light step reports no
+        # exposure because N.I.N.A. dropped the Sequencer+ `Parent`
+        # back-references while loading, which emptied its exposure groups (15
+        # "Failed to deserialize sequence entity" per load). That is fixed now —
+        # `LightsSequenceTests` captures a light step carrying its groups — but
+        # the projection must still report a broken payload honestly as `None`
+        # rather than invent zeros, and both calibration steps, which load
+        # cleanly, count.
         self.assertIsNone(light["exposure"])
         self.assertEqual(light["exposure_groups"], [])
         for step in (dark, bias):
@@ -354,6 +357,163 @@ class FinishedRunTests(unittest.TestCase):
         self.assertEqual(len(first), 2)
         self.assertTrue(first[0].startswith("ACQUISITION-STARTING"))
         self.assertTrue(first[1].startswith("ACQUISITION-FINISHED"))
+
+
+class LightsSequenceTests(unittest.TestCase):
+    """A real lights sequence, captured in all three of its states.
+
+    NGC 7662, 4 x 10.0 s ``L`` in one batched group, captured from a live run
+    on 2026-11-15 with ``scripts/refresh_fixtures.py --label lights`` (before
+    the start), ``--label lightsrunning`` (exposure 1 of 4 in flight) and
+    ``--label lightsfinished`` (all four counted, end area still in its
+    pre-park delay).
+
+    This is the first pair whose **light** step carries its exposure groups:
+    the legacy ``unrun`` pair froze the pre-fix era in which N.I.N.A. dropped
+    the Sequencer+ ``Parent`` back-references while loading and emptied them
+    (15 "Failed to deserialize sequence entity" per load — see
+    ``test_totals_never_zero``). Across these three captures the countdown
+    itself is visible too: the group's iteration condition walks
+    ``0 -> 1 -> 4`` against a total of 4 while ``Loop while "n > 0"`` and
+    ``Variable n`` sit alongside it, evaluating clean at every stage.
+    """
+
+    LABELS = ("lights", "lightsrunning", "lightsfinished")
+    PLAN_ID = "plan-0f7e6d5c4b3a"
+
+    @classmethod
+    def setUpClass(cls):
+        cls.out = {}
+        for label in cls.LABELS:
+            state = json.loads((_F / f"sequence_state_{label}.json").read_text())
+            done = json.loads((_F / f"sequence_json_{label}.json").read_text())
+            cls.out[label] = project_sequence_state(state["Response"], done["Response"])
+
+    def step(self, label):
+        (step,) = self.out[label]["steps"]
+        return step
+
+    def test_single_light_step_with_its_groups_in_every_state(self):
+        for label in self.LABELS:
+            out = self.out[label]
+            self.assertEqual(out["step_count"], 1, label)
+            self.assertFalse(out["parse_error"], label)
+            self.assertEqual(out["issues"], [], label)
+            self.assertEqual(out["preflight_issues"], [], label)
+
+            step = self.step(label)
+            self.assertEqual(step["frame_type"], "LIGHT", label)
+            self.assertEqual(step["plan_id"], self.PLAN_ID, label)
+            self.assertIsNone(step["pointing_index"], label)
+            self.assertEqual(step["issues"], [], label)
+
+            exposure = step["exposure"]
+            self.assertEqual(exposure["total"], 4, label)
+            self.assertEqual(exposure["seconds"], 10.0, label)
+            self.assertEqual(exposure["filter"], "L", label)
+            self.assertEqual(exposure["binning"], "1x1", label)
+            # a step that has groups lists exactly one entry per group, and
+            # `exposure` is that first group
+            self.assertEqual(step["exposure_groups"], [exposure], label)
+
+    def test_countdown_walks_zero_to_full_across_the_captures(self):
+        unrun, running, finished = (self.step(x) for x in self.LABELS)
+
+        self.assertEqual(
+            (unrun["status"], running["status"], finished["status"]),
+            ("CREATED", "RUNNING", "FINISHED"),
+        )
+        counts = [s["exposure"]["completed"] for s in (unrun, running, finished)]
+        self.assertEqual(counts, [0, 1, 4])
+        # …against the same fixed total: the group spent exactly what it owed
+        self.assertEqual(
+            [s["exposure"]["total"] for s in (unrun, running, finished)],
+            [4, 4, 4],
+        )
+
+        # `running` tracks ANY running node, so it stays true after the last
+        # frame while the end area is still in its 3-minute pre-park delay.
+        self.assertFalse(self.out["lights"]["running"])
+        self.assertTrue(self.out["lightsrunning"]["running"])
+        self.assertTrue(self.out["lightsfinished"]["running"])
+        self.assertEqual(
+            [self.out[x]["completed_steps"] for x in self.LABELS], [0, 0, 1]
+        )
+
+    def test_running_step_reports_its_phase_and_partial_counts(self):
+        step = self.step("lightsrunning")
+        self.assertEqual(step["phase"], "Take Exposure")
+        self.assertLess(step["exposure"]["completed"], step["exposure"]["total"])
+
+    def test_fired_events_accumulate_with_the_run(self):
+        self.assertEqual(self.step("lights")["fired_events"], [])
+
+        (only_start,) = self.step("lightsrunning")["fired_events"]
+        self.assertTrue(only_start.startswith("ACQUISITION-STARTING"))
+
+        both = self.step("lightsfinished")["fired_events"]
+        self.assertEqual(len(both), 2)
+        self.assertTrue(both[0].startswith("ACQUISITION-STARTING"))
+        self.assertTrue(both[1].startswith("ACQUISITION-FINISHED"))
+        # the token in the message is the plan id the projection reads back
+        self.assertIn(self.PLAN_ID, both[0])
+
+    def test_horizon_is_merged_into_every_state(self):
+        # The target was near the meridian (73-76 deg) with the floor at 30,
+        # so `expected_time` reads "Now" in all three captures.
+        for label in self.LABELS:
+            horizon = self.step(label)["horizon"]
+            self.assertIsNotNone(horizon, label)
+            self.assertEqual(horizon["min_altitude"], 30, label)
+            self.assertEqual(horizon["expected_time"], "Now", label)
+            self.assertGreater(horizon["current_altitude"], 30, label)
+
+    def test_raw_countdown_nodes_are_present_and_clean(self):
+        """The payload behind the projection: variable, read, loop condition."""
+        for label in self.LABELS:
+            state = json.loads((_F / f"sequence_state_{label}.json").read_text())[
+                "Response"
+            ]
+            nodes = list(_nodes(state))
+
+            (variable,) = [n for n in nodes if n.get("Name") == "Variable"]
+            self.assertEqual(variable["Identifier"], "n", label)
+            self.assertEqual(variable["OriginalDefinition"], "0", label)
+
+            (loop,) = [n for n in nodes if n.get("Name") == "Loop While_Condition"]
+            self.assertEqual(
+                (loop.get("PredicateExpr") or {}).get("Expression"), "n > 0", label
+            )
+
+            reads = [
+                (n.get("VExpr") or {}).get("Expression")
+                for n in nodes
+                if n.get("Name") == "Get from Array"
+            ]
+            self.assertTrue(reads and all(r == "n" for r in reads), label)
+
+            # the group's iteration condition is what `exposure.completed`
+            # reports: it counts 0 -> 1 -> 4 across the three captures. Two
+            # loop-for-iterations nodes ship in this payload — the group's
+            # frame loop (4) and a 1-iteration outer loop — so select on the
+            # total rather than on position.
+            conds = [
+                n for n in nodes if n.get("Name") == "Loop For Iterations_Condition"
+            ]
+            (cond,) = [c for c in conds if c.get("Iterations") == 4]
+            self.assertEqual(
+                cond["CompletedIterations"],
+                {"lights": 0, "lightsrunning": 1, "lightsfinished": 4}[label],
+                label,
+            )
+
+            # nothing anywhere carries an issue — the pre-fix payload threw
+            # 15 deserialize errors per load and left a checklist prompt
+            self.assertEqual(
+                [(n.get("Name"), n.get("Issues")) for n in nodes if n.get("Issues")],
+                [],
+                label,
+            )
 
 
 def _nodes(node):
