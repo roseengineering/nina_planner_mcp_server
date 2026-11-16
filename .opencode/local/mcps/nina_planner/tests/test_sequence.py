@@ -1018,6 +1018,28 @@ class DitherTriggerTest(unittest.TestCase):
         self.assertIn("LoopCondition", node["Conditions"]["$values"][0]["$type"])
         self.assertIn("DitherAfterExposures", node["Triggers"]["$values"][0]["$type"])
 
+    def test_smart_exposure_without_a_filter_still_carries_the_switch_child(self):
+        """``filter_name=None`` nulls the filter — it never drops the child.
+
+        N.I.N.A. reads ``Items[0]`` as the SwitchFilter positionally and
+        ``Validate()`` dereferences ``sw.Filter``, so an omitted child throws
+        out of validation and aborts the whole run before the first
+        instruction (SEQUENCE-STARTING → FINISHED same second, step stays
+        CREATED, nothing logged) — the same abort as an absent dither
+        trigger, proven live 2026-11-16 with three A/B/C probes. The correct
+        "don't touch the wheel" shape is ``Filter: null``, which N.I.N.A.
+        skips (``SequenceItemSkippedException`` → ``Status=SKIPPED``) and
+        then runs the exposure — also proven live.
+        """
+        from nina_planner.sequence import smart_exposure
+
+        node = smart_exposure(count=5, exposure=60.0, image_type="DARK")
+        items = node["Items"]["$values"]
+        self.assertEqual(len(items), 2, "both positional children must exist")
+        self.assertIn("FilterWheel.SwitchFilter", items[0]["$type"])
+        self.assertIsNone(items[0]["Filter"], "null filter = wheel untouched")
+        self.assertIn("Imaging.TakeExposure", items[1]["$type"])
+
 
 class SequenceBehaviorTest(unittest.TestCase):
     """Behavioral assertions on generated sequence contents.
@@ -1963,9 +1985,15 @@ class SequenceBehaviorTest(unittest.TestCase):
                 ["CloseCover", "OpenCover"],
                 "close, then expose, then reopen — in document order",
             )
-            # The wheel stays where it was: no Dark-filter switch at all.
-            self.assertEqual(
-                _find_items(result, "FilterWheel.SwitchFilter, NINA.Sequencer"), []
+            # The wheel stays where it was — but SmartExposure still needs
+            # its Items[0] SwitchFilter child, so it carries Filter=null
+            # (N.I.N.A. skips it) instead of being absent, which would throw
+            # out of Validate() and abort the run (live-proven 2026-11-16).
+            switches = _find_items(result, "FilterWheel.SwitchFilter, NINA.Sequencer")
+            self.assertTrue(switches, "SmartExposure always carries its switch child")
+            self.assertTrue(
+                all(s["Filter"] is None for s in switches),
+                "null filter = wheel untouched",
             )
             smart = _find_items(result, "Imaging.SmartExposure, NINA.Sequencer")
             self.assertTrue(smart)
@@ -1992,9 +2020,14 @@ class SequenceBehaviorTest(unittest.TestCase):
             )
             # No cover operations
             self.assertEqual(_find_items(result, "FlatDevice."), [])
-            # The wheel stays where it was: no Dark-filter switch at all.
-            self.assertEqual(
-                _find_items(result, "FilterWheel.SwitchFilter, NINA.Sequencer"), []
+            # The wheel stays where it was — expressed as a Filter=null
+            # SwitchFilter child (skipped by N.I.N.A.), never as an absent
+            # child, which would abort the run (see the cover test above).
+            switches = _find_items(result, "FilterWheel.SwitchFilter, NINA.Sequencer")
+            self.assertTrue(switches, "SmartExposure always carries its switch child")
+            self.assertTrue(
+                all(s["Filter"] is None for s in switches),
+                "null filter = wheel untouched",
             )
             smart = _find_items(result, "Imaging.SmartExposure, NINA.Sequencer")
             self.assertTrue(smart)

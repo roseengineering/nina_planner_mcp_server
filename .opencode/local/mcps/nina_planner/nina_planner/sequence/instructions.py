@@ -101,8 +101,11 @@ def annotation() -> dict[str, Any]:
 
 
 def switch_filter(
-    # Callers with no slot to select don't call this at all — see
-    # smart_exposure, which omits the switch instead of passing None.
+    # filter_name=None emits `Filter: null` — N.I.N.A.'s own "no filter":
+    # SwitchFilter.Execute throws SequenceItemSkippedException and the child
+    # is SKIPPED, so the wheel is left where it is. That is the shape to use
+    # inside SmartExposure, which reads Items[0] positionally and cannot
+    # tolerate the child being absent (see smart_exposure).
     filter_name: str | None,
     filter_position: int | None,
 ) -> dict[str, Any]:
@@ -371,14 +374,21 @@ def smart_exposure(
         # trigger `if (dither.AfterExposures > 0)`, and darks/bias — which never
         # dither — have carried this placeholder through every run that worked.
         triggers=[dither_after_exposures(dither)],
-        # No filter_name means leave the wheel untouched: covered darks cut
-        # the light with the cover, so there is no SwitchFilter at all.
-        instructions=(
-            [switch_filter(filter_name, filter_position)]
-            if filter_name is not None
-            else []
-        )
-        + [take_exposure(exposure, image_type)],
+        # ALWAYS emitted, even with no filter: N.I.N.A.'s SmartExposure reads
+        # its children positionally — `GetSwitchFilter() => Items[0]`,
+        # `GetTakeExposure() => Items[1]` — and Validate() dereferences
+        # `sw.Filter` unconditionally, so a missing SwitchFilter child throws
+        # out of validation and aborts the whole run silently before the first
+        # instruction (SEQUENCE-STARTING -> FINISHED, step stays CREATED) —
+        # the same abort as an absent dither trigger, proven live 2026-11-16.
+        # filter_name=None means "don't touch the wheel": the child carries
+        # Filter=null, which N.I.N.A. skips (SequenceItemSkippedException ->
+        # Status=SKIPPED) instead of failing, so covered/shutter darks expose
+        # with the wheel exactly where it was.
+        instructions=[
+            switch_filter(filter_name, filter_position),
+            take_exposure(exposure, image_type),
+        ],
     )
 
 
