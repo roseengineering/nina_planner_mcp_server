@@ -7,10 +7,6 @@ NINA_FLATS_ALTITUDE = float(os.environ.get("NINA_FLATS_ALTITUDE", "80"))
 NINA_FLATS_AZIMUTH_DAWN = float(os.environ.get("NINA_FLATS_AZIMUTH_DAWN", "270"))
 NINA_FLATS_AZIMUTH_DUSK = float(os.environ.get("NINA_FLATS_AZIMUTH_DUSK", "90"))
 
-# The plugin namespace whose nodes we emit without a Parent back-reference;
-# see _add_refs for why.
-_SEQUENCER_PLUS = "NINA.Plugin.SequencerPlus."
-
 
 def _fix_provider(data: dict[str, Any]) -> dict[str, Any]:
     store: dict[str, str] = {}
@@ -37,21 +33,32 @@ def _fix_provider(data: dict[str, Any]) -> dict[str, Any]:
 def _add_refs(data: dict[str, Any]) -> dict[str, Any]:
     """Number every node and point each ``Parent`` at the node that holds it.
 
-    Sequencer+ (plugin) nodes are the one exception: their ``Parent`` is
-    dropped instead of filled in. N.I.N.A. evaluates a plugin node's
-    expressions *while applying* ``Parent`` — mid-deserialization, before
-    anything has run, when the countdown variable ``n`` cannot resolve — and
-    the throw surfaces as ``Failed to deserialize sequence entity``
-    (``JsonCreationConverter.ReadJson``), which drops the node. The first
-    casualty is ``LoopWhile`` (``n > 0``), and its failure takes the whole
-    exposure-group container with it, so a lights step loads with empty
-    groups, no ``Take Exposure``, and would shoot zero frames. Measured
-    against the live API: with ``Parent`` kept, 15 errors and 0 of 5 groups
-    intact; stripped here, 0 errors with every group and array op intact.
-    Known cost, not yet proven safe: ``GetArray.Execute`` resolves its result
-    variable through ``Symbol.FindSymbol(name, Parent)``, so only a real run
-    settles the runtime half. Core (``NINA.*``) nodes keep theirs — stripping
-    those is what leaves a node with Issues instead.
+    Every node keeps its ``Parent``, Sequencer+ ones included. Two attempts
+    to strip it (2026-11-15) are recorded here so nobody repeats them:
+
+    * **Stripping plugin nodes to dodge 15 ``Failed to deserialize sequence
+      entity`` errors** per light load (which emptied every exposure group
+      and would have shot zero frames) only hid the symptom: the real cause
+      was ``declare_variable`` emitting ``Parent`` *before* ``Identifier``,
+      so ``Symbol.Identifier``'s setter took its attached path and never
+      stored the name — the countdown variable ``n`` did not exist, and
+      every ``n``-referencing expression failed to evaluate while ``Parent``
+      was being applied. With the name stored (``Parent`` last, see
+      ``declare_variable``) every payload loads with **0** errors.
+    * **Leaving ``SetVariable`` unattached** instead makes
+      ``Validate()`` short-circuit with
+      ``if (!IsAttachedToRoot()) return true;`` *without setting* ``Issues``
+      (a null auto-property), and N.I.N.A.'s start-time
+      ``issues.AddRange(v.Issues)`` (``Sequencer.cs:203``) then throws
+      ``ArgumentNullException`` and aborts the start in ~20 ms — no
+      ``RUN-STARTING``, step left ``CREATED``, nothing else logged.
+
+    ``Parent`` is therefore load-safe (once ``n`` exists) *and* required at
+    run time: ``GetArray.Execute`` resolves its result variable through
+    ``Symbol.FindSymbol(name, Parent)``, so without it the countdown never
+    advances — ``LoopWhile(n > 0)`` stays false, groups are skipped and zero
+    exposures are taken. Measured end to end: all-``Parent`` payload → 0 load
+    errors, no pre-sequence checklist prompt, dark probe ran ``1/1``.
     """
     ident = 0
 
@@ -61,12 +68,9 @@ def _add_refs(data: dict[str, Any]) -> dict[str, Any]:
             ident += 1
             data["$id"] = str(ident)
             if "Parent" in data:
-                if str(data.get("$type", "")).startswith(_SEQUENCER_PLUS):
-                    data.pop("Parent")
-                else:
-                    data["Parent"] = parent
-                    if "Instructions" not in data:
-                        parent = {"$ref": str(ident)}
+                data["Parent"] = parent
+                if "Instructions" not in data:
+                    parent = {"$ref": str(ident)}
         for d in data.values():
             if isinstance(d, dict):
                 fn(d, parent)

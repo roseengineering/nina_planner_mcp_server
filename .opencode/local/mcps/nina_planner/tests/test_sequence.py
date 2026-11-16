@@ -292,12 +292,14 @@ class ReferenceNormalizationTest(unittest.TestCase):
         self.assertEqual(container["Parent"], {"$ref": "1"})
         self.assertEqual(container["Instructions"][0]["Parent"], {"$ref": "1"})
 
-    def test_sequencer_plus_nodes_lose_their_parent_reference(self):
-        """Plugin nodes are emitted bare; core siblings keep theirs.
+    def test_every_node_gets_a_parent_reference(self):
+        """Every node — plugin and core — points at the container holding it.
 
-        N.I.N.A. evaluates a Sequencer+ node's expressions while applying
-        ``Parent`` — mid-deserialization, when the countdown ``n`` cannot
-        resolve — and the throw drops the node (see ``_add_refs``).
+        ``Parent`` is required at both ends: N.I.N.A. evaluates expressions
+        while applying it (safe once ``declare_variable`` stores the name —
+        it emits ``Parent`` last), and at run time ``GetArray`` resolves its
+        result variable with ``Symbol.FindSymbol(name, Parent)`` while
+        ``SetVariable.Validate()`` needs the attachment to set ``Issues``.
         """
         from nina_planner.sequence import _add_refs
 
@@ -325,6 +327,16 @@ class ReferenceNormalizationTest(unittest.TestCase):
                             {
                                 "$id": None,
                                 "$type": (
+                                    "NINA.Plugin.SequencerPlus.SetVariable, "
+                                    "NINA.Plugin.SequencerPlus"
+                                ),
+                                "Parent": None,
+                                "Identifier": "n",
+                                "OriginalDefinition": "0",
+                            },
+                            {
+                                "$id": None,
+                                "$type": (
                                     "NINA.Sequencer.SequenceItem.Imaging."
                                     "TakeExposure, NINA.Sequencer"
                                 ),
@@ -337,12 +349,11 @@ class ReferenceNormalizationTest(unittest.TestCase):
         )
 
         container = result["Items"][0]
-        plugin, core = container["Items"]
-        # The plugin node keeps its $id (nothing may reference it any more)
-        # but carries no Parent at all — not even null, which would still run
-        # the parent-changed path it throws in.
+        plugin, variable, core = container["Items"]
         self.assertIn("$id", plugin)
-        self.assertNotIn("Parent", plugin)
+        # All three point at the container holding them — plugin ones too.
+        self.assertEqual(plugin["Parent"], {"$ref": container["$id"]})
+        self.assertEqual(variable["Parent"], {"$ref": container["$id"]})
         # The core sibling still points at the container holding it.
         self.assertEqual(core["Parent"], {"$ref": container["$id"]})
         self.assertEqual(container["Parent"], {"$ref": "1"})
@@ -1331,6 +1342,12 @@ class SequenceBehaviorTest(unittest.TestCase):
         declare, initialize, cell = head[-3:]
         self.assertEqual(declare["Identifier"], "n")
         self.assertEqual(declare["OriginalDefinition"], "0")
+        # Parent must come LAST: the name is only stored by the setter's
+        # Parent-null branch, and the node must still end up attached for
+        # N.I.N.A.'s start-time validation (see declare_variable).
+        keys = list(declare)
+        self.assertLess(keys.index("Identifier"), keys.index("Parent"))
+        self.assertEqual(keys[-1], "Parent")
         # the array name is an expression that must evaluate to a string
         self.assertEqual(initialize["NameExpr"]["Expression"], "'count'")
         self.assertEqual(
@@ -1391,15 +1408,17 @@ class SequenceBehaviorTest(unittest.TestCase):
             _find_items(group, "Guider.DitherAfterExposures, NINA.Sequencer"), []
         )
 
-    def test_sequencer_plus_nodes_are_emitted_without_a_parent(self):
-        """No plugin node in a built payload carries a Parent back-reference.
+    def test_sequencer_plus_nodes_all_keep_their_parent(self):
+        """Every plugin node keeps its ``Parent`` — including ``SetVariable``.
 
-        N.I.N.A. evaluates a Sequencer+ node's expressions while applying
-        ``Parent`` — mid-deserialization, before anything has run, when the
-        countdown ``n`` cannot resolve — and the throw drops the node, which
-        for ``LoopWhile`` takes the whole exposure-group container with it:
-        a lights step that would load with empty groups and shoot zero
-        frames. See ``nodes._add_refs`` for the live measurement.
+        Two failure modes pin this (full story in ``nodes._add_refs``):
+        without ``Parent``, ``SetVariable.Validate()`` short-circuits with
+        ``Issues`` still null and N.I.N.A.'s start-time
+        ``issues.AddRange(v.Issues)`` throws, aborting the start; and
+        ``GetArray`` resolves its result variable with
+        ``Symbol.FindSymbol(name, Parent)``, so a bare ``GetArray`` lets the
+        countdown silently never advance (``LoopWhile(n > 0)`` false →
+        groups skipped → zero exposures).
         """
         plan = self._plan()
         result = build_sequence_lights(
@@ -1407,9 +1426,9 @@ class SequenceBehaviorTest(unittest.TestCase):
         )
         plugin = _find_items(result, "NINA.Plugin.SequencerPlus.")
         self.assertTrue(plugin, "expected Sequencer+ nodes in a lights payload")
-        stragglers = sorted({_kind(n) for n in plugin if "Parent" in n})
-        self.assertEqual(stragglers, [], "Sequencer+ nodes still carrying Parent")
-        # Core nodes keep theirs — dropping those is what leaves Issues.
+        without = sorted({_kind(n) for n in plugin if not n.get("Parent")})
+        self.assertEqual(without, [], "plugin nodes missing a Parent reference")
+        # Core nodes too — they always carried theirs.
         takes = _find_items(result, "Imaging.TakeExposure, NINA.Sequencer")
         self.assertTrue(takes)
         self.assertTrue(all(t.get("Parent") for t in takes))

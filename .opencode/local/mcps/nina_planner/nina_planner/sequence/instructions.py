@@ -439,17 +439,31 @@ def declare_variable(name: str, value: str) -> dict[str, Any]:
     defined". ``value`` is the initial value expression, evaluated when this
     instruction runs.
 
-    ⚠️ A sequence containing this node (or ``SetGlobalVariable`` — anything
-    derived from the plugin's ``Symbol``) cannot be *started* on the rig as
-    of 2026-11-15: every start aborts before the first instruction,
-    silently (no log entry, step left CREATED), while payloads without a
-    Symbol node run. Verified with both this form and the legacy
-    ``Variable``/``OValueExpr`` aliases, with and without ``Parent``. See
-    PROGRESS.md for the probe matrix.
+    Key order matters — JSON.NET applies keys in document order:
+
+    * ``Identifier`` / ``OriginalDefinition`` must be read while ``Parent``
+      is still null: ``Symbol.Identifier``'s setter stores directly only in
+      that branch, and with ``Parent`` already applied it takes a
+      SymbolCache path that left the name empty — N.I.N.A. then reports
+      "A name and an initial value must be specified" (this node's own
+      ``Validate()`` message), which raises the pre-sequence checklist
+      prompt and makes the countdown variable undefined, so
+      ``LoopWhile(n > 0)`` skips every group.
+    * ``Parent`` must then still be present (it is filled in by
+      ``_add_refs``), because ``Validate()`` short-circuits with
+      ``if (!IsAttachedToRoot()) return true;`` *without setting* ``Issues``,
+      and N.I.N.A.'s start-time ``issues.AddRange(v.Issues)``
+      (``Sequencer.cs:203``) throws on the null and aborts the start.
     """
-    return _child(
-        "NINA.Plugin.SequencerPlus.SetVariable, NINA.Plugin.SequencerPlus"
-    ) | {"Identifier": name, "OriginalDefinition": value}
+    return {
+        "$id": None,
+        "$type": "NINA.Plugin.SequencerPlus.SetVariable, NINA.Plugin.SequencerPlus",
+        "Identifier": name,
+        "OriginalDefinition": value,
+        # last on purpose — see the docstring; _add_refs only assigns into
+        # this key, which preserves its position.
+        "Parent": None,
+    }
 
 
 def loop_while_expression(expression: str) -> dict[str, Any]:
