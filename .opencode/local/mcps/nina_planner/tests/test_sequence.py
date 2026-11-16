@@ -1428,6 +1428,19 @@ class SequenceBehaviorTest(unittest.TestCase):
         self.assertTrue(plugin, "expected Sequencer+ nodes in a lights payload")
         without = sorted({_kind(n) for n in plugin if not n.get("Parent")})
         self.assertEqual(without, [], "plugin nodes missing a Parent reference")
+        # Ordering rule (nodes._add_refs): leaves carry Parent LAST — own
+        # properties must be applied before Parent, or Symbol.Identifier's
+        # Parent-sensitive setter mis-stores the name (the 2026-11-15 bug:
+        # `n` never defined -> every lights failure).
+        for n in plugin:
+            self.assertEqual(
+                list(n)[-1], "Parent", f"{_kind(n)} must carry Parent last"
+            )
+        # Containers deliberately keep Parent BEFORE Items: their children
+        # attach against a complete upward chain (Symbol reads it).
+        (group,) = _countdown_groups(result)
+        gkeys = list(group)
+        self.assertLess(gkeys.index("Parent"), gkeys.index("Items"))
         # Core nodes too — they always carried theirs.
         takes = _find_items(result, "Imaging.TakeExposure, NINA.Sequencer")
         self.assertTrue(takes)

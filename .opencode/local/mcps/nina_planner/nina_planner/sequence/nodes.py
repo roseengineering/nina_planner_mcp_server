@@ -59,6 +59,18 @@ def _add_refs(data: dict[str, Any]) -> dict[str, Any]:
     advances — ``LoopWhile(n > 0)`` stays false, groups are skipped and zero
     exposures are taken. Measured end to end: all-``Parent`` payload → 0 load
     errors, no pre-sequence checklist prompt, dark probe ran ``1/1``.
+
+    **Ordering rule enforced here:** a node *without* ``Items``/``Conditions``
+    (a leaf) has its ``Parent`` re-inserted **after** its own properties,
+    because JSON.NET applies keys in document order and a Parent-sensitive
+    setter then mis-stores its value — exactly what ``Symbol.Identifier``
+    did when ``declare_variable`` put ``Parent`` first: the name never landed,
+    the countdown variable ``n`` did not exist, and every symptom followed
+    (15 load errors, the ``ArgumentNullException`` abort at ``Sequencer.cs:203``,
+    the checklist prompt, and groups skipped at run time). Containers keep
+    ``Parent`` *before* ``Items`` on purpose: their children must attach
+    against a complete upward chain, which ``Symbol``'s registration and
+    ``IsAttachedToRoot`` paths read.
     """
     ident = 0
 
@@ -71,6 +83,19 @@ def _add_refs(data: dict[str, Any]) -> dict[str, Any]:
                 data["Parent"] = parent
                 if "Instructions" not in data:
                     parent = {"$ref": str(ident)}
+                if "Items" not in data and "Conditions" not in data:
+                    # OWN PROPERTIES BEFORE PARENT — on leaves only.
+                    # JSON.NET applies keys in document order, so a
+                    # Parent-sensitive setter (Symbol.Identifier) mis-stores
+                    # its value when Parent is already set: that is what left
+                    # the countdown variable `n` undefined and broke every
+                    # lights load/start/run on 2026-11-15. Re-inserting
+                    # Parent here puts it after the node's own properties.
+                    # Containers deliberately keep Parent *before* Items:
+                    # their children must attach against a complete upward
+                    # chain (Symbol's registration and IsAttachedToRoot
+                    # paths read it), which the countdown depends on.
+                    data["Parent"] = data.pop("Parent")
         for d in data.values():
             if isinstance(d, dict):
                 fn(d, parent)
