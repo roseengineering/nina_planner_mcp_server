@@ -47,6 +47,20 @@ def _issues(node: Any) -> tuple[list[str], list[str]]:
     return failed, preflight
 
 
+def _children(node: dict[str, Any]) -> Iterator[dict[str, Any]]:
+    """A container's direct children, in either payload shape.
+
+    ``/sequence/state`` carries ``Items`` as a list; ``/sequence/json`` wraps
+    it in ``{"$values": [...]}``.
+    """
+    items = node.get("Items")
+    if isinstance(items, dict):
+        items = items.get("$values")
+    for item in items or []:
+        if isinstance(item, dict):
+            yield item
+
+
 def _counts_exposures(node: dict[str, Any]) -> bool:
     """True for a container whose loop condition counts this step's exposures.
 
@@ -55,6 +69,13 @@ def _counts_exposures(node: dict[str, Any]) -> bool:
     unambiguous: the other condition types — ``TimeCondition``,
     ``AboveHorizonCondition``, ``AltitudeCondition``,
     ``SafetyMonitorCondition`` — never match.
+
+    The exposure has to be a DIRECT child, not merely somewhere below. A
+    looping wrapper around a group carries ``Iterations`` too and contains a
+    ``Take Exposure`` somewhere in it, and ``_walk`` yields the wrapper
+    before its children — so an ancestor search let a 2-iteration wrapper
+    around a 5-frame group be collected first and report ``total: 2``. See
+    ``test_a_looping_wrapper_is_not_mistaken_for_the_group_it_holds``.
     """
     return (
         isinstance(node.get("Conditions"), list)
@@ -63,7 +84,7 @@ def _counts_exposures(node: dict[str, Any]) -> bool:
             for c in node["Conditions"]
             if isinstance(c, dict)
         )
-        and _find(node, "Take Exposure") is not None
+        and any(c.get("Name") == "Take Exposure" for c in _children(node))
     )
 
 

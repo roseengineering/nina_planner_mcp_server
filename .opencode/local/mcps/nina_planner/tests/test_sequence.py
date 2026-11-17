@@ -1862,23 +1862,26 @@ class SequenceBehaviorTest(unittest.TestCase):
 
         ``batch_size`` is deliberately ignored here — there is nothing to
         batch or interleave — so the default of 5 must not leak in and split
-        these entries the way it does lights.
+        these entries the way it does lights. Every count below EXCEEDS that
+        batch size on purpose: at counts ≤ 5 a round-robin emits one entry
+        per count and looks identical to the correct behaviour, so this test
+        would pass with the very regression it exists to catch.
         """
         from sequence_helpers import build_sequence_darks
 
         plan = self._plan(
             dark_frames=[
-                {"exposure_time_seconds": 60.0, "total_count": 2},
-                {"exposure_time_seconds": 120.0, "total_count": 3},
+                {"exposure_time_seconds": 60.0, "total_count": 7},
+                {"exposure_time_seconds": 120.0, "total_count": 8},
             ],
-            bias_frames=[{"total_count": 4}, {"total_count": 5}],
+            bias_frames=[{"total_count": 6}, {"total_count": 9}],
         )
         self.assertEqual(plan.batch_size, 5)
         for bias, expected in (
-            (False, [(2, 60.0), (3, 120.0)]),
+            (False, [(7, 60.0), (8, 120.0)]),
             # a bias has no exposure_time_seconds: the camera's shutter
             # decides, so the group reads 0
-            (True, [(4, 0), (5, 0)]),
+            (True, [(6, 0), (9, 0)]),
         ):
             result = build_sequence_darks(
                 plan,
