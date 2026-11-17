@@ -517,6 +517,27 @@ class LightsSequenceTests(unittest.TestCase):
             (variable,) = [n for n in nodes if n.get("Name") == "Variable"]
             self.assertEqual(variable["Identifier"], "n", label)
             self.assertEqual(variable["OriginalDefinition"], "0", label)
+            # `OriginalDefinition` is the DECLARED value and never changes;
+            # `Definition` is what N.I.N.A. has evaluated it to so far. Before
+            # the sequence runs, the node is unexecuted and `Definition` ships
+            # EMPTY — "" means "not evaluated yet", not a value of zero. A
+            # reader that coerced it to 0 would take `n` as "nothing left" and
+            # call the group complete while it still owes every one of its
+            # frames (remaining is really total - completed = 4 - 0).
+            # Nothing else in the suite reads `Definition` at all, so pin it
+            # here, next to the declaration it must not be confused with.
+            self.assertEqual(
+                variable["Definition"],
+                {"lights": "", "lightsrunning": "3", "lightsfinished": "0"}[label],
+                label,
+            )
+            # …and keep the two consistent: only an executed node carries an
+            # evaluated value, so emptiness and `Executed` must agree.
+            self.assertEqual(
+                variable["Definition"] != "",
+                variable["Executed"],
+                f"{label}: Definition/Executed disagree",
+            )
 
             (loop,) = [n for n in nodes if n.get("Name") == "Loop While_Condition"]
             self.assertEqual(
