@@ -107,7 +107,10 @@ class GenSequenceScriptTest(unittest.TestCase):
         # imaging root" (the warning's own documented no-warning path).
         # Tests needing metadata open their own `with patch.object(...)`,
         # which is entered later and therefore wins over this one.
-        async def _no_imaging_root():
+        # `image_type` is accepted because the warning asks for one type
+        # (`read_metadata("light")`), while the remaining-mode count asks
+        # for none — the stub has to serve both call shapes.
+        async def _no_imaging_root(image_type: str | None = None):
             raise FileNotFoundError("imaging root is not mounted")
 
         stub = patch.object(self.script.metadata, "read_metadata", _no_imaging_root)
@@ -269,7 +272,7 @@ class GenSequenceScriptTest(unittest.TestCase):
         tests/test_server.py.
         """
 
-        async def attributed_rows():
+        async def attributed_rows(image_type: str | None = None):
             # One already-attributed light per frame, so the group reads
             # complete against this plan id.
             return [
@@ -317,7 +320,7 @@ class GenSequenceScriptTest(unittest.TestCase):
     # ------------------------------------------------------- remaining mode
 
     def test_remaining_mode_with_no_frames_acquired_generates_them(self):
-        async def no_rows():
+        async def no_rows(image_type: str | None = None):
             return []
 
         with patch.object(self.script.metadata, "read_metadata", no_rows):
@@ -328,7 +331,7 @@ class GenSequenceScriptTest(unittest.TestCase):
         self.assertIn("5 frame(s) to acquire", err)
 
     def test_remaining_mode_reports_a_complete_plan_and_prints_nothing(self):
-        async def no_rows():
+        async def no_rows(image_type: str | None = None):
             return []
 
         def fake_progress(_plan, _rows, **_kwargs):
@@ -356,7 +359,7 @@ class GenSequenceScriptTest(unittest.TestCase):
         self.assertIn("is complete", err)
 
     def test_remaining_mode_unreadable_metadata_suggests_full(self):
-        async def broken_rows():
+        async def broken_rows(image_type: str | None = None):
             raise FileNotFoundError("imaging root is not mounted")
 
         with patch.object(self.script.metadata, "read_metadata", broken_rows):
@@ -528,10 +531,24 @@ class GenSequenceLoadOverHttpTest(unittest.TestCase):
         self.addCleanup(tmp.cleanup)
         self.plan = Path(tmp.name) / "plan.json"
         self.plan.write_text(json.dumps(PLAN_DATA), encoding="utf-8")
+        # This class runs the script as a SUBPROCESS, so the in-process
+        # `read_metadata` stub in `GenSequenceScriptTest.setUp` cannot reach
+        # it: without this, the script inherits this host's NINA_DRIVE_MOUNT
+        # and the full-mode re-shoot warning would scan the host's REAL
+        # imaging directory — slow, and able to fail or hang on something
+        # unrelated to the test. The stub profile's `C:\images` therefore
+        # resolves inside a fresh, empty tree instead: `_require_root` only
+        # needs the directory to exist, and an empty one yields 0 rows.
+        self.imaging_root = Path(tmp.name) / "imaging"
+        (self.imaging_root / "images").mkdir(parents=True)
 
     def _run_subprocess(self, *argv: str) -> subprocess.CompletedProcess:
         port = self.server.server_address[1]
-        env = dict(os.environ, NINA_ENDPOINT=f"127.0.0.1:{port}")
+        env = dict(
+            os.environ,
+            NINA_ENDPOINT=f"127.0.0.1:{port}",
+            NINA_DRIVE_MOUNT=str(self.imaging_root),
+        )
         return subprocess.run(
             [sys.executable, str(SCRIPT), *argv],
             capture_output=True,
@@ -559,6 +576,47 @@ class GenSequenceLoadOverHttpTest(unittest.TestCase):
         # The build succeeded, so the JSON is still on stdout.
         self.assertIn("Wait For Object", proc.stdout)
         self.assertEqual(_StubNina.loaded, [])
+
+    def test_build_scans_this_tests_imaging_root_not_the_hosts(self):
+        """The subprocess must read the temporary root set up in setUp.
+
+        A poisoned ``ImageMetaData.csv`` there attributes every light frame
+        of this plan, so the full-mode re-shoot warning can only appear if
+        the subprocess scanned THIS tree. The host's real imaging root has
+        no frames for ``plan-test123``, so a subprocess that fell back to it
+        would print no warning — after walking the whole real directory to
+        get there, which is the failure this isolation exists to prevent.
+        """
+        plan_id = PLAN_DATA["plan_id"]
+        light_dir = (
+            self.imaging_root
+            / "images"
+            / f"Test Target _{plan_id}_"
+            / "2026-10-22"
+            / "LIGHT"
+        )
+        light_dir.mkdir(parents=True)
+        rows = ["image_type,file_path,duration,filter_name"]
+        for i in range(PLAN_DATA["light_frames"][0]["total_count"]):
+            name = f"frame_{i:04d}.fits"
+            # The row's file_path must exist on disk or read_imaging_csv
+            # drops it as gone, so write the file the row claims.
+            (light_dir / name).write_bytes(b"")
+            windows_path = (
+                rf"Z:\images\Test Target _{plan_id}_"
+                rf"\2026-10-22\LIGHT\{name}"
+            )
+            rows.append(f"LIGHT,{windows_path},60.0,L")
+        (light_dir / "ImageMetaData.csv").write_text(
+            "\n".join(rows) + "\n", encoding="utf-8"
+        )
+
+        proc = self._run_subprocess(str(self.plan))
+
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertIn("5 frame(s), mode=full", proc.stderr)
+        # Only reachable via the temporary root's poisoned rows.
+        self.assertIn("already complete", proc.stderr)
 
     def test_without_load_nothing_is_posted(self):
         proc = self._run_subprocess(str(self.plan))

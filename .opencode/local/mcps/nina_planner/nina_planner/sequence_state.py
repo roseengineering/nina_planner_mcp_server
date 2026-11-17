@@ -52,11 +52,20 @@ def _children(node: dict[str, Any]) -> Iterator[dict[str, Any]]:
 
     ``/sequence/state`` carries ``Items`` as a list; ``/sequence/json`` wraps
     it in ``{"$values": [...]}``.
+
+    Anything else — a dict with no ``$values``, a missing key, a string, a
+    bare number — yields nothing rather than raising: this feeds
+    ``_counts_exposures``, so an unreadable container must read as "no
+    children" (``exposure: null``) instead of taking the whole projection
+    down with a ``TypeError``.
     """
     items = node.get("Items")
     if isinstance(items, dict):
         items = items.get("$values")
-    for item in items or []:
+    # Only list/tuple can hold children; every other JSON scalar fails closed.
+    if not isinstance(items, (list, tuple)):
+        return
+    for item in items:
         if isinstance(item, dict):
             yield item
 

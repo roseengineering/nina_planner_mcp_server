@@ -2703,6 +2703,178 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
         # Loading is the only API call: no running-state pre-check, no start.
         api_get.assert_not_awaited()
 
+    async def test_load_sequence_full_mode_metadata_read_errors_never_block(self):
+        """Every metadata read/parse failure degrades to "no warning".
+
+        `_full_mode_note` is advisory by contract, but it only caught
+        `RuntimeError`/`FileNotFoundError`/`httpx.HTTPError`, while
+        `read_metadata` reads CSVs and can just as easily raise `OSError`
+        (unreadable file), `UnicodeDecodeError` (bad UTF-8) or `TypeError`
+        (`csv.DictReader` parks surplus cells under a `None` key and
+        `to_snake(None)` blows up). Each of those aborted the whole load
+        over a courtesy line — the same defect class the handler exists to
+        close, closed only for the cases already under test.
+        """
+        from nina_planner.server import load_sequence
+
+        plan_dict = {
+            "plan_id": "plan-test123",
+            "target": "M31",
+            "pointings": [{"ra_hours": 5.0, "dec_deg": 10.0}],
+            "light_frames": [
+                {"filter_name": "L", "exposure_time_seconds": 60.0, "total_count": 1}
+            ],
+            "flat_frames": [{"filter_name": "L", "total_count": 1}],
+            "dark_frames": [{"exposure_time_seconds": 60.0, "total_count": 1}],
+            "bias_frames": [{"total_count": 1}],
+        }
+        failures: dict[str, Exception] = {
+            "OSError": OSError("cannot read ImageMetaData.csv"),
+            "UnicodeDecodeError": UnicodeDecodeError(
+                "utf-8", b"\xff\xfe", 0, 1, "invalid start byte"
+            ),
+            "TypeError": TypeError("to_snake(None)"),
+        }
+
+        for label, exc in failures.items():
+            with self.subTest(label):
+                with tempfile.TemporaryDirectory() as tmp:
+                    plan_path = Path(tmp) / "plan.json"
+                    plan_path.write_text(json.dumps(plan_dict))
+                    with (
+                        patch(
+                            "nina_planner.tools.equipment.get_site_profile",
+                            AsyncMock(return_value=self._full_profile()),
+                        ),
+                        patch(
+                            "nina_planner.tools.equipment._get_site_equipment_status",
+                            AsyncMock(return_value=self._payload_equipment()),
+                        ),
+                        patch(
+                            "nina_planner.metadata.read_metadata",
+                            new=AsyncMock(side_effect=exc),
+                        ),
+                        patch(
+                            "nina_planner.client.api_post", AsyncMock(return_value={})
+                        ) as api_post,
+                        patch(
+                            "nina_planner.client.api_get", AsyncMock(return_value={})
+                        ),
+                    ):
+                        result = await load_sequence(
+                            [
+                                SequenceRequest(
+                                    plan=str(plan_path),
+                                    action="light",
+                                    pointing_index=1,
+                                    mode="full",
+                                )
+                            ]
+                        )
+                # The advisory line vanished; the load itself did not.
+                self.assertNotIn("already complete", result)
+                self.assertIn("Sequence loaded (1 of 1 step(s))", result)
+                api_post.assert_awaited_once()
+
+    async def test_full_mode_note_swallows_every_metadata_failure(self):
+        """Direct repro: `_full_mode_note` returns "" instead of raising.
+
+        Same three failures as above, exercised at the function itself so a
+        regression points at the note rather than at a load five frames
+        downstream.
+        """
+        from nina_planner.plan_utils import load_plan
+        from nina_planner.tools.sequence import _full_mode_note
+
+        plan_dict = {
+            "plan_id": "plan-test123",
+            "target": "M31",
+            "pointings": [{"ra_hours": 5.0, "dec_deg": 10.0}],
+            "light_frames": [
+                {"filter_name": "L", "exposure_time_seconds": 60.0, "total_count": 5}
+            ],
+            "flat_frames": [{"filter_name": "L", "total_count": 1}],
+            "dark_frames": [{"exposure_time_seconds": 60.0, "total_count": 1}],
+            "bias_frames": [{"total_count": 1}],
+        }
+        failures: dict[str, Exception] = {
+            "OSError": OSError("cannot read ImageMetaData.csv"),
+            "UnicodeDecodeError": UnicodeDecodeError(
+                "utf-8", b"\xff\xfe", 0, 1, "invalid start byte"
+            ),
+            "TypeError": TypeError("to_snake(None)"),
+        }
+
+        with tempfile.TemporaryDirectory() as tmp:
+            plan_path = Path(tmp) / "plan.json"
+            plan_path.write_text(json.dumps(plan_dict))
+            plan = await load_plan(str(plan_path))
+            now = datetime.now(UTC).replace(microsecond=0)
+            for label, exc in failures.items():
+                with self.subTest(label):
+                    with patch(
+                        "nina_planner.metadata.read_metadata",
+                        new=AsyncMock(side_effect=exc),
+                    ):
+                        note = await _full_mode_note(plan, "light", 1, 5, now)
+                    self.assertEqual(note, "")
+
+    async def test_full_mode_note_scans_the_imaging_root_once(self):
+        """One scan, not four: the note asks for light rows only.
+
+        `read_metadata()` with no image type loops light, dark, bias and
+        flat — four full `visible_rglob` passes over the imaging root for
+        one advisory line, on every default (full-mode) light command.
+        """
+        from nina_planner import imaging
+        from nina_planner.plan_utils import load_plan
+        from nina_planner.tools.sequence import _full_mode_note
+
+        plan_dict = {
+            "plan_id": "plan-test123",
+            "target": "M31",
+            "pointings": [{"ra_hours": 5.0, "dec_deg": 10.0}],
+            "light_frames": [
+                {"filter_name": "L", "exposure_time_seconds": 60.0, "total_count": 5}
+            ],
+            "flat_frames": [{"filter_name": "L", "total_count": 1}],
+            "dark_frames": [{"exposure_time_seconds": 60.0, "total_count": 1}],
+            "bias_frames": [{"total_count": 1}],
+        }
+        scanned: list[str] = []
+        real_rglob = imaging.visible_rglob
+
+        def counting_rglob(root: Path, name: str) -> list[Path]:
+            scanned.append(name)
+            return real_rglob(root, name)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            plan_path = root / "plan.json"
+            plan_path.write_text(json.dumps(plan_dict))
+            plan = await load_plan(str(plan_path))
+            with (
+                patch(
+                    "nina_planner.metadata.resolve_imaging_root",
+                    AsyncMock(return_value=root),
+                ),
+                patch(
+                    "nina_planner.imaging.visible_rglob",
+                    side_effect=counting_rglob,
+                ),
+            ):
+                note = await _full_mode_note(
+                    plan, "light", 1, 5, datetime.now(UTC).replace(microsecond=0)
+                )
+
+        # Empty root → nothing attributed → frames outstanding → no warning.
+        self.assertEqual(note, "")
+        self.assertEqual(
+            len(scanned),
+            1,
+            f"expected one type-scan of the root, got {len(scanned)}: {scanned}",
+        )
+
     async def test_load_sequence_full_mode_warns_when_already_complete(self):
         """A full-mode re-shoot over an already-complete plan says so at load.
 

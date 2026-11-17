@@ -1,8 +1,6 @@
 from datetime import UTC, datetime
 from typing import Any, cast
 
-import httpx
-
 from .. import client, config, metadata, plan_utils
 from ..app import mcp
 from ..models.observatory import ObservatoryEquipment
@@ -92,14 +90,23 @@ async def _full_mode_note(
     if group != "light":
         return ""
     try:
-        rows = await metadata.read_metadata()
-    # Any read error yields no warning rather than an error, as the
-    # docstring above commits to. `resolve_imaging_root` re-reads the site
-    # profile over HTTP, so a N.I.N.A. that answers the profile fetch but
-    # drops out before this read surfaces as `httpx`, not as RuntimeError —
-    # and failing the whole load because an advisory line could not be
-    # computed is exactly what "must not block the load" forbids.
-    except (RuntimeError, FileNotFoundError, httpx.HTTPError):
+        # Light rows only: the warning reasons about this group and nothing
+        # else, so asking for every type would walk light, dark, bias and
+        # flat — four full scans of the imaging root for one line of output.
+        rows = await metadata.read_metadata("light")
+    # Any read or parse failure yields no warning rather than an error, as
+    # the docstring above commits to. This whole computation is advisory by
+    # contract, so the handler is deliberately broad: beside `RuntimeError`
+    # (the profile fetch inside `resolve_imaging_root`) and `httpx.HTTPError`
+    # (N.I.N.A. answering the profile, then dropping out before the read),
+    # the CSV itself can raise `FileNotFoundError`/`OSError` (root gone,
+    # unreadable file), `UnicodeDecodeError` (bad UTF-8) or `TypeError`
+    # (`csv.DictReader` parks surplus cells under a `None` key and
+    # `to_snake(None)` blows up). Any of those escaping would abort the whole
+    # load over a courtesy line — exactly what "must not block the load"
+    # forbids. `Exception` rather than a bare `except:` so KeyboardInterrupt
+    # and SystemExit still propagate.
+    except Exception:
         return ""
     # Same thresholds as the remaining-mode count beside this warning (the
     # plan's `quality` section), so "already complete" here means exactly

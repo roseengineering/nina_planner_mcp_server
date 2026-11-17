@@ -575,6 +575,54 @@ class LightsSequenceTests(unittest.TestCase):
             )
 
 
+class ChildrenShapeTests(unittest.TestCase):
+    """`_children` must fail CLOSED on an `Items` shape it does not recognise.
+
+    It reads `Items` in both payload spellings — `/sequence/state`'s plain
+    list and `/sequence/json`'s `{"$values": [...]}` — so anything else (a
+    dict with no `$values`, a missing key, a bare string) has to yield
+    nothing rather than raise or invent children. `_counts_exposures` and
+    `_exposure_groups` are both built on it: a raise here would take the
+    whole projection down, and a stray child would report an exposure group
+    that does not exist.
+    """
+
+    def test_both_payload_spellings_yield_the_direct_children(self):
+        from nina_planner.sequence_state import _children
+
+        child = {"Name": "Take Exposure"}
+        self.assertEqual(list(_children({"Items": [child]})), [child])
+        self.assertEqual(list(_children({"Items": {"$values": [child]}})), [child])
+
+    def test_unrecognised_items_shapes_yield_nothing(self):
+        from nina_planner.sequence_state import _children
+
+        shapes = {
+            "dict without $values": {"$type": "System.Collections.ObjectModel.X"},
+            "missing key": {},
+            "bare string": {"Items": "Take Exposure"},
+            "$values is a string": {"Items": {"$values": "Take Exposure"}},
+            "items is an int": {"Items": 7},
+            "$values is a dict": {"Items": {"$values": {"Name": "Take Exposure"}}},
+        }
+        for label, node in shapes.items():
+            with self.subTest(label):
+                self.assertEqual(list(_children(node)), [])
+
+    def test_counts_exposures_is_false_when_items_are_unreadable(self):
+        from nina_planner.sequence_state import _counts_exposures
+
+        # The loop condition matches, but the children cannot be read: the
+        # node must not count as an exposure group (fail closed), which is
+        # what keeps `exposure` null instead of inventing a group.
+        node = {
+            "Conditions": [{"Iterations": 5}],
+            "Items": {"$type": "System.Collections.ObjectModel.X"},
+        }
+        self.assertFalse(_counts_exposures(node))
+        self.assertFalse(_counts_exposures({"Conditions": [{"Iterations": 5}]}))
+
+
 def _nodes(node):
     if isinstance(node, dict):
         yield node
