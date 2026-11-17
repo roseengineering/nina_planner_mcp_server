@@ -268,6 +268,44 @@ class ProjectSequenceStateTests(unittest.TestCase):
         self.assertIsNone(step["exposure"]["filter"])
         self.assertIsNone(step["exposure_groups"][0]["filter"])
 
+    def test_a_looping_wrapper_is_not_mistaken_for_the_group_it_holds(self):
+        """W1: a wrapper's own iteration count must not become the group's.
+
+        ``_counts_exposures`` matches any node that BOTH carries an iteration
+        condition and merely CONTAINS a ``Take Exposure``, and ``_walk`` yields
+        a container before its children — so a 2-iteration wrapper around a
+        5-frame countdown group put the wrapper first, and ``exposure`` (the
+        first group) reported ``total: 2`` instead of the group's 5, with a
+        phantom second group beside it.
+        """
+        state = _grouped_step_state(
+            [{"filter": "L", "total": 5, "completed": 2, "seconds": 60.0}]
+        )
+        deep_sky = state[0]["Items"][0]
+        (group,) = deep_sky["Items"]
+        deep_sky["Items"] = [
+            {
+                "Name": "Outer Loop_Container",
+                "Status": "CREATED",
+                "Conditions": [
+                    {
+                        "Name": "Loop For Iterations_Condition",
+                        "Iterations": 2,
+                        "CompletedIterations": 1,
+                    }
+                ],
+                "Items": [group],
+            }
+        ]
+
+        step = project_sequence_state(state)["steps"][0]
+        # the step owes 5 frames across ONE countdown group, not 2
+        self.assertEqual([g["total"] for g in step["exposure_groups"]], [5])
+        self.assertEqual(step["exposure"]["total"], 5)
+        self.assertEqual(step["exposure"]["completed"], 2)
+        # and `exposure` stays byte-for-byte that single group
+        self.assertEqual(step["exposure"], step["exposure_groups"][0])
+
     def test_unrecognised_target_area_is_reported_not_raised(self):
         """C2: an area name we do not recognise must not look like 'empty'."""
         renamed = [

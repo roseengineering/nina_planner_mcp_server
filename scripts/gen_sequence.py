@@ -60,6 +60,7 @@ try:
         _get_site_equipment_status,
         get_site_profile,
     )
+    from nina_planner.tools.sequence import _full_mode_note
 except ImportError as exc:  # pragma: no cover - environment guard
     raise SystemExit(
         "✗ nina_planner is not importable from this interpreter — run the "
@@ -186,7 +187,17 @@ async def _generate(args: argparse.Namespace) -> tuple[dict[str, Any] | None, st
             "flat": plan.flat_frames,
         }
         total = sum(f.total_count for f in frame_groups[group])
-        note = f"{total} frame(s), mode=full"
+        # Same warning `load_sequence` appends on a full-mode load: nothing
+        # downstream can tell a re-shoot from an ordinary acquisition
+        # afterwards (get_plan_progress reads complete:true either way), and
+        # this is the last point where the operator can still revisit it.
+        note = f"{total} frame(s), mode=full" + await _full_mode_note(
+            plan,
+            group,
+            pointing_index,
+            total,
+            datetime.now(UTC).replace(microsecond=0),
+        )
 
     # Attribution guard: without $$TARGETNAME$$ in the FilePattern the
     # frames N.I.N.A. writes carry no plan id and attribute to nothing.

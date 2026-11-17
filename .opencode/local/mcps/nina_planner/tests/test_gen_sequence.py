@@ -101,6 +101,19 @@ class GenSequenceScriptTest(unittest.TestCase):
         self.plan = Path(tmp.name) / "plan.json"
         self.plan.write_text(json.dumps(PLAN_DATA), encoding="utf-8")
 
+        # Full mode's re-shoot warning reads the imaging metadata, which
+        # re-reads the site profile over HTTP — without a stub, the DEFAULT
+        # action of every test here would dial N.I.N.A. Default to "no
+        # imaging root" (the warning's own documented no-warning path).
+        # Tests needing metadata open their own `with patch.object(...)`,
+        # which is entered later and therefore wins over this one.
+        async def _no_imaging_root():
+            raise FileNotFoundError("imaging root is not mounted")
+
+        stub = patch.object(self.script.metadata, "read_metadata", _no_imaging_root)
+        stub.start()
+        self.addCleanup(stub.stop)
+
     def _run(self, *argv: str, profile=None, equipment=None):
         """Run ``main(argv)`` with the live N.I.N.A. reads stubbed.
 
@@ -124,7 +137,23 @@ class GenSequenceScriptTest(unittest.TestCase):
             redirect_stderr(err),
         ):
             code = self.script.main(list(argv))
-        return code, out.getvalue(), err.getvalue()
+        stdout, stderr = out.getvalue(), err.getvalue()
+        # The contract this module states in its docstring — stdout carries
+        # ONLY the sequence JSON — enforced once here, for every successful
+        # run, instead of per-test substring checks. A stray diagnostic
+        # written to stdout would happily pass `assertIn("Wait For Object",
+        # out)` while breaking `> seq.json` and `--load`. A non-zero exit
+        # prints nothing on stdout, so failures keep their own assertions.
+        if code == 0 and stdout.strip():
+            try:
+                json.loads(stdout)
+            except json.JSONDecodeError as exc:
+                raise AssertionError(
+                    "stdout must be exactly the sequence JSON — notes, "
+                    "warnings and errors belong on stderr; got "
+                    f"{stdout[:200]!r}"
+                ) from exc
+        return code, stdout, stderr
 
     # ------------------------------------------------------------ defaults
 
@@ -228,6 +257,44 @@ class GenSequenceScriptTest(unittest.TestCase):
         self.assertEqual(code, 0)
         self.assertIn("Wait For Object", out)
         self.assertIn("mode=full", err)
+
+    def test_full_mode_warns_when_the_plan_is_already_complete(self):
+        """A full-mode re-shoot over a finished plan says so on stderr.
+
+        The CLI used to report only the frame count, while `load_sequence`
+        appended this warning — nothing downstream can verify the outcome
+        afterwards (`get_plan_progress` reads `complete: true` whether the
+        re-shoot delivered every frame or a handful), so this line is the
+        only place the operator is told. See `load_sequence`'s twin test in
+        tests/test_server.py.
+        """
+
+        async def attributed_rows():
+            # One already-attributed light per frame, so the group reads
+            # complete against this plan id.
+            return [
+                {
+                    "image_type": "LIGHT",
+                    "file_path": (
+                        r"Z:\landing\Test Target _plan-test123_\2026-10-22"
+                        rf"\LIGHT\frame_{i:04d}.fits.fz"
+                    ),
+                    "duration": "60.0",
+                    "filter_name": "L",
+                    "hfr": "1.50",
+                    "detected_stars": "100",
+                }
+                for i in range(PLAN_DATA["light_frames"][0]["total_count"])
+            ]
+
+        with patch.object(self.script.metadata, "read_metadata", attributed_rows):
+            code, out, err = self._run(str(self.plan))
+
+        self.assertEqual(code, 0)
+        self.assertIn("5 frame(s), mode=full", err)
+        self.assertIn("already complete", err)
+        # The warning never blocks the build itself.
+        self.assertIn("Wait For Object", out)
 
     def test_pointing_index_out_of_range_exits_1(self):
         code, out, err = self._run(str(self.plan), "--pointing-index", "9")

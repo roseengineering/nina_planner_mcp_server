@@ -1,6 +1,8 @@
 from datetime import UTC, datetime
 from typing import Any, cast
 
+import httpx
+
 from .. import client, config, metadata, plan_utils
 from ..app import mcp
 from ..models.observatory import ObservatoryEquipment
@@ -91,7 +93,13 @@ async def _full_mode_note(
         return ""
     try:
         rows = await metadata.read_metadata()
-    except (RuntimeError, FileNotFoundError):
+    # Any read error yields no warning rather than an error, as the
+    # docstring above commits to. `resolve_imaging_root` re-reads the site
+    # profile over HTTP, so a N.I.N.A. that answers the profile fetch but
+    # drops out before this read surfaces as `httpx`, not as RuntimeError —
+    # and failing the whole load because an advisory line could not be
+    # computed is exactly what "must not block the load" forbids.
+    except (RuntimeError, FileNotFoundError, httpx.HTTPError):
         return ""
     # Same thresholds as the remaining-mode count beside this warning (the
     # plan's `quality` section), so "already complete" here means exactly
