@@ -211,6 +211,32 @@ export default Plugin.define({
       log(`[${instanceId}] restored pinned session: ${pinnedSessionID}`);
     }
 
+    // Armed gate. Disarming is how the operator silences this notifier while
+    // they work WITH the agents (coding, reviewing) instead of observing:
+    // every wake — event, interval, watchdog and gap-RECOVERY — is dropped at
+    // the single delivery choke point below, while the socket stays connected
+    // and N.I.N.A. keeps its own event history, so nothing is lost, only
+    // unpushed. The `armed` flag is written ONLY by the `nina_notify_disarm`
+    // / `nina_notify_arm` tools and persisted like the pin because several
+    // opencode processes load this plugin and an eviction or restart in the
+    // middle of a disarmed stretch must not silently bring the wakes back.
+    // `disarmedAt` is stamped by `disarm` and read only while disarmed (it is
+    // the instant the silence started, and the window the `arm` confirmation
+    // hands back to the agent). Default is ARMED: an absent key (every
+    // install predating this tool) behaves exactly as it did before.
+    const savedArmed = await ctx.storage.get("armed");
+    let armed = savedArmed !== false;
+    const savedDisarmedAt = await ctx.storage.get("disarmedAt");
+    let disarmedAt =
+      typeof savedDisarmedAt === "string" && savedDisarmedAt
+        ? savedDisarmedAt
+        : null;
+    if (!armed) {
+      log(
+        `[${instanceId}] DISARMED (restored from storage${disarmedAt ? ` since ${disarmedAt}` : ""})`,
+      );
+    }
+
     const promptHook = await ctx.session.hook("prompt", async (event) => {
       if (pinnedSessionID && event.sessionID !== pinnedSessionID) {
         log(
@@ -298,6 +324,31 @@ export default Plugin.define({
       return pinnedSessionID ?? targetSessionID;
     }
 
+    // Re-read the armed gate on EVERY send, for the same reason resolveTarget
+    // re-reads the pin: a disarm issued from another opencode process (or from
+    // this one while a wake was already queued on the chain) must stop the
+    // next wake, not only the ones after a restart. The absent-key rule
+    // matches the startup read — no key means armed — and a storage failure
+    // keeps the CURRENT value, so a hiccup can never re-arm a disarmed
+    // notifier (the safe direction to fail in while someone is coding).
+    async function refreshArmed(): Promise<boolean> {
+      try {
+        const stored = await ctx.storage.get("armed");
+        const next = stored !== false;
+        if (next !== armed) {
+          armed = next;
+          log(
+            `[${instanceId}] armed gate changed elsewhere: ${armed ? "ARMED" : "DISARMED"}`,
+          );
+        }
+      } catch (err) {
+        log(
+          `[${instanceId}] armed gate read failed (${err}); staying ${armed ? "armed" : "disarmed"}`,
+        );
+      }
+      return armed;
+    }
+
     async function sendIntervention(events: unknown = null) {
       const since = Math.max(60, Math.round((Date.now() - lastWakeAt) / 1000));
       const body =
@@ -307,11 +358,30 @@ export default Plugin.define({
       await deliverPrompt(`${body}${contextHint(since)}`);
     }
 
-    // One delivery: resolve target → dedupe → log → inject. `force` skips
-    // the 30s dedupe — an operator action (arm confirmation, explicit test
-    // wake) must never be swallowed by a prompt that happens to look
-    // identical to the last one.
-    async function deliverPrompt(text: string, opts: { force?: boolean } = {}) {
+    // One delivery: resolve target → armed gate → dedupe → log → inject.
+    // `force` skips the 30s dedupe — an operator action (arm confirmation,
+    // explicit test wake) must never be swallowed by a prompt that happens to
+    // look identical to the last one. `force` deliberately does NOT bypass the
+    // armed gate: force is about dedupe only, and the one operator delivery
+    // that must still land while disarmed (the `test` wake, which exists to
+    // prove the path) opts in with `allowDisarmed`. Everything else — event
+    // batches, the interval check, watchdog faults and the gap RECOVERY —
+    // comes through here, so this is the only place a disarmed notifier has
+    // to be checked.
+    async function deliverPrompt(
+      text: string,
+      opts: { force?: boolean; allowDisarmed?: boolean } = {},
+    ) {
+      if (!opts.allowDisarmed && !(await refreshArmed())) {
+        // Suppressed, not lost: `lastWakeAt` and `routineSinceWake` are left
+        // untouched, so nothing ever claims a wake that did not happen, and
+        // the `arm` confirmation that ends the silence names the whole
+        // disarmed window for the agent instead.
+        log(
+          `[${instanceId}] DISARMED: wake suppressed -> ${text.split("\n")[0]}`,
+        );
+        return;
+      }
       const target = await resolveTarget();
       if (!target) {
         log(`[${instanceId}] no target session yet; skipping injection`);
@@ -385,7 +455,7 @@ export default Plugin.define({
     // interleave their storage reads/writes.
     function enqueueDelivery(
       text: string,
-      opts: { force?: boolean } = {},
+      opts: { force?: boolean; allowDisarmed?: boolean } = {},
     ): Promise<void> {
       promptChain = promptChain
         .then(() => deliverPrompt(text, opts))
@@ -1026,12 +1096,22 @@ export default Plugin.define({
     // --- Operator tools ------------------------------------------------------
     // Arming used to be an invisible side effect of "whichever session was
     // prompted last", which drifted to stale sessions whenever an old session
-    // was opened (replayed prompt admission re-fired the hook). These three
+    // was opened (replayed prompt admission re-fired the hook). These four
     // tools make it explicit and verifiable:
-    //   nina_notify_arm    pin THIS (or a given) session + send a confirmation
+    //   nina_notify_arm    pin THIS (or a given) session, re-enable the wakes
+    //                      if they were disarmed, and send a confirmation
     //                      through the real wake-delivery path
+    //   nina_notify_disarm suppress EVERY wake (event, interval, watchdog,
+    //                      gap-RECOVERY) until `arm` is called again — the
+    //                      switch for "I am coding, not observing". Persisted
+    //                      like the pin, so a restart mid-disarm cannot bring
+    //                      the wakes back on its own, and every opencode
+    //                      process honours it. Touches no pin: the target
+    //                      stays ready for the moment the notifier is
+    //                      re-armed.
     //   nina_notify_check   what is pinned, is the event socket actually
-    //                      alive. Renamed 2026-11-07 (`health` → `check`);
+    //                      alive, and is the notifier armed. Renamed
+    //                      2026-11-07 (`health` → `check`);
     //                      the name has to point at this notifier, not at
     //                      N.I.N.A. — a bare "status" kept resolving to the
     //                      nina-planner `get_nina_status` /
@@ -1043,9 +1123,14 @@ export default Plugin.define({
     //                      (folding it in as `test:true` was reverted
     //                      2026-11-05) so a re-verification can never be one
     //                      forgotten flag away from re-targeting the wakes.
-    // Read and write stay separate: `check` never wakes anyone, so the
-    // once-per-session pipeline check can be called as often as it is useful.
+    //                      The one delivery allowed while disarmed: proving
+    //                      the path still works must not need the notifier
+    //                      switched back on.
+    // Read and write stay separate: `check` never wakes anyone and `disarm`
+    // only flips the gate, so the once-per-session pipeline check can be
+    // called as often as it is useful.
     async function buildStatus() {
+      const isArmed = await refreshArmed();
       const target = await resolveTarget();
       let title = "";
       if (target) {
@@ -1066,6 +1151,12 @@ export default Plugin.define({
         autoFallbackSessionID: targetSessionID ?? null,
         effectiveTarget: target ?? null,
         effectiveTargetTitle: title,
+        // The on/off switch itself. While `armed: false` every wake is
+        // dropped at delivery (see deliverPrompt) and the socket keeps
+        // running; `disarmedAt` is the instant that silence started, hidden
+        // whenever the notifier is armed because it is inert then.
+        armed: isArmed,
+        disarmedAt: isArmed ? null : disarmedAt,
         eventSocket: {
           url: `ws://${ninaEndpoint}/v2/socket`,
           state: ws
@@ -1097,13 +1188,13 @@ export default Plugin.define({
           editor.namespace({
             name: "nina_notify",
             description:
-              "Arm, inspect, and test the nina-notify wake pipeline that prompts the observation controller on N.I.N.A. milestones, faults, and safety changes.",
+              "Arm, disarm, inspect, and test the nina-notify wake pipeline that prompts the observation controller on N.I.N.A. milestones, faults, and safety changes.",
           });
 
           editor.add({
             name: "arm",
             description:
-              "Pin the observation-controller session as nina-notify's wake target and prove delivery. Call this as the FIRST action of every observatory session, and again after creating a new controller session. Pins the calling session unless sessionID is given; once pinned, no other session's prompts can re-target the wakes. Sends a confirmation through the real wake-delivery path — seeing it appear proves end-to-end delivery. Answers the nina-notify wake pipeline, not N.I.N.A. API liveness — that is get_nina_status / get_site_equipment_status. (To re-prove delivery WITHOUT re-pinning, use nina_notify_test.)",
+              "Pin the observation-controller session as nina-notify's wake target and prove delivery. Call this as the FIRST action of every observatory session, and again after creating a new controller session. Pins the calling session unless sessionID is given; once pinned, no other session's prompts can re-target the wakes. Also the way back from nina_notify_disarm: it re-enables every wake, and its confirmation then carries get_events(since=…) covering the whole disarmed window. Sends a confirmation through the real wake-delivery path — seeing it appear proves end-to-end delivery. Answers the nina-notify wake pipeline, not N.I.N.A. API liveness — that is get_nina_status / get_site_equipment_status. (To re-prove delivery WITHOUT re-pinning, use nina_notify_test.)",
             input: {
               type: "object",
               properties: {
@@ -1123,6 +1214,12 @@ export default Plugin.define({
               if (!sessionID) {
                 return { content: "arm failed: no session id available" };
               }
+              // Captured before anything is cleared: this is the window the
+              // confirmation hands back to the agent, so it can read the
+              // events the silence swallowed instead of assuming the night
+              // was quiet.
+              const wasDisarmed = !(await refreshArmed());
+              const wasSince = disarmedAt;
               let title = "";
               try {
                 const info = await ctx.session.get({
@@ -1145,15 +1242,108 @@ export default Plugin.define({
                   content: `arm failed: could not persist pin (${err})`,
                 };
               }
+              // Re-enable only AFTER the pin: a half-applied arm must never
+              // leave the wakes on with a stale target. Writing `armed` is
+              // what every other opencode process reads, so the local flag is
+              // rolled back if the write fails — an arm that silently only
+              // worked here would be worse than an arm that says it did not.
+              // `disarmedAt` is deliberately left as it stands: it is only
+              // read while disarmed (buildStatus hides it behind `armed`),
+              // and clearing it would mean writing a null this storage has
+              // never been asked to hold.
+              if (wasDisarmed) {
+                try {
+                  await ctx.storage.set("armed", true);
+                } catch (err) {
+                  log(`[${instanceId}] arm: failed to re-enable wakes: ${err}`);
+                  return {
+                    content: `arm failed: pin set to ${sessionID}, but wakes could not be re-enabled (${err}) — nina-notify stays disarmed; retry nina_notify_arm`,
+                  };
+                }
+                armed = true;
+                log(
+                  `[${instanceId}] ARM: wakes re-enabled${wasSince ? ` (disarmed since ${wasSince})` : ""}`,
+                );
+              }
               log(
                 `[${instanceId}] ARM: pinned session=${sessionID} title="${title}" (by ${(context as { sessionID?: string }).sessionID ?? "unknown"})`,
               );
+              const gapSeconds =
+                wasDisarmed && wasSince && Number.isFinite(Date.parse(wasSince))
+                  ? Math.max(
+                      60,
+                      Math.round((Date.now() - Date.parse(wasSince)) / 1000),
+                    )
+                  : 0;
               const confirm =
                 `✅ nina-notify armed → session=${sessionID}${title ? ` "${title}"` : ""}.\n\n` +
-                `This confirmation travelled the same delivery path as real wakes — if you can read it, intervention delivery works end-to-end.`;
+                (wasDisarmed
+                  ? `Wakes were DISARMED${wasSince ? ` since ${wasSince}` : ""} — every wake in that window (milestones, faults, safety, interval, watchdog) was dropped, not queued. It is armed again now.\n\n`
+                  : "") +
+                `This confirmation travelled the same delivery path as real wakes — if you can read it, intervention delivery works end-to-end.` +
+                (gapSeconds ? contextHint(gapSeconds) : "");
               await enqueueDelivery(confirm, { force: true });
               return {
-                content: `pinned session=${sessionID} "${title}"; confirmation wake sent — verify it appeared in this session (and in Telegram).`,
+                content:
+                  `pinned session=${sessionID} "${title}"` +
+                  (wasDisarmed ? "; wakes re-enabled" : "") +
+                  `; confirmation wake sent — verify it appeared in this session (and in Telegram).` +
+                  (gapSeconds
+                    ? ` It carries get_events(since=${gapSeconds}) covering the disarmed window.`
+                    : ""),
+              };
+            },
+          });
+
+          editor.add({
+            name: "disarm",
+            description:
+              "Silence nina-notify until nina_notify_arm is called again: suppress EVERY wake — N.I.N.A. milestones, faults, safety changes (UNSAFE/WEATHER/DOME/ROOF), the interval check, the quality watchdog and gap-recovery prompts. Use this when the operator is working with the agents rather than observing (coding, reviewing) and does not want N.I.N.A. API events prompting the session. Persisted, so a server restart or plugin eviction in the middle of a disarmed stretch stays silent, and honoured by every opencode process. The event socket stays connected and N.I.N.A. keeps its own event history, so nothing is lost — the nina_notify_arm confirmation that ends the silence names the get_events window to read. Does NOT touch the pinned session and sends no wake of its own. Current state is reported by nina_notify_check (`armed`). NOT N.I.N.A. API liveness — that is get_nina_status / get_site_equipment_status.",
+            input: {
+              type: "object",
+              properties: {},
+              additionalProperties: false,
+            },
+            options: { namespace: "nina_notify", codemode: true },
+            execute: async (_input, context) => {
+              const by =
+                (context as { sessionID?: string }).sessionID ?? "unknown";
+              if (!(await refreshArmed())) {
+                log(
+                  `[${instanceId}] DISARM ignored (already disarmed${disarmedAt ? ` since ${disarmedAt}` : ""}) by ${by}`,
+                );
+                return {
+                  content:
+                    `🛑 nina-notify is already DISARMED${disarmedAt ? ` since ${disarmedAt}` : ""} — no wakes are being delivered.\n\n` +
+                    JSON.stringify(await buildStatus(), null, 2),
+                };
+              }
+              // Persist FIRST, `disarmedAt` before `armed`: the two writes are
+              // not atomic, so the order decides how a partial failure lands.
+              // Timestamp-then-flag leaves the notifier ARMED (a stale
+              // `disarmedAt` is inert — it is only read while disarmed),
+              // whereas flag-then-timestamp could leave every other opencode
+              // process silenced with no idea since when.
+              const at = localTime();
+              try {
+                await ctx.storage.set("disarmedAt", at);
+                await ctx.storage.set("armed", false);
+              } catch (err) {
+                log(`[${instanceId}] disarm: failed to persist: ${err}`);
+                return {
+                  content: `disarm failed: could not persist (${err}) — nina-notify stays armed`,
+                };
+              }
+              armed = false;
+              disarmedAt = at;
+              log(
+                `[${instanceId}] DISARM: all wakes suppressed (by ${by}) at ${at}`,
+              );
+              return {
+                content:
+                  `🛑 nina-notify DISARMED at ${at} — no wake will be delivered until nina_notify_arm.\n\n` +
+                  `Everything is silent: milestones, faults, safety changes (UNSAFE/WEATHER/DOME/ROOF), interval checks, the quality watchdog and gap recovery. The event socket stays connected and N.I.N.A. keeps its own event history, so nothing is lost — the arm confirmation hands back the get_events window covering this stretch. The pinned session is untouched.\n\n` +
+                  JSON.stringify(await buildStatus(), null, 2),
               };
             },
           });
@@ -1161,7 +1351,7 @@ export default Plugin.define({
           editor.add({
             name: "check",
             description:
-              "Check the nina-notify wake pipeline: what it is pinned to, whether the N.I.N.A. event socket is actually receiving (not just open), and wake history — ask this to answer 'is everything healthy / am I synced?'. NOT N.I.N.A. API liveness or equipment state: for those use get_nina_status / get_site_equipment_status from nina-planner. Read-only: it never wakes anyone and arms nothing.",
+              "Check the nina-notify wake pipeline: what it is pinned to, whether it is ARMED or DISARMED (`armed: false` means every wake is being suppressed until nina_notify_arm), whether the N.I.N.A. event socket is actually receiving (not just open), and wake history — ask this to answer 'is everything healthy / am I synced?' or 'is it still silenced?'. NOT N.I.N.A. API liveness or equipment state: for those use get_nina_status / get_site_equipment_status from nina-planner. Read-only: it never wakes anyone and neither arms nor disarms anything.",
             input: {
               type: "object",
               properties: {},
@@ -1176,7 +1366,7 @@ export default Plugin.define({
           editor.add({
             name: "test",
             description:
-              "Fire one test wake through the exact path real N.I.N.A. wakes take (dedupe bypassed) and return socket health. Run once after arming, before leaving the observatory unattended. Changes NO pin — it re-proves delivery only, so it can never re-target the wakes the way calling arm again would. For N.I.N.A. API liveness/equipment use get_nina_status / get_site_equipment_status instead.",
+              "Fire one test wake through the exact path real N.I.N.A. wakes take (dedupe bypassed) and return socket health. Run once after arming, before leaving the observatory unattended. Changes NO pin and never arms or disarms anything — it re-proves delivery only, so it can never re-target the wakes the way calling arm again would. It is also the ONE delivery permitted while nina_notify_disarm is in effect (real N.I.N.A. wakes stay suppressed), so the path can be verified without switching the notifier back on. For N.I.N.A. API liveness/equipment use get_nina_status / get_site_equipment_status instead.",
             input: {
               type: "object",
               properties: {},
@@ -1186,18 +1376,23 @@ export default Plugin.define({
             execute: async () => {
               const status = await buildStatus();
               log(
-                `[${instanceId}] TEST wake requested (target=${status.effectiveTarget ?? "none"})`,
+                `[${instanceId}] TEST wake requested (target=${status.effectiveTarget ?? "none"}, armed=${status.armed})`,
               );
-              const text =
-                `🧪 nina-notify TEST WAKE — armed → session=${status.effectiveTarget ?? "NONE"}. ` +
-                `No action required; this only proves the delivery path.`;
-              await enqueueDelivery(text, { force: true });
+              const text = status.armed
+                ? `🧪 nina-notify TEST WAKE — armed → session=${status.effectiveTarget ?? "NONE"}. ` +
+                  `No action required; this only proves the delivery path.`
+                : `🧪 nina-notify TEST WAKE — DISARMED${status.disarmedAt ? ` since ${status.disarmedAt}` : ""} (operator test only; real N.I.N.A. wakes stay suppressed) → session=${status.effectiveTarget ?? "NONE"}. ` +
+                  `No action required; this only proves the delivery path.`;
+              // allowDisarmed: this is the one delivery that must land while
+              // the notifier is silenced — proving the path works is exactly
+              // what you want to be able to do mid-disarm.
+              await enqueueDelivery(text, { force: true, allowDisarmed: true });
               return { content: JSON.stringify(status, null, 2) };
             },
           });
         });
         log(
-          `[${instanceId}] tools registered: nina_notify_arm, nina_notify_check, nina_notify_test`,
+          `[${instanceId}] tools registered: nina_notify_arm, nina_notify_disarm, nina_notify_check, nina_notify_test`,
         );
       } else {
         log(
