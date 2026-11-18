@@ -48,9 +48,8 @@ Run `NINA_VERIFY_CMD`. If it reports anything pending or different, stop: do not
 `nina-purge` reads the `manifest.json` files under `DEST` and never modifies `DEST`.
 
 1. `nina-purge --dest "$DEST"` (report only). Show the verdict table.
-2. **Ask the user** before `nina-purge --dest "$DEST" --apply`. This moves folders into `.quarantine/`; nothing is deleted. It refuses while a sequence is running.
-3. Tell the user to move the quarantined plans' JSON files out of the project directory (they now read as `NEVER_SHOT`).
-4. **Ask again** before `nina-purge --dest "$DEST" --purge`. This deletes for real and is irreversible.
+2. **Ask the user** before `nina-purge --dest "$DEST" --apply`. This moves folders into `.quarantine/`; nothing is deleted. It refuses while a sequence is running. The quarantined plans' JSON files now read as `NEVER_SHOT` — do **not** move them by hand: the next step's `--purge` removes them automatically (their verbatim `plan.json` is in the archive; `purge.py` prints the names after `--apply`).
+3. **Ask again** before `nina-purge --dest "$DEST" --purge`. This deletes for real and is irreversible — and it also removes each purged plan's original plan JSON, the step that clears the `NEVER_SHOT` leftover.
 
 ## 5. Clean up the local archive
 
