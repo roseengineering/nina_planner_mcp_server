@@ -56,6 +56,11 @@ class FakeNina:
             return _envelope("Sequence stopped")
         if path in ("/sequence/json", "/sequence/state"):
             return _envelope(self._state())
+        if path == "/application/plugins":
+            # The plugins a light/flat load must see installed before it
+            # POSTs (tools/sequence._require_sequencer_plus): this fake rig
+            # has Sequencer+ like the real one.
+            return _envelope(["Sequencer+"])
         return _envelope(error=f"Unknown endpoint {path}", status=404)
 
     @property

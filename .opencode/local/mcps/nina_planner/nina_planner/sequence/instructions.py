@@ -82,14 +82,6 @@ def slew_to_azalt(az: float, alt: float) -> dict[str, Any]:
     ) | {"Coordinates": _azalt_coordinates(az, alt)}
 
 
-def set_readout(mode: int) -> dict[str, Any]:
-    return _child(
-        "NINA.Sequencer.SequenceItem.Camera.SetReadoutMode, NINA.Sequencer"
-    ) | {
-        "Mode": mode,
-    }
-
-
 def run_autofocus() -> dict[str, Any]:
     return _child("NINA.Sequencer.SequenceItem.Autofocus.RunAutofocus, NINA.Sequencer")
 

@@ -72,6 +72,22 @@ from .nodes import (
 # event that proves every step has run (see _sequence_with_steps).
 
 
+def _contains_type(node: Any, needle: str) -> bool:
+    """True when any ``$type`` anywhere in a nested payload contains ``needle``.
+
+    Used by the dark/bias sky-gate assertion below to prove a step emits no
+    instruction of a given family — a payload is plain nested dicts/lists, so
+    this walks the whole tree.
+    """
+    if isinstance(node, dict):
+        if needle in str(node.get("$type", "")):
+            return True
+        return any(_contains_type(value, needle) for value in node.values())
+    if isinstance(node, list):
+        return any(_contains_type(item, needle) for item in node)
+    return False
+
+
 def build_sequence_many(
     equipment: ObservatoryEquipment, payloads: list[list[dict[str, Any]]]
 ) -> dict[str, Any]:
@@ -104,9 +120,10 @@ def target_payload_darks(
 ) -> list[dict[str, Any]]:
     """The Target-area content of a darks/bias step.
 
-    Parked imaging: the container parks (or homes) the mount and sets the
-    camera temperature before the exposures, and never unparks — the caller's
-    End area decides how the night ends.
+    Parked imaging: the container parks the mount (never homes — homing is
+    not emitted in a calibration step) and sets the camera temperature
+    before the exposures, and never unparks — the caller's End area decides
+    how the night ends.
 
     ``variant`` is how the light is cut off: ``wheel`` parks the wheel on the
     profile's ``Dark`` filter slot (the default), ``cover`` closes a
@@ -150,10 +167,29 @@ def target_payload_darks(
         ]
         base = sequence_park_scope(equipment) + sequence_cool_camera(plan, equipment)
         if variant == "cover":
-            return base + [close_cover()] + exposures + [open_cover()]
-        # wheel and shutter differ only in how the light is cut, which is
-        # settled above: neither wraps the exposures in anything.
-        return base + exposures
+            built = base + [close_cover()] + exposures + [open_cover()]
+        else:
+            # wheel and shutter differ only in how the light is cut, which is
+            # settled above: neither wraps the exposures in anything.
+            built = base + exposures
+        # THE DARK/BIAS SKY-GATE EXEMPTION, stated where it is emitted.
+        # Darks and biases are NOT sky-dependent: they may be loaded and
+        # started with the enclosure closed (is_safe=false), because this
+        # step parks first and NEVER unparks, cuts the light at the camera
+        # (Dark filter slot / cover / shutter) and needs no open sky — no
+        # slew, no center, no guiding. That is the whole reason a dark can
+        # run behind a closed roof while lights and dawn/dusk sky flats stay
+        # gated. The assertion pins the half of that claim a later edit
+        # could break silently: one UnparkScope (or a slew/center/guiding
+        # instruction) in here would make the exemption a lie while every
+        # test that only counts exposures kept passing.
+        for needle in ("UnparkScope", "Platesolving", "StartGuiding"):
+            assert not _contains_type(built, needle), (
+                f"darks/bias must never emit {needle}: the is_safe gate "
+                "exemption depends on the scope staying parked and on the "
+                "step taking no sky-dependent instruction"
+            )
+        return built
 
     return [
         sequence_calibration(
@@ -293,7 +329,7 @@ def target_payload_lights(
                             instructions=[end_instruction(name_object)],
                         ),
                     ]
-                    # out of view: park (or home) while waiting for object to rise
+                    # out of view: park while waiting for object to rise
                     + sequence_park_scope(equipment)
                     + [
                         wait_until_above_horizon(
@@ -354,9 +390,14 @@ def target_payload_lights(
                             ),
                         ]
                         + [
-                            slew_and_center()
-                            if pointing.position_angle_deg is None
-                            else slew_center_and_rotate()
+                            # Same rule validate_position_angle checks
+                            # (Pointing.requests_rotation): 0 == None == no
+                            # rotation, so a rotator-less rig — whose mosaic
+                            # panes carry the explicitly-stamped 0 — gets a
+                            # plain Center, never CenterAndRotate.
+                            slew_center_and_rotate()
+                            if pointing.requests_rotation()
+                            else slew_and_center()
                         ]
                         + [
                             run_autofocus(),

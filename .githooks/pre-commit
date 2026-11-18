@@ -53,13 +53,24 @@ if ! command -v python3 >/dev/null 2>&1; then
         "install python3, otherwise README.md will go stale unnoticed."
 fi
 
+# The script annotates with `str | os.PathLike` at runtime (needs 3.10+) and
+# the project requires 3.11, but a system python3 may be older than that —
+# macOS still ships 3.9, where this dies with a TypeError before doing any
+# work. Prefer the project venv's interpreter, which is the one ruff and
+# mypy below already run on, and fall back to plain python3 only if the
+# venv has not been built yet.
+readme_python=$repo_root/$venv/bin/python
+if [ ! -x "$readme_python" ]; then
+    readme_python=python3
+fi
+
 # The script only rewrites the fenced excerpts it owns, so compare README
 # before/after: if the refresh actually changed it, stage it and carry on —
 # no second round-trip through the index for you. An edit of your own that
 # the generator does not own stays exactly where you left it.
 readme_before=$(git hash-object -- README.md 2>/dev/null || true)
 
-if ! python3 scripts/update_readme.py; then
+if ! "$readme_python" scripts/update_readme.py; then
     die "scripts/update_readme.py failed." \
         "fix the script before committing."
 fi

@@ -683,7 +683,14 @@ def _rank_catalog(
     times = when + np.arange(samples) * 30 * u.min
     dark = [s < _DARKNESS_SUN_ALT for s in _sun_altitudes(times, location)]
     if not any(dark):
+        # No astronomical darkness in the sampled 12 h at all — midsummer at
+        # a high latitude. `is_dark_now` is part of this tool's documented
+        # shape on EVERY return (best_targets spreads it into its result and
+        # callers read it unconditionally), and here it is False by
+        # construction: the first sample is not dark. Dropping the key here
+        # used to surface as a caller KeyError.
         return {
+            "is_dark_now": False,
             "visible_now": [],
             "later_tonight": [],
             "sampled_catalog": len(catalog),

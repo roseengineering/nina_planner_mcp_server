@@ -35,10 +35,19 @@ def log_payload(label: str, payload: str) -> None:
     path = _log_file()
     if path is None:
         return
-    path.parent.mkdir(parents=True, exist_ok=True)
     timestamp = datetime.now(UTC).isoformat()
-    with path.open("a", encoding="utf-8") as f:
-        f.write(f"{timestamp} {label} {payload}\n")
+    # Best-effort by contract: this runs AFTER the real work succeeded (the
+    # API helpers log the response they are about to return; the launch
+    # helpers log around their commands), so an unwritable NINA_PLANNER_LOG
+    # — a read-only mount, a directory where the file should be, tightened
+    # permissions — must never turn a successful read-only tool into a
+    # failure over a debug line. Drop the line and move on.
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("a", encoding="utf-8") as f:
+            f.write(f"{timestamp} {label} {payload}\n")
+    except OSError:
+        return
 
 
 def _error_detail(resp: httpx.Response) -> str:
@@ -61,11 +70,16 @@ def _error_detail(resp: httpx.Response) -> str:
 
 
 def unwrap_response(method: str, path: str, resp: httpx.Response) -> dict[str, Any]:
-    """Return the envelope's ``Response``, raising with N.I.N.A.'s own reason.
+    """Return the response envelope itself, raising with N.I.N.A.'s own reason.
 
-    Both failure shapes are covered: a non-2xx status (whose body would
-    otherwise be dropped by ``raise_for_status``) and a 200 whose
-    ``Success`` flag is false.
+    The whole decoded body — ``Success``/``Error``/``Response`` — is what
+    comes back; callers that want the payload take ``data["Response"]``
+    themselves (see ``api_get``/``api_post``). Every failure shape carries
+    its context: a non-2xx status (whose body
+    would otherwise be dropped by ``raise_for_status``), a non-JSON or
+    non-object body, and a 200 whose ``Success`` flag is false — reported
+    with N.I.N.A.'s own ``Error`` text when it sent one, else with the
+    method, URL, status and the body it did send.
     """
     url = f"{config.NINA_API_URL}{path}"
     if not resp.is_success:
@@ -78,10 +92,21 @@ def unwrap_response(method: str, path: str, resp: httpx.Response) -> dict[str, A
         raise RuntimeError(
             f"{method} {url} returned a non-JSON body: {_error_detail(resp)}"
         ) from None
-    if not isinstance(data, dict) or not data.get("Success", False):
-        if isinstance(data, dict) and data.get("Error"):
+    if not isinstance(data, dict):
+        raise RuntimeError(
+            f"{method} {url} returned HTTP {resp.status_code} with a "
+            f"non-object JSON body: {_error_detail(resp)}"
+        )
+    if not data.get("Success", False):
+        if data.get("Error"):
             raise RuntimeError(str(data["Error"]))
-        raise RuntimeError("API request failed")
+        # The third failure shape: HTTP 200, Success=false, no Error field.
+        # Bare "API request failed" told the caller nothing its siblings
+        # don't — method, URL, status and the body N.I.N.A. did send.
+        raise RuntimeError(
+            f"{method} {url} returned HTTP {resp.status_code} with "
+            f"Success=false and no Error field: {_error_detail(resp)}"
+        )
     return data
 
 
@@ -135,6 +160,68 @@ async def stop_running_sequence_and_wait(timeout: float = 15.0) -> bool:
             return True
         await anyio.sleep(0.2)
     raise RuntimeError(f"NINA sequence did not stop within {timeout:.0f}s")
+
+
+# Budget for wait_until_sequence_started. A module constant read at call time
+# (not a default argument) so tests can tighten it without re-binding the
+# function's signature.
+SEQUENCE_START_TIMEOUT = 10.0
+
+
+def _node_statuses(state: Any) -> list[str]:
+    """Every node ``Status`` string anywhere in a ``/sequence/json`` payload.
+
+    The payload is nested arbitrarily (areas → containers → items), so this
+    walks it and collects the value stored under each ``Status`` key — the
+    same read ``_sequence_running`` does, minus the "is it RUNNING" filter.
+    """
+    if isinstance(state, dict):
+        statuses = [state["Status"]] if isinstance(state.get("Status"), str) else []
+        for key, value in state.items():
+            if key != "Status":
+                statuses.extend(_node_statuses(value))
+        return statuses
+    if isinstance(state, list):
+        return [status for item in state for status in _node_statuses(item)]
+    return []
+
+
+async def wait_until_sequence_started(timeout: float | None = None) -> list[str]:
+    """Block until the sequencer leaves ``CREATED`` — the proof a start took.
+
+    ``GET /sequence/start`` answers as soon as N.I.N.A. *accepts* the start;
+    the run itself can still abort in its first milliseconds (a start-time
+    validation throwing is the recorded case) with every node left
+    ``CREATED``, no ``RUN-STARTING`` and nothing else logged — so the caller
+    would be told "started" about a sequence that never ran. This is the
+    other half of the contract ``stop_running_sequence_and_wait`` already
+    holds for stopping.
+
+    The criterion is "ANY node left ``CREATED``", deliberately **not**
+    "RUNNING": a short park sequence can legitimately finish between the
+    start and the first read, and N.I.N.A. leaves ``FINISHED``/``SKIPPED``
+    nodes behind afterwards, so requiring ``RUNNING`` would raise on a
+    sequence that had already succeeded.
+
+    Returns the statuses seen. Raises ``RuntimeError`` with a short status
+    summary when the budget runs out.
+    """
+    budget = SEQUENCE_START_TIMEOUT if timeout is None else timeout
+    deadline = time.monotonic() + budget
+    while True:
+        statuses = _node_statuses(await api_get(config.SEQUENCE_JSON_PATH))
+        if any(status != "CREATED" for status in statuses):
+            return statuses
+        if time.monotonic() >= deadline:
+            counts = {s: statuses.count(s) for s in sorted(set(statuses))}
+            raise RuntimeError(
+                f"NINA sequence did not start within {budget:.0f}s — every "
+                f"node is still CREATED ({len(statuses)} node(s) read; "
+                f"statuses: {counts or 'none reported'}). The sequence may "
+                "have failed its start-time validation: check get_logs() and "
+                "get_sequence_state() before retrying."
+            )
+        await anyio.sleep(0.2)
 
 
 async def load_sequence_payload(seq: Any) -> None:

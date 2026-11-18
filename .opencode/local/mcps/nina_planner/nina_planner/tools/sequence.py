@@ -40,7 +40,7 @@ async def load_sequence(
     - `dark` and `bias` take `wheel` (default — park the wheel on the profile's `Dark` filter slot), `cover` (close the motorized cover — e.g. a flip-flat — around the exposures, then reopen it so a later step never shoots through a closed cover), or `shutter` (expose without moving the filter wheel, relying on the camera's shutter). The variant is capability-checked at load: `wheel` needs a configured filter wheel with a `Dark` slot, `cover` a configured flat device reporting open/close support, `shutter` a camera reporting HasShutter. A variant the rig cannot perform fails naming the reason and the variants it supports — the default is checked the same way, so an omitted variant never silently picks another method.
     - `light` takes no variant.
 
-    Steps run in order as the sequence reaches them; a step carrying its own wait conditions (lights, flats) waits, or is skipped when its window has passed, without blocking the steps behind it, so list order controls timing. Entries already complete in `remaining` mode are skipped and reported; if every entry is complete, nothing is sent to N.I.N.A. Profile, equipment, and metadata are fetched once per call, one POST carries the whole sequence, and a validation failure names its 0-based position (`request[1]: ...`). A mount that cannot park — or no mount at all — is rejected as soon as a sequence would load: the End area could not park it, and the wait stages that park first would leave it unparked. An all-complete list sends nothing and so needs no park, and loads without that error.
+    Steps run in order as the sequence reaches them; a step carrying its own wait conditions (lights, flats) waits, or is skipped when its window has passed, without blocking the steps behind it, so list order controls timing. Entries already complete in `remaining` mode are skipped and reported; if every entry is complete, nothing is sent to N.I.N.A. Profile, equipment, and metadata are fetched once per call, one POST carries the whole sequence, and a validation failure — or a plan file that cannot be read — names the entry's 0-based position (`request[1]: ...`). A mount that cannot park — or no mount at all — is rejected as soon as a sequence would load: the End area could not park it, and the wait stages that park first would leave it unparked. An all-complete list sends nothing and so needs no park, and loads without that error. A `light` entry is additionally rejected when the profile reports no plate solver, no guider or no focuser (its payload emits slew/center, guiding and autofocus unconditionally), and a `light`/`flat` entry when N.I.N.A. has no `Sequencer+` plugin (its payload carries Sequencer+ nodes that would deserialize to nothing). The park/home/safety policy that rejection rests on — park is the only closing maneuver, find home is never a park fallback, darks/bias are exempt from the enclosure gate — is stated canonically above `sequence_park_scope` in `nina_planner/sequence/builders.py`; this docstring only summarises it.
 
     Fails if a sequence is already running — NINA's own error is reported; call stop_sequence() first."""
     if not isinstance(request, list):
@@ -126,6 +126,76 @@ async def _full_mode_note(
         "top of what is already attributed. get_plan_progress will still read "
         "complete:true afterwards, so verify what actually landed with "
         "audit_plans and the per-date frame folders."
+    )
+
+
+# Display names the Sequencer+ plugin may carry in N.I.N.A.'s
+# ``/application/plugins`` list. NEITHER spelling has been confirmed against a
+# recorded response from this rig (none exists in the repo, and N.I.N.A. was
+# not reachable while this was written): README.md:9/401 calls the required
+# plugin "**Sequencer+**", while the plugin's own csproj installs it into the
+# folder "Sequencer Plus" (github.com/palmito9/Nina.SequencerPlus, PostBuild
+# target), and ``scripts/api_spec.yaml``'s example list does not include it at
+# all. Both are therefore accepted, compared case-insensitively; a readable
+# list containing neither fails the load and PRINTS the list it saw, so a
+# third spelling shows itself the first time the guard fires. Verify against
+# the live rig with ``GET /v2/api/application/plugins`` before trusting this.
+SEQUENCER_PLUS_PLUGIN_NAMES = ("Sequencer+", "Sequencer Plus")
+
+
+async def _require_sequencer_plus() -> None:
+    """Refuse a light/flat load when the Sequencer+ plugin is missing.
+
+    ``target_payload_lights`` and every safetynet (flats included) emit
+    ``NINA.Plugin.SequencerPlus.*`` nodes — the countdown array and the
+    ``End Instruction Set``. Without the plugin N.I.N.A. deserializes them
+    into nothing while the run still loads, still reaches its End area and
+    still fires ``RUN-FINISHED``: a night that reports success and shoots
+    zero frames. That failure is invisible at load time, which is why it is
+    checked here.
+
+    ninaAPI (``send_event``, behind every ``RUN-*``/``ACQUISITION-*``/
+    ``PARK-*`` event) is deliberately NOT checked: it is the "Advanced API"
+    plugin this very REST API is served by (``scripts/api_spec.yaml`` title
+    and description), so reaching this endpoint already proves it is
+    installed.
+
+    Verification is best effort: if the plugin list cannot be read or is not
+    a list of names, there is nothing to compare against, so the load goes
+    ahead with a logged warning instead of being blocked by an API shape we
+    do not recognise. A list we CAN read is authoritative — a light/flat
+    payload without the plugin fails here, naming the plugin and the actions
+    that need it.
+    """
+    try:
+        plugins = await client.api_get("/application/plugins")
+    except Exception as e:  # advisory by contract: never block on the read
+        client.log_payload("_require_sequencer_plus:", f"cannot read plugin list: {e}")
+        return
+    if not isinstance(plugins, list) or not all(
+        isinstance(name, str) for name in plugins
+    ):
+        client.log_payload(
+            "_require_sequencer_plus:",
+            f"unexpected plugin list shape ({type(plugins).__name__}): "
+            f"{plugins!r} — cannot verify Sequencer+, loading anyway",
+        )
+        return
+    installed = {name.strip().casefold() for name in plugins}
+    if any(
+        wanted in installed for wanted in map(str.casefold, SEQUENCER_PLUS_PLUGIN_NAMES)
+    ):
+        return
+    wanted = " or ".join(repr(name) for name in SEQUENCER_PLUS_PLUGIN_NAMES)
+    raise ValueError(
+        f"the N.I.N.A. plugin {wanted} is not installed, and `light` and "
+        "`flat` sequences need it — the lights countdown array and the "
+        "safetynet's End Instruction Set are Sequencer+ nodes, and without "
+        "the plugin they fail to deserialize while every exposure group "
+        f"empties. Installed plugins: {sorted(plugins)!r}. Install "
+        "Sequencer+ (or correct SEQUENCER_PLUS_PLUGIN_NAMES in "
+        "nina_planner/tools/sequence.py if it is installed under another "
+        "name) or load a `dark`/`bias` step instead — nothing was loaded."
     )
 
 
@@ -219,6 +289,15 @@ async def _load_many(requests: list[SequenceRequest]) -> str:
         # how many frames are left or on the imaging root being readable.
         if action in ("dark", "bias"):
             validate_dark_variant(request.variant or "wheel", eq, site_profile)
+
+        # Same guard, lights only: the lights payload emits slew/center,
+        # start/stop guiding and run_autofocus unconditionally, so a rig
+        # without a plate solver, a guider or a focuser would fail at run
+        # time inside N.I.N.A. instead of here. Darks/bias/flats never emit
+        # those instructions and are not checked. See
+        # plan_utils.require_light_capabilities.
+        if action == "light":
+            plan_utils.require_light_capabilities(site_profile)
 
         if request.mode == "remaining":
             progress = plan_progress(
@@ -316,7 +395,13 @@ async def _load_many(requests: list[SequenceRequest]) -> str:
     for i, request in enumerate(requests):
         try:
             payload, note = await step(request)
-        except ValueError as e:
+        except (ValueError, OSError) as e:
+            # ValueError is the validation family (pydantic ValidationError
+            # and every explicit check in step). OSError covers a plan file
+            # that cannot be READ at all — load_plan's FileNotFoundError
+            # above all — which the docstring promises the same `request[i]:`
+            # position prefix: without it the raw FileNotFoundError escaped
+            # with no hint of WHICH entry named the missing file.
             raise ValueError(f"request[{i}]: {e}") from e
         payloads.append(payload)
         lines.append(f"request[{i}]: {note}")
@@ -334,17 +419,22 @@ async def _load_many(requests: list[SequenceRequest]) -> str:
         # End area announces a park around a no-op. A park that silently does
         # nothing is worse than an error. It is checked here rather than up
         # front so a fully-complete list — nothing sent, no End area — stays a
-        # clean "Nothing to load".
+        # clean "Nothing to load". The refusal itself is ONE shared function
+        # (plan_utils.require_parkable), also used by scripts/gen_sequence.py.
         eq = await equipment()
-        mount = eq.mount
-        can_park = bool(mount and mount.can_park)
-        if not can_park:
-            raise ValueError(
-                f"Mount cannot park (can_park={can_park}) — nothing to park: "
-                "the End area would announce PARK-STARTING/PARK-FINISHED "
-                "around an instruction list that does nothing. Nothing was "
-                "loaded."
-            )
+        plan_utils.require_parkable(eq)
+
+        # Plugin check, same placement rule as the park guard: only when a
+        # sequence really is sent, and only for the two actions whose payloads
+        # carry Sequencer+ nodes (lights and flats). The empty park and
+        # darks/bias emit none, so they never read the plugin list — an empty
+        # park stays free of N.I.N.A. reads entirely.
+        if any(
+            request.action in ("light", "flat") and payload
+            for request, payload in zip(requests, payloads, strict=True)
+        ):
+            await _require_sequencer_plus()
+
         await client.load_sequence_payload(build_sequence_many(eq, payloads))
         if requests:
             lines.append(
@@ -373,8 +463,11 @@ async def stop_sequence() -> str:
 
 @mcp.tool()
 async def start_sequence() -> str:
-    """Starts the currently loaded NINA sequence immediately. Use this after load_sequence(), which only loads a sequence and never starts it."""
+    """Starts the currently loaded NINA sequence immediately. Use this after load_sequence(), which only loads a sequence and never starts it.
+
+    It returns once the sequencer has ACTUALLY started — every node has left `CREATED` — mirroring stop_sequence()'s "returns once NINA reports the sequencer has stopped" contract. N.I.N.A. answers `GET /sequence/start` the moment it accepts the request, and a start can still abort in its first milliseconds (a start-time validation failure leaves every node `CREATED`, no RUN-STARTING and nothing logged), so the state is polled afterwards instead of trusting the 200. A sequence that starts and finishes before the first read (a fast park) is NOT a failure: N.I.N.A. leaves FINISHED nodes behind, and leaving `CREATED` is the signal. If nothing leaves `CREATED` within the budget the call raises with a status summary — check get_logs() and get_sequence_state() before retrying."""
     await client.api_get(config.SEQUENCE_START_PATH)
+    await client.wait_until_sequence_started()
     return "Sequence started."
 
 

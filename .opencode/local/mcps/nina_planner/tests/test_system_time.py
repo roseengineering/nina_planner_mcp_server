@@ -9,9 +9,7 @@ from nina_planner.system_time import (
     NINA_EXE_DEFAULT,
     get_launcher_paths,
     kill_nina_command,
-    local_to_windows,
     nina_exe_path,
-    nina_running,
     schtasks_create_command,
     schtasks_delete_command,
     schtasks_run_command,
@@ -59,36 +57,6 @@ class CommandBuildersTest(unittest.TestCase):
             ["schtasks.exe", "/Delete", "/TN", "NINAPlanner-Launch", "/F"],
         )
 
-    def test_local_to_windows_wsl_mount(self):
-        p = PurePosixPath("/mnt/c/Users/george/AppData/Local/Temp/launch_nina.cmd")
-        with (
-            patch("nina_planner.system_time.sys.platform", "linux"),
-            patch("nina_planner.system_time.Path") as path_constructor,
-            patch.dict(os.environ, {"NINA_DRIVE_MOUNT": "/ignored"}),
-        ):
-            # Model WSL resolution without resolving a POSIX path on Windows.
-            path_constructor.return_value.resolve.return_value = p
-            self.assertEqual(
-                local_to_windows(p),
-                r"C:\Users\george\AppData\Local\Temp\launch_nina.cmd",
-            )
-        path_constructor.assert_called_once_with(p)
-        path_constructor.return_value.resolve.assert_called_once_with()
-
-    def test_local_to_windows_preserves_native_windows_path(self):
-        with (
-            patch("nina_planner.system_time.sys.platform", "win32"),
-            patch("nina_planner.system_time.Path") as path_constructor,
-            patch.dict(os.environ, {"NINA_DRIVE_MOUNT": "/ignored"}),
-        ):
-            for p in (
-                r"D:\NINA Files\launch_nina.cmd",
-                PureWindowsPath(r"D:\NINA Files\launch_nina.cmd"),
-            ):
-                with self.subTest(path=p):
-                    self.assertEqual(local_to_windows(p), str(p))
-        path_constructor.assert_not_called()
-
     def test_write_nina_launcher(self):
         with tempfile.TemporaryDirectory() as tmp:
             with (
@@ -122,6 +90,51 @@ class CommandBuildersTest(unittest.TestCase):
                 content = local_p.read_text(encoding="utf-8")
                 self.assertIn("@echo off", content)
                 self.assertIn(r'start "" "C:\Test\NINA.exe"', content)
+
+    def test_write_nina_launcher_escapes_percent_signs(self):
+        # %VAR% expands even inside quotes in a .cmd file, so a literal
+        # percent must be doubled (batch's escape) or NINA_EXE_PATH could
+        # launch whatever the variable names.
+        with tempfile.TemporaryDirectory() as tmp:
+            with (
+                patch("nina_planner.system_time.sys.platform", "win32"),
+                patch("nina_planner.system_time.tempfile.gettempdir", return_value=tmp),
+                patch("nina_planner.system_time.subprocess.run") as run,
+                patch.dict(os.environ, {"NINA_EXE_PATH": r"C:\apps\100%pure\NINA.exe"}),
+            ):
+                local_p, _ = write_nina_launcher()
+            run.assert_not_called()
+            content = local_p.read_text(encoding="utf-8")
+            self.assertIn(r'start "" "C:\apps\100%%pure\NINA.exe"', content)
+            self.assertNotIn('"C:\\apps\\100%pure', content)
+
+    def test_write_nina_launcher_rejects_quote_injection(self):
+        # A quote closes the start "" "…" quoting; whatever follows
+        # (& calc.exe, a newline) would run as Task Scheduler commands.
+        # Windows paths cannot contain quotes, so this must fail closed.
+        with tempfile.TemporaryDirectory() as tmp:
+            with (
+                patch("nina_planner.system_time.sys.platform", "win32"),
+                patch("nina_planner.system_time.tempfile.gettempdir", return_value=tmp),
+                patch("nina_planner.system_time.subprocess.run"),
+            ):
+                with self.assertRaises(ValueError) as ctx:
+                    write_nina_launcher(r'C:\NINA" & calc.exe & "')
+            self.assertIn("NINA_EXE_PATH", str(ctx.exception))
+            self.assertFalse((Path(tmp) / "launch_nina.cmd").exists())
+
+    def test_write_nina_launcher_rejects_newline_injection(self):
+        # A CR/LF would terminate the start line and run the rest as its
+        # own command line.
+        with tempfile.TemporaryDirectory() as tmp:
+            with (
+                patch("nina_planner.system_time.sys.platform", "win32"),
+                patch("nina_planner.system_time.tempfile.gettempdir", return_value=tmp),
+                patch("nina_planner.system_time.subprocess.run"),
+            ):
+                with self.assertRaises(ValueError):
+                    write_nina_launcher("C:\\NINA.exe\r\n& calc.exe")
+            self.assertFalse((Path(tmp) / "launch_nina.cmd").exists())
 
     def test_launcher_uses_windows_temp_directory_under_wsl(self):
         with (
@@ -198,34 +211,6 @@ class NinaExePathTest(unittest.TestCase):
             os.environ, {"NINA_EXE_PATH": r"D:\apps\NINA.exe"}, clear=False
         ):
             self.assertEqual(nina_exe_path(), r"D:\apps\NINA.exe")
-
-
-class NinaRunningTest(unittest.TestCase):
-    def test_present(self):
-        fake = MagicMock()
-        fake.stdout = (
-            "INFO: This is a Windows-elevated tasklist.\n"
-            "Image Name                     PID Session Name        "
-            "Session#    Mem Usage\n"
-            "========================= ======== ================ "
-            "========== ============\n"
-            "NINA.exe                      12345 Console            "
-            "1         123,456 K\n"
-        )
-        with patch("nina_planner.system_time.subprocess.run", return_value=fake):
-            self.assertTrue(nina_running())
-
-    def test_absent(self):
-        fake = MagicMock()
-        fake.stdout = "INFO: No tasks are running which match the specified criteria.\n"
-        with patch("nina_planner.system_time.subprocess.run", return_value=fake):
-            self.assertFalse(nina_running())
-
-    def test_absent_with_empty_stdout(self):
-        fake = MagicMock()
-        fake.stdout = ""
-        with patch("nina_planner.system_time.subprocess.run", return_value=fake):
-            self.assertFalse(nina_running())
 
 
 class WindowsInteropAvailableTest(unittest.TestCase):
@@ -666,6 +651,56 @@ class StartNinaTest(unittest.TestCase):
         )
         self.assertIn("/Delete", executed_cmds[-1])
 
+    def test_start_routes_timeout_expired_into_a_contextual_error(self):
+        """A hung command fails like any other launch failure.
+
+        `subprocess.TimeoutExpired` used to escape `start_nina` raw — no
+        action, no command, nothing to act on — while `stop_nina` already
+        folds its own timeout into a RuntimeError. Both must report the
+        same way: a RuntimeError naming the action and the command.
+        """
+        import subprocess
+
+        from nina_planner.server import start_nina
+
+        executed_cmds = []
+
+        def fake_run(argv, timeout=30.0):
+            executed_cmds.append(argv)
+            if "/Run" in argv:
+                raise subprocess.TimeoutExpired(cmd=argv, timeout=15.0)
+            return MagicMock(returncode=0, stdout="", stderr="")
+
+        with (
+            patch(
+                "nina_planner.client.nina_api_responsive",
+                AsyncMock(return_value=False),
+            ),
+            patch(
+                "nina_planner.tools.lifecycle.windows_interop_available",
+                return_value=True,
+            ),
+            patch("nina_planner.client.run_blocking", side_effect=fake_run),
+            patch(
+                "nina_planner.tools.lifecycle.write_nina_launcher",
+                return_value=self._STUB_LAUNCHER_PATHS,
+            ),
+            patch("nina_planner.client.log_payload"),
+        ):
+            with self.assertRaises(RuntimeError) as ctx:
+                asyncio.run(start_nina())
+            # A TimeoutExpired is NOT a RuntimeError, so catching one here
+            # would itself fail — but assert the routing explicitly anyway.
+            self.assertNotIsInstance(ctx.exception, subprocess.TimeoutExpired)
+
+        message = str(ctx.exception)
+        self.assertIn("Task Scheduler task execution", message)
+        self.assertIn("timed out after 15s", message)
+        self.assertIn("schtasks.exe", message)
+        # The failure happened inside the try, so the temporary task was
+        # still cleaned up (the finally block) before the error surfaced.
+        self.assertIn("/Delete", executed_cmds[-1])
+
 
 class IsWslTest(unittest.TestCase):
     """``_is_wsl`` itself — the existing interop tests patch it out."""
@@ -732,37 +767,6 @@ class IsWslTest(unittest.TestCase):
             patch("builtins.open", mock_open(read_data="6.8.0-generic")),
         ):
             self.assertFalse(_is_wsl())
-
-
-class LocalToWindowsMountTest(unittest.TestCase):
-    """The ``NINA_DRIVE_MOUNT``/``drive_mount`` mapping (the ``/mnt/c`` form
-    is already covered above)."""
-
-    def setUp(self):
-        self._tmp = tempfile.TemporaryDirectory()
-        self.mount = Path(self._tmp.name).resolve()
-
-    def tearDown(self):
-        self._tmp.cleanup()
-
-    def test_drive_mount_prefix_maps_to_c_drive(self):
-        target = self.mount / "sub" / "file.txt"
-        self.assertEqual(
-            local_to_windows(target, drive_mount=str(self.mount)),
-            r"C:\sub\file.txt",
-        )
-
-    def test_env_drive_mount_is_used_when_argument_absent(self):
-        target = self.mount / "deep" / "nested" / "seq.json"
-        with patch.dict(os.environ, {"NINA_DRIVE_MOUNT": str(self.mount)}):
-            self.assertEqual(local_to_windows(target), r"C:\deep\nested\seq.json")
-
-    def test_path_outside_the_mount_is_returned_resolved(self):
-        with patch.dict(os.environ, {"NINA_DRIVE_MOUNT": ""}):
-            self.assertEqual(
-                local_to_windows(self.mount / "elsewhere.fits"),
-                str(self.mount / "elsewhere.fits"),
-            )
 
 
 class LauncherPathsErrorTest(unittest.TestCase):

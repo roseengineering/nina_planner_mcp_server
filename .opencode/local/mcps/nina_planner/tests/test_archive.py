@@ -1690,6 +1690,46 @@ class FolderNameTest(unittest.TestCase):
         self.assertNotIn(":", name)
         self.assertIn("plan-abc123", name)
 
+    def test_folder_name_rejects_names_that_resolve_outside_dest(self):
+        """``dest / "."`` IS dest — never a folder to build (or rmtree).
+
+        The plan-id charset admits ``"."``/``".."`` and
+        ``sanitize_filename`` strips path SEPARATORS only, so a plan_id
+        that equals (or sits inside) the plan file's stem lets
+        ``_folder_name`` return ``"."``/``".."`` wholesale: the archive
+        commit would then ``shutil.rmtree(dest)`` under ``--force`` — the
+        whole archive — while ``".."`` is even worse (dest's parent).
+        Both are refused at the source.
+        """
+        for plan_file, plan_id in (
+            (Path(".."), ".."),  # stem ".." equals the plan_id -> name ".."
+            (Path(".."), "."),  # plan_id "." sits inside the stem -> ".."
+        ):
+            with self.subTest(plan_id=plan_id):
+                plan = _plan(plan_id=plan_id)
+                with self.assertRaises(archive_mod.ArchiveError) as ctx:
+                    archive_mod._folder_name(plan_file, plan)
+                self.assertIn("archive destination", str(ctx.exception))
+
+    def test_dest_child_refuses_the_destination_and_its_parent(self):
+        """The join feeding ``shutil.rmtree(final)`` is guarded directly.
+
+        ``_folder_name`` rejects these names at the source, but the
+        destructive use happens at the join — so whatever produces a
+        folder name, ``dest`` itself (or anything above it) must never be
+        an archive target.
+        """
+        dest = Path("/archive")
+        with self.assertRaises(archive_mod.ArchiveError):
+            archive_mod._dest_child(dest, ".")
+        with self.assertRaises(archive_mod.ArchiveError):
+            archive_mod._dest_child(dest, "..")
+        # An ordinary folder name joins as a strict child.
+        self.assertEqual(
+            archive_mod._dest_child(dest, "m31__plan-abc123"),
+            dest / "m31__plan-abc123",
+        )
+
 
 class MainAsyncTest(unittest.IsolatedAsyncioTestCase):
     async def test_run_returns_exit_code_without_raising(self):

@@ -22,22 +22,6 @@ def nina_exe_path() -> str:
     return os.environ.get("NINA_EXE_PATH") or NINA_EXE_DEFAULT
 
 
-def nina_running() -> bool:
-    """Return True if a ``NINA.exe`` process is visible to ``tasklist.exe``.
-
-    Mirrors ``tasklist.exe /FI "IMAGENAME eq NINA.exe" 2>&1 | grep -q "NINA.exe"``
-    from the bash. The tasklist banner uses ``NINA.exe`` (mixed case) regardless
-    of the actual ImageName column casing, so we look for that substring.
-    """
-    result = subprocess.run(
-        ["tasklist.exe", "/FI", "IMAGENAME eq NINA.exe"],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    return "NINA.exe" in (result.stdout or "")
-
-
 def kill_nina_command() -> list[str]:
     """Argv for ``subprocess.run`` to force-kill NINA.exe."""
     return ["taskkill.exe", "/F", "/IM", "NINA.exe"]
@@ -78,22 +62,6 @@ def windows_interop_available() -> bool:
     if not _is_wsl():
         return False
     return all(shutil.which(exe) for exe in _WINDOWS_INTEROP_EXES)
-
-
-def local_to_windows(local_path: Path | str, drive_mount: str | None = None) -> str:
-    """Convert a local path (e.g. /mnt/c/...) to a Windows path (C:\\...)."""
-    if sys.platform == "win32":
-        return str(local_path)
-    p = Path(local_path).resolve()
-    parts = p.parts
-    if len(parts) >= 3 and parts[1] == "mnt" and len(parts[2]) == 1:
-        drive_letter = parts[2].upper()
-        return f"{drive_letter}:\\" + "\\".join(parts[3:])
-    mount = drive_mount or os.environ.get("NINA_DRIVE_MOUNT")
-    if mount and str(p).startswith(mount):
-        rel = str(p)[len(mount) :].lstrip("/")
-        return "C:\\" + rel.replace("/", "\\")
-    return str(p)
 
 
 def get_launcher_paths() -> tuple[Path, str]:
@@ -137,12 +105,36 @@ def get_launcher_paths() -> tuple[Path, str]:
     return local_p, windows_p
 
 
+def _batch_quoted(value: str, var: str) -> str:
+    """Make ``value`` safe inside ``start "" "…"`` in the launcher .cmd file.
+
+    The launcher is written for Task Scheduler to run, so an unsanitized
+    ``NINA_EXE_PATH`` is command injection: a ``"`` closes the quoting and
+    ``&``/``|``/a newline then runs arbitrary commands, and ``%VAR%``
+    expands even inside quotes. Windows paths can contain neither ``"``
+    nor control characters, so those are rejected outright (fail closed —
+    a launch that would be hijacked must not happen), while ``%`` is legal
+    in a filename and is escaped by doubling, the batch-file spelling for
+    a literal percent. ``&``, ``|``, ``<``, ``>`` and ``^`` need no
+    escaping once the quotes are guaranteed intact: cmd treats them
+    literally inside a quoted string.
+    """
+    if '"' in value or any(ord(c) < 32 for c in value):
+        raise ValueError(
+            f"{var} contains a quote or control character and cannot be "
+            f"safely written into launch_nina.cmd: {value!r}"
+        )
+    return value.replace("%", "%%")
+
+
 def write_nina_launcher(nina_exe: str | None = None) -> tuple[Path, str]:
     """Write a helper .cmd script to launch NINA with GUI, avoiding quoting issues.
 
-    Returns (local_path, windows_path).
+    ``nina_exe`` (or ``NINA_EXE_PATH``) is sanitized with
+    :func:`_batch_quoted` before it is embedded. Returns
+    (local_path, windows_path).
     """
-    exe = nina_exe or nina_exe_path()
+    exe = _batch_quoted(nina_exe or nina_exe_path(), "NINA_EXE_PATH")
     local_path, win_path = get_launcher_paths()
     local_path.parent.mkdir(parents=True, exist_ok=True)
     local_path.write_text(f'@echo off\r\nstart "" "{exe}"\r\n', encoding="utf-8")

@@ -186,14 +186,58 @@ def _looks_like_plan_file(path: Path) -> bool:
 
 
 def _folder_name(plan_file: Path, plan: ObservationPlan) -> str:
-    """Unique, greppable folder name: ``<plan stem>__<plan id>``."""
+    """Unique, greppable folder name: ``<plan stem>__<plan id>``.
+
+    Raises ``ArchiveError`` when the name would not be a plain directory
+    component: the plan-id charset admits ``"."`` and ``".."`` (see
+    ``_PLAN_ID_ALLOWED``), and ``dest / "."`` IS ``dest`` — the commit step
+    would then ``shutil.rmtree(dest)`` under ``--force``, deleting the
+    WHOLE archive before renaming the staging folder into it, while
+    ``dest / ".."`` names dest's parent. ``sanitize_filename`` only strips
+    path SEPARATORS, so it cannot catch either.
+    """
     stem = plan_utils.sanitize_filename(plan_file.stem)
     plan_id = plan._base_plan_id()
     if plan_id and plan_id in stem:
-        return stem
-    if plan_id:
-        return f"{stem}__{plan_utils.sanitize_filename(plan_id)}"
-    return stem
+        name = stem
+    elif plan_id:
+        name = f"{stem}__{plan_utils.sanitize_filename(plan_id)}"
+    else:
+        name = stem
+    if name in ("", ".", ".."):
+        # Exactly the names for which `dest / name` is NOT a strict child
+        # of dest: "." IS dest, ".." is its parent, "" joins back to dest.
+        # Every other post-sanitisation name (no separators left) is a
+        # plain child directory.
+        raise ArchiveError(
+            f"{plan_file.name}: refusing folder name {name!r} (from plan_id "
+            f"{plan_id!r}) — it is not a plain directory name: it would "
+            "resolve to the archive destination itself (or its parent), "
+            "which --force would delete. Give the plan a real plan_id "
+            "(nina-pin-id) or rename the plan file."
+        )
+    return name
+
+
+def _dest_child(dest: Path, folder: str) -> Path:
+    """``dest / folder``, refusing a name that lands ON or ABOVE ``dest``.
+
+    The last line of defense in front of the commit step's
+    ``shutil.rmtree(final)``: whatever produced ``folder``, the archive's
+    own destination must never be a rmtree target. ``"."`` IS ``dest``
+    (``dest / "." == dest``) and ``".."`` is its parent — either would
+    delete archives the run never touched. ``_folder_name`` rejects these
+    names at the source; this guards the join itself, where the
+    destructive use happens.
+    """
+    child = dest / folder
+    if child.resolve() == dest.resolve() or not _inside(child, dest):
+        raise ArchiveError(
+            f"archive folder {folder!r} resolves to {child.resolve()} — not "
+            f"inside the destination {dest.resolve()}; refusing to build or "
+            "delete anything there"
+        )
+    return child
 
 
 def _merge_weather(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -536,7 +580,10 @@ def _archive_one(
     is skipped and recorded under the manifest's ``missing`` instead.
     """
     folder = _folder_name(plan_file, plan)
-    final = dest / folder
+    # _dest_child, not a bare `dest / folder`: `final` is the commit
+    # step's shutil.rmtree target (under --force), so the join itself is
+    # guarded — dest ("/." IS dest) must never be that target.
+    final = _dest_child(dest, folder)
     staging = dest / f".{folder}.partial"
     dest.mkdir(parents=True, exist_ok=True)
     if staging.exists():
@@ -1005,7 +1052,14 @@ async def run(args: argparse.Namespace) -> int:
         # actually shipped — skipped files must not count as archived.
         disk = disk_report(plan, rows, dropped_rows, selected, divert)
         file_count = sum(len(v) for v in selected.values())
-        folder = _folder_name(plan_file, plan)
+        try:
+            folder = _folder_name(plan_file, plan)
+        except ArchiveError as exc:
+            # A folder name that would resolve to dest (or above it) is a
+            # per-plan error like any other — reported and swept past, never
+            # raised out of the run, and never used to build dest/folder.
+            errors.append((plan_file, str(exc)))
+            continue
 
         if args.dry_run:
             total = 0

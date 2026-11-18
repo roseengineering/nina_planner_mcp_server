@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any
 
 import anyio
+from pydantic import ConfigDict
 
 from .. import client, config, metadata, plan_utils
 from ..app import mcp
@@ -196,7 +197,7 @@ async def write_plan_file(plan: ObservationPlan) -> str:
 async def get_plan_progress(file_path: str) -> dict[str, Any]:
     """Per-frame-type acquisition progress for every pointing of an observation-plan JSON: each exposure group's `total_count` (from the plan), `acquired_count` (attributed from ImageMetaData.csv), `remaining_count`, and `deficit_count` (raw total − acquired, never window-adjusted). Call before load_sequence to decide what still needs acquiring; one plan per call — use audit_plans for a whole-project sweep.
 
-    Lights are attributed via the underscore-delimited plan id in the recorded path (`_{base_plan_id}_`, `_{base_plan_id}-{pointing_index}_` per mosaic pane; no target-name fallback); flats match type+filter, darks/bias type+exposure, and calibration counts only within `calibration_window_days` of the earliest attributed light, on either side of it. Calibration groups therefore carry `window_open` and `window_end`: inside the window `remaining_count` is total − acquired; outside it reads 0, because no frame shot now could ever be credited, while `acquired_count` stays truthful — raise `calibration_window_days` or write a new plan to reopen it. Lights carry neither field.
+    Lights are attributed via the underscore-delimited plan id in the recorded path (`_{base_plan_id}_`, `_{base_plan_id}-{pointing_index}_` per mosaic pane; no target-name fallback); flats match type+filter, darks type+exposure, bias type alone (its exposure spec carries no exposure), and calibration counts only within `calibration_window_days` of the earliest attributed light, on either side of it. Calibration groups therefore carry `window_open` and `window_end`: inside the window `remaining_count` is total − acquired; outside it reads 0, because no frame shot now could ever be credited, while `acquired_count` stays truthful — raise `calibration_window_days` or write a new plan to reopen it. Lights carry neither field.
 
     Light-frame quality thresholds come from the plan file's `quality` section (`max_hfr`, `max_hfr_st_dev`, `min_detected_stars`, `max_guiding_rms_arcsec`), never from this call — the response's `quality` field echoes what was applied, so you can see the active rules without opening the file. A light frame failing an enabled threshold, or missing the metric it needs (NINA writes 0 for unmeasured values), is not counted; with no thresholds set every attributed frame counts, as before. The same section drives load_sequence's remaining-mode count, so the two can never disagree. `audit_plans` deliberately ignores it — it reports what is on disk, not what qualifies.
 
@@ -316,6 +317,52 @@ async def get_plan_progress(file_path: str) -> dict[str, Any]:
             res["warning"] = warning
     client.log_payload("Progress:", json.dumps(res, indent=2))
     return res
+
+
+# ---------------------------------------------------------------------
+# get_plan_progress FORBIDS unknown arguments.
+#
+# The function's only parameter is `file_path` — thresholds live in that
+# file's `quality` section, one source of truth — and FastMCP builds each
+# tool's argument model from the signature with extra keys IGNORED, so a
+# caller still passing max_hfr would have it silently dropped: unfiltered
+# counts, no error, exactly the split-brain the docstring forbids. The
+# function never sees the dropped key, so the guard cannot live in the
+# body; it is applied to the generated `get_plan_progressArguments` model
+# instead. There is no legacy-key list and no migration message — an
+# unexpected field is refused as invalid input whatever it is called.
+# ---------------------------------------------------------------------
+
+
+def _forbid_unknown_arguments() -> None:
+    """Swap in an argument model that refuses unknown fields.
+
+    ``@mcp.tool()`` registered the function above when it was defined;
+    this replaces the registered tool's generated argument model with an
+    ``extra="forbid"`` subclass of it. The FIELDS are untouched, so the
+    published schema only gains ``additionalProperties: false`` — a
+    caller passing ``max_hfr`` (or any other stray key) now gets a
+    validation error naming that key instead of silently unfiltered
+    counts. Fails loudly if FastMCP's registration surface ever moves:
+    silently losing this helper would silently reintroduce the
+    ignored-key bug.
+    """
+    tool = mcp._tool_manager.get_tool("get_plan_progress")
+    if tool is None:
+        raise RuntimeError(
+            "get_plan_progress is not registered on the MCP server — the "
+            "unknown-argument refusal cannot be installed"
+        )
+    arg_model = tool.fn_metadata.arg_model
+    strict_model = type(
+        arg_model.__name__,
+        (arg_model,),
+        {"model_config": ConfigDict(extra="forbid")},
+    )
+    tool.fn_metadata = tool.fn_metadata.model_copy(update={"arg_model": strict_model})
+
+
+_forbid_unknown_arguments()
 
 
 # capture audit
@@ -1320,6 +1367,3 @@ async def get_nina_settings() -> dict[str, Any]:
     missing = [name for name in _SETTING_NAMES if name not in settings]
     ready = all(name in settings for name in _ARCHIVE_GATE_NAMES)
     return {"settings": settings, "missing": missing, "ready": ready}
-
-
-# sequence tools

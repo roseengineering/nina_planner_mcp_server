@@ -201,6 +201,44 @@ def sequence_cool_camera(
     )
 
 
+# ---------------------------------------------------------------------------
+# CANONICAL park / home / safety policy for generated sequences.
+#
+# This block (sequence_park_scope → sequence_home_scope →
+# sequence_unpark_scope) is the ONE source of truth for the policy below.
+# Two other places summarise it for readers who land there first — the MCP
+# server instructions (nina_planner/app.py) and the load_sequence docstring
+# (nina_planner/tools/sequence.py) — and each now points here. To change the
+# policy: change it here, then re-state it in those two; they are summaries,
+# never sources, so the three can no longer drift silently.
+#
+#   * Park is the ONLY closing maneuver. Sequences emit Park Scope whenever
+#     the mount reports can_park=true, and a mount that cannot park — or no
+#     mount at all — is rejected before anything is sent, by the one shared
+#     refusal plan_utils.require_parkable (called by tools/sequence's
+#     load_sequence and by scripts/gen_sequence.py). The conditional
+#     emission in the three functions below is a defensive default for
+#     callers that build payloads directly (tests, inspection), not the
+#     guard: a park that silently does nothing is worse than an error.
+#   * Find home is NEVER a park fallback. It is emitted once per lights
+#     step, ahead of set_tracking(0), when can_find_home=true. Homing is a
+#     calibration — the mount drives its axes to a known physical reference
+#     (the home position) and re-syncs its sensors, ~30 s — and it is what
+#     restores a trustworthy position readout after the mount loses sync
+#     (power outage, bump, driver restart). Park closes up; homing does not.
+#   * Safety: the safety monitor's is_safe reflects whether the enclosure is
+#     open and it is safe to unpark and expose. is_safe=true means the scope
+#     may be unparked and sky-dependent acquisition may proceed;
+#     is_safe=false means the scope must remain parked and lights and
+#     dawn/dusk sky flats are gated until it clears. Darks and biases are
+#     NOT sky-dependent and are exempt: they may be loaded and started with
+#     the enclosure closed, because the step parks first and never unparks,
+#     cuts the light at the camera (Dark filter slot, cover or shutter) and
+#     needs no open sky. Weather is a separate input, reported by the
+#     weather device.
+# ---------------------------------------------------------------------------
+
+
 def sequence_park_scope(equipment: ObservatoryEquipment) -> list[dict[str, Any]]:
     # Park only: home is not a fallback for it. Park is the closing maneuver —
     # the scope goes to its parked position for the night — while homing is a
@@ -225,6 +263,13 @@ def sequence_home_scope(equipment: ObservatoryEquipment) -> list[dict[str, Any]]
 
 
 def sequence_unpark_scope(equipment: ObservatoryEquipment) -> list[dict[str, Any]]:
+    # Gated on can_park as a DELIBERATE proxy for "can unpark": neither ASCOM
+    # nor N.I.N.A. exposes a CanUnpark — the mount schema carries CanFindHome,
+    # CanPark and CanSetPark only (scripts/api_spec.yaml, MountInfo), and the
+    # unpark surface is the action GET /equipment/mount/unpark, not a
+    # capability. So can_park is the only park-family capability there is to
+    # read, and a mount that reports cannot-park never reaches here anyway:
+    # plan_utils.require_parkable rejects it before anything is sent.
     return [unpark_scope()] if equipment.mount and equipment.mount.can_park else []
 
 

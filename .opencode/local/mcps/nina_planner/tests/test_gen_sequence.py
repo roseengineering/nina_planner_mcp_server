@@ -67,6 +67,9 @@ def _profile(*, file_pattern: str = "$$TARGETNAME$$") -> ObservatoryProfile:
             FilterInfo(name="L", position=3),
             FilterInfo(name="Dark", position=4),
         ],
+        # A lights build rejects a rig with no plate solver (the payload
+        # emits a slew/center), so the stubbed rig reports one.
+        plate_solver="ASTAP",
         image_save_path="C:\\images",
         file_pattern=file_pattern,
         equipment={
@@ -445,14 +448,19 @@ _PROFILE_PAYLOAD = {
         "FilePath": "C:/images",
         "FilePattern": "$$TARGETNAME$$",
     },
-    "PlateSolveSettings": {},
+    # A rig that CAN shoot lights: the CLI rejects a lights build when the
+    # profile reports no plate solver, no guider or no focuser (every lights
+    # step emits slew/center, guiding and autofocus), so the stub reports all
+    # three. None of them appear in _EQUIPMENT_INFO, so nothing extra is
+    # connected over the wire.
+    "PlateSolveSettings": {"PlateSolverType": "ASTAP", "BlindSolverType": "ASTAP"},
     "FramingAssistantSettings": {"CameraWidth": 1920, "CameraHeight": 1080},
-    "GuiderSettings": {},
+    "GuiderSettings": {"GuiderName": "PHD2"},
     "RotatorSettings": {},
     "DomeSettings": {},
     "WeatherDataSettings": {},
     "SafetyMonitorSettings": {},
-    "FocuserSettings": {},
+    "FocuserSettings": {"Id": "foc"},
     "SwitchSettings": {},
     "FlatDeviceSettings": {},
 }

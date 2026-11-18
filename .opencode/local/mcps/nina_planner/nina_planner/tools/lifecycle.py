@@ -1,3 +1,4 @@
+import subprocess
 from collections.abc import Awaitable, Callable
 from typing import Any
 
@@ -16,6 +17,25 @@ from ..system_time import (
 )
 
 
+async def _run_launch_command(argv: list[str], timeout: float, action: str) -> Any:
+    """Run one launch command, folding a timeout into the shared failure shape.
+
+    ``run_blocking`` lets ``subprocess.TimeoutExpired`` escape untouched,
+    and nothing on the start path used to catch it: where ``stop_nina``
+    already wraps its own ``taskkill`` timeout into a ``RuntimeError``
+    naming the action, ``start_nina`` surfaced a bare ``TimeoutExpired``
+    with neither the command nor the action in the message. A timeout is
+    just another failed launch command here — same context
+    ``_raise_for_command_failure`` gives a nonzero exit (action + command).
+    """
+    try:
+        return await client.run_blocking(argv, timeout=timeout)
+    except subprocess.TimeoutExpired as e:
+        raise RuntimeError(
+            f"{action} command {' '.join(argv)!r} timed out after {timeout:.0f}s"
+        ) from e
+
+
 async def _launch_nina_interactive(nina_exe: str) -> None:
     """Launch NINA in the active interactive desktop session via Task Scheduler."""
     _, win_path = write_nina_launcher(nina_exe)
@@ -23,13 +43,17 @@ async def _launch_nina_interactive(nina_exe: str) -> None:
     run_cmd = schtasks_run_command()
     del_cmd = schtasks_delete_command()
     client.log_payload("_launch_nina_interactive: create", " ".join(create_cmd))
-    create_result = await client.run_blocking(create_cmd, timeout=15.0)
+    create_result = await _run_launch_command(
+        create_cmd, 15.0, "Task Scheduler task creation"
+    )
     _raise_for_command_failure(
         create_result, create_cmd, "Task Scheduler task creation"
     )
     client.log_payload("_launch_nina_interactive: run", " ".join(run_cmd))
     try:
-        run_result = await client.run_blocking(run_cmd, timeout=15.0)
+        run_result = await _run_launch_command(
+            run_cmd, 15.0, "Task Scheduler task execution"
+        )
         _raise_for_command_failure(run_result, run_cmd, "Task Scheduler task execution")
     finally:
         # Remove the temporary task even when starting it fails.

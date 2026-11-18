@@ -108,6 +108,7 @@ from typing import Any
 from . import config, metadata, plan_utils
 from .archive import (
     _MANIFEST_NAME,
+    ArchiveError,
     _folder_name,
     _human_bytes,
     _inside,
@@ -868,7 +869,17 @@ async def run(args: argparse.Namespace) -> int:
             continue
         plan_id = plan._base_plan_id()
         plan_names.setdefault(plan_id, plan_file.name)
-        folder, archive_ok, stale, gate_reason = _plan_file_gate(plan_file, plan, dest)
+        try:
+            folder, archive_ok, stale, gate_reason = _plan_file_gate(
+                plan_file, plan, dest
+            )
+        except ArchiveError as exc:
+            # _folder_name refused this plan's name ("." / ".." plan_id):
+            # its archive folder is indeterminate, so its claims are too —
+            # record it like a load failure (nothing purged) instead of
+            # crashing the sweep.
+            errors.append((plan_file, str(exc).splitlines()[0]))
+            continue
         if stale:
             refusals.append((plan_file, gate_reason))
         selected = _select_frames(plan, rows, now)

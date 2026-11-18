@@ -674,7 +674,7 @@ class RankCatalogTest(unittest.TestCase):
         rows = sky._rank_catalog(catalog, **{**base, "top": 1})
         self.assertLessEqual(len(rows["visible_now"]), 1)
 
-    def test_no_darkness_in_the_window_returns_empty_lists(self):
+    def test_no_darkness_in_the_window_still_reports_is_dark_now(self):
         # 75°N in June: the sun never reaches -18° in the sampled 12 hours,
         # so there is no peak "within darkness" to report at all — and the
         # day's peaks must not leak in as if they were observable.
@@ -691,10 +691,22 @@ class RankCatalogTest(unittest.TestCase):
             None,
             10,
         )
+        # Exact-equality on purpose: is_dark_now is part of this tool's
+        # documented shape on EVERY return (best_targets spreads it into
+        # its result and callers read it unconditionally), so this early
+        # return must ship it too — False by construction, since the first
+        # sample is not dark. The key used to be dropped right here,
+        # surfacing as a caller KeyError.
         self.assertEqual(
             rows,
-            {"visible_now": [], "later_tonight": [], "sampled_catalog": 3},
+            {
+                "is_dark_now": False,
+                "visible_now": [],
+                "later_tonight": [],
+                "sampled_catalog": 3,
+            },
         )
+        self.assertFalse(rows["is_dark_now"])
 
     def test_large_for_field_uses_the_reported_fov(self):
         when = Time("2026-10-18T02:00:00")

@@ -210,10 +210,20 @@ class HelperFunctionsTest(unittest.TestCase):
             self.assertIn("Test", content)
             self.assertIn("payload", content)
 
-    def test_log_payload_falls_back_to_stderr_when_no_env(self):
-        # When NINA_PLANNER_LOG is unset, log_payload writes to stderr.
-        with patch("nina_planner.config.NINA_PLANNER_LOG", None):
+    def test_log_payload_is_a_noop_when_no_env(self):
+        # When NINA_PLANNER_LOG is unset, log_payload silently returns —
+        # it never writes to stderr or anywhere else (client.py log_payload:
+        # `if path is None: return`).
+        import io
+        from contextlib import redirect_stderr
+
+        buf = io.StringIO()
+        with (
+            patch("nina_planner.config.NINA_PLANNER_LOG", None),
+            redirect_stderr(buf),
+        ):
             _log_payload("Test", "payload")  # should not raise
+        self.assertEqual(buf.getvalue(), "")
 
     def test_log_payload_windows_path_relocated_on_posix(self):
         """The sample config's C:/... log path must not build a literal C: tree
@@ -232,6 +242,27 @@ class HelperFunctionsTest(unittest.TestCase):
             self.assertEqual(_log_file(), expected)
             _log_payload("Test", "payload")
         self.assertIn("Test", expected.read_text())
+
+    def test_log_payload_swallows_an_unwritable_log_path(self):
+        """Debug logging runs AFTER the real work succeeded — an unwritable
+        NINA_PLANNER_LOG must never fail the read-only tool that just did
+        its job. Both failure modes are OSError: a directory where the log
+        FILE should be (open fails), and a parent that is not a directory
+        (mkdir fails)."""
+        with tempfile.TemporaryDirectory() as tmp:
+            # The log path IS a directory: append-open raises
+            # IsADirectoryError.
+            with patch("nina_planner.config.NINA_PLANNER_LOG", tmp):
+                _log_payload("Test", "payload")  # must not raise
+
+        with tempfile.TemporaryDirectory() as tmp:
+            # The log's parent is a FILE: mkdir(parents=True) raises.
+            blocker = Path(tmp) / "not-a-directory"
+            blocker.write_text("x")
+            log_path = blocker / "nested" / "nina-planner-debug.log"
+            with patch("nina_planner.config.NINA_PLANNER_LOG", str(log_path)):
+                _log_payload("Test", "payload")  # must not raise
+            self.assertFalse(log_path.exists())
 
     def test_api_probe_reports_liveness_and_reason(self):
         from nina_planner.client import api_probe as _api_probe
@@ -349,14 +380,36 @@ class HelperFunctionsTest(unittest.TestCase):
         self.assertIn("non-JSON", str(ctx.exception))
         self.assertIn("gateway exploded", str(ctx.exception))
 
-    def test_api_200_success_false_without_error_is_generic_failure(self):
+    def test_api_200_success_false_without_error_reports_full_context(self):
         # NINA always pairs Success:false with an Error string; a body that
-        # does not still must not be reported as a success.
+        # does not still must not be reported as a success — and the bare
+        # "API request failed" it used to raise told the caller nothing its
+        # sibling branches don't: no method, no URL, no status, no body.
         from nina_planner.client import unwrap_response as _unwrap_response
 
         resp = self._api_response(200, json_body={"Success": False, "Response": ""})
-        with self.assertRaisesRegex(RuntimeError, "^API request failed$"):
+        with self.assertRaises(RuntimeError) as ctx:
             _unwrap_response("GET", "/time", resp)
+        message = str(ctx.exception)
+        self.assertIn("GET", message)
+        self.assertIn("/time", message)
+        self.assertIn("200", message)
+        self.assertIn("Success=false", message)
+        self.assertNotEqual(message, "API request failed")
+
+    def test_api_200_non_object_json_body_reports_full_context(self):
+        # The sibling shape of the same branch: HTTP 200 whose body is JSON
+        # but not an envelope object — also contextual, never bare.
+        from nina_planner.client import unwrap_response as _unwrap_response
+
+        resp = self._api_response(200, json_body=["not", "an", "envelope"])
+        with self.assertRaises(RuntimeError) as ctx:
+            _unwrap_response("POST", "/sequence/load", resp)
+        message = str(ctx.exception)
+        self.assertIn("POST", message)
+        self.assertIn("/sequence/load", message)
+        self.assertIn("200", message)
+        self.assertIn("non-object JSON body", message)
 
     def test_run_blocking_runs_a_real_subprocess(self):
         import sys
@@ -405,7 +458,10 @@ class HelperFunctionsTest(unittest.TestCase):
             site=SiteLocationInfo(),
             optics=OpticalTrainInfo(),
             filters=filters,
-            plate_solver=None,
+            # Explicit rather than defaulted: a lights load rejects a rig
+            # with no plate solver, and this factory feeds positive
+            # validation tests (negative ones override it).
+            plate_solver="ASTAP",
             blind_plate_solver=None,
             image_save_path="/tmp/x",
             file_pattern=None,
@@ -531,6 +587,9 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
             site=SiteLocationInfo(),
             optics=OpticalTrainInfo(),
             filters=[],
+            # Kept explicit: nothing about this rig is assumed. It reports no
+            # solver, no guider and no focuser, so a light load built from it
+            # is rejected on all three counts (the solver first).
             plate_solver=None,
             blind_plate_solver=None,
             image_save_path="C:\\NINA",
@@ -578,7 +637,10 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
                 camera_ysize_px=2000,
             ),
             filters=filters,
-            plate_solver=None,
+            # A lights load refuses a rig with no plate solver (every lights
+            # step emits a slew/center), so the usual load-test rig reports
+            # one: negative tests take it away explicitly.
+            plate_solver="ASTAP",
             blind_plate_solver=None,
             image_save_path="C:\\NINA",
             file_pattern="$$DATEMINUS12$$\\$$IMAGETYPE$$\\$$TARGETNAME$$",
@@ -1392,6 +1454,37 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
         params = list(inspect.signature(get_plan_progress).parameters)
         self.assertEqual(params, ["file_path"])
 
+    async def test_get_plan_progress_refuses_unknown_arguments(self):
+        """Unknown args are refused on the ARG MODEL — FastMCP drops them.
+
+        The function's only parameter is `file_path`, and FastMCP builds
+        its argument model with extra keys IGNORED, so a caller passing
+        max_hfr used to get back UNFILTERED counts with no error. The
+        registered argument model now forbids unknown fields outright, so
+        any stray key — not just the four quality thresholds — is refused
+        by name instead of silently vanishing.
+        """
+        from mcp.server.fastmcp.exceptions import ToolError
+
+        from nina_planner.server import mcp as server_mcp
+
+        with self.assertRaises(ToolError) as ctx:
+            await server_mcp.call_tool(
+                "get_plan_progress",
+                {"file_path": "plans/m31.json", "max_hfr": 2.5},
+            )
+        message = str(ctx.exception)
+        self.assertIn("max_hfr", message)
+        # Not a migration hint — a plain invalid-argument refusal.
+        self.assertIn("Extra inputs are not permitted", message)
+        # A non-threshold stray key is refused the same way.
+        with self.assertRaises(ToolError) as ctx:
+            await server_mcp.call_tool(
+                "get_plan_progress",
+                {"file_path": "plans/m31.json", "nonsense": 1},
+            )
+        self.assertIn("nonsense", str(ctx.exception))
+
     async def test_get_plan_progress_flags_overshoot_with_warning(self):
         """`complete: true` plus `overshot` is how a truncated mode=full
         re-shoot becomes visible.
@@ -2002,6 +2095,91 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn("is complete", result)
         self.assertIn("nothing to load", result)
 
+    async def test_load_sequence_unpinned_plan_keeps_its_token_in_remaining_mode(self):
+        """Remaining mode must emit the id of the plan file AS WRITTEN.
+
+        With no explicit plan_id the base id is HASHED FROM THE PLAN'S OWN
+        JSON, so rewriting the frame counts (which is exactly what
+        remaining mode does — `plan_with_remaining` drops finished groups
+        and shrinks the rest) used to mint a different token than the file
+        on disk derives. get_plan_progress/audit_plans count against the
+        FILE's id, so the frames would re-attribute every night as
+        `remaining` shrank and the plan would never complete. The emitted
+        token must equal the file-as-written id even after the rewrite.
+        """
+        import re
+
+        from nina_planner.models.plan import ObservationPlan
+        from nina_planner.server import load_sequence
+
+        plan_dict = {
+            # Deliberately NO plan_id: unpinned, derived from this content.
+            "target": "M31",
+            "pointings": [{"ra_hours": 5.0, "dec_deg": 10.0}],
+            "light_frames": [
+                {"filter_name": "L", "exposure_time_seconds": 60.0, "total_count": 4}
+            ],
+            "flat_frames": [{"filter_name": "L", "total_count": 1}],
+            "dark_frames": [{"exposure_time_seconds": 60.0, "total_count": 1}],
+            "bias_frames": [{"total_count": 1}],
+        }
+        file_base = ObservationPlan.model_validate(plan_dict)._base_plan_id()
+
+        with tempfile.TemporaryDirectory() as tmp:
+            plan_path = Path(tmp) / "plan.json"
+            plan_path.write_text(json.dumps(plan_dict))
+
+            # One of the four lights already attributed under the FILE's
+            # token, so remaining mode really rewrites the plan (4 -> 3).
+            rows = [
+                {
+                    "image_type": "LIGHT",
+                    "file_path": (
+                        f"C:\\NINA\\LIGHT\\2026-11-01\\shot _{file_base}_.fits"
+                    ),
+                    "filter_name": "L",
+                    "duration": 60.0,
+                }
+            ]
+            with (
+                patch(
+                    "nina_planner.tools.equipment.get_site_profile",
+                    AsyncMock(return_value=self._full_profile()),
+                ),
+                patch(
+                    "nina_planner.tools.equipment._get_site_equipment_status",
+                    AsyncMock(return_value=self._payload_equipment()),
+                ),
+                patch(
+                    "nina_planner.metadata.read_metadata",
+                    AsyncMock(return_value=rows),
+                ),
+                patch(
+                    "nina_planner.client.api_post",
+                    AsyncMock(return_value={}),
+                ) as api_post,
+                patch(
+                    "nina_planner.client.api_get",
+                    AsyncMock(return_value={}),
+                ),
+            ):
+                result = await load_sequence(
+                    [SequenceRequest(plan=str(plan_path), action="light")]
+                )
+
+        self.assertIn("3 frame(s) to acquire", result)
+        api_post.assert_awaited_once()
+        body = json.dumps(api_post.await_args.args[1])
+        tokens = set(re.findall(r"plan-[0-9a-f]{12}", body))
+        self.assertEqual(
+            tokens,
+            {file_base},
+            msg=(
+                "every plan token in the emitted sequence must be the id of "
+                f"the plan FILE as written ({file_base}); got {tokens}"
+            ),
+        )
+
     async def test_load_sequence_remaining_mode_uses_plan_quality(self):
         """The plan's `quality` section decides what load_sequence acquires.
 
@@ -2077,20 +2255,21 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn("is complete", result)
         self.assertIn("nothing to load", result)
 
-    def test_load_sequence_request_rejects_legacy_threshold_keys(self):
-        """A threshold passed the old way fails loudly, naming the new home.
+    def test_load_sequence_request_refuses_unknown_keys(self):
+        """An unknown request field fails loudly instead of being ignored.
 
-        pydantic would otherwise IGNORE the unknown key, which is the one
-        outcome that must not happen: the caller would believe it was
-        filtering while every frame counted.
+        pydantic would otherwise IGNORE it, which is the one outcome that
+        must not happen: the caller would believe it was filtering while
+        every frame counted. There is no legacy-key list — any stray key
+        is refused as invalid input.
         """
         with self.assertRaises(Exception) as ctx:
             SequenceRequest(plan="plan.json", action="light", max_hfr=2.5)
         msg = str(ctx.exception)
         self.assertIn("max_hfr", msg)
-        self.assertIn("quality", msg)
+        self.assertIn("Extra inputs are not permitted", msg)
 
-    def test_load_sequence_request_rejects_each_legacy_key(self):
+    def test_load_sequence_request_refuses_each_stray_key(self):
         for key in (
             "max_hfr",
             "max_hfr_st_dev",
@@ -2101,7 +2280,7 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
                 with self.assertRaises(Exception) as ctx:
                     SequenceRequest(plan="plan.json", action="light", **{key: 1})
                 self.assertIn(key, str(ctx.exception))
-                self.assertIn("plan file", str(ctx.exception))
+                self.assertIn("Extra inputs are not permitted", str(ctx.exception))
 
     async def test_load_sequence_read_metadata_fails(self):
         from nina_planner.server import load_sequence
@@ -2148,6 +2327,26 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
                     )
         self.assertIn("Cannot compute remaining frames", str(ctx.exception))
         self.assertIn("Pass mode='full'", str(ctx.exception))
+
+    async def test_load_sequence_missing_plan_file_names_the_entry(self):
+        """A plan file that cannot be READ gets the same `request[i]:` prefix.
+
+        The docstring promises a failure names the entry's 0-based
+        position, but the wrap covered only ValueError while
+        plan_utils.load_plan raises FileNotFoundError for a missing file —
+        which escaped bare, with no hint of WHICH entry named it.
+        """
+        from nina_planner.server import load_sequence
+
+        with tempfile.TemporaryDirectory() as tmp:
+            missing = str(Path(tmp) / "does-not-exist.json")
+            with self.assertRaises(ValueError) as ctx:
+                await load_sequence([SequenceRequest(plan=missing, action="light")])
+        message = str(ctx.exception)
+        self.assertTrue(
+            message.startswith("request[0]: "), f"unprefixed message: {message}"
+        )
+        self.assertIn("does-not-exist.json", message)
 
     async def test_load_sequence_invalid_mode(self):
         from nina_planner.server import load_sequence
@@ -2700,8 +2899,13 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn("Sequence loaded (1 of 1 step(s))", result)
         api_post.assert_awaited_once()
         self.assertEqual(api_post.await_args.args[0], "/sequence/load")
-        # Loading is the only API call: no running-state pre-check, no start.
-        api_get.assert_not_awaited()
+        # The load's own API traffic is exactly one read: the plugin list
+        # (Sequencer+ must be installed before a light/flat payload is
+        # POSTed). No running-state pre-check, no start.
+        self.assertEqual(
+            [call.args[0] for call in api_get.await_args_list],
+            ["/application/plugins"],
+        )
 
     async def test_load_sequence_full_mode_metadata_read_errors_never_block(self):
         """Every metadata read/parse failure degrades to "no warning".
@@ -3066,15 +3270,60 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("already complete", result)
 
     async def test_start_sequence(self):
+        """start_sequence waits for the start to take: the start GET, then a
+        `/sequence/json` read proving a node left CREATED — it returns once
+        the sequencer has actually started, not when N.I.N.A. accepted the
+        request (see client.wait_until_sequence_started)."""
         from nina_planner.server import start_sequence
 
         with patch(
             "nina_planner.client.api_get",
-            AsyncMock(return_value={}),
+            AsyncMock(return_value={"Status": "RUNNING"}),
         ) as api_get:
             result = await start_sequence()
         self.assertEqual(result, "Sequence started.")
-        api_get.assert_awaited_once_with("/sequence/start")
+        paths = [call.args[0] for call in api_get.await_args_list]
+        self.assertEqual(paths[0], "/sequence/start")
+        self.assertIn("/sequence/json", paths, "the start is verified")
+
+    async def test_start_sequence_raises_when_nothing_leaves_created(self):
+        """A start N.I.N.A. accepts but never runs (every node still CREATED
+        after the budget) must not be reported as started."""
+        from nina_planner.server import start_sequence
+
+        with (
+            patch(
+                "nina_planner.client.api_get",
+                AsyncMock(return_value={"Status": "CREATED"}),
+            ),
+            patch("nina_planner.client.SEQUENCE_START_TIMEOUT", 0.01),
+            self.assertRaisesRegex(RuntimeError, "did not start within 0s") as ctx,
+        ):
+            await start_sequence()
+
+        message = str(ctx.exception)
+        self.assertIn("CREATED", message)
+        self.assertIn("get_logs()", message)
+
+    async def test_start_sequence_accepts_a_sequence_that_finished_first(self):
+        """A short park can legitimately complete between the start and the
+        first read: FINISHED nodes prove it ran, so this is not a failure."""
+        from nina_planner.server import start_sequence
+
+        reads = iter(
+            [
+                "Sequence started",  # GET /sequence/start — return value unused
+                {"Status": "FINISHED"},  # first state read: already done
+            ]
+        )
+        with patch(
+            "nina_planner.client.api_get",
+            AsyncMock(side_effect=lambda path: next(reads)),
+        ) as api_get:
+            result = await start_sequence()
+
+        self.assertEqual(result, "Sequence started.")
+        self.assertEqual(api_get.await_count, 2)
 
     async def test_load_sequence_empty_list_parks_without_starting(self):
         """The default (and only) park: no arguments loads the closing
@@ -3223,6 +3472,208 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
             self.assertIn("Nothing was loaded", str(ctx.exception))
         api_post.assert_not_awaited()
 
+    # capability guards: what a lights step emits must exist on the rig
+
+    async def _load_entry(
+        self,
+        action: str,
+        *,
+        variant: str | None = None,
+        profile: ObservatoryProfile | None = None,
+        equipment: ObservatoryEquipment | None = None,
+        plugins: Any = None,
+    ) -> tuple[Any, AsyncMock]:
+        """One ``load_sequence`` entry with every N.I.N.A. read stubbed.
+
+        Returns ``(outcome, api_post)`` where ``outcome`` is the tool's
+        result **or the exception it raised** — never raises itself — so each
+        test can assert both what was said and whether anything was POSTed.
+        ``plugins`` is what ``GET /application/plugins`` answers.
+        """
+        from nina_planner.server import load_sequence
+
+        api_post = AsyncMock(return_value={})
+        with tempfile.TemporaryDirectory() as tmp:
+            plan_path = Path(tmp) / "plan.json"
+            plan_path.write_text(json.dumps(self._list_plan_dict()))
+            request: dict[str, Any] = {"plan": str(plan_path), "action": action}
+            if variant is not None:
+                request["variant"] = variant
+            with (
+                patch(
+                    "nina_planner.tools.equipment.get_site_profile",
+                    AsyncMock(return_value=profile or self._full_profile()),
+                ),
+                patch(
+                    "nina_planner.tools.equipment._get_site_equipment_status",
+                    AsyncMock(return_value=equipment or self._payload_equipment()),
+                ),
+                patch(
+                    "nina_planner.metadata.read_metadata",
+                    AsyncMock(return_value=[]),
+                ),
+                patch("nina_planner.client.api_post", api_post),
+                # An Exception passed as `plugins` RAISES from the read, so
+                # the "the endpoint is not there" path can be exercised too.
+                patch(
+                    "nina_planner.client.api_get",
+                    AsyncMock(side_effect=plugins)
+                    if isinstance(plugins, Exception)
+                    else AsyncMock(return_value=plugins),
+                ),
+            ):
+                try:
+                    outcome: Any = await load_sequence([request])
+                except Exception as exc:  # returned for the caller to assert on
+                    outcome = exc
+        return outcome, api_post
+
+    async def test_light_load_rejects_a_rig_without_a_plate_solver(self):
+        """Every lights step emits a slew/center, so no solver at all —
+        neither plate_solver nor blind_plate_solver — fails the load."""
+        profile = self._full_profile().model_copy(
+            update={"plate_solver": None, "blind_plate_solver": None}
+        )
+        outcome, api_post = await self._load_entry("light", profile=profile)
+
+        self.assertIsInstance(outcome, ValueError)
+        message = str(outcome)
+        self.assertIn("request[0]", message, "the entry is named")
+        self.assertIn("plate solver", message)
+        self.assertIn("slew/center", message)
+        api_post.assert_not_awaited()
+
+    async def test_light_load_rejects_a_rig_without_a_guider(self):
+        """start_guiding/stop_guiding are emitted unconditionally, so a
+        profile reporting no guider fails the load instead of the run."""
+        profile = self._full_profile().model_copy(
+            update={
+                "equipment": self._full_profile().equipment.model_copy(
+                    update={"has_guider": False}
+                )
+            }
+        )
+        outcome, api_post = await self._load_entry("light", profile=profile)
+
+        self.assertIsInstance(outcome, ValueError)
+        message = str(outcome)
+        self.assertIn("request[0]", message)
+        self.assertIn("guider", message)
+        self.assertIn("start_guiding", message)
+        api_post.assert_not_awaited()
+
+    async def test_light_load_rejects_a_rig_without_a_focuser(self):
+        """run_autofocus is emitted unconditionally too, so a profile
+        reporting no focuser fails the load rather than the night."""
+        profile = self._full_profile().model_copy(
+            update={
+                "equipment": self._full_profile().equipment.model_copy(
+                    update={"has_focuser": False}
+                )
+            }
+        )
+        outcome, api_post = await self._load_entry("light", profile=profile)
+
+        self.assertIsInstance(outcome, ValueError)
+        message = str(outcome)
+        self.assertIn("request[0]", message)
+        self.assertIn("focuser", message)
+        self.assertIn("run_autofocus", message)
+        api_post.assert_not_awaited()
+
+    async def test_calibration_loads_are_not_capability_checked(self):
+        """Darks, bias and flats never emit center/guiding/autofocus, so the
+        lights capability check must leave them alone — the same rig with no
+        solver, no guider and no focuser still loads all three."""
+        profile = self._full_profile().model_copy(
+            update={
+                "plate_solver": None,
+                "blind_plate_solver": None,
+                "equipment": self._full_profile().equipment.model_copy(
+                    update={"has_guider": False, "has_focuser": False}
+                ),
+            }
+        )
+        for action, variant in (("dark", None), ("bias", None), ("flat", "dawn")):
+            with self.subTest(action=action):
+                outcome, api_post = await self._load_entry(
+                    action, variant=variant, profile=profile, plugins=["Sequencer+"]
+                )
+                self.assertNotIsInstance(outcome, Exception, outcome)
+                self.assertIn("Sequence loaded", outcome)
+                api_post.assert_awaited_once()
+
+    # Sequencer+ plugin presence at load
+
+    async def test_light_load_requires_the_sequencer_plus_plugin(self):
+        """A readable plugin list without Sequencer+ refuses the load, naming
+        the plugin and the two actions that need it — before the POST."""
+        outcome, api_post = await self._load_entry(
+            "light", plugins=["Advanced API", "Session Metadata"]
+        )
+
+        self.assertIsInstance(outcome, ValueError)
+        message = str(outcome)
+        self.assertIn("Sequencer+", message)
+        self.assertIn("light", message)
+        self.assertIn("flat", message)
+        self.assertIn("Advanced API", message, "the actual list is shown")
+        api_post.assert_not_awaited()
+
+    async def test_flat_load_requires_the_sequencer_plus_plugin(self):
+        """Flats carry the safetynet's Sequencer+ End Instruction Set, so they
+        are checked exactly like lights."""
+        outcome, api_post = await self._load_entry(
+            "flat", variant="dusk", plugins=["Advanced API"]
+        )
+
+        self.assertIsInstance(outcome, ValueError)
+        self.assertIn("Sequencer+", str(outcome))
+        api_post.assert_not_awaited()
+
+    async def test_light_loads_when_the_sequencer_plus_plugin_is_present(self):
+        outcome, api_post = await self._load_entry(
+            "light", plugins=["Advanced API", "Sequencer+", "Session Metadata"]
+        )
+
+        self.assertNotIsInstance(outcome, Exception, outcome)
+        self.assertIn("Sequence loaded", outcome)
+        api_post.assert_awaited_once()
+
+    async def test_light_load_accepts_the_alternate_plugin_spelling(self):
+        """Both known spellings count as installed: README says "Sequencer+",
+        the plugin's own csproj installs it as "Sequencer Plus", and no rig
+        response has confirmed which one /application/plugins reports."""
+        outcome, api_post = await self._load_entry(
+            "light", plugins=["Advanced API", "Sequencer Plus"]
+        )
+
+        self.assertNotIsInstance(outcome, Exception, outcome)
+        self.assertIn("Sequence loaded", outcome)
+        api_post.assert_awaited_once()
+
+    async def test_dark_load_never_reads_the_plugin_list(self):
+        """Darks/bias emit no Sequencer+ node, so the empty-park rule extends
+        to them: no plugin read, and an absent Sequencer+ changes nothing."""
+        outcome, api_post = await self._load_entry("dark", plugins=[])
+
+        self.assertNotIsInstance(outcome, Exception, outcome)
+        self.assertIn("Sequence loaded", outcome)
+        api_post.assert_awaited_once()
+
+    async def test_load_continues_when_the_plugin_list_cannot_be_read(self):
+        """An endpoint we cannot read — it 404s, or answers something that is
+        not a list of names — must not block the night: verification is best
+        effort, so the load proceeds with a logged warning instead."""
+        unreadable = (RuntimeError("HTTP 404 Not Found"), {}, "", None)
+        for answer in unreadable:
+            with self.subTest(answer=answer):
+                outcome, api_post = await self._load_entry("light", plugins=answer)
+
+                self.assertNotIsInstance(outcome, Exception, outcome)
+                self.assertIn("Sequence loaded", outcome)
+                api_post.assert_awaited_once()
+
     # load_sequence with a LIST of requests
 
     @staticmethod
@@ -3299,6 +3750,13 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
             ),
             patch("nina_planner.metadata.read_metadata", AsyncMock(return_value=[])),
             patch("nina_planner.client.api_post", api_post),
+            # Light and flat loads read GET /application/plugins to prove the
+            # Sequencer+ plugin is installed before anything is POSTed; the
+            # usual rig has it. Tests that care override this patch.
+            patch(
+                "nina_planner.client.api_get",
+                AsyncMock(return_value=["Sequencer+"]),
+            ),
         ):
             if progress is None:
                 result = await load_sequence(requests)

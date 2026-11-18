@@ -135,6 +135,12 @@ async def _generate(args: argparse.Namespace) -> tuple[dict[str, Any] | None, st
         # explicit variant does, so an omitted variant never silently picks
         # another way to cut the light.
         validate_dark_variant(variant or "wheel", equipment, profile)
+    if action == "light":
+        # The same lights-only capability guard load_sequence applies, for
+        # CLI parity: the payload emits slew/center, guiding and autofocus
+        # unconditionally, so a rig without them would only fail at run time
+        # inside N.I.N.A. (plan_utils.require_light_capabilities).
+        plan_utils.require_light_capabilities(profile)
 
     if args.mode == "remaining":
         try:
@@ -234,13 +240,10 @@ async def _generate(args: argparse.Namespace) -> tuple[dict[str, Any] | None, st
     # The same park guard load_sequence applies before anything is sent: the
     # End area always announces a park, and a mount that cannot park would
     # make that announcement around an instruction list that does nothing.
-    mount = equipment.mount
-    if mount is None or not mount.can_park:
-        raise ScriptError(
-            "Mount cannot park (can_park=False) — the End area would "
-            "announce PARK around an instruction list that does nothing. "
-            "Nothing was generated."
-        )
+    # One shared refusal — plan_utils.require_parkable — so the CLI and the
+    # tool can never drift apart on it (the builders keep their own silent
+    # no-op as the defensive default; see sequence_park_scope).
+    plan_utils.require_parkable(equipment)
 
     sequence = build_sequence_many(equipment, [payload])
     return sequence, f"{label}{where} — {note}"

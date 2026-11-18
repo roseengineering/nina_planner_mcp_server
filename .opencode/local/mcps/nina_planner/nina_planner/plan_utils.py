@@ -6,6 +6,7 @@ from typing import Any
 import anyio
 
 from . import config
+from .models.observatory import ObservatoryEquipment
 from .models.plan import ObservationPlan
 from .models.profile import ObservatoryProfile
 
@@ -51,16 +52,19 @@ def validate_position_angle(plan: ObservationPlan, profile: ObservatoryProfile) 
             f"pointings {unset_idxs} do not. Either set position_angle_deg on "
             "every pointing or omit it from all."
         )
+    # "Requests a rotation" is ONE rule — Pointing.requests_rotation — shared
+    # with the emission side (sequence/targets.py picks CenterAndRotate by it),
+    # so 0 and None can never validate one way and emit another: a plan of
+    # 0-valued panes (what plan_mosaic stamps) validates as "no rotation
+    # needed" and must emit a plain center slew too.
     nonzero_idxs = [
-        i
-        for i, p in enumerate(plan.pointings, start=1)
-        if p.position_angle_deg is not None and p.position_angle_deg != 0
+        i for i, p in enumerate(plan.pointings, start=1) if p.requests_rotation()
     ]
     if not profile.equipment.has_rotator and nonzero_idxs:
         labeled = [
             f"pointing {i} ({p.label})" if p.label else f"pointing {i}"
             for i, p in enumerate(plan.pointings, start=1)
-            if p.position_angle_deg is not None and p.position_angle_deg != 0
+            if p.requests_rotation()
         ]
         raise ValueError(
             f"Plan sets a nonzero position_angle_deg on {', '.join(labeled)} but "
@@ -75,6 +79,80 @@ def check_pointing_index(plan: ObservationPlan, pointing_index: int) -> None:
         raise ValueError(
             f"pointing_index={pointing_index} out of range (plan has "
             f"{len(plan.pointings)} pointings; valid 1..{len(plan.pointings)})"
+        )
+
+
+def require_parkable(equipment: ObservatoryEquipment) -> None:
+    """Refuse a sequence the mount could not close at the end (``can_park``).
+
+    THE ONE AUTHORITY for the park guard: ``tools/sequence.load_sequence``
+    and ``scripts/gen_sequence.py`` both call this, so the refusal — and its
+    exact wording — can only ever change in one place. Every loaded list ends
+    with the End-area park and the wait stages park first, so a mount that
+    cannot park would sit unparked through a long wait while
+    ``PARK-STARTING``/``PARK-FINISHED`` announced an instruction list that
+    does nothing. A park that silently does nothing is worse than an error.
+
+    The builders keep their own conditional emission (``sequence_park_scope``
+    and friends return ``[]`` for such a mount) as a defensive default: they
+    are pure functions over whatever equipment they are handed and are called
+    directly by tests with a bare ``ObservatoryEquipment()``. They never raise
+    — raising is this function's job, at the boundary, before anything is
+    sent.
+    """
+    can_park = bool(equipment.mount and equipment.mount.can_park)
+    if can_park:
+        return
+    raise ValueError(
+        f"Mount cannot park (can_park={can_park}) — nothing to park: "
+        "the End area would announce PARK-STARTING/PARK-FINISHED "
+        "around an instruction list that does nothing. Nothing was "
+        "loaded."
+    )
+
+
+def require_light_capabilities(profile: ObservatoryProfile) -> None:
+    """Refuse a lights step whose instructions this rig cannot execute.
+
+    ``target_payload_lights`` emits a slew/center, ``start_guiding``/
+    ``stop_guiding`` and ``run_autofocus`` **unconditionally**
+    (``sequence/targets.py``), so a profile reporting no plate solver, no
+    guider or no focuser would only discover the gap at run time, inside
+    N.I.N.A., hours into the night — with the sequence loaded and the
+    operator told it had started.
+
+    Degrading instead (omitting those instructions) is deliberately not
+    offered: it would silently change what the night acquires, and every
+    emitted payload would then depend on the rig. Darks, bias and flats
+    never emit these instructions and are never checked here.
+
+    Callers wrap the message with their own entry position (``request[i]:``
+    in ``load_sequence``), so this only has to name the action and each
+    missing capability.
+    """
+    missing: list[str] = []
+    if not (profile.plate_solver or profile.blind_plate_solver):
+        missing.append(
+            "no plate solver configured (neither plate_solver "
+            "(PlateSolverType) nor blind_plate_solver (BlindSolverType)) — "
+            "every lights step emits a slew/center"
+        )
+    if not profile.equipment.has_guider:
+        missing.append(
+            "no guider configured (equipment.has_guider=false) — every "
+            "lights step emits start_guiding/stop_guiding"
+        )
+    if not profile.equipment.has_focuser:
+        missing.append(
+            "no focuser configured (equipment.has_focuser=false) — every "
+            "lights step emits run_autofocus"
+        )
+    if missing:
+        raise ValueError(
+            "action='light' needs capabilities this rig does not report: "
+            + "; ".join(missing)
+            + ". Configure them in the N.I.N.A. profile, or load a "
+            "`dark`/`bias`/`flat` step instead — nothing was loaded."
         )
 
 

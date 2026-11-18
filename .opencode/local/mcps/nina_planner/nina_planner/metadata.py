@@ -18,6 +18,3 @@ async def read_metadata(image_type: str | None = None) -> list[dict[str, Any]]:
     for t in ("light", "dark", "bias", "flat"):
         rows += read_imaging_csv(root=root, image_type=t)
     return rows
-
-
-### mcp tools

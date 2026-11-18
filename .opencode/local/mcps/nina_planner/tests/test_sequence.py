@@ -497,13 +497,6 @@ class JsonTemplateBuildersTest(unittest.TestCase):
         self.assertEqual(result["Coordinates"]["AzDegrees"], 180)
         self.assertEqual(result["Coordinates"]["AltDegrees"], 45)
 
-    def test_set_readout(self):
-        from nina_planner.sequence import set_readout
-
-        result = set_readout(0)
-        self._assert_clr_type(result, "SetReadoutMode")
-        self.assertEqual(result["Mode"], 0)
-
     def test_annotation(self):
         from nina_planner.sequence import annotation
 
@@ -697,7 +690,7 @@ class SequenceBuildersTest(unittest.TestCase):
         self.assertEqual(
             _find_items(end, "WarmCamera"), _find_items(result, "WarmCamera")
         )
-        self.assertTrue(_find_items(result, "ParkScope"), "park parks (or homes)")
+        self.assertTrue(_find_items(result, "ParkScope"), "park parks")
         self.assertTrue(_find_items(result, "WarmCamera"), "park then warms")
 
     def test_build_sequence_darks(self):
@@ -1228,6 +1221,47 @@ class SequenceBehaviorTest(unittest.TestCase):
         self.assertEqual(len(rotates), 1)
         self.assertEqual(centers, [])
 
+    def test_rotator_less_mosaic_panes_center_without_rotate(self):
+        """A rotator-less rig must never see CenterAndRotate.
+
+        `plan_mosaic` stamps `position_angle_deg=0` on every pane (a record
+        of the north-aligned grid, not a rotation request), and validation
+        treats 0 exactly like omitting the field — so emission has to apply
+        the SAME rule (Pointing.requests_rotation). It used to key off
+        `is not None`, which made every pane of every mosaic on a
+        rotator-less rig emit the rotator-needing CenterAndRotate item.
+        """
+        from nina_planner.mosaic import plan_mosaic
+        from nina_planner.plan_utils import validate_position_angle
+
+        profile = _profile()
+        profile = profile.model_copy(
+            update={
+                "equipment": profile.equipment.model_copy(update={"has_rotator": False})
+            }
+        )
+        pointings = plan_mosaic(
+            center_ra_hours=5.0,
+            center_dec_deg=10.0,
+            cols=2,
+            rows=2,
+            step_width_deg=0.5,
+            step_height_deg=0.5,
+            pa_deg=0.0,
+        )
+        plan = self._plan(pointings=pointings)
+        # Validation accepts every pane's explicitly-stamped 0 with no
+        # rotator — and emission must agree rather than rotate anyway.
+        validate_position_angle(plan, profile)
+
+        result = build_sequence_lights(
+            plan, equipment=ObservatoryEquipment(), profile=profile
+        )
+        rotates = _find_items(result, "CenterAndRotate")
+        centers = _find_items(result, "Platesolving.Center, NINA.Sequencer")
+        self.assertEqual(rotates, [])
+        self.assertEqual(len(centers), 1)
+
     def test_lights_contains_acquisition_starting_and_finished_events(self):
         plan = self._plan()
         result = build_sequence_lights(
@@ -1612,7 +1646,7 @@ class SequenceBehaviorTest(unittest.TestCase):
     def test_lights_parks_when_object_is_not_in_view(self):
         """The "Wait For Object" container folds in the visibility check: if
         the target is already in view, it skips the wait and park via an End set
-        naming that container; if not in view, it parks (or homes) the mount and
+        naming that container; if not in view, it parks the mount and
         waits for the target to rise."""
         plan = self._plan(
             constraints={"min_altitude": 45.0, "horizon_offset_degrees": 5.0}

@@ -414,8 +414,9 @@ def filter_metadata_rows(
     """Rows attributed to `plan` for `image_type`.
 
     Lights match by the plan_id embedded in their file path (with the
-    pointing_index suffix appended at load time); dark/bias frames match the
-    plan's exposure specs, and flat frames match by filter alone.
+    pointing_index suffix appended at load time); dark frames match the
+    plan's exposure specs, bias frames match by type alone (the bias spec
+    has no exposure), and flat frames match by filter alone.
     Calibration is anchored
     to the plan's light session: a frame counts when it was shot within
     ``max_age_days`` of ``session_start`` on either side, where
@@ -715,6 +716,24 @@ def progress_verdict(progress: dict[str, list[dict[str, Any]]]) -> dict[str, Any
 def plan_with_remaining(
     plan: ObservationPlan, progress: dict[str, list[dict[str, Any]]]
 ) -> ObservationPlan:
+    """Drop finished groups and shrink the rest to what still remains.
+
+    The rewrite MUST NOT change the plan's identity. An unpinned plan
+    (empty ``plan_id``) derives its id by hashing its own JSON
+    (``_base_plan_id``), so reducing a group's ``total_count`` here would
+    mint a DIFFERENT id than the file on disk derives — the emitted
+    ``_{plan-…}_`` token would then differ from what ``get_plan_progress``
+    and ``audit_plans`` count against (they read the file as written), and
+    it would shift again every night as ``remaining`` shrinks: frames
+    re-attribute forever and the plan never completes. The base id is
+    therefore taken from the plan AS WRITTEN — before any frame count
+    changes — and stamped onto the copy when ``plan_id`` is empty, so
+    ``_base_plan_id()`` returns that literal instead of re-hashing (this
+    is exactly what ``nina-pin-id`` does to the file, done in memory for
+    the lifetime of the rewrite). An explicit ``plan_id`` already wins
+    over the hash and is left untouched.
+    """
+
     def rebuild(groups: list[Any], key: str) -> list[Any]:
         out: list[Any] = []
         for g, item in zip(groups, progress[key], strict=True):
@@ -724,11 +743,12 @@ def plan_with_remaining(
             out.append(type(g)(**{**g.model_dump(), "total_count": remaining}))
         return out
 
-    return plan.model_copy(
-        update={
-            "light_frames": rebuild(plan.light_frames, "light"),
-            "flat_frames": rebuild(plan.flat_frames, "flat"),
-            "dark_frames": rebuild(plan.dark_frames, "dark"),
-            "bias_frames": rebuild(plan.bias_frames, "bias"),
-        }
-    )
+    update: dict[str, Any] = {
+        "light_frames": rebuild(plan.light_frames, "light"),
+        "flat_frames": rebuild(plan.flat_frames, "flat"),
+        "dark_frames": rebuild(plan.dark_frames, "dark"),
+        "bias_frames": rebuild(plan.bias_frames, "bias"),
+    }
+    if not plan.plan_id:
+        update["plan_id"] = plan._base_plan_id()
+    return plan.model_copy(update=update)

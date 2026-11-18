@@ -1,6 +1,6 @@
 from typing import Literal
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 # Everything load_sequence understands: the four plan-backed frame sequences.
 # Every action builds from a plan — there are no plan-less actions, and an
@@ -29,6 +29,15 @@ VARIANTS: dict[str, frozenset[str]] = {
 class SequenceRequest(BaseModel):
     """One entry of the `request` list `load_sequence` takes: what to load and
     how."""
+
+    # Unknown keys are refused outright, not ignored. Quality thresholds are
+    # NOT request fields — they live in the plan file's `quality` section, so
+    # load_sequence and get_plan_progress always agree about what counts — and
+    # pydantic's default (ignore) would be the worst answer: a caller passing
+    # max_hfr would silently get unfiltered counts while believing it was
+    # filtering. There is no legacy-key list and no migration message; an
+    # unexpected field is simply invalid input, whatever it is named.
+    model_config = ConfigDict(extra="forbid")
 
     plan: str | None = Field(
         default=None,
@@ -80,31 +89,8 @@ class SequenceRequest(BaseModel):
 
     # Quality thresholds are NOT request fields: they live in the plan file's
     # `quality` section, so load_sequence and get_plan_progress always agree
-    # about what counts. pydantic's default is to IGNORE unknown keys, which
-    # here would be the worst outcome — an old caller passing max_hfr would
-    # silently get unfiltered counts — so the legacy names are rejected with
-    # the migration path instead.
-    @model_validator(mode="before")
-    @classmethod
-    def _reject_legacy_quality_keys(cls, data: object) -> object:
-        legacy = (
-            "max_hfr",
-            "max_hfr_st_dev",
-            "min_detected_stars",
-            "max_guiding_rms_arcsec",
-        )
-        if isinstance(data, dict):
-            present = [key for key in legacy if key in data]
-            if present:
-                raise ValueError(
-                    f"{', '.join(present)} — quality thresholds are no longer "
-                    "passed to load_sequence. Set them in the plan file's "
-                    '`quality` section instead (e.g. "quality": {"max_hfr": '
-                    "2.5}); every tool reading that plan then applies them "
-                    "consistently."
-                )
-        return data
-
+    # about what counts. `extra="forbid"` above is what keeps an unknown key
+    # from being silently dropped.
     @model_validator(mode="after")
     def _check_variant(self) -> "SequenceRequest":
         """Enforce the action-scoped variant vocabulary.
