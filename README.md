@@ -581,8 +581,7 @@ Read the 7-day hourly forecast for the observatory site from clearoutside.com â€
     {
       "package": "./local/plugins/nina_notify",
       "options": {
-        "ninaEndpoint": "10.0.0.35:1888",
-        "pluginLogs": "/tmp/nina-notify-debug.log"
+        "pluginLogs": "C:/Windows/Temp/nina-notify-debug.log"
       }
     }
   ],
@@ -591,12 +590,10 @@ Read the 7-day hourly forecast for the observatory site from clearoutside.com â€
       "nina-planner": {
         "type": "local",
         "environment": {
-          "NINA_ENDPOINT": "10.0.0.35:1888",
-          "NINA_DRIVE_MOUNT": "/System/Volumes/Data/Network",
-          "NINA_PLANNER_LOG": "/tmp/nina-planner-debug.log",
+          "NINA_PLANNER_LOG": "C:/Windows/Temp/nina-planner-debug.log",
           "NINA_ARCHIVE_DEST": ".archive/",
-          "NINA_UPLOAD_CMD": "gcloud storage rsync -r .archive gs://astronomyimaging/landing/soyuz",
-          "NINA_VERIFY_CMD": "gcloud storage rsync -r .archive gs://astronomyimaging/landing/soyuz --dry-run"
+          "NINA_UPLOAD_CMD": "gcloud storage rsync --recursive .archive gs://YOUR-BUCKET/nina-archive",
+          "NINA_VERIFY_CMD": "gcloud storage rsync --recursive .archive gs://YOUR-BUCKET/nina-archive --dry-run"
         },
         "command": [
           "uv", "run", "--project", ".opencode/local/mcps/nina_planner", "nina-planner"
