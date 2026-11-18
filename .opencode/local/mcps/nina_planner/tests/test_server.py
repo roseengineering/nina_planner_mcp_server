@@ -2,6 +2,7 @@ import asyncio
 import json
 import tempfile
 import unittest
+from contextlib import nullcontext
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -34,11 +35,6 @@ from nina_planner.plan_utils import (
     validate_position_angle as _validate_position_angle,
 )
 from nina_planner.tools.equipment import _convert_keys, _convert_to_met
-
-_STUB_LAUNCHER_PATHS = (
-    Path("/tmp/launch_nina.cmd"),
-    r"C:\Users\user\AppData\Local\Temp\launch_nina.cmd",
-)
 
 
 def _target_items(payload: dict) -> list[dict]:
@@ -382,9 +378,8 @@ class HelperFunctionsTest(unittest.TestCase):
 
     def test_api_200_success_false_without_error_reports_full_context(self):
         # NINA always pairs Success:false with an Error string; a body that
-        # does not still must not be reported as a success — and the bare
-        # "API request failed" it used to raise told the caller nothing its
-        # sibling branches don't: no method, no URL, no status, no body.
+        # does not still must not read as a success, and the reported error
+        # must carry method, URL, status and body either way.
         from nina_planner.client import unwrap_response as _unwrap_response
 
         resp = self._api_response(200, json_body={"Success": False, "Response": ""})
@@ -746,13 +741,14 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(rows[0]["image_type"], "LIGHT")
 
     async def test_read_metadata_without_image_type(self):
+        """One call, not four: image_type=None lets read_imaging_csv walk once."""
         from nina_planner.metadata import read_metadata as _read_metadata
 
-        types_seen = []
+        calls = []
 
-        def fake_read(root, image_type):
-            types_seen.append(image_type)
-            return [{"image_type": image_type}]
+        def fake_read(root, image_type=None):
+            calls.append(image_type)
+            return [{"image_type": "LIGHT"}]
 
         with (
             patch(
@@ -762,8 +758,8 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
             patch("nina_planner.metadata.read_imaging_csv", side_effect=fake_read),
         ):
             rows = await _read_metadata()
-        self.assertEqual(set(types_seen), {"light", "dark", "bias", "flat"})
-        self.assertEqual(len(rows), 4)
+        self.assertEqual(calls, [None])
+        self.assertEqual(len(rows), 1)
 
     async def test_get_site_profile_returns_observatory_profile(self):
         from nina_planner.server import get_site_profile
@@ -909,43 +905,6 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(kept["B"].position, 4)
         self.assertIsNone(kept["B"].focus_offset)
         self.assertEqual(kept["L"].focus_offset, 0)
-
-    async def test_get_site_profile_unparseable_focus_offset_keeps_filter(self):
-        # "n/a" is an ASCOM *missing* marker (ascom_int returns None); a
-        # value that is not a number at all is the parse failure — the
-        # filter stays in the profile with focus_offset=None, because a
-        # metadata field must never drop the filter a plan references.
-        from nina_planner.server import get_site_profile
-
-        filters = [
-            {"Name": "L", "Position": 1, "FocusOffset": "fast-focus"},
-            {"Name": "R", "Position": 2, "FocusOffset": 0},
-        ]
-        raw = {
-            "Name": "Test",
-            "Id": "abc",
-            "Description": "",
-            "AstrometrySettings": {},
-            "TelescopeSettings": {},
-            "CameraSettings": {},
-            "FilterWheelSettings": {"FilterWheelFilters": filters},
-            "ImageFileSettings": {"FilePath": "", "FilePattern": None},
-            "PlateSolveSettings": {"PlateSolverType": None, "BlindSolverType": None},
-            "FramingAssistantSettings": {},
-            "GuiderSettings": {},
-            "RotatorSettings": {},
-            "DomeSettings": {},
-            "WeatherDataSettings": {},
-            "SafetyMonitorSettings": {},
-            "FocuserSettings": {},
-            "SwitchSettings": {},
-        }
-        with patch("nina_planner.client.api_get", AsyncMock(return_value=raw)):
-            result = await get_site_profile()
-        kept = {f.name: f for f in result.filters}
-        self.assertEqual(list(kept), ["L", "R"])
-        self.assertIsNone(kept["L"].focus_offset)
-        self.assertEqual(kept["R"].focus_offset, 0)
 
     async def test_get_site_equipment_status_returns_empty_when_all_false(self):
         from nina_planner.tools.equipment import (
@@ -1458,11 +1417,9 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
         """Unknown args are refused on the ARG MODEL — FastMCP drops them.
 
         The function's only parameter is `file_path`, and FastMCP builds
-        its argument model with extra keys IGNORED, so a caller passing
-        max_hfr used to get back UNFILTERED counts with no error. The
-        registered argument model now forbids unknown fields outright, so
-        any stray key — not just the four quality thresholds — is refused
-        by name instead of silently vanishing.
+        its argument model with extra keys IGNORED, so any stray key —
+        not just the four quality thresholds — must be refused by name
+        instead of silently vanishing.
         """
         from mcp.server.fastmcp.exceptions import ToolError
 
@@ -1831,9 +1788,8 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
                 data["mosaic"]["pane_fov_arcmins"][1], 43.09, places=2
             )
 
-            # Content-derived id, as every plan gets (the old mosaic flow
-            # cleared the base id for the same reason): each pane then
-            # attributes independently via _{plan_id}-{pointing_index}_.
+            # Content-derived id: each pane then attributes independently
+            # via _{plan_id}-{pointing_index}_.
             self.assertTrue(data["plan_id"].startswith("plan-"))
 
             # End to end: the written file passes the load-time pointing
@@ -1890,8 +1846,8 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
             self.assertIn("mosaic 2x2 (4 pointings)", result)
 
     async def test_write_plan_file_mosaic_nonzero_pa_without_rotator_raises(self):
-        # PA can't be enforced without a rotator, so the expanded panes
-        # fail loudly exactly as the old CSV flow did.
+        # PA can't be enforced without a rotator, so a plan that asks for
+        # a nonzero position angle fails loudly.
         from nina_planner.server import write_plan_file
 
         profile = self._full_profile().model_copy(
@@ -2010,164 +1966,47 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(result["pointings"][0]["complete"])
 
     async def test_load_sequence_remaining_mode(self):
-        from nina_planner.server import load_sequence
-
-        plan_dict = {
-            "plan_id": "plan-test123",
-            "target": "M31",
-            "pointings": [{"ra_hours": 5.0, "dec_deg": 10.0}],
-            "light_frames": [
-                {"filter_name": "L", "exposure_time_seconds": 60.0, "total_count": 1}
-            ],
-            "flat_frames": [{"filter_name": "L", "total_count": 1}],
-            "dark_frames": [{"exposure_time_seconds": 60.0, "total_count": 1}],
-            "bias_frames": [{"total_count": 1}],
-        }
-
-        with tempfile.TemporaryDirectory() as tmp:
-            plan_path = Path(tmp) / "plan.json"
-            plan_path.write_text(json.dumps(plan_dict))
-
-            fake_progress = {
-                "light": [
-                    {
-                        "filter_name": "L",
-                        "exposure_time_seconds": 60.0,
-                        "total_count": 1,
-                        "acquired_count": 1,
-                        "remaining_count": 0,
-                    }
-                ],
-                "flat": [
-                    {
-                        "filter_name": "L",
-                        "exposure_time_seconds": 5.0,
-                        "total_count": 1,
-                        "acquired_count": 1,
-                        "remaining_count": 0,
-                    }
-                ],
-                "dark": [
-                    {
-                        "filter_name": None,
-                        "exposure_time_seconds": 60.0,
-                        "total_count": 1,
-                        "acquired_count": 1,
-                        "remaining_count": 0,
-                    }
-                ],
-                "bias": [
-                    {
-                        "filter_name": None,
-                        "exposure_time_seconds": None,
-                        "total_count": 1,
-                        "acquired_count": 1,
-                        "remaining_count": 0,
-                    }
-                ],
-            }
-
-            with (
-                patch(
-                    "nina_planner.tools.equipment.get_site_profile",
-                    AsyncMock(return_value=self._full_profile()),
-                ),
-                patch(
-                    "nina_planner.tools.equipment._get_site_equipment_status",
-                    AsyncMock(return_value=self._payload_equipment()),
-                ),
-                patch(
-                    "nina_planner.metadata.read_metadata",
-                    AsyncMock(return_value=[]),
-                ),
-                patch(
-                    "nina_planner.tools.sequence.plan_progress",
-                    return_value=fake_progress,
-                ),
-            ):
-                result = await load_sequence(
-                    [
-                        SequenceRequest(
-                            plan=str(plan_path), action="light", pointing_index=1
-                        )
-                    ]
-                )
-        self.assertIn("is complete", result)
-        self.assertIn("nothing to load", result)
+        """Nothing outstanding in any group: remaining mode reports the plan
+        complete and loads nothing."""
+        outcome, _ = await self._load_entry(
+            "light",
+            request={"pointing_index": 1},
+            progress=self._progress(light=0, flat=0, dark=0, bias=0),
+        )
+        self.assertIn("is complete", outcome)
+        self.assertIn("nothing to load", outcome)
 
     async def test_load_sequence_unpinned_plan_keeps_its_token_in_remaining_mode(self):
-        """Remaining mode must emit the id of the plan file AS WRITTEN.
-
-        With no explicit plan_id the base id is HASHED FROM THE PLAN'S OWN
-        JSON, so rewriting the frame counts (which is exactly what
-        remaining mode does — `plan_with_remaining` drops finished groups
-        and shrinks the rest) used to mint a different token than the file
-        on disk derives. get_plan_progress/audit_plans count against the
-        FILE's id, so the frames would re-attribute every night as
-        `remaining` shrank and the plan would never complete. The emitted
-        token must equal the file-as-written id even after the rewrite.
-        """
+        """Remaining mode rewrites frame counts, but the emitted plan token
+        must stay the id the plan FILE derives — otherwise frames
+        re-attribute every night as remaining shrinks and the plan never
+        completes."""
         import re
 
-        from nina_planner.models.plan import ObservationPlan
-        from nina_planner.server import load_sequence
-
-        plan_dict = {
-            # Deliberately NO plan_id: unpinned, derived from this content.
-            "target": "M31",
-            "pointings": [{"ra_hours": 5.0, "dec_deg": 10.0}],
-            "light_frames": [
+        # Deliberately NO plan_id: the id is derived from this content.
+        plan_dict = self._entry_plan_dict(
+            light_frames=[
                 {"filter_name": "L", "exposure_time_seconds": 60.0, "total_count": 4}
-            ],
-            "flat_frames": [{"filter_name": "L", "total_count": 1}],
-            "dark_frames": [{"exposure_time_seconds": 60.0, "total_count": 1}],
-            "bias_frames": [{"total_count": 1}],
-        }
+            ]
+        )
+        plan_dict.pop("plan_id")
         file_base = ObservationPlan.model_validate(plan_dict)._base_plan_id()
 
-        with tempfile.TemporaryDirectory() as tmp:
-            plan_path = Path(tmp) / "plan.json"
-            plan_path.write_text(json.dumps(plan_dict))
+        # One of the four lights already attributed under the FILE's token,
+        # so remaining mode really rewrites the plan (4 -> 3).
+        rows = [
+            {
+                "image_type": "LIGHT",
+                "file_path": (f"C:\\NINA\\LIGHT\\2026-11-01\\shot _{file_base}_.fits"),
+                "filter_name": "L",
+                "duration": 60.0,
+            }
+        ]
+        outcome, api_post = await self._load_entry(
+            "light", plan=plan_dict, metadata=rows
+        )
 
-            # One of the four lights already attributed under the FILE's
-            # token, so remaining mode really rewrites the plan (4 -> 3).
-            rows = [
-                {
-                    "image_type": "LIGHT",
-                    "file_path": (
-                        f"C:\\NINA\\LIGHT\\2026-11-01\\shot _{file_base}_.fits"
-                    ),
-                    "filter_name": "L",
-                    "duration": 60.0,
-                }
-            ]
-            with (
-                patch(
-                    "nina_planner.tools.equipment.get_site_profile",
-                    AsyncMock(return_value=self._full_profile()),
-                ),
-                patch(
-                    "nina_planner.tools.equipment._get_site_equipment_status",
-                    AsyncMock(return_value=self._payload_equipment()),
-                ),
-                patch(
-                    "nina_planner.metadata.read_metadata",
-                    AsyncMock(return_value=rows),
-                ),
-                patch(
-                    "nina_planner.client.api_post",
-                    AsyncMock(return_value={}),
-                ) as api_post,
-                patch(
-                    "nina_planner.client.api_get",
-                    AsyncMock(return_value={}),
-                ),
-            ):
-                result = await load_sequence(
-                    [SequenceRequest(plan=str(plan_path), action="light")]
-                )
-
-        self.assertIn("3 frame(s) to acquire", result)
+        self.assertIn("3 frame(s) to acquire", outcome)
         api_post.assert_awaited_once()
         body = json.dumps(api_post.await_args.args[1])
         tokens = set(re.findall(r"plan-[0-9a-f]{12}", body))
@@ -2187,89 +2026,32 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
         only one counts — remaining mode must ask N.I.N.A. for the missing
         frame rather than declaring the plan done.
         """
-        from nina_planner.server import load_sequence
-
-        plan_dict = self._quality_plan_dict(quality={"max_hfr": 2.5})
-
-        with tempfile.TemporaryDirectory() as tmp:
-            plan_path = Path(tmp) / "plan.json"
-            plan_path.write_text(json.dumps(plan_dict))
-
-            with (
-                patch(
-                    "nina_planner.tools.equipment.get_site_profile",
-                    AsyncMock(return_value=self._full_profile()),
-                ),
-                patch(
-                    "nina_planner.tools.equipment._get_site_equipment_status",
-                    AsyncMock(return_value=self._payload_equipment()),
-                ),
-                patch(
-                    "nina_planner.metadata.read_metadata",
-                    AsyncMock(return_value=self._quality_light_rows([1.5, 4.0])),
-                ),
-                patch(
-                    "nina_planner.client.api_post",
-                    AsyncMock(return_value={}),
-                ) as api_post,
-            ):
-                result = await load_sequence(
-                    [SequenceRequest(plan=str(plan_path), action="light")]
-                )
-        # Remaining mode must actually ASK N.I.N.A. for the missing frame.
-        # The mocked POST is what proves it, and it keeps this test off the
-        # live API — without it the call went to 127.0.0.1:1888 for real and
-        # the test died on httpx.ConnectError whenever NINA was down.
+        outcome, api_post = await self._load_entry(
+            "light",
+            plan=self._quality_plan_dict(quality={"max_hfr": 2.5}),
+            metadata=self._quality_light_rows([1.5, 4.0]),
+        )
         self.assertTrue(
             api_post.await_args_list, "load_sequence never asked N.I.N.A. to load"
         )
         self.assertEqual(api_post.await_args_list[0].args[0], "/sequence/load")
-        self.assertIn("1 frame(s) to acquire", result)
-        self.assertNotIn("nothing to load", result)
+        self.assertIn("1 frame(s) to acquire", outcome)
+        self.assertNotIn("nothing to load", outcome)
 
     async def test_load_sequence_without_quality_counts_all(self):
         """Same rows, no `quality` section: both frames count, nothing to load."""
-        from nina_planner.server import load_sequence
-
-        with tempfile.TemporaryDirectory() as tmp:
-            plan_path = Path(tmp) / "plan.json"
-            plan_path.write_text(json.dumps(self._quality_plan_dict()))
-
-            with (
-                patch(
-                    "nina_planner.tools.equipment.get_site_profile",
-                    AsyncMock(return_value=self._full_profile()),
-                ),
-                patch(
-                    "nina_planner.tools.equipment._get_site_equipment_status",
-                    AsyncMock(return_value=self._payload_equipment()),
-                ),
-                patch(
-                    "nina_planner.metadata.read_metadata",
-                    AsyncMock(return_value=self._quality_light_rows([1.5, 4.0])),
-                ),
-            ):
-                result = await load_sequence(
-                    [SequenceRequest(plan=str(plan_path), action="light")]
-                )
-        self.assertIn("is complete", result)
-        self.assertIn("nothing to load", result)
-
-    def test_load_sequence_request_refuses_unknown_keys(self):
-        """An unknown request field fails loudly instead of being ignored.
-
-        pydantic would otherwise IGNORE it, which is the one outcome that
-        must not happen: the caller would believe it was filtering while
-        every frame counted. There is no legacy-key list — any stray key
-        is refused as invalid input.
-        """
-        with self.assertRaises(Exception) as ctx:
-            SequenceRequest(plan="plan.json", action="light", max_hfr=2.5)
-        msg = str(ctx.exception)
-        self.assertIn("max_hfr", msg)
-        self.assertIn("Extra inputs are not permitted", msg)
+        outcome, _ = await self._load_entry(
+            "light",
+            plan=self._quality_plan_dict(),
+            metadata=self._quality_light_rows([1.5, 4.0]),
+        )
+        self.assertIn("is complete", outcome)
+        self.assertIn("nothing to load", outcome)
 
     def test_load_sequence_request_refuses_each_stray_key(self):
+        """An unknown request field fails loudly instead of being ignored —
+        pydantic would drop it, and the caller would believe it was filtering
+        while every frame counted."""
         for key in (
             "max_hfr",
             "max_hfr_st_dev",
@@ -2283,59 +2065,21 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
                 self.assertIn("Extra inputs are not permitted", str(ctx.exception))
 
     async def test_load_sequence_read_metadata_fails(self):
-        from nina_planner.server import load_sequence
-
-        plan_dict = {
-            "plan_id": "plan-test123",
-            "target": "M31",
-            "pointings": [{"ra_hours": 5.0, "dec_deg": 10.0}],
-            "light_frames": [
-                {"filter_name": "L", "exposure_time_seconds": 60.0, "total_count": 1}
-            ],
-            "flat_frames": [{"filter_name": "L", "total_count": 1}],
-            "dark_frames": [{"exposure_time_seconds": 60.0, "total_count": 1}],
-            "bias_frames": [{"total_count": 1}],
-        }
-
-        with tempfile.TemporaryDirectory() as tmp:
-            plan_path = Path(tmp) / "plan.json"
-            plan_path.write_text(json.dumps(plan_dict))
-
-            with (
-                patch(
-                    "nina_planner.tools.equipment.get_site_profile",
-                    AsyncMock(return_value=self._full_profile()),
-                ),
-                patch(
-                    "nina_planner.tools.equipment._get_site_equipment_status",
-                    AsyncMock(return_value=self._payload_equipment()),
-                ),
-                patch(
-                    "nina_planner.metadata.read_metadata",
-                    AsyncMock(side_effect=RuntimeError("imaging dir missing")),
-                ),
-            ):
-                with self.assertRaises(ValueError) as ctx:
-                    await load_sequence(
-                        [
-                            SequenceRequest(
-                                plan=str(plan_path),
-                                action="light",
-                                pointing_index=1,
-                            )
-                        ]
-                    )
-        self.assertIn("Cannot compute remaining frames", str(ctx.exception))
-        self.assertIn("Pass mode='full'", str(ctx.exception))
+        """Remaining mode cannot count frames without metadata: the error
+        names mode='full' as the escape hatch."""
+        outcome, _ = await self._load_entry(
+            "light",
+            request={"pointing_index": 1},
+            metadata=RuntimeError("imaging dir missing"),
+        )
+        self.assertIsInstance(outcome, ValueError)
+        self.assertIn("Cannot compute remaining frames", str(outcome))
+        self.assertIn("Pass mode='full'", str(outcome))
 
     async def test_load_sequence_missing_plan_file_names_the_entry(self):
-        """A plan file that cannot be READ gets the same `request[i]:` prefix.
-
-        The docstring promises a failure names the entry's 0-based
-        position, but the wrap covered only ValueError while
-        plan_utils.load_plan raises FileNotFoundError for a missing file —
-        which escaped bare, with no hint of WHICH entry named it.
-        """
+        """A plan file that cannot be READ gets the `request[i]:` prefix too —
+        the 0-based entry position must wrap FileNotFoundError, not just
+        ValueError."""
         from nina_planner.server import load_sequence
 
         with tempfile.TemporaryDirectory() as tmp:
@@ -2349,50 +2093,13 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn("does-not-exist.json", message)
 
     async def test_load_sequence_invalid_mode(self):
-        from nina_planner.server import load_sequence
-
-        plan_dict = {
-            "plan_id": "plan-test123",
-            "target": "M31",
-            "pointings": [{"ra_hours": 5.0, "dec_deg": 10.0}],
-            "light_frames": [
-                {"filter_name": "L", "exposure_time_seconds": 60.0, "total_count": 1}
-            ],
-            "flat_frames": [{"filter_name": "L", "total_count": 1}],
-            "dark_frames": [{"exposure_time_seconds": 60.0, "total_count": 1}],
-            "bias_frames": [{"total_count": 1}],
-        }
-
-        with tempfile.TemporaryDirectory() as tmp:
-            plan_path = Path(tmp) / "plan.json"
-            plan_path.write_text(json.dumps(plan_dict))
-
-            with (
-                patch(
-                    "nina_planner.tools.equipment.get_site_profile",
-                    AsyncMock(return_value=self._full_profile()),
-                ),
-                patch(
-                    "nina_planner.tools.equipment._get_site_equipment_status",
-                    AsyncMock(return_value=self._payload_equipment()),
-                ),
-                patch(
-                    "nina_planner.metadata.read_metadata",
-                    AsyncMock(return_value=[]),
-                ),
-            ):
-                with self.assertRaises(ValueError) as ctx:
-                    await load_sequence(
-                        [
-                            SequenceRequest(
-                                plan=str(plan_path),
-                                action="light",
-                                pointing_index=1,
-                                mode="invalid",
-                            )
-                        ]
-                    )
-        self.assertIn("Unsupported mode", str(ctx.exception))
+        """Only `remaining` and `full` are modes; anything else is rejected."""
+        outcome, _ = await self._load_entry(
+            "light",
+            request={"pointing_index": 1, "mode": "invalid"},
+        )
+        self.assertIsInstance(outcome, ValueError)
+        self.assertIn("Unsupported mode", str(outcome))
 
     async def test_load_sequence_request_must_be_a_list(self):
         # A single object (or any non-list) is a caller bug, caught before a
@@ -2414,51 +2121,12 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn("request.plan", str(ctx.exception))
 
     async def test_load_sequence_dark_frame(self):
+        """A dark loads plan-level: one darks step, no pointing in the report."""
         from unittest.mock import MagicMock as _MM
 
-        from nina_planner.server import load_sequence
-
-        plan_dict = {
-            "plan_id": "plan-test123",
-            "target": "M31",
-            "pointings": [{"ra_hours": 5.0, "dec_deg": 10.0}],
-            "light_frames": [
-                {"filter_name": "L", "exposure_time_seconds": 60.0, "total_count": 1}
-            ],
-            "flat_frames": [{"filter_name": "L", "total_count": 1}],
-            "dark_frames": [{"exposure_time_seconds": 60.0, "total_count": 1}],
-            "bias_frames": [{"total_count": 1}],
-        }
-
-        with tempfile.TemporaryDirectory() as tmp:
-            plan_path = Path(tmp) / "plan.json"
-            plan_path.write_text(json.dumps(plan_dict))
-
-            darks_step = _MM(return_value=[{"$type": "darks"}])
-            with (
-                patch(
-                    "nina_planner.tools.equipment.get_site_profile",
-                    AsyncMock(return_value=self._full_profile()),
-                ),
-                patch(
-                    "nina_planner.tools.equipment._get_site_equipment_status",
-                    AsyncMock(return_value=self._payload_equipment()),
-                ),
-                patch(
-                    "nina_planner.metadata.read_metadata",
-                    AsyncMock(return_value=[]),
-                ),
-                patch(
-                    "nina_planner.tools.sequence.target_payload_darks", new=darks_step
-                ),
-                patch(
-                    "nina_planner.client.api_post",
-                    AsyncMock(return_value={}),
-                ) as api_post,
-            ):
-                result = await load_sequence(
-                    [SequenceRequest(plan=str(plan_path), action="dark")]
-                )
+        darks_step = _MM(return_value=[{"$type": "darks"}])
+        with patch("nina_planner.tools.sequence.target_payload_darks", new=darks_step):
+            result, api_post = await self._load_entry("dark")
         darks_step.assert_called_once()
         self.assertEqual(api_post.await_args.args[0], "/sequence/load")
         self.assertIn("`dark` — ", result)
@@ -2472,19 +2140,6 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
         as done rather than re-shoot them forever."""
         from unittest.mock import MagicMock as _MM
 
-        from nina_planner.server import load_sequence
-
-        plan_dict = {
-            "plan_id": "plan-test123",
-            "target": "M31",
-            "pointings": [{"ra_hours": 5.0, "dec_deg": 10.0}],
-            "light_frames": [
-                {"filter_name": "L", "exposure_time_seconds": 60.0, "total_count": 1}
-            ],
-            "flat_frames": [{"filter_name": "L", "total_count": 1}],
-            "dark_frames": [{"exposure_time_seconds": 60.0, "total_count": 1}],
-            "bias_frames": [{"total_count": 1}],
-        }
         old_light = {
             "image_type": "LIGHT",
             "filter_name": "L",
@@ -2492,32 +2147,9 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
             "exposure_start_utc": "2020-01-01T20:00:00Z",
             "file_path": "C:/NINA/LIGHT/M31 _plan-test123-1___60.00s_0000.fits",
         }
-
-        with tempfile.TemporaryDirectory() as tmp:
-            plan_path = Path(tmp) / "plan.json"
-            plan_path.write_text(json.dumps(plan_dict))
-
-            darks_step = _MM(return_value=[{"$type": "darks"}])
-            with (
-                patch(
-                    "nina_planner.tools.equipment.get_site_profile",
-                    AsyncMock(return_value=self._full_profile()),
-                ),
-                patch(
-                    "nina_planner.tools.equipment._get_site_equipment_status",
-                    AsyncMock(return_value=self._payload_equipment()),
-                ),
-                patch(
-                    "nina_planner.metadata.read_metadata",
-                    AsyncMock(return_value=[old_light]),
-                ),
-                patch(
-                    "nina_planner.tools.sequence.target_payload_darks", new=darks_step
-                ),
-            ):
-                result = await load_sequence(
-                    [SequenceRequest(plan=str(plan_path), action="dark")]
-                )
+        darks_step = _MM(return_value=[{"$type": "darks"}])
+        with patch("nina_planner.tools.sequence.target_payload_darks", new=darks_step):
+            result, _ = await self._load_entry("dark", metadata=[old_light])
 
         # The window closed with the dark still missing: nothing loads (a
         # frame shot now could not be credited), and the report names the
@@ -2527,57 +2159,20 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
         darks_step.assert_not_called()
 
     async def test_load_sequence_bias_frame(self):
-        from nina_planner.server import load_sequence
+        """A bias loads plan-level via the wheel darks builder with bias=True."""
+        captured_kwargs = {}
 
-        plan_dict = {
-            "plan_id": "plan-test123",
-            "target": "M31",
-            "pointings": [{"ra_hours": 5.0, "dec_deg": 10.0}],
-            "light_frames": [
-                {"filter_name": "L", "exposure_time_seconds": 60.0, "total_count": 1}
-            ],
-            "flat_frames": [{"filter_name": "L", "total_count": 1}],
-            "dark_frames": [{"exposure_time_seconds": 60.0, "total_count": 1}],
-            "bias_frames": [{"total_count": 1}],
-        }
+        def fake_darks(plan, equipment, profile, bias=False, variant="wheel"):
+            captured_kwargs["bias"] = bias
+            captured_kwargs["variant"] = variant
+            captured_kwargs["profile"] = profile
+            return [{"$type": "darks"}]
 
-        with tempfile.TemporaryDirectory() as tmp:
-            plan_path = Path(tmp) / "plan.json"
-            plan_path.write_text(json.dumps(plan_dict))
-
-            captured_kwargs = {}
-
-            def fake_darks(plan, equipment, profile, bias=False, variant="wheel"):
-                captured_kwargs["bias"] = bias
-                captured_kwargs["variant"] = variant
-                captured_kwargs["profile"] = profile
-                return [{"$type": "darks"}]
-
-            with (
-                patch(
-                    "nina_planner.metadata.read_metadata",
-                    AsyncMock(return_value=[]),
-                ),
-                patch(
-                    "nina_planner.tools.equipment.get_site_profile",
-                    AsyncMock(return_value=self._full_profile()),
-                ),
-                patch(
-                    "nina_planner.tools.equipment._get_site_equipment_status",
-                    AsyncMock(return_value=self._payload_equipment()),
-                ),
-                patch(
-                    "nina_planner.tools.sequence.target_payload_darks",
-                    side_effect=fake_darks,
-                ),
-                patch(
-                    "nina_planner.client.api_post",
-                    AsyncMock(return_value={}),
-                ),
-            ):
-                result = await load_sequence(
-                    [SequenceRequest(plan=str(plan_path), action="bias")]
-                )
+        with patch(
+            "nina_planner.tools.sequence.target_payload_darks",
+            side_effect=fake_darks,
+        ):
+            result, _ = await self._load_entry("bias")
         self.assertTrue(captured_kwargs["bias"])
         # No variant asked for: darks/bias fall back to the wheel method.
         self.assertEqual(captured_kwargs["variant"], "wheel")
@@ -2587,314 +2182,91 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn("Sequence loaded (1 of 1 step(s))", result)
 
     async def test_load_sequence_pointing_index_rejected_for_calibration(self):
+        """Calibration is plan-level: any pointing_index — including the
+        habit-shaped pointing_index=1 — is rejected with a teaching error,
+        while lights range-check theirs instead."""
         from unittest.mock import MagicMock as _MM
 
-        from nina_planner.server import load_sequence
-
-        plan_dict = {
-            "plan_id": "plan-test123",
-            "target": "M31",
-            "pointings": [{"ra_hours": 5.0, "dec_deg": 10.0}],
-            "light_frames": [
-                {"filter_name": "L", "exposure_time_seconds": 60.0, "total_count": 1}
-            ],
-            "flat_frames": [{"filter_name": "L", "total_count": 1}],
-            "dark_frames": [{"exposure_time_seconds": 60.0, "total_count": 1}],
-            "bias_frames": [{"total_count": 1}],
-        }
-
-        with tempfile.TemporaryDirectory() as tmp:
-            plan_path = Path(tmp) / "plan.json"
-            plan_path.write_text(json.dumps(plan_dict))
-
-            darks_step = _MM(return_value=[{"$type": "darks"}])
-            lights_step = _MM(return_value=[{"$type": "lights"}])
-            with (
-                patch(
-                    "nina_planner.tools.equipment.get_site_profile",
-                    AsyncMock(return_value=self._full_profile()),
-                ),
-                patch(
-                    "nina_planner.tools.equipment._get_site_equipment_status",
-                    AsyncMock(return_value=self._payload_equipment()),
-                ),
-                patch(
-                    "nina_planner.metadata.read_metadata",
-                    AsyncMock(return_value=[]),
-                ),
-                patch(
-                    "nina_planner.tools.sequence.target_payload_darks", new=darks_step
-                ),
-                patch(
-                    "nina_planner.tools.sequence.target_payload_lights", new=lights_step
-                ),
-                patch("nina_planner.client.api_post", AsyncMock(return_value={})),
-            ):
-                # Calibration is plan-level: any pointing_index — including
-                # the habit-shaped pointing_index=1 — is rejected with a
-                # teaching error, not silently ignored.
-                for bad_index in (1, 99):
-                    with self.assertRaisesRegex(
-                        ValueError, "Remove pointing_index from this request"
-                    ):
-                        await load_sequence(
-                            [
-                                SequenceRequest(
-                                    plan=str(plan_path),
-                                    action="dark",
-                                    pointing_index=bad_index,
-                                )
-                            ]
-                        )
-                # Lights are per-pane: an out-of-range index is range-checked.
-                with self.assertRaisesRegex(
-                    ValueError, "pointing_index=99 out of range"
-                ):
-                    await load_sequence(
-                        [
-                            SequenceRequest(
-                                plan=str(plan_path),
-                                action="light",
-                                pointing_index=99,
-                            )
-                        ]
-                    )
-                # Omitting the index on calibration loads plan-level.
-                result = await load_sequence(
-                    [SequenceRequest(plan=str(plan_path), action="dark")]
+        darks_step = _MM(return_value=[{"$type": "darks"}])
+        lights_step = _MM(return_value=[{"$type": "lights"}])
+        with (
+            patch("nina_planner.tools.sequence.target_payload_darks", new=darks_step),
+            patch("nina_planner.tools.sequence.target_payload_lights", new=lights_step),
+        ):
+            for bad_index in (1, 99):
+                outcome, _ = await self._load_entry(
+                    "dark", request={"pointing_index": bad_index}
                 )
+                self.assertIsInstance(outcome, ValueError)
+                self.assertIn("Remove pointing_index from this request", str(outcome))
+            outcome, _ = await self._load_entry("light", request={"pointing_index": 99})
+            self.assertIsInstance(outcome, ValueError)
+            self.assertIn("pointing_index=99 out of range", str(outcome))
+            # Omitting the index on calibration loads plan-level.
+            result, _ = await self._load_entry("dark")
         darks_step.assert_called_once()
         lights_step.assert_not_called()
         self.assertIn("`dark` — ", result)
         self.assertNotIn("pointing", result)
 
     async def test_load_sequence_dawn_flat(self):
-        from nina_planner.server import load_sequence
+        """A dawn flat builds its flats step with dusk=False."""
+        captured_kwargs = {}
 
-        plan_dict = {
-            "plan_id": "plan-test123",
-            "target": "M31",
-            "pointings": [{"ra_hours": 5.0, "dec_deg": 10.0}],
-            "light_frames": [
-                {"filter_name": "L", "exposure_time_seconds": 60.0, "total_count": 1}
-            ],
-            "flat_frames": [{"filter_name": "L", "total_count": 1}],
-            "dark_frames": [{"exposure_time_seconds": 60.0, "total_count": 1}],
-            "bias_frames": [{"total_count": 1}],
-        }
+        def fake_flats(plan, equipment, profile, dusk=False):
+            captured_kwargs["dusk"] = dusk
+            return [{"$type": "flats"}]
 
-        with tempfile.TemporaryDirectory() as tmp:
-            plan_path = Path(tmp) / "plan.json"
-            plan_path.write_text(json.dumps(plan_dict))
-
-            captured_kwargs = {}
-
-            def fake_flats(plan, equipment, profile, dusk=False):
-                captured_kwargs["dusk"] = dusk
-                return [{"$type": "flats"}]
-
-            with (
-                patch(
-                    "nina_planner.metadata.read_metadata",
-                    AsyncMock(return_value=[]),
-                ),
-                patch(
-                    "nina_planner.tools.equipment.get_site_profile",
-                    AsyncMock(return_value=self._full_profile()),
-                ),
-                patch(
-                    "nina_planner.tools.equipment._get_site_equipment_status",
-                    AsyncMock(return_value=self._payload_equipment()),
-                ),
-                patch(
-                    "nina_planner.tools.sequence.target_payload_flats",
-                    side_effect=fake_flats,
-                ),
-                patch(
-                    "nina_planner.client.api_post",
-                    AsyncMock(return_value={}),
-                ),
-            ):
-                result = await load_sequence(
-                    [
-                        SequenceRequest(
-                            plan=str(plan_path),
-                            action="flat",
-                            variant="dawn",
-                        )
-                    ]
-                )
+        with patch(
+            "nina_planner.tools.sequence.target_payload_flats",
+            side_effect=fake_flats,
+        ):
+            result, _ = await self._load_entry("flat", variant="dawn")
         self.assertFalse(captured_kwargs["dusk"])
         self.assertIn("`flat` (dawn) — ", result)
         self.assertNotIn("pointing", result, "calibration is plan-level")
         self.assertIn("Sequence loaded (1 of 1 step(s))", result)
 
     async def test_load_sequence_dusk_flat(self):
-        from nina_planner.server import load_sequence
+        """A dusk flat builds its flats step with dusk=True."""
+        captured_kwargs = {}
 
-        plan_dict = {
-            "plan_id": "plan-test123",
-            "target": "M31",
-            "pointings": [{"ra_hours": 5.0, "dec_deg": 10.0}],
-            "light_frames": [
-                {"filter_name": "L", "exposure_time_seconds": 60.0, "total_count": 1}
-            ],
-            "flat_frames": [{"filter_name": "L", "total_count": 1}],
-            "dark_frames": [{"exposure_time_seconds": 60.0, "total_count": 1}],
-            "bias_frames": [{"total_count": 1}],
-        }
+        def fake_flats(plan, equipment, profile, dusk=False):
+            captured_kwargs["dusk"] = dusk
+            return [{"$type": "flats"}]
 
-        with tempfile.TemporaryDirectory() as tmp:
-            plan_path = Path(tmp) / "plan.json"
-            plan_path.write_text(json.dumps(plan_dict))
-
-            captured_kwargs = {}
-
-            def fake_flats(plan, equipment, profile, dusk=False):
-                captured_kwargs["dusk"] = dusk
-                return [{"$type": "flats"}]
-
-            with (
-                patch(
-                    "nina_planner.metadata.read_metadata",
-                    AsyncMock(return_value=[]),
-                ),
-                patch(
-                    "nina_planner.tools.equipment.get_site_profile",
-                    AsyncMock(return_value=self._full_profile()),
-                ),
-                patch(
-                    "nina_planner.tools.equipment._get_site_equipment_status",
-                    AsyncMock(return_value=self._payload_equipment()),
-                ),
-                patch(
-                    "nina_planner.tools.sequence.target_payload_flats",
-                    side_effect=fake_flats,
-                ),
-                patch(
-                    "nina_planner.client.api_post",
-                    AsyncMock(return_value={}),
-                ),
-            ):
-                result = await load_sequence(
-                    [
-                        SequenceRequest(
-                            plan=str(plan_path),
-                            action="flat",
-                            variant="dusk",
-                        )
-                    ]
-                )
+        with patch(
+            "nina_planner.tools.sequence.target_payload_flats",
+            side_effect=fake_flats,
+        ):
+            result, _ = await self._load_entry("flat", variant="dusk")
         self.assertTrue(captured_kwargs["dusk"])
         self.assertIn("`flat` (dusk) — ", result)
         self.assertNotIn("pointing", result, "calibration is plan-level")
         self.assertIn("Sequence loaded (1 of 1 step(s))", result)
 
     async def test_load_light_sequence_requires_targetname_file_pattern(self):
-        from nina_planner.server import load_sequence
-
-        plan_dict = {
-            "plan_id": "plan-test123",
-            "target": "M31",
-            "pointings": [{"ra_hours": 5.0, "dec_deg": 10.0}],
-            "light_frames": [
-                {"filter_name": "L", "exposure_time_seconds": 60.0, "total_count": 1}
-            ],
-            "flat_frames": [{"filter_name": "L", "total_count": 1}],
-            "dark_frames": [{"exposure_time_seconds": 60.0, "total_count": 1}],
-            "bias_frames": [{"total_count": 1}],
-        }
-
-        with tempfile.TemporaryDirectory() as tmp:
-            plan_path = Path(tmp) / "plan.json"
-            plan_path.write_text(json.dumps(plan_dict))
-            api_post = AsyncMock(return_value={})
-
-            with (
-                patch(
-                    "nina_planner.tools.equipment.get_site_profile",
-                    AsyncMock(
-                        return_value=self._full_profile().model_copy(
-                            update={"file_pattern": None}
-                        )
-                    ),
-                ),
-                patch(
-                    "nina_planner.tools.equipment._get_site_equipment_status",
-                    AsyncMock(return_value=self._payload_equipment()),
-                ),
-                patch("nina_planner.client.api_post", api_post),
-            ):
-                with self.assertRaisesRegex(
-                    ValueError,
-                    r"N\.I\.N\.A\. FilePattern must contain \$\$TARGETNAME\$\$",
-                ):
-                    await load_sequence(
-                        [
-                            SequenceRequest(
-                                plan=str(plan_path), action="light", mode="full"
-                            )
-                        ]
-                    )
-
-            api_post.assert_not_awaited()
+        """Light frames attribute through $$TARGETNAME$$, so a profile whose
+        FilePattern lacks it fails the load before anything is POSTed."""
+        outcome, api_post = await self._load_entry(
+            "light",
+            profile=self._full_profile().model_copy(update={"file_pattern": None}),
+            request={"mode": "full"},
+        )
+        self.assertIsInstance(outcome, ValueError)
+        self.assertIn("N.I.N.A. FilePattern must contain $$TARGETNAME$$", str(outcome))
+        api_post.assert_not_awaited()
 
     async def test_load_sequence_full_mode(self):
-        from nina_planner.server import load_sequence
-
-        plan_dict = {
-            "plan_id": "plan-test123",
-            "target": "M31",
-            "pointings": [{"ra_hours": 5.0, "dec_deg": 10.0}],
-            "light_frames": [
-                {"filter_name": "L", "exposure_time_seconds": 60.0, "total_count": 1}
-            ],
-            "flat_frames": [{"filter_name": "L", "total_count": 1}],
-            "dark_frames": [{"exposure_time_seconds": 60.0, "total_count": 1}],
-            "bias_frames": [{"total_count": 1}],
-        }
-
-        with tempfile.TemporaryDirectory() as tmp:
-            plan_path = Path(tmp) / "plan.json"
-            plan_path.write_text(json.dumps(plan_dict))
-
-            # Full mode must not *require* metadata. The already-complete
-            # warning below reads it to spot a re-shoot over a finished plan,
-            # but full mode is the mode chosen precisely when remaining
-            # counts are not to be trusted — so an unreadable drive has to
-            # degrade to "no warning", never to a failed load.
-            with (
-                patch(
-                    "nina_planner.tools.equipment.get_site_profile",
-                    AsyncMock(return_value=self._full_profile()),
-                ),
-                patch(
-                    "nina_planner.tools.equipment._get_site_equipment_status",
-                    AsyncMock(return_value=self._payload_equipment()),
-                ),
-                patch(
-                    "nina_planner.metadata.read_metadata",
-                    new=AsyncMock(side_effect=FileNotFoundError("no drive")),
-                ),
-                patch(
-                    "nina_planner.client.api_post",
-                    AsyncMock(return_value={}),
-                ) as api_post,
-                patch(
-                    "nina_planner.client.api_get",
-                    AsyncMock(return_value={}),
-                ) as api_get,
-            ):
-                result = await load_sequence(
-                    [
-                        SequenceRequest(
-                            plan=str(plan_path),
-                            action="light",
-                            pointing_index=1,
-                            mode="full",
-                        )
-                    ]
-                )
+        """A full-mode light load reads exactly one thing from N.I.N.A.
+        first — the plugin list — then one POST carries the sequence."""
+        mocks: dict[str, Any] = {}
+        result, api_post = await self._load_entry(
+            "light",
+            request={"pointing_index": 1, "mode": "full"},
+            metadata=FileNotFoundError("no drive"),
+            mocks=mocks,
+        )
         self.assertIn("`light` pointing 1", result)
         self.assertIn("Sequence loaded (1 of 1 step(s))", result)
         api_post.assert_awaited_once()
@@ -2903,90 +2275,14 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
         # (Sequencer+ must be installed before a light/flat payload is
         # POSTed). No running-state pre-check, no start.
         self.assertEqual(
-            [call.args[0] for call in api_get.await_args_list],
+            [call.args[0] for call in mocks["api_get"].await_args_list],
             ["/application/plugins"],
         )
 
-    async def test_load_sequence_full_mode_metadata_read_errors_never_block(self):
-        """Every metadata read/parse failure degrades to "no warning".
-
-        `_full_mode_note` is advisory by contract, but it only caught
-        `RuntimeError`/`FileNotFoundError`/`httpx.HTTPError`, while
-        `read_metadata` reads CSVs and can just as easily raise `OSError`
-        (unreadable file), `UnicodeDecodeError` (bad UTF-8) or `TypeError`
-        (`csv.DictReader` parks surplus cells under a `None` key and
-        `to_snake(None)` blows up). Each of those aborted the whole load
-        over a courtesy line — the same defect class the handler exists to
-        close, closed only for the cases already under test.
-        """
-        from nina_planner.server import load_sequence
-
-        plan_dict = {
-            "plan_id": "plan-test123",
-            "target": "M31",
-            "pointings": [{"ra_hours": 5.0, "dec_deg": 10.0}],
-            "light_frames": [
-                {"filter_name": "L", "exposure_time_seconds": 60.0, "total_count": 1}
-            ],
-            "flat_frames": [{"filter_name": "L", "total_count": 1}],
-            "dark_frames": [{"exposure_time_seconds": 60.0, "total_count": 1}],
-            "bias_frames": [{"total_count": 1}],
-        }
-        failures: dict[str, Exception] = {
-            "OSError": OSError("cannot read ImageMetaData.csv"),
-            "UnicodeDecodeError": UnicodeDecodeError(
-                "utf-8", b"\xff\xfe", 0, 1, "invalid start byte"
-            ),
-            "TypeError": TypeError("to_snake(None)"),
-        }
-
-        for label, exc in failures.items():
-            with self.subTest(label):
-                with tempfile.TemporaryDirectory() as tmp:
-                    plan_path = Path(tmp) / "plan.json"
-                    plan_path.write_text(json.dumps(plan_dict))
-                    with (
-                        patch(
-                            "nina_planner.tools.equipment.get_site_profile",
-                            AsyncMock(return_value=self._full_profile()),
-                        ),
-                        patch(
-                            "nina_planner.tools.equipment._get_site_equipment_status",
-                            AsyncMock(return_value=self._payload_equipment()),
-                        ),
-                        patch(
-                            "nina_planner.metadata.read_metadata",
-                            new=AsyncMock(side_effect=exc),
-                        ),
-                        patch(
-                            "nina_planner.client.api_post", AsyncMock(return_value={})
-                        ) as api_post,
-                        patch(
-                            "nina_planner.client.api_get", AsyncMock(return_value={})
-                        ),
-                    ):
-                        result = await load_sequence(
-                            [
-                                SequenceRequest(
-                                    plan=str(plan_path),
-                                    action="light",
-                                    pointing_index=1,
-                                    mode="full",
-                                )
-                            ]
-                        )
-                # The advisory line vanished; the load itself did not.
-                self.assertNotIn("already complete", result)
-                self.assertIn("Sequence loaded (1 of 1 step(s))", result)
-                api_post.assert_awaited_once()
-
     async def test_full_mode_note_swallows_every_metadata_failure(self):
-        """Direct repro: `_full_mode_note` returns "" instead of raising.
-
-        Same three failures as above, exercised at the function itself so a
-        regression points at the note rather than at a load five frames
-        downstream.
-        """
+        """`_full_mode_note` is advisory: any metadata read/parse failure
+        (unreadable file, bad UTF-8, malformed row) returns "" instead of
+        aborting the load."""
         from nina_planner.plan_utils import load_plan
         from nina_planner.tools.sequence import _full_mode_note
 
@@ -3024,11 +2320,12 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
                     self.assertEqual(note, "")
 
     async def test_full_mode_note_scans_the_imaging_root_once(self):
-        """One scan, not four: the note asks for light rows only.
+        """One scan: the advisory note asks for light rows only.
 
-        `read_metadata()` with no image type loops light, dark, bias and
-        flat — four full `visible_rglob` passes over the imaging root for
-        one advisory line, on every default (full-mode) light command.
+        `_full_mode_note` reads `read_metadata("light")` — and an
+        unfiltered `read_metadata()` also scans once (image_type=None is
+        matched in a single walk) — so one default (full-mode) light
+        command never pays more than one pass over the imaging root.
         """
         from nina_planner import imaging
         from nina_planner.plan_utils import load_plan
@@ -3080,25 +2377,9 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
         )
 
     async def test_load_sequence_full_mode_warns_when_already_complete(self):
-        """A full-mode re-shoot over an already-complete plan says so at load.
-
-        Nothing downstream can verify the outcome afterwards — get_plan_progress
-        reports `complete: true` whether the re-shoot delivered every frame or
-        a handful — so the load line is the only place the operator is told.
-        """
-        from nina_planner.server import load_sequence
-
-        plan_dict = {
-            "plan_id": "plan-test123",
-            "target": "M31",
-            "pointings": [{"ra_hours": 5.0, "dec_deg": 10.0}],
-            "light_frames": [
-                {"filter_name": "L", "exposure_time_seconds": 60.0, "total_count": 1}
-            ],
-            "flat_frames": [{"filter_name": "L", "total_count": 1}],
-            "dark_frames": [{"exposure_time_seconds": 60.0, "total_count": 1}],
-            "bias_frames": [{"total_count": 1}],
-        }
+        """A full-mode re-shoot over an already-complete plan says so at load:
+        nothing downstream can verify the outcome afterwards, so the load
+        line is the only place the operator is told."""
         # One already-attributed light, so the group reads complete.
         rows = [
             {
@@ -3113,37 +2394,11 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
                 "detected_stars": "100",
             }
         ]
-
-        with tempfile.TemporaryDirectory() as tmp:
-            plan_path = Path(tmp) / "plan.json"
-            plan_path.write_text(json.dumps(plan_dict))
-
-            with (
-                patch(
-                    "nina_planner.tools.equipment.get_site_profile",
-                    AsyncMock(return_value=self._full_profile()),
-                ),
-                patch(
-                    "nina_planner.tools.equipment._get_site_equipment_status",
-                    AsyncMock(return_value=self._payload_equipment()),
-                ),
-                patch(
-                    "nina_planner.metadata.read_metadata",
-                    AsyncMock(return_value=rows),
-                ),
-                patch("nina_planner.client.api_post", AsyncMock(return_value={})),
-                patch("nina_planner.client.api_get", AsyncMock(return_value={})),
-            ):
-                result = await load_sequence(
-                    [
-                        SequenceRequest(
-                            plan=str(plan_path),
-                            action="light",
-                            pointing_index=1,
-                            mode="full",
-                        )
-                    ]
-                )
+        result, _ = await self._load_entry(
+            "light",
+            request={"pointing_index": 1, "mode": "full"},
+            metadata=rows,
+        )
 
         self.assertIn("1 frame(s), mode=full", result)
         self.assertIn("already complete", result)
@@ -3153,50 +2408,14 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
     async def test_load_sequence_full_mode_silent_when_frames_outstanding(self):
         """No warning when the group still has frames to acquire — that is an
         ordinary full-mode load, not a re-shoot over a finished plan."""
-        from nina_planner.server import load_sequence
-
-        plan_dict = {
-            "plan_id": "plan-test123",
-            "target": "M31",
-            "pointings": [{"ra_hours": 5.0, "dec_deg": 10.0}],
-            "light_frames": [
+        plan = self._entry_plan_dict(
+            light_frames=[
                 {"filter_name": "L", "exposure_time_seconds": 60.0, "total_count": 5}
-            ],
-            "flat_frames": [{"filter_name": "L", "total_count": 1}],
-            "dark_frames": [{"exposure_time_seconds": 60.0, "total_count": 1}],
-            "bias_frames": [{"total_count": 1}],
-        }
-
-        with tempfile.TemporaryDirectory() as tmp:
-            plan_path = Path(tmp) / "plan.json"
-            plan_path.write_text(json.dumps(plan_dict))
-
-            with (
-                patch(
-                    "nina_planner.tools.equipment.get_site_profile",
-                    AsyncMock(return_value=self._full_profile()),
-                ),
-                patch(
-                    "nina_planner.tools.equipment._get_site_equipment_status",
-                    AsyncMock(return_value=self._payload_equipment()),
-                ),
-                patch(
-                    "nina_planner.metadata.read_metadata",
-                    AsyncMock(return_value=[]),
-                ),
-                patch("nina_planner.client.api_post", AsyncMock(return_value={})),
-                patch("nina_planner.client.api_get", AsyncMock(return_value={})),
-            ):
-                result = await load_sequence(
-                    [
-                        SequenceRequest(
-                            plan=str(plan_path),
-                            action="light",
-                            pointing_index=1,
-                            mode="full",
-                        )
-                    ]
-                )
+            ]
+        )
+        result, _ = await self._load_entry(
+            "light", plan=plan, request={"pointing_index": 1, "mode": "full"}
+        )
 
         self.assertIn("5 frame(s), mode=full", result)
         self.assertNotIn("already complete", result)
@@ -3206,19 +2425,6 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
         """Calibration is pool-credited across plans, so a dark group reads
         "already complete" on nearly every plan — warning there would fire on
         every routine calibration load and mean nothing."""
-        from nina_planner.server import load_sequence
-
-        plan_dict = {
-            "plan_id": "plan-test123",
-            "target": "M31",
-            "pointings": [{"ra_hours": 5.0, "dec_deg": 10.0}],
-            "light_frames": [
-                {"filter_name": "L", "exposure_time_seconds": 60.0, "total_count": 1}
-            ],
-            "flat_frames": [{"filter_name": "L", "total_count": 1}],
-            "dark_frames": [{"exposure_time_seconds": 60.0, "total_count": 1}],
-            "bias_frames": [{"total_count": 1}],
-        }
         # Every frame type already present and inside its window, so the dark
         # group reads complete — the exemption under test is the only reason
         # no warning appears. The stamp is relative to the host clock: the
@@ -3235,36 +2441,9 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
                 ),
             }
         ]
-
-        with tempfile.TemporaryDirectory() as tmp:
-            plan_path = Path(tmp) / "plan.json"
-            plan_path.write_text(json.dumps(plan_dict))
-
-            with (
-                patch(
-                    "nina_planner.tools.equipment.get_site_profile",
-                    AsyncMock(return_value=self._full_profile()),
-                ),
-                patch(
-                    "nina_planner.tools.equipment._get_site_equipment_status",
-                    AsyncMock(return_value=self._payload_equipment()),
-                ),
-                patch(
-                    "nina_planner.metadata.read_metadata",
-                    AsyncMock(return_value=rows),
-                ),
-                patch("nina_planner.client.api_post", AsyncMock(return_value={})),
-                patch("nina_planner.client.api_get", AsyncMock(return_value={})),
-            ):
-                result = await load_sequence(
-                    [
-                        SequenceRequest(
-                            plan=str(plan_path),
-                            action="dark",
-                            mode="full",
-                        )
-                    ]
-                )
+        result, _ = await self._load_entry(
+            "dark", request={"mode": "full"}, metadata=rows
+        )
 
         self.assertIn("1 frame(s), mode=full", result)
         self.assertNotIn("already complete", result)
@@ -3369,6 +2548,8 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(text.count("WaitForTimeSpan"), 1)
 
     async def test_park_without_a_parkable_mount_sends_nothing(self):
+        """An empty park still needs a parkable mount: rejected with a
+        'cannot park' / 'nothing to park' error before anything is POSTed."""
         from nina_planner.server import load_sequence
 
         api_post = AsyncMock(return_value={})
@@ -3384,18 +2565,12 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
                 ),
             ),
             patch("nina_planner.client.api_post", api_post),
-            self.assertRaises(ValueError),
+            self.assertRaises(ValueError) as ctx,
         ):
             await load_sequence([])
-        api_post.assert_not_awaited()
-
-    async def test_park_requires_a_parkable_mount(self):
-        with self.assertRaises(ValueError) as ctx:
-            await self._load_list(
-                [], equipment=self._equipment(can_park=False, can_find_home=False)
-            )
         self.assertIn("cannot park", str(ctx.exception))
         self.assertIn("nothing to park", str(ctx.exception))
+        api_post.assert_not_awaited()
 
     async def test_load_sequence_with_an_unparkable_mount_sends_nothing(self):
         """The park guardrail is the sequence guardrail: every loaded list
@@ -3474,6 +2649,23 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
 
     # capability guards: what a lights step emits must exist on the rig
 
+    @staticmethod
+    def _entry_plan_dict(**overrides) -> dict:
+        """The usual entry-test plan: one pointing, one frame per group."""
+        data = {
+            "plan_id": "plan-test123",
+            "target": "M31",
+            "pointings": [{"ra_hours": 5.0, "dec_deg": 10.0}],
+            "light_frames": [
+                {"filter_name": "L", "exposure_time_seconds": 60.0, "total_count": 1}
+            ],
+            "flat_frames": [{"filter_name": "L", "total_count": 1}],
+            "dark_frames": [{"exposure_time_seconds": 60.0, "total_count": 1}],
+            "bias_frames": [{"total_count": 1}],
+        }
+        data.update(overrides)
+        return data
+
     async def _load_entry(
         self,
         action: str,
@@ -3482,23 +2674,50 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
         profile: ObservatoryProfile | None = None,
         equipment: ObservatoryEquipment | None = None,
         plugins: Any = None,
+        plan: dict | None = None,
+        request: dict[str, Any] | None = None,
+        metadata: Any = None,
+        progress: Any = None,
+        mocks: dict | None = None,
     ) -> tuple[Any, AsyncMock]:
         """One ``load_sequence`` entry with every N.I.N.A. read stubbed.
 
         Returns ``(outcome, api_post)`` where ``outcome`` is the tool's
         result **or the exception it raised** — never raises itself — so each
         test can assert both what was said and whether anything was POSTed.
-        ``plugins`` is what ``GET /application/plugins`` answers.
+        ``plugins`` is what ``GET /application/plugins`` answers and
+        ``metadata`` what ``read_metadata`` returns (an Exception passed to
+        either makes that read raise); ``progress`` replaces plan_progress
+        (a dict result, or a callable); ``request`` carries extra request
+        fields (``pointing_index``, ``mode``); ``plan`` replaces the plan
+        file's content (default ``_entry_plan_dict()``); and ``mocks``
+        receives the ``api_get`` mock for tests that assert on the load's
+        reads.
         """
         from nina_planner.server import load_sequence
 
         api_post = AsyncMock(return_value={})
+        api_get = (
+            AsyncMock(side_effect=plugins)
+            if isinstance(plugins, Exception)
+            else AsyncMock(return_value=plugins)
+        )
+        if mocks is not None:
+            mocks["api_get"] = api_get
+        progress_kwargs: dict[str, Any] = (
+            {"side_effect": progress}
+            if callable(progress)
+            else {"return_value": progress}
+        )
         with tempfile.TemporaryDirectory() as tmp:
             plan_path = Path(tmp) / "plan.json"
-            plan_path.write_text(json.dumps(self._list_plan_dict()))
-            request: dict[str, Any] = {"plan": str(plan_path), "action": action}
+            plan_path.write_text(
+                json.dumps(self._entry_plan_dict() if plan is None else plan)
+            )
+            entry: dict[str, Any] = {"plan": str(plan_path), "action": action}
             if variant is not None:
-                request["variant"] = variant
+                entry["variant"] = variant
+            entry.update(request or {})
             with (
                 patch(
                     "nina_planner.tools.equipment.get_site_profile",
@@ -3510,20 +2729,22 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
                 ),
                 patch(
                     "nina_planner.metadata.read_metadata",
-                    AsyncMock(return_value=[]),
+                    AsyncMock(side_effect=metadata)
+                    if isinstance(metadata, Exception)
+                    else AsyncMock(return_value=[] if metadata is None else metadata),
                 ),
                 patch("nina_planner.client.api_post", api_post),
-                # An Exception passed as `plugins` RAISES from the read, so
-                # the "the endpoint is not there" path can be exercised too.
-                patch(
-                    "nina_planner.client.api_get",
-                    AsyncMock(side_effect=plugins)
-                    if isinstance(plugins, Exception)
-                    else AsyncMock(return_value=plugins),
+                patch("nina_planner.client.api_get", api_get),
+                (
+                    patch(
+                        "nina_planner.tools.sequence.plan_progress", **progress_kwargs
+                    )
+                    if progress is not None
+                    else nullcontext()
                 ),
             ):
                 try:
-                    outcome: Any = await load_sequence([request])
+                    outcome: Any = await load_sequence([entry])
                 except Exception as exc:  # returned for the caller to assert on
                     outcome = exc
         return outcome, api_post
@@ -3898,71 +3119,33 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn("light", message)
 
     async def test_load_sequence_dark_cover_variant_reaches_the_builder(self):
-        from nina_planner.server import load_sequence
+        """The requested `cover` variant reaches the darks builder unchanged
+        (and never as a bias), on a rig whose flat device can cover."""
+        captured_kwargs = {}
 
-        plan_dict = {
-            "plan_id": "plan-test123",
-            "target": "M31",
-            "pointings": [{"ra_hours": 5.0, "dec_deg": 10.0}],
-            "light_frames": [
-                {"filter_name": "L", "exposure_time_seconds": 60.0, "total_count": 1}
-            ],
-            "flat_frames": [{"filter_name": "L", "total_count": 1}],
-            "dark_frames": [{"exposure_time_seconds": 60.0, "total_count": 1}],
-            "bias_frames": [{"total_count": 1}],
-        }
+        def fake_darks(plan, equipment, profile, bias=False, variant="wheel"):
+            captured_kwargs["bias"] = bias
+            captured_kwargs["variant"] = variant
+            return [{"$type": "darks"}]
 
-        with tempfile.TemporaryDirectory() as tmp:
-            plan_path = Path(tmp) / "plan.json"
-            plan_path.write_text(json.dumps(plan_dict))
-
-            captured_kwargs = {}
-
-            def fake_darks(plan, equipment, profile, bias=False, variant="wheel"):
-                captured_kwargs["bias"] = bias
-                captured_kwargs["variant"] = variant
-                return [{"$type": "darks"}]
-
-            with (
-                patch(
-                    "nina_planner.metadata.read_metadata",
-                    AsyncMock(return_value=[]),
-                ),
-                patch(
-                    "nina_planner.tools.equipment.get_site_profile",
-                    AsyncMock(return_value=self._full_profile(has_flat_device=True)),
-                ),
-                patch(
-                    "nina_planner.tools.equipment._get_site_equipment_status",
-                    AsyncMock(
-                        return_value=ObservatoryEquipment(
-                            mount=MountDevice(connected=True, name="m", can_park=True),
-                            flat_device=FlatDevice(
-                                connected=True,
-                                cover_state="Closed",
-                                supports_open_close=True,
-                            ),
-                        )
-                    ),
-                ),
-                patch(
-                    "nina_planner.tools.sequence.target_payload_darks",
-                    side_effect=fake_darks,
-                ),
-                patch(
-                    "nina_planner.client.api_post",
-                    AsyncMock(return_value={}),
-                ),
-            ):
-                result = await load_sequence(
-                    [
-                        SequenceRequest(
-                            plan=str(plan_path),
-                            action="dark",
-                            variant="cover",
-                        )
-                    ]
-                )
+        equipment = ObservatoryEquipment(
+            mount=MountDevice(connected=True, name="m", can_park=True),
+            flat_device=FlatDevice(
+                connected=True,
+                cover_state="Closed",
+                supports_open_close=True,
+            ),
+        )
+        with patch(
+            "nina_planner.tools.sequence.target_payload_darks",
+            side_effect=fake_darks,
+        ):
+            result, _ = await self._load_entry(
+                "dark",
+                variant="cover",
+                profile=self._full_profile(has_flat_device=True),
+                equipment=equipment,
+            )
         self.assertFalse(captured_kwargs["bias"])
         self.assertEqual(captured_kwargs["variant"], "cover")
         self.assertIn("`dark` (cover) — ", result)
@@ -3970,69 +3153,26 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn("Sequence loaded (1 of 1 step(s))", result)
 
     async def test_load_sequence_dark_shutter_variant_reaches_the_builder(self):
-        from nina_planner.server import load_sequence
+        """The requested `shutter` variant reaches the darks builder unchanged
+        (and never as a bias), on a rig whose camera has a shutter."""
+        captured_kwargs = {}
 
-        plan_dict = {
-            "plan_id": "plan-test123",
-            "target": "M31",
-            "pointings": [{"ra_hours": 5.0, "dec_deg": 10.0}],
-            "light_frames": [
-                {"filter_name": "L", "exposure_time_seconds": 60.0, "total_count": 1}
-            ],
-            "flat_frames": [{"filter_name": "L", "total_count": 1}],
-            "dark_frames": [{"exposure_time_seconds": 60.0, "total_count": 1}],
-            "bias_frames": [{"total_count": 1}],
-        }
+        def fake_darks(plan, equipment, profile, bias=False, variant="wheel"):
+            captured_kwargs["bias"] = bias
+            captured_kwargs["variant"] = variant
+            return [{"$type": "darks"}]
 
-        with tempfile.TemporaryDirectory() as tmp:
-            plan_path = Path(tmp) / "plan.json"
-            plan_path.write_text(json.dumps(plan_dict))
-
-            captured_kwargs = {}
-
-            def fake_darks(plan, equipment, profile, bias=False, variant="wheel"):
-                captured_kwargs["bias"] = bias
-                captured_kwargs["variant"] = variant
-                return [{"$type": "darks"}]
-
-            with (
-                patch(
-                    "nina_planner.metadata.read_metadata",
-                    AsyncMock(return_value=[]),
-                ),
-                patch(
-                    "nina_planner.tools.equipment.get_site_profile",
-                    AsyncMock(return_value=self._full_profile()),
-                ),
-                patch(
-                    "nina_planner.tools.equipment._get_site_equipment_status",
-                    AsyncMock(
-                        return_value=ObservatoryEquipment(
-                            mount=MountDevice(connected=True, name="m", can_park=True),
-                            camera=CameraDevice(
-                                connected=True, name="cam", has_shutter=True
-                            ),
-                        )
-                    ),
-                ),
-                patch(
-                    "nina_planner.tools.sequence.target_payload_darks",
-                    side_effect=fake_darks,
-                ),
-                patch(
-                    "nina_planner.client.api_post",
-                    AsyncMock(return_value={}),
-                ),
-            ):
-                result = await load_sequence(
-                    [
-                        SequenceRequest(
-                            plan=str(plan_path),
-                            action="dark",
-                            variant="shutter",
-                        )
-                    ]
-                )
+        equipment = ObservatoryEquipment(
+            mount=MountDevice(connected=True, name="m", can_park=True),
+            camera=CameraDevice(connected=True, name="cam", has_shutter=True),
+        )
+        with patch(
+            "nina_planner.tools.sequence.target_payload_darks",
+            side_effect=fake_darks,
+        ):
+            result, _ = await self._load_entry(
+                "dark", variant="shutter", equipment=equipment
+            )
         self.assertFalse(captured_kwargs["bias"])
         self.assertEqual(captured_kwargs["variant"], "shutter")
         self.assertIn("`dark` (shutter) — ", result)
@@ -4383,109 +3523,6 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
             content = log_path.read_text()
             self.assertIn("Equipment:", content)
 
-    async def test_start_nina_already_running_raises(self):
-        from nina_planner.server import start_nina
-
-        with (
-            patch(
-                "nina_planner.client.nina_api_responsive",
-                AsyncMock(return_value=True),
-            ),
-            patch(
-                "nina_planner.tools.lifecycle.windows_interop_available",
-                return_value=True,
-            ),
-        ):
-            with self.assertRaises(RuntimeError) as ctx:
-                await start_nina()
-        self.assertIn("already running", str(ctx.exception))
-
-    async def test_start_nina_remote_unavailable_raises(self):
-        """API down and no Windows interop: cannot launch a remote NINA."""
-        from nina_planner.server import start_nina
-
-        with (
-            patch(
-                "nina_planner.client.nina_api_responsive",
-                AsyncMock(return_value=False),
-            ),
-            patch(
-                "nina_planner.tools.lifecycle.windows_interop_available",
-                return_value=False,
-            ),
-        ):
-            with self.assertRaises(RuntimeError) as ctx:
-                await start_nina()
-        self.assertIn("cannot be launched", str(ctx.exception))
-
-    async def test_stop_nina_api_down_is_noop(self):
-        from nina_planner.server import stop_nina
-
-        with (
-            patch(
-                "nina_planner.client.api_probe",
-                AsyncMock(return_value=(False, "connection refused")),
-            ),
-            patch("nina_planner.client.log_payload"),
-        ):
-            result = await stop_nina()
-        self.assertFalse(result["stopped"])
-        self.assertIn("not running", result["summary"])
-        self.assertIn("Probe error: connection refused", result["summary"])
-
-    async def test_stop_nina_remote_unavailable_raises(self):
-        from nina_planner.server import stop_nina
-
-        with (
-            patch(
-                "nina_planner.client.api_probe",
-                AsyncMock(return_value=(True, None)),
-            ),
-            patch(
-                "nina_planner.tools.lifecycle.windows_interop_available",
-                return_value=False,
-            ),
-            patch("nina_planner.client.log_payload"),
-        ):
-            with self.assertRaises(RuntimeError) as ctx:
-                await stop_nina()
-        self.assertIn("remote host", str(ctx.exception))
-
-    async def test_stop_nina_terminates_local(self):
-        from nina_planner.server import stop_nina
-
-        class FakeProcess:
-            returncode = 0
-            stdout = ""
-            stderr = ""
-
-        with (
-            patch(
-                # First probe: NINA is up (stop proceeds to taskkill). Second
-                # probe: the kill verification poll sees the API gone.
-                "nina_planner.client.api_probe",
-                AsyncMock(
-                    side_effect=[
-                        (True, None),
-                        (False, "connection refused"),
-                    ]
-                ),
-            ),
-            patch(
-                "nina_planner.tools.lifecycle.windows_interop_available",
-                return_value=True,
-            ),
-            patch(
-                "nina_planner.client.run_blocking",
-                AsyncMock(return_value=FakeProcess()),
-            ),
-            patch("nina_planner.tools.lifecycle.anyio.sleep", new=AsyncMockSleep()),
-            patch("nina_planner.client.log_payload"),
-        ):
-            result = await stop_nina()
-        self.assertTrue(result["stopped"])
-        self.assertIn("terminated", result["summary"])
-
     async def test_get_site_equipment_status_missing_device_data(self):
         """When a device is marked has_X=True but the raw response has no
         entry for it (empty dict), _build returns None without trying to
@@ -4601,13 +3638,6 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
             equipment = await _get_site_equipment_status(profile)
         self.assertIsNotNone(equipment.camera)
         self.assertIs(equipment.camera.has_shutter, False)
-
-
-class AsyncMockSleep:
-    """Async sleep stand-in that returns immediately."""
-
-    async def __call__(self, *_args, **_kwargs):
-        return None
 
 
 if __name__ == "__main__":

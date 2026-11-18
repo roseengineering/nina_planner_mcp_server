@@ -33,44 +33,23 @@ def _fix_provider(data: dict[str, Any]) -> dict[str, Any]:
 def _add_refs(data: dict[str, Any]) -> dict[str, Any]:
     """Number every node and point each ``Parent`` at the node that holds it.
 
-    Every node keeps its ``Parent``, Sequencer+ ones included. Two attempts
-    to strip it (2026-11-15) are recorded here so nobody repeats them:
+    Two invariants, both hard-won against N.I.N.A.'s JSON.NET deserializer:
 
-    * **Stripping plugin nodes to dodge 15 ``Failed to deserialize sequence
-      entity`` errors** per light load (which emptied every exposure group
-      and would have shot zero frames) only hid the symptom: the real cause
-      was ``declare_variable`` emitting ``Parent`` *before* ``Identifier``,
-      so ``Symbol.Identifier``'s setter took its attached path and never
-      stored the name — the countdown variable ``n`` did not exist, and
-      every ``n``-referencing expression failed to evaluate while ``Parent``
-      was being applied. With the name stored (``Parent`` last, see
-      ``declare_variable``) every payload loads with **0** errors.
-    * **Leaving ``SetVariable`` unattached** instead makes
-      ``Validate()`` short-circuit with
-      ``if (!IsAttachedToRoot()) return true;`` *without setting* ``Issues``
-      (a null auto-property), and N.I.N.A.'s start-time
-      ``issues.AddRange(v.Issues)`` (``Sequencer.cs:203``) then throws
-      ``ArgumentNullException`` and aborts the start in ~20 ms — no
-      ``RUN-STARTING``, step left ``CREATED``, nothing else logged.
-
-    ``Parent`` is therefore load-safe (once ``n`` exists) *and* required at
-    run time: ``GetArray.Execute`` resolves its result variable through
-    ``Symbol.FindSymbol(name, Parent)``, so without it the countdown never
-    advances — ``LoopWhile(n > 0)`` stays false, groups are skipped and zero
-    exposures are taken. Measured end to end: all-``Parent`` payload → 0 load
-    errors, no pre-sequence checklist prompt, dark probe ran ``1/1``.
-
-    **Ordering rule enforced here:** a node *without* ``Items``/``Conditions``
-    (a leaf) has its ``Parent`` re-inserted **after** its own properties,
-    because JSON.NET applies keys in document order and a Parent-sensitive
-    setter then mis-stores its value — exactly what ``Symbol.Identifier``
-    did when ``declare_variable`` put ``Parent`` first: the name never landed,
-    the countdown variable ``n`` did not exist, and every symptom followed
-    (15 load errors, the ``ArgumentNullException`` abort at ``Sequencer.cs:203``,
-    the checklist prompt, and groups skipped at run time). Containers keep
-    ``Parent`` *before* ``Items`` on purpose: their children must attach
-    against a complete upward chain, which ``Symbol``'s registration and
-    ``IsAttachedToRoot`` paths read.
+    * Every node keeps its ``Parent`` (Sequencer+ ones included) — it is not
+      cosmetic. ``GetArray.Execute`` resolves its result variable through
+      ``Symbol.FindSymbol(name, Parent)``, so without it the countdown never
+      advances: ``LoopWhile(n > 0)`` stays false, groups are skipped and zero
+      exposures are taken. An *unattached* ``SetVariable`` also makes
+      ``Validate()`` return true without setting ``Issues``, which N.I.N.A.'s
+      start-time ``issues.AddRange(v.Issues)`` then dereferences into an
+      ``ArgumentNullException`` that aborts the start in ~20 ms.
+    * **Ordering:** a leaf (no ``Items``/``Conditions``) has ``Parent``
+      re-inserted AFTER its own properties — JSON.NET applies keys in document
+      order, and a Parent-sensitive setter mis-stores its value when Parent
+      arrives first (``Symbol.Identifier`` never stored the countdown name,
+      which is what emptied every exposure group). Containers keep ``Parent``
+      BEFORE ``Items``: their children must attach against a complete upward
+      chain.
     """
     ident = 0
 
@@ -84,17 +63,9 @@ def _add_refs(data: dict[str, Any]) -> dict[str, Any]:
                 if "Instructions" not in data:
                     parent = {"$ref": str(ident)}
                 if "Items" not in data and "Conditions" not in data:
-                    # OWN PROPERTIES BEFORE PARENT — on leaves only.
-                    # JSON.NET applies keys in document order, so a
-                    # Parent-sensitive setter (Symbol.Identifier) mis-stores
-                    # its value when Parent is already set: that is what left
-                    # the countdown variable `n` undefined and broke every
-                    # lights load/start/run on 2026-11-15. Re-inserting
-                    # Parent here puts it after the node's own properties.
-                    # Containers deliberately keep Parent *before* Items:
-                    # their children must attach against a complete upward
-                    # chain (Symbol's registration and IsAttachedToRoot
-                    # paths read it), which the countdown depends on.
+                    # Leaf: own properties first, Parent last (JSON.NET
+                    # document order; see the docstring). Containers keep
+                    # Parent before Items.
                     data["Parent"] = data.pop("Parent")
         for d in data.values():
             if isinstance(d, dict):
@@ -157,16 +128,13 @@ def _azalt_coordinates(az: float, alt: float) -> dict[str, Any]:
 def _round_robin(
     exposures: list[LightExposurePlan], batch_size: int = 0
 ) -> list[tuple[int, float, str]]:
-    """Split every light frame's exposures into batches, interleaved across
-    the frames: L5/R5 at ``batch_size=2`` → L2 R2 L2 R2 L1 R1.
+    """Split light frames into interleaved batches: L5/R5 at ``batch_size=2``
+    → L2 R2 L2 R2 L1 R1.
 
-    This is the only grouping left in the generator, and it exists for one
-    caller — lights, where ``plan.batch_size`` decides how many exposures of
-    one filter are shot before moving to the next. Darks, bias and flats
-    have nothing to batch or reorder, so they read their plan entries
-    directly, one group each (see ``target_payload_darks`` /
-    ``target_payload_flats``); the tuple is always a light frame's
-    (count, exposure, filter).
+    Lights only — the one caller (``batch_size`` decides how many exposures
+    of one filter are shot before moving to the next). Darks, bias and flats
+    have nothing to batch and read their plan entries directly, one group
+    each (see ``target_payload_darks`` / ``target_payload_flats``).
     """
     groups: list[tuple[int, float, str]] = []
     current_count = 0
@@ -223,8 +191,6 @@ def _container_base(
 
 
 def container_root(instructions: list[Any] | None = None) -> dict[str, Any]:
-    if instructions is None:
-        instructions = []
     return _fix_provider(
         _add_refs(
             _container_base(
@@ -237,8 +203,6 @@ def container_root(instructions: list[Any] | None = None) -> dict[str, Any]:
 
 
 def container_start(instructions: list[Any] | None = None) -> dict[str, Any]:
-    if instructions is None:
-        instructions = []
     return _container_base(
         ctype="NINA.Sequencer.Container.StartAreaContainer, NINA.Sequencer",
         name="Start Sequence",
@@ -247,8 +211,6 @@ def container_start(instructions: list[Any] | None = None) -> dict[str, Any]:
 
 
 def container_target(instructions: list[Any] | None = None) -> dict[str, Any]:
-    if instructions is None:
-        instructions = []
     return _container_base(
         ctype="NINA.Sequencer.Container.TargetAreaContainer, NINA.Sequencer",
         name="Target Sequence",
@@ -257,8 +219,6 @@ def container_target(instructions: list[Any] | None = None) -> dict[str, Any]:
 
 
 def container_end(instructions: list[Any] | None = None) -> dict[str, Any]:
-    if instructions is None:
-        instructions = []
     return _container_base(
         ctype="NINA.Sequencer.Container.EndAreaContainer, NINA.Sequencer",
         name="End Sequence",
@@ -272,12 +232,6 @@ def container_sequential(
     triggers: list[Any] | None = None,
     instructions: list[Any] | None = None,
 ) -> dict[str, Any]:
-    if conditions is None:
-        conditions = []
-    if triggers is None:
-        triggers = []
-    if instructions is None:
-        instructions = []
     return _container_base(
         ctype="NINA.Sequencer.Container.SequentialContainer, NINA.Sequencer",
         name=name,
@@ -297,12 +251,6 @@ def container_deepsky(
     conditions: list[Any] | None = None,
     instructions: list[Any] | None = None,
 ) -> dict[str, Any]:
-    if conditions is None:
-        conditions = []
-    if triggers is None:
-        triggers = []
-    if instructions is None:
-        instructions = []
     return _container_base(
         ctype="NINA.Sequencer.Container.DeepSkyObjectContainer, NINA.Sequencer",
         name=name,

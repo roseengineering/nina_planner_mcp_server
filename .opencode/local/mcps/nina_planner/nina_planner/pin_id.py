@@ -1,35 +1,23 @@
 """nina-pin-id — stamp a plan's derived id into its plan_id field.
 
-A blank ``plan_id`` is valid and meaningful: it means "derive me from my
-content" — ``ObservationPlan._base_plan_id()`` hashes the plan's own JSON
-(minus ``plan_id``) into ``plan-<hex12>``. That keeps a fresh plan
-self-describing, but it makes the id *volatile*: edit the plan — one more
-light group, a raised ``total_count`` — and the hash changes with it,
-while every frame already shot still carries the OLD id as the
-``_{plan_id}_`` token N.I.N.A. wrote into its file path. The already-shot
-frames then attribute to no live plan: ``get_plan_progress`` reports zero
-acquired, ``nina-archive`` builds a different folder name, and
-``nina-purge`` no longer sees the plan claiming its frames.
+A blank ``plan_id`` means "derive me from my content": ``_base_plan_id()``
+hashes the plan's own JSON (minus ``plan_id``) into ``plan-<hex12>``. That
+keeps a fresh plan self-describing but makes the id *volatile* — edit the
+plan and the hash changes, while every frame already shot still carries the
+OLD id as the ``_{plan_id}_`` token N.I.N.A. wrote into its file path. Those
+frames then attribute to no live plan: ``get_plan_progress`` reads zero
+acquired, ``nina-archive`` builds a different folder name, and ``nina-purge``
+stops seeing the plan claiming its frames.
 
-Pinning freezes the id *before* the edit: the current derived id is
-written into the ``plan_id`` field, and from then on ``_base_plan_id()``
-returns that literal value instead of re-hashing, so the plan can be
-edited freely while its frames keep attributing to it. Nothing else
-changes — the plan is loaded through the ordinary ``plan_utils.load_plan``
-(so a file that would not load is reported, never half-written) and
-rewritten with the same serializer ``write_plan_file`` uses
-(``model_dump_json(indent=2)``). The write is atomic: a temp file in the
-plan's own folder, then ``os.replace`` — an interrupted pin can never
-truncate or half-write a plan file.
+Pinning freezes the id *before* the edit: the current derived id is written
+into ``plan_id``, so the plan can be edited freely while its frames keep
+attributing to it. The file is loaded through ``plan_utils.load_plan`` (a
+file that would not load is reported, never half-written) and rewritten
+atomically — a temp file in the plan's own folder, then ``os.replace`` —
+so an interrupted pin can never truncate a plan.
 
-An already-pinned plan is a no-op (``already pinned: <id>``): pinning
-never rewrites an explicit id, so a hand-written ``plan_id`` survives
-re-running the tool too.
-
-Pin BEFORE editing. Once a blank-id plan is edited its old hash cannot be
-recomputed — it can only be recovered from an archive folder name
-(``<stem>__<plan-id>``) or from frame paths (they contain
-``_<plan_id>_``).
+An already-pinned plan is a no-op (``already pinned: <id>``): an explicit
+id is never overwritten, so a hand-written ``plan_id`` survives re-runs too.
 
 Exit codes: 0 — every named plan was pinned (or already was, or would be
 in a dry run), 1 — a plan could not be loaded or written, 2 — bad
@@ -94,9 +82,8 @@ def _write_atomic(path: Path, text: str) -> None:
 async def pin_plan_file(plan_file: str | Path, *, dry_run: bool = False) -> str:
     """Pin one plan file; return the message to print for it.
 
-    A plan that already carries a ``plan_id`` is a no-op — its explicit id
-    is never overwritten. Otherwise the id the plan derives RIGHT NOW
-    (``_base_plan_id()`` on the loaded, unedited content) is stamped into
+    An already-pinned plan is a no-op — its explicit id is never
+    overwritten. Otherwise the id the plan derives RIGHT NOW is stamped into
     ``plan_id`` and the file rewritten with the canonical serializer;
     ``dry_run`` reports the same message without touching the file.
     Raises ``PinError`` (user-facing message) when the plan cannot be

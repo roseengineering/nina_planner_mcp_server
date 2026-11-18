@@ -18,10 +18,9 @@ def _parse_binning_mode(mode: object) -> tuple[int, int] | None:
     """Normalize one ``BinningModes`` entry to an ``(x, y)`` tuple.
 
     ninaAPI serializes binning modes as ``{"Name": "2x2", "X": 2, "Y": 2}``
-    objects — the only shape the ``api_spec.yaml`` ``CameraInfo.BinningModes``
-    schema defines. ``X`` and ``Y`` are required; entries missing either axis
-    (or carrying an unparseable one) are dropped instead of raising, so one
-    odd driver value cannot fail the whole equipment-status call.
+    objects; entries missing an axis (or carrying an unparseable one) are
+    dropped instead of raising, so one odd driver value cannot fail the
+    whole equipment-status call.
     """
     if isinstance(mode, dict):
         x = _binning_axis(mode.get("x"))
@@ -108,18 +107,9 @@ class CameraDevice(BaseModel):
 
             data["state"] = data.get("camera_state")
 
-            bin_x = data.get("bin_x", 1)
-            bin_y = data.get("bin_y", 1)
-            if not isinstance(bin_x, int):
-                try:
-                    bin_x = int(bin_x)
-                except (ValueError, TypeError):
-                    bin_x = 1
-            if not isinstance(bin_y, int):
-                try:
-                    bin_y = int(bin_y)
-                except (ValueError, TypeError):
-                    bin_y = 1
+            # Unparseable/absent binning reads as 1x1 (the ASCOM default).
+            bin_x = _binning_axis(data.get("bin_x"))
+            bin_y = _binning_axis(data.get("bin_y"))
 
             raw_binning_modes = data.get("binning_modes", [])
             supported_modes: list[tuple[int, int]] = []
@@ -175,7 +165,10 @@ class CameraDevice(BaseModel):
             )
 
             data["binning"] = BinningInfo(
-                current=(bin_x, bin_y),
+                current=(
+                    bin_x if bin_x is not None else 1,
+                    bin_y if bin_y is not None else 1,
+                ),
                 supported_modes=supported_modes,
             )
 

@@ -67,21 +67,13 @@ class Pointing(StrictModel):
     def requests_rotation(self) -> bool:
         """True iff this pointing asks N.I.N.A. to move the rotator.
 
-        THE rule for "does this pointing rotate?", stated once so
-        validation and emission can never disagree about it:
-
-        - ``position_angle_deg is None`` → no rotation ("leaving the
-          rotator at its current/synced position", per the field docs).
-        - ``position_angle_deg == 0`` → also no rotation — validation
-          explicitly accepts 0 wherever it accepts omitting the field, and
-          ``plan_mosaic`` stamps 0 on every pane as a record of a
-          north-aligned grid, NOT as a request to slew the rotator.
-        - any nonzero value → rotate.
-
-        Emission must consult this same rule: keying off
-        ``is not None`` instead (as the lights builder used to) made every
-        mosaic pane on a ROTATOR-LESS rig emit ``CenterAndRotate`` — a
-        platesolving item that needs a rotator — because the mosaic stamps
-        0 explicitly.
+        THE rule for "does this pointing rotate?", stated once so validation
+        and emission can never disagree: ``None`` → no rotation (the field
+        docs' "leave the rotator synced"), ``0`` → also no rotation (a value
+        ``plan_mosaic`` stamps on every pane as a north-aligned grid, not a
+        request), any nonzero value → rotate. Emission must consult this
+        rule rather than ``is not None``: keying off that would send every
+        mosaic pane on a rotator-less rig to ``CenterAndRotate``, a
+        platesolving item that needs a rotator.
         """
         return self.position_angle_deg is not None and self.position_angle_deg != 0

@@ -147,26 +147,6 @@ class ReadImagingCsvTest(unittest.TestCase):
         self.assertIsInstance(default, list)
         self.assertEqual(len(default), 1)
 
-    def test_row_kept_when_path_absent(self):
-        _write_csv(
-            self.light_dir / "ImageMetaData.csv",
-            ["ImageType", "Duration", "FilterName"],
-            [["LIGHT", "60.0", "LP"]],
-        )
-
-        rows = read_imaging_csv(root=self.root, image_type="light")
-
-        self.assertEqual(len(rows), 1)
-        self.assertEqual(rows[0]["duration"], "60.0")
-
-    def test_rows_have_no_folder_date(self):
-        self._write_images([["LIGHT", "60.0", "LP"]])
-
-        rows = read_imaging_csv(root=self.root, image_type="light")
-
-        self.assertEqual(len(rows), 1)
-        self.assertNotIn("date", rows[0])
-
     def test_relative_path_resolved_against_csv_sibling(self):
         # Regression: a relative FilePath like "foo.fits" previously checked
         # against process CWD, so it was silently dropped unless the MCP
@@ -348,22 +328,7 @@ class WindowsToLocalTest(unittest.TestCase):
 
 
 class ImagingDefensivePathsTest(unittest.TestCase):
-    """Defensive branches in imaging.py that handle malformed input,
-    mismatched types, or non-Windows platforms. Each test targets one
-    of the missed lines reported by coverage."""
-
-    # ---- windows_to_local (line 19): sys.platform == "win32" passthrough ----
-
-    def test_windows_to_local_passthrough_on_windows(self):
-        """When sys.platform is 'win32', windows_to_local returns
-        Path(windows_path) directly without any path rewriting."""
-        from nina_planner.imaging import windows_to_local
-
-        with patch("nina_planner.imaging.sys.platform", "win32"):
-            result = windows_to_local(r"D:\apps\NINA\foo.fits")
-        self.assertEqual(str(result), r"D:\apps\NINA\foo.fits")
-
-    # ---- _resolve_image_path (line 46): file_path None or empty ----
+    """Malformed input and platform branches in imaging.py."""
 
     def test_resolve_image_path_returns_none_when_file_path_none(self):
         from nina_planner.imaging import _resolve_image_path
@@ -375,11 +340,8 @@ class ImagingDefensivePathsTest(unittest.TestCase):
 
         self.assertIsNone(_resolve_image_path(""))
 
-    # ---- read_imaging_csv (line 80): skip rows where image_type mismatches ----
-
     def test_read_imaging_csv_skips_rows_with_mismatched_image_type(self):
-        """When the CSV contains rows of multiple image types, only rows
-        matching the requested image_type are returned."""
+        """Only rows matching the requested image_type come back."""
         from nina_planner.imaging import read_imaging_csv
 
         with tempfile.TemporaryDirectory() as tmp:

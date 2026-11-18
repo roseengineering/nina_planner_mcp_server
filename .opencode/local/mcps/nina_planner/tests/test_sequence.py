@@ -67,33 +67,6 @@ def _park_equipment() -> ObservatoryEquipment:
     )
 
 
-class BuildSequenceLightsTest(unittest.TestCase):
-    def test_pointing_with_no_position_angle_does_not_raise_name_error(self):
-        plan = _plan(
-            pointings=[{"ra_hours": 5.0, "dec_deg": 10.0, "position_angle_deg": None}]
-        )
-        result = build_sequence_lights(
-            plan, equipment=ObservatoryEquipment(), profile=_profile()
-        )
-        self.assertIsInstance(result, dict)
-
-    def test_pointing_with_position_angle_does_not_raise_name_error(self):
-        plan = _plan(
-            pointings=[{"ra_hours": 5.0, "dec_deg": 10.0, "position_angle_deg": 90.0}]
-        )
-        result = build_sequence_lights(
-            plan, equipment=ObservatoryEquipment(), profile=_profile()
-        )
-        self.assertIsInstance(result, dict)
-
-    def test_pointing_without_position_angle_field_does_not_raise_name_error(self):
-        plan = _plan(pointings=[{"ra_hours": 5.0, "dec_deg": 10.0}])
-        result = build_sequence_lights(
-            plan, equipment=ObservatoryEquipment(), profile=_profile()
-        )
-        self.assertIsInstance(result, dict)
-
-
 @dataclass
 class _Exp:
     filter_name: str
@@ -144,9 +117,8 @@ class RoundRobinBatchingTest(unittest.TestCase):
 
 
 class ContainerDefaultsTest(unittest.TestCase):
-    """Covers the `if X is None: X = []` defensive patterns in container
-    helpers (lines 145, 169, 247, etc.).
-    """
+    """Container helpers normalize omitted lists to empty ``$values`` lists
+    (the normalization lives in ``_container_base``)."""
 
     def _assert_empty_values_list(self, container_func, field_name):
         """When the field is None, the resulting dict contains a _values
@@ -441,12 +413,8 @@ class PointingIndexValidationTest(unittest.TestCase):
 
 
 class JsonTemplateBuildersTest(unittest.TestCase):
-    """Coverage of the one-line JSON template wrappers in sequence.py.
-
-    These tests are busywork — they don't catch algorithmic bugs — but
-    they lock in CLR type names so a future NINA upgrade that renames a
-    type will be caught.
-    """
+    """Pin the CLR ``$type`` names and key fields of the one-line template
+    wrappers — a N.I.N.A. type rename must be caught here."""
 
     def _assert_clr_type(self, result, expected_substring):
         self.assertIn("$type", result)
@@ -692,48 +660,6 @@ class SequenceBuildersTest(unittest.TestCase):
         )
         self.assertTrue(_find_items(result, "ParkScope"), "park parks")
         self.assertTrue(_find_items(result, "WarmCamera"), "park then warms")
-
-    def test_build_sequence_darks(self):
-        from sequence_helpers import build_sequence_darks
-
-        plan = self._plan()
-        result = build_sequence_darks(
-            plan, equipment=ObservatoryEquipment(), profile=self._profile()
-        )
-        self.assertIsInstance(result, dict)
-
-    def test_build_sequence_darks_with_bias(self):
-        from sequence_helpers import build_sequence_darks
-
-        plan = self._plan()
-        result = build_sequence_darks(
-            plan, equipment=ObservatoryEquipment(), profile=self._profile(), bias=True
-        )
-        self.assertIsInstance(result, dict)
-
-    def test_build_sequence_flats_dawn(self):
-        from sequence_helpers import build_sequence_flats
-
-        plan = self._plan()
-        result = build_sequence_flats(
-            plan,
-            equipment=ObservatoryEquipment(),
-            profile=self._profile(),
-            dusk=False,
-        )
-        self.assertIsInstance(result, dict)
-
-    def test_build_sequence_flats_dusk(self):
-        from sequence_helpers import build_sequence_flats
-
-        plan = self._plan()
-        result = build_sequence_flats(
-            plan,
-            equipment=ObservatoryEquipment(),
-            profile=self._profile(),
-            dusk=True,
-        )
-        self.assertIsInstance(result, dict)
 
     def test_flats_container_is_plan_level_with_kind_name(self):
         from sequence_helpers import build_sequence_flats

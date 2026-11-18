@@ -751,14 +751,6 @@ class BuiltinCatalogTest(unittest.TestCase):
         )
 
 
-class BestTargetsValidationTest(unittest.TestCase):
-    def test_bad_level_raises_before_profile_fetch(self):
-        import asyncio
-
-        with self.assertRaises(ValueError):
-            asyncio.run(sky.best_targets(level="expert"))
-
-
 class HorizonGatingTest(unittest.TestCase):
     """Planning tools apply N.I.N.A.'s horizon-aware floor, not bare altitude."""
 

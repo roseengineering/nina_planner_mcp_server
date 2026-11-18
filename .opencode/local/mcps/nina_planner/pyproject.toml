@@ -35,9 +35,8 @@ dependencies = [
     "mcp>=1.0,<2",
     "httpx>=0.27",
     "astropy>=6.0",
-    # Imported directly (client.py, plan_utils.py, tools/plans.py,
-    # tools/sky.py, tools/lifecycle.py) — declare them rather than relying
-    # on mcp/astropy pulling them in transitively.
+    # Imported directly (client.py, plan_utils.py, tools/*), so declared
+    # rather than relied on transitively via mcp/astropy.
     "anyio>=4.0",
     "numpy>=1.26",
 ]
@@ -63,7 +62,6 @@ nina-pin-id = "nina_planner.pin_id:main"
 nina-purge = "nina_planner.purge:main"
 
 [tool.uv]
-# Install the dev group (pytest, ruff, mypy, pytest-cov, pytest-timeout) by default on `uv sync`.
 default-groups = ["dev"]
 
 [tool.setuptools.packages.find]
@@ -91,6 +89,10 @@ extend-exclude = ["build"]
 [tool.ruff.lint]
 # E/F = Basic errors, I = Auto-sorting imports, B = Common code bugs
 select = ["E", "F", "I", "B"]
+# select = ["E", "F", "I", "B", "D"]
+
+[tool.ruff.lint.pydocstyle]
+convention = "google"
 
 [tool.ruff.lint.per-file-ignores]
 # Tool docstrings and the server instructions are intentionally long for clarity;
@@ -108,8 +110,8 @@ markers = [
     "live: slow environment-specific integration tests (running NINA or WSL required)",
 ]
 
-# [tool.coverage] alone is silently ignored by coverage — the options must
-# live under [tool.coverage.run] / [tool.coverage.report].
+# [tool.coverage] alone is silently ignored — the options must live under
+# [tool.coverage.run] / [tool.coverage.report].
 [tool.coverage.run]
 source = ["nina_planner"]
 

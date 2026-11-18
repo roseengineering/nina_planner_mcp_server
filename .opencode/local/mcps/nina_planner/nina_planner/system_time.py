@@ -7,6 +7,8 @@ import sys
 import tempfile
 from pathlib import Path, PureWindowsPath
 
+from .imaging import windows_to_local
+
 NINA_EXE_DEFAULT = (
     r"C:\Program Files\N.I.N.A. - Nighttime Imaging 'N' Astronomy\NINA.exe"
 )
@@ -91,16 +93,13 @@ def get_launcher_paths() -> tuple[Path, str]:
         )
 
     windows_temp_path = PureWindowsPath(windows_temp)
-    drive = windows_temp_path.drive
-    if not drive or not windows_temp_path.is_absolute():
+    if not windows_temp_path.drive or not windows_temp_path.is_absolute():
         raise RuntimeError(
             f"Windows TEMP is not an absolute drive path: {windows_temp!r}"
         )
 
-    mount = os.environ.get("NINA_DRIVE_MOUNT") or f"/mnt/{drive[0].lower()}"
-    local_temp = Path(mount).joinpath(*windows_temp_path.parts[1:])
     launcher_name = "launch_nina.cmd"
-    local_p = local_temp / launcher_name
+    local_p = windows_to_local(windows_temp) / launcher_name
     windows_p = str(windows_temp_path / launcher_name)
     return local_p, windows_p
 
@@ -108,16 +107,12 @@ def get_launcher_paths() -> tuple[Path, str]:
 def _batch_quoted(value: str, var: str) -> str:
     """Make ``value`` safe inside ``start "" "…"`` in the launcher .cmd file.
 
-    The launcher is written for Task Scheduler to run, so an unsanitized
-    ``NINA_EXE_PATH`` is command injection: a ``"`` closes the quoting and
-    ``&``/``|``/a newline then runs arbitrary commands, and ``%VAR%``
-    expands even inside quotes. Windows paths can contain neither ``"``
-    nor control characters, so those are rejected outright (fail closed —
-    a launch that would be hijacked must not happen), while ``%`` is legal
-    in a filename and is escaped by doubling, the batch-file spelling for
-    a literal percent. ``&``, ``|``, ``<``, ``>`` and ``^`` need no
-    escaping once the quotes are guaranteed intact: cmd treats them
-    literally inside a quoted string.
+    The launcher runs under Task Scheduler: a ``"`` would close the quoting
+    (and ``&``/``|``/a newline then run arbitrary commands), and ``%VAR%``
+    expands even inside quotes. Quotes and control characters are rejected
+    outright (fail closed); ``%`` is escaped by doubling — the batch-file
+    spelling for a literal percent. ``&``, ``|``, ``<``, ``>`` and ``^``
+    need no escaping once the quotes are guaranteed intact.
     """
     if '"' in value or any(ord(c) < 32 for c in value):
         raise ValueError(

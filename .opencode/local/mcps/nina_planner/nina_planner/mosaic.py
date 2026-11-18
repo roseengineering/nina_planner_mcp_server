@@ -8,13 +8,12 @@ chosen: the caller never does the tiling arithmetic, and the grid can never
 under-cover the request (``grid_size`` rounds UP, so a target needing 2.1
 panes gets 3 — one pane of overshoot beats a gap at the target's edge).
 
-``plan_mosaic`` is a pure port of the standalone ``mosaic.sh`` calculator
-this module replaces: a symmetric grid about the requested center, stepped by
-pane FOV x (1 - overlap), rotated by the position angle, with each pane's
-exact sky coordinate found by porting astropy's ``spherical_offsets_by``
-(the ``SkyOffsetFrame`` rotation ``mosaic.sh`` relied on) into stdlib
-``math`` — no astropy dependency at runtime. A pane center that crosses RA
-0h/24h wraps correctly instead of being clamped.
+``plan_mosaic`` lays out a symmetric grid about the requested center,
+stepped by pane FOV x (1 - overlap) and rotated by the position angle, with
+each pane's exact sky coordinate found via the same rotation astropy's
+``spherical_offsets_by`` performs (``SkyOffsetFrame``) — ported into stdlib
+``math`` here, so there is no astropy dependency at runtime. A pane center
+that crosses RA 0h/24h wraps correctly instead of being clamped.
 """
 
 from __future__ import annotations
@@ -30,24 +29,20 @@ __all__ = ["grid_size", "pane_fov_arcmins", "plan_mosaic"]
 def pane_fov_arcmins(optics: OpticalTrainInfo) -> tuple[float, float]:
     """The rig's single-pane field of view ``(width, height)`` in arcminutes.
 
-    Derived exactly as ``mosaic.sh`` and ``OpticalTrainInfo._compute_fov``
-    do: sensor size in mm from pixels x pixel size, then
-    ``2 * atan(sensor / (2 * focal_length))``.
+    The trig is ``OpticalTrainInfo.fov_deg`` — the profile's own FOV
+    computation — converted to arcminutes.
 
     Raises ``ValueError`` naming every missing value when the profile lacks
     the optics the computation needs — a mosaic sized against a guessed FOV
     would be sized wrong, so there is no default.
     """
-    focal_length = optics.focal_length_mm
-    pixel_size = optics.pixel_size_microns
-    xsize = optics.camera_xsize_px
-    ysize = optics.camera_ysize_px
-    if not focal_length or not pixel_size or not xsize or not ysize:
+    fov = optics.fov_deg()
+    if fov is None:
         values = {
-            "focal_length_mm": focal_length,
-            "pixel_size_microns": pixel_size,
-            "camera_xsize_px": xsize,
-            "camera_ysize_px": ysize,
+            "focal_length_mm": optics.focal_length_mm,
+            "pixel_size_microns": optics.pixel_size_microns,
+            "camera_xsize_px": optics.camera_xsize_px,
+            "camera_ysize_px": optics.camera_ysize_px,
         }
         missing = [name for name, value in values.items() if not value]
         raise ValueError(
@@ -57,12 +52,7 @@ def pane_fov_arcmins(optics: OpticalTrainInfo) -> tuple[float, float]:
             "before writing a mosaic plan — a mosaic sized against a guessed "
             "field of view would be sized wrong."
         )
-
-    sensor_width_mm = xsize * pixel_size / 1000.0
-    sensor_height_mm = ysize * pixel_size / 1000.0
-    fov_w_deg = math.degrees(2.0 * math.atan(sensor_width_mm / (2.0 * focal_length)))
-    fov_h_deg = math.degrees(2.0 * math.atan(sensor_height_mm / (2.0 * focal_length)))
-    return (fov_w_deg * 60.0, fov_h_deg * 60.0)
+    return (fov[0] * 60.0, fov[1] * 60.0)
 
 
 def _axis_count(
@@ -116,15 +106,12 @@ def _spherical_offset(
 ) -> tuple[float, float]:
     """``(ra, dec)`` of the point ``east_deg``/``north_deg`` from ``(ra0, dec0)``.
 
-    A faithful port of ``SkyCoord.spherical_offsets_by`` — what ``mosaic.sh``
-    called, via its ``SkyOffsetFrame`` implementation — in pure math: build
-    the offset as a unit vector of the rotated frame whose origin is the
-    center (``sph(east, north)``), then rotate it back to RA/Dec with
-    ``Rz(ra0) . Ry(-dec0)``. The two are the same sphere, so north shifts
-    declination along the meridian and east along the parallel, composed
-    exactly on the sphere rather than by naive addition (which drifts away
-    from the equator) or by a single great-circle walk in the combined
-    direction (which is what a naive tangent-plane offset does, and it
+    A pure-math port of ``SkyCoord.spherical_offsets_by``: build the offset
+    as a unit vector of the rotated frame whose origin is the center
+    (``sph(east, north)``), then rotate it back to RA/Dec with
+    ``Rz(ra0) . Ry(-dec0)``. Composed on the sphere rather than by naive
+    addition (which drifts from the equator) or a single great-circle walk
+    in the combined direction (the naive tangent-plane offset, which
     disagrees with astropy for combined offsets).
 
     RA comes back in ``[0, 2*pi)`` by construction (``atan2``), so a pane
@@ -168,12 +155,11 @@ def plan_mosaic(
 ) -> list[Pointing]:
     """The ``cols x rows`` pane pointings of a mosaic centered on the target.
 
-    Grid layout (port of ``mosaic.sh``): pane centers step by
-    ``step_width/height`` degrees, symmetric about the center — an odd count
-    puts a pane on the center, an even count straddles it — with row 1 at the
-    top (north). The whole grid is then rotated by ``pa_deg`` in the tangent
-    plane, so a nonzero PA rotates the footprint on the sky without moving
-    its center.
+    Grid layout: pane centers step by ``step_width/height`` degrees,
+    symmetric about the center — an odd count puts a pane on the center, an
+    even count straddles it — with row 1 at the top (north). The whole grid
+    is then rotated by ``pa_deg`` in the tangent plane, so a nonzero PA
+    rotates the footprint on the sky without moving its center.
 
     Pointings come back labeled ``r{row}_c{col}`` (1-based, top-to-bottom,
     left-to-right) with ``row``/``column`` carried as metadata N.I.N.A. does

@@ -7,27 +7,13 @@ step on a camera without one silently produces light-contaminated darks.
 ``validate_dark_variant`` moves that failure to load time, where it names the
 variant, the reason, and the variants this rig can actually run.
 
-Readability rules (the rig is allowed to be simple, not to be guessed):
-
-* ``wheel`` is profile data — a configured filter wheel plus a ``Dark`` slot
-  in the profile's filters — so it is always readable and is the default
-  when a request omits ``variant``.
-* ``cover`` needs the profile's flat device *and* an ``/equipment/info``
-  payload that says the panel can open and close. Missing payload while the
-  profile says one is configured is unread capability, not a maybe.
-* ``shutter`` needs ``CameraInfo.HasShutter`` to be reported ``true``;
-  ``false`` and "not reported" are both unsupported.
-
 Every check fails closed: an unreadable capability rejects the load with a
 message rather than quietly choosing a different way to take the dark.
 """
 
 from ..models.observatory import ObservatoryEquipment
 from ..models.profile import ObservatoryProfile
-
-# The dark/bias vocabulary, in preference order: the wheel method first
-# because it is the default, then the two ways to cut light without one.
-DARK_VARIANTS = ("wheel", "cover", "shutter")
+from ..models.request import DARK_VARIANTS
 
 # CoverState values that mean "there is no usable cover here" — NotPresent
 # is NINA's explicit "no such device", Error is a cover that will not move.

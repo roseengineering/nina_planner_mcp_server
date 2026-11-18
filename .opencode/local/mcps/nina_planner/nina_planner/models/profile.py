@@ -45,33 +45,39 @@ class OpticalTrainInfo(BaseModel):
     camera_ysize_px: int | None = None
     field_of_view_deg: tuple[float, float] | None = None
 
+    def fov_deg(self) -> tuple[float, float] | None:
+        """The field of view ``(width, height)`` in degrees, unrounded.
+
+        The one place the FOV trig lives: the profile's ``field_of_view_deg``
+        and ``mosaic.pane_fov_arcmins`` both read it. ``None`` when the
+        optics needed for the computation are missing or non-positive.
+        """
+        focal_length = self.focal_length_mm
+        pixel_size = self.pixel_size_microns
+        xsize = self.camera_xsize_px
+        ysize = self.camera_ysize_px
+        if (
+            focal_length is None
+            or pixel_size is None
+            or xsize is None
+            or ysize is None
+            or focal_length <= 0
+            or pixel_size <= 0
+            or xsize <= 0
+            or ysize <= 0
+        ):
+            return None
+        sensor_width_mm = xsize * pixel_size / 1000.0
+        sensor_height_mm = ysize * pixel_size / 1000.0
+        fov_x = 2.0 * math.atan2(sensor_width_mm / 2.0, focal_length)
+        fov_y = 2.0 * math.atan2(sensor_height_mm / 2.0, focal_length)
+        return (math.degrees(fov_x), math.degrees(fov_y))
+
     @model_validator(mode="after")
     def _compute_fov(self) -> Self:
-        if (
-            self.pixel_size_microns is not None
-            and self.focal_length_mm is not None
-            and self.camera_xsize_px is not None
-            and self.camera_ysize_px is not None
-            and self.camera_xsize_px > 0
-            and self.camera_ysize_px > 0
-            and self.focal_length_mm > 0
-            and self.pixel_size_microns > 0
-        ):
-            sensor_width_mm = self.camera_xsize_px * self.pixel_size_microns / 1000.0
-            sensor_height_mm = self.camera_ysize_px * self.pixel_size_microns / 1000.0
-            fov_x = (
-                2
-                * math.atan2(sensor_width_mm / 2, self.focal_length_mm)
-                * 180
-                / math.pi
-            )
-            fov_y = (
-                2
-                * math.atan2(sensor_height_mm / 2, self.focal_length_mm)
-                * 180
-                / math.pi
-            )
-            self.field_of_view_deg = (round(fov_x, 4), round(fov_y, 4))
+        fov = self.fov_deg()
+        if fov is not None:
+            self.field_of_view_deg = (round(fov[0], 4), round(fov[1], 4))
         return self
 
 

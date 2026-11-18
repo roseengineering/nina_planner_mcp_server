@@ -12,81 +12,57 @@ down to a workstation for calibration and stacking::
         lights/ImageMetaData.csv archived light metadata (+ joined weather)
         lights/*.fits.fz       attributed light frames
         flats/  darks/  biases/ matched calibration frames (+ sidecar CSVs)
-        junk/ImageMetaData.csv own-token frames no plan ships into a
-        junk/*.fits              type folder (degenerate + uncredited),
-                                  with junk_reason (+ weather for lights)
+        junk/                  own-token frames no plan ships into a type
+                               folder (degenerate + uncredited), with
+                               junk_reason (+ weather for lights)
 
-Folder names are lowercase and plural (``_FOLDER_NAMES``), chosen as
-the intersection of what the readers need rather than a preference for
-any one of them.  Every header-driven stacker — PixInsight's WBPP,
-Astro Pixel Processor, DeepSkyStacker — ignores directory names and
-sorts on the FITS ``IMAGETYP`` header (with ``FILTER``, ``EXPTIME``,
-``GAIN``, ``DATE-OBS``), so a folder name cannot break those: they sort
-these frames the same whatever the directories are called.  The one
-reader that does depend on the name is Siril's built-in preprocessing
-scripts (``OSC_Preprocessing.ssf`` and friends) — literal batch scripts
-(``cd biases``, …) that neither scan subdirectories nor parse
-``IMAGETYP`` and read exactly four case-sensitive directories:
-``lights``, ``darks``, ``flats``, ``biases``.  Matching those costs the
-header-driven tools nothing and makes an archived plan folder a Siril
-working directory as it stands.  The manifest's ``type`` stays
-uppercase: it is N.I.N.A.'s ``ImageType`` verbatim, and only the folder
-on disk is lowercased.
+Folder names are lowercase and plural (``_FOLDER_NAMES``): the header-driven
+stackers (PixInsight WBPP, Astro Pixel Processor, DeepSkyStacker) sort on the
+FITS ``IMAGETYP`` header and ignore directory names, while Siril's built-in
+preprocessing scripts (``OSC_Preprocessing.ssf`` and friends) read exactly
+four case-sensitive directories — ``lights``, ``darks``, ``flats``,
+``biases``. Matching those costs the header-driven tools nothing. The
+manifest's ``type`` stays uppercase: N.I.N.A.'s ``ImageType`` verbatim.
 
-Frame selection reuses the exact attribution matchers behind
-``get_plan_progress`` / ``audit_plans`` (``progress.filter_metadata_rows``),
-so "archived" means "attributed to this plan" — a deliberate superset of
-what progress *credits* for lights: attribution is token-only, so every
-light carrying the underscore- or bracket-delimited plan-id token ships
-(every pointing of a mosaic, any filter/exposure the plan shot, surplus
-included), while progress credits each light group against its own
-filter+exposure. Calibration pools by type+filter / type+exposure / type
-alone inside ``calibration_window_days`` of the earliest attributed light —
-unioned across pointings so a mosaic shot over several nights carries each
-night's calibration.
+Frame selection reuses the attribution matchers behind ``get_plan_progress``
+/ ``audit_plans`` (``progress.filter_metadata_rows``), so "archived" means
+"attributed to this plan" — a deliberate superset of what progress *credits*
+for lights (attribution is token-only: every pointing of a mosaic, any
+filter/exposure, surplus included), while calibration pools by
+type+filter / type+exposure / type alone inside ``calibration_window_days``
+of the earliest attributed light, unioned across pointings.
 
-Decisions encoded here (see PROGRESS.md): originals are always COPIED, never
-moved; a plan is archivable when the shared completion verdict
-(``progress.progress_verdict`` — acquired vs total plus window state, the
-same rule ``get_plan_progress`` reports as ``complete``) says every pointing
-is done; a light ships only when it carries this plan's token, calibration
-only when a pooled matcher claims it inside a window.  ``--all`` overrides
-the completeness gate, ``--force`` rebuilds an existing folder, ``--dry-run``
-writes nothing.
+Decisions: originals are always COPIED, never moved; a plan is archivable
+when the shared completion verdict (``progress.progress_verdict`` — the same
+rule ``get_plan_progress`` reports as ``complete``) says every pointing is
+done; ``--all`` overrides the completeness gate, ``--force`` rebuilds an
+existing folder, ``--dry-run`` writes nothing.
 
-JUNK diversion (the fix for a purge deadlock): a live row carrying THIS
-plan's token that no plan ships into a type folder is copied to ``junk/``
-instead of being skipped, so every such row lands in ``manifest.files[]``
-and reads *preserved* to ``nina-purge``.  Two kinds share the folder with
-the reason kept per file — ``degenerate`` (a capture with no data in it:
-``progress.is_junk_row``, the 0.00003s Smart Exposure dark; this is what
-``audit_plans`` calls junk) and ``uncredited`` (real data no group
-credited: calibration outside every window, an exposure no group asked for
-— not "extra" frames, just ones this plan cannot place).  A row ANY plan
-selects is left alone, so a pooled dark another plan archives into its own
-``darks/`` is never duplicated here.  The invariant this buys:
-**every live own-token row is in the manifest**, either in its type folder
-or in ``junk/`` — only a genuine cross-plan claim can still hold a
-landing directory.
+JUNK diversion: a live row carrying THIS plan's token that no plan ships
+into a type folder is copied to ``junk/`` instead of being skipped, so every
+such row lands in ``manifest.files[]`` and reads *preserved* to
+``nina-purge``. Two kinds share the folder with the reason kept per file —
+``degenerate`` (a capture with no data in it: ``progress.is_junk_row``, the
+0.00003s Smart Exposure dark) and ``uncredited`` (real data no group
+credited: calibration outside every window, an exposure no group asked for).
+A row ANY plan selects is left alone. The invariant this buys: **every live
+own-token row is in the manifest**, either in its type folder or in
+``junk/`` — only a genuine cross-plan claim can still hold a landing
+directory.
 
 Copy semantics: each folder is assembled in a hidden ``.<name>.partial``
 sibling and atomically renamed into place, so an interrupted run can never
-leave a folder that looks complete.  Every file's size is verified after
-copying (``--checksum`` adds sha256).  ``<dest>/archive-index.jsonl`` is an
-append-only log of archived plans.  A selected file that vanishes between
-the metadata read and the copy is skipped and listed under the manifest's
-``missing`` with a warning (the run still succeeds; a run in which NO
-selected frame could be copied is refused rather than committed empty —
-junk copies never rescue such a run).  N.I.N.A. ``BAD_`` rejects never reach
-the copy loop at all — ``read_imaging_csv`` drops their rows at read time
-(the CSV still names the pre-rename file), so rejects are reported by
-``audit_plans``' ``bad`` disk count — and mirrored for offline readers as
-the manifest's ``disk.rejected``.  The rest of that row-driven
-classification (``disk.gone`` = recorded once but now nowhere;
-``disk.not_selected`` = this plan's token, deliberately skipped because
-another plan ships it; ``disk.junk`` = shipped to ``junk/`` with its
-reason) comes from ``disk_report``: existence probes over CSV records, never
-a directory walk.
+leave a folder that looks complete. Every file's size is verified after
+copying (``--checksum`` adds sha256); ``<dest>/archive-index.jsonl`` is an
+append-only log of archived plans. A selected file that vanishes between the
+metadata read and the copy is skipped and listed under ``missing`` (a run in
+which NO selected frame could be copied is refused rather than committed
+empty — junk copies never rescue such a run). N.I.N.A. ``BAD_`` rejects
+never reach the copy loop at all (``read_imaging_csv`` drops their rows at
+read time) and are reported by ``audit_plans``' ``bad`` disk count and the
+manifest's ``disk.rejected``; the rest of that row-driven classification
+(``disk.gone`` / ``disk.not_selected`` / ``disk.junk``) comes from
+``disk_report``: existence probes over CSV records, never a directory walk.
 
 The destination must live OUTSIDE the imaging root: archived folders carry
 their own ``ImageMetaData.csv`` copies, and a later attribution pass reading
@@ -112,19 +88,16 @@ from .models.plan import ObservationPlan
 from .progress import (
     filter_metadata_rows,
     is_junk_row,
+    path_has_id,
     plan_progress,
     progress_verdict,
 )
-from .tools.plans import _path_has_id, _plan_files
 
 _ARCHIVE_TYPES = ("LIGHT", "FLAT", "DARK", "BIAS")
 
 # The manifest's ``type`` is N.I.N.A.'s ImageType, uppercase, everywhere in
-# this file; only the DIRECTORY on disk is lowercased, because Siril's
-# built-in preprocessing scripts (OSC_Preprocessing.ssf & co) are
-# case-sensitive and read exactly four folders out of their working
-# directory: lights/, darks/, flats/, biases/.  ``junk/`` is our own — not
-# a Siril input, lowercased only so nothing in a plan folder stands out.
+# this file; only the DIRECTORY on disk is lowercased (Siril's case-sensitive
+# preprocessing scripts — see the module docstring).
 _FOLDER_NAMES: dict[str, str] = {
     "LIGHT": "lights",
     "FLAT": "flats",
@@ -205,10 +178,7 @@ def _folder_name(plan_file: Path, plan: ObservationPlan) -> str:
     else:
         name = stem
     if name in ("", ".", ".."):
-        # Exactly the names for which `dest / name` is NOT a strict child
-        # of dest: "." IS dest, ".." is its parent, "" joins back to dest.
-        # Every other post-sanitisation name (no separators left) is a
-        # plain child directory.
+        # The only names for which `dest / name` is NOT a strict child.
         raise ArchiveError(
             f"{plan_file.name}: refusing folder name {name!r} (from plan_id "
             f"{plan_id!r}) — it is not a plain directory name: it would "
@@ -314,14 +284,12 @@ def _progress_facts(
     completion verdict (``progress.progress_verdict``) says every pointing
     is complete — acquired vs total plus window state, NEVER
     ``remaining_count``, which ``plan_progress`` deliberately zeroes once a
-    calibration window closes.  The old ``remaining_count == 0`` test here
-    archived a window that expired short of its calibration as "complete";
-    it now reads expired_with_deficit as incomplete (``--all`` still
-    overrides, flagged in the manifest).  Light counts sum across
-    pointings (each pane asks its own set); calibration is plan-level and
-    read from pointing 1 exactly as ``audit_plans`` does — the manifest's
-    separate ``archived`` count (set by the copy loop from what actually
-    shipped) carries the union actually copied.
+    calibration window closes, so an expired window reads incomplete here
+    (``--all`` still overrides, flagged in the manifest). Light counts sum
+    across pointings (each pane asks its own set); calibration is
+    plan-level and read from pointing 1 exactly as ``audit_plans`` does —
+    the manifest's separate ``archived`` count (set by the copy loop from
+    what actually shipped) carries the union actually copied.
     """
     complete = True
     light_expected = 0
@@ -414,12 +382,9 @@ def _divert_frames(
 ) -> list[tuple[dict[str, Any], str]]:
     """Own-token rows no plan ships into a type folder → ``(row, reason)``.
 
-    These are the rows that used to sit in ``disk.not_selected`` and hold
-    their landing directory in ``nina-purge`` for ever ("not preserved —
-    run nina-archive first"): recorded under this plan's token, live on
-    disk, shipped nowhere.  Both kinds are this plan's own frames — neither
-    is surplus to it — so both are archived under ``junk/`` with the
-    distinction preserved per file:
+    Recorded under this plan's token, live on disk, shipped nowhere — both
+    kinds are this plan's own frames, neither surplus to it, so both are
+    archived under ``junk/`` with the distinction preserved per file:
 
     - ``degenerate`` — no data in the frame at all
       (``progress.is_junk_row``): the 0.00003s Smart Exposure dark.
@@ -429,7 +394,7 @@ def _divert_frames(
     ``shipped`` is the union of EVERY plan's selection, so a pooled frame
     another plan archives into its own ``darks/`` is left alone here — one
     good dark must not be duplicated into this folder and mislabelled as
-    junk.  Own-token scoping is ``_path_has_id`` on the base id (bare,
+    junk. Own-token scoping is ``path_has_id`` on the base id (bare,
     pane-suffixed and bracketed forms), exactly ``disk_report``'s, so other
     plans' rows never leak in.
     """
@@ -439,7 +404,7 @@ def _divert_frames(
         path = str(row.get("file_path") or "")
         if not path or path in shipped:
             continue
-        if not _path_has_id(path, base_id):
+        if not path_has_id(path, base_id):
             continue
         image_type = str(row.get("image_type") or "").upper()
         reason = "degenerate" if is_junk_row(plan, row, image_type) else "uncredited"
@@ -461,29 +426,26 @@ def disk_report(
     probe, answering the four "why isn't it in a type folder" questions:
 
     - ``rejected`` — a dropped row whose ``BAD_<name>`` twin exists: N.I.N.A.
-      discarded the frame.  Correctly excluded everywhere (not credited, not
+      discarded the frame. Correctly excluded everywhere (not credited, not
       selected, not shipped); listed so an OFFLINE reader can explain
-      expected-vs-shipped without observatory access.  A live agent reads
-      ``audit_plans``' ``bad`` instead — this is the archive's offline mirror
-      of that fact, not a replacement for it.
+      expected-vs-shipped without observatory access. A live agent reads
+      ``audit_plans``' ``bad`` instead.
     - ``gone`` — a dropped row with no ``BAD_`` twin: recorded once, now
-      nowhere on disk (deleted, moved, renamed outside N.I.N.A).  An anomaly,
-      so it earns a manifest warning and a console line.
+      nowhere on disk (deleted, moved, renamed outside N.I.N.A). Anomaly, so
+      it earns a manifest warning and a console line.
     - ``junk`` — a live own-token row this run shipped to ``junk/`` instead
       of a type folder (see ``_divert_frames``), each entry carrying its
-      ``reason`` (``degenerate`` / ``uncredited``).  These ARE in the
-      folder — under ``junk/`` — which is precisely what makes them read
-      *preserved* to ``nina-purge`` instead of holding the directory.
+      ``reason``. These ARE in the folder — under ``junk/`` — which is what
+      makes them read *preserved* to ``nina-purge`` instead of holding the
+      directory.
     - ``not_selected`` — a live own-token row this run did not ship because
-      ANOTHER plan's selection ships it (pooled calibration): informational,
-      and preserved by that plan's manifest rather than this one's.
+      ANOTHER plan's selection ships it (pooled calibration):
+      informational, preserved by that plan's manifest.
 
-    Scope: rows only.  A file no CSV row ever recorded is invisible by
-    construction — deliberate, since the Session Metadata plugin is trusted
-    (a directory walk would do little beyond re-checking that assumption).
-    Own-token scoping is ``_path_has_id`` on the base id, which covers the
-    bare, pointing-suffixed, and bracketed/parenthesised token forms, so
-    other plans' pooled rows never leak into ``not_selected``.
+    Scope: rows only. A file no CSV row ever recorded is invisible by
+    construction (the Session Metadata plugin is trusted). Own-token scoping
+    is ``path_has_id`` on the base id, so other plans' pooled rows never
+    leak into ``not_selected``.
     """
     selected_paths = {
         str(row.get("file_path") or "")
@@ -512,7 +474,7 @@ def disk_report(
         path = str(row.get("file_path") or "")
         if not path or path in selected_paths or path in divert_paths:
             continue
-        if _path_has_id(path, base_id):
+        if path_has_id(path, base_id):
             not_selected.append(
                 {
                     "type": str(row.get("image_type") or "").upper(),
@@ -598,42 +560,61 @@ def _archive_one(
     copied = 0
     junk_copied = 0
     junk_kept: list[tuple[dict[str, Any], str]] = []
+
+    def copy_one(
+        row: dict[str, Any],
+        *,
+        type_name: str,
+        type_dir: Path,
+        rel_map: dict[str, str],
+        used_names: set[str],
+    ) -> tuple[Path, str, int] | None:
+        """Copy one row's file into ``type_dir``; ``(src, rel_path, size)``,
+        or None when the source vanished BETWEEN the metadata read and this
+        copy (recorded under ``missing``). read_imaging_csv already drops rows
+        gone at read time — which is also how N.I.N.A. BAD_ rejects never
+        reach selection (the CSV names the pre-rename file) — so a vanish
+        here is a genuine mid-run change: skip the file, record it, and keep
+        the otherwise-complete archive.
+        """
+        src = Path(str(row.get("file_path") or ""))
+        if not src.is_file():
+            missing.append({"type": type_name, "source": str(src)})
+            return None
+        name = src.name
+        if name in used_names:
+            # Same filename from two date folders: keep both.
+            stem, dot, ext = name.partition(".fits")
+            name = (
+                f"{stem}_dup{len(used_names)}{dot}{ext}"
+                if dot
+                else f"{name}_{len(used_names)}"
+            )
+        used_names.add(name)
+        size = _copy_file(src, type_dir / name, checksum=checksum)
+        rel_path = f"{type_dir.name}/{name}"
+        rel_map[str(row["file_path"])] = rel_path
+        return src, rel_path, size
+
     try:
         for image_type in _ARCHIVE_TYPES:
             rows_for_type = selected.get(image_type.lower(), [])
             # Lowercase plural on disk (Siril), uppercase type in the manifest.
-            type_folder = _FOLDER_NAMES[image_type]
-            type_dir = staging / type_folder
+            type_dir = staging / _FOLDER_NAMES[image_type]
             rel_map: dict[str, str] = {}
             kept_rows: list[dict[str, Any]] = []
             used_names: set[str] = set()
             for row in rows_for_type:
-                src = Path(str(row.get("file_path") or ""))
-                if not src.is_file():
-                    # Vanished BETWEEN the metadata read and this copy.
-                    # read_imaging_csv already drops rows whose recorded
-                    # path was gone at read time — that is also how N.I.N.A.
-                    # BAD_ rejects never reach selection (the CSV names the
-                    # pre-rename file), so rejects are not this branch's
-                    # business; this is a genuine mid-run change.  Skip the
-                    # file and record it: one vanished frame must not throw
-                    # away an otherwise-complete archive.
-                    missing.append({"type": image_type, "source": str(src)})
+                copied_one = copy_one(
+                    row,
+                    type_name=image_type,
+                    type_dir=type_dir,
+                    rel_map=rel_map,
+                    used_names=used_names,
+                )
+                if copied_one is None:
                     continue
-                name = src.name
-                if name in used_names:
-                    # Same filename from two date folders: keep both.
-                    stem, dot, ext = name.partition(".fits")
-                    name = (
-                        f"{stem}_dup{len(used_names)}{dot}{ext}"
-                        if dot
-                        else f"{name}_{len(used_names)}"
-                    )
-                used_names.add(name)
-                dst = type_dir / name
-                size = _copy_file(src, dst, checksum=checksum)
-                rel_path = f"{type_folder}/{name}"
-                rel_map[str(row["file_path"])] = rel_path
+                src, rel_path, size = copied_one
                 kept_rows.append(row)
                 manifest_files.append(
                     {
@@ -654,33 +635,25 @@ def _archive_one(
                 )
 
         # junk/: the own-token rows no plan ships into a type folder
-        # (see _divert_frames).  Same copy/verify/sidecar machinery, one
-        # flat folder, and each entry keeps its reason so a reader can tell
-        # a worthless frame from merely-uncredited real data.
+        # (see _divert_frames).  Same copy machinery, one flat folder, and
+        # each entry keeps its reason so a reader can tell a worthless frame
+        # from merely-uncredited real data.
         if divert:
             junk_dir = staging / _FOLDER_NAMES["JUNK"]
             rel_map = {}
             used_names = set()
             sidecar_rows: list[dict[str, Any]] = []
             for row, reason in divert:
-                src = Path(str(row.get("file_path") or ""))
-                if not src.is_file():
-                    # Same mid-run vanishing as the type folders above.
-                    missing.append({"type": "JUNK", "source": str(src)})
+                copied_one = copy_one(
+                    row,
+                    type_name="JUNK",
+                    type_dir=junk_dir,
+                    rel_map=rel_map,
+                    used_names=used_names,
+                )
+                if copied_one is None:
                     continue
-                name = src.name
-                if name in used_names:
-                    stem, dot, ext = name.partition(".fits")
-                    name = (
-                        f"{stem}_dup{len(used_names)}{dot}{ext}"
-                        if dot
-                        else f"{name}_{len(used_names)}"
-                    )
-                used_names.add(name)
-                dst = junk_dir / name
-                size = _copy_file(src, dst, checksum=checksum)
-                rel_path = f"{_FOLDER_NAMES['JUNK']}/{name}"
-                rel_map[str(row["file_path"])] = rel_path
+                src, rel_path, size = copied_one
                 sidecar_row = dict(row)
                 sidecar_row["junk_reason"] = reason
                 sidecar_rows.append(sidecar_row)
@@ -946,7 +919,7 @@ async def run(args: argparse.Namespace) -> int:
     else:
         plan_files = [
             p
-            for p in _plan_files(project_dir)
+            for p in plan_utils.plan_files(project_dir)
             # Never re-archive what an earlier run wrote into --dest: a
             # plan.json copy under dest would read as a fresh plan file,
             # and its ImageMetaData.csv copies would double-count frames.
@@ -973,16 +946,16 @@ async def run(args: argparse.Namespace) -> int:
         return 1
 
     try:
-        rows: list[dict[str, Any]] = []
-        dropped_rows: list[dict[str, Any]] = []
-        for image_type in ("light", "dark", "bias", "flat"):
-            kept, dropped = read_imaging_csv(
-                root=imaging_root, image_type=image_type, report_dropped=True
+        # One walk over the imaging root for every frame type (was one walk
+        # per type), with the weather sidecar merged into the light rows.
+        rows, dropped_rows = read_imaging_csv(
+            root=imaging_root, image_type=None, report_dropped=True
+        )
+        if getattr(args, "weather", True):
+            merged = iter(
+                _merge_weather([r for r in rows if r["frame_type"] == "LIGHT"])
             )
-            if image_type == "light" and getattr(args, "weather", True):
-                kept = _merge_weather(kept)
-            rows.extend(kept)
-            dropped_rows.extend(dropped)
+            rows = [next(merged) if r["frame_type"] == "LIGHT" else r for r in rows]
     except FileNotFoundError as exc:
         print(f"✗ {exc}", file=sys.stderr)
         return 1
@@ -1063,13 +1036,15 @@ async def run(args: argparse.Namespace) -> int:
 
         if args.dry_run:
             total = 0
-            for frames in selected.values():
-                for row in frames:
-                    src = Path(str(row["file_path"]))
-                    if src.is_file():
-                        total += src.stat().st_size
-            for row, _reason in divert:
-                src = Path(str(row["file_path"]))
+            for row_path in [
+                *(
+                    str(row["file_path"])
+                    for frames in selected.values()
+                    for row in frames
+                ),
+                *(str(row["file_path"]) for row, _reason in divert),
+            ]:
+                src = Path(row_path)
                 if src.is_file():
                     total += src.stat().st_size
             anomalies = ""

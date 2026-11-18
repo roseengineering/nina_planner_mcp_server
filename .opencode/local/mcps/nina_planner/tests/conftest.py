@@ -6,49 +6,38 @@ so test modules can simply ``from conftest import requires_windows_interop``.
 
 from __future__ import annotations
 
-import os
-import shutil
-import sys
 import unittest
+from datetime import UTC, datetime
 
-_WINDOWS_INTEROP_EXES = (
-    "cmd.exe",
-    "tasklist.exe",
-    "taskkill.exe",
-    "schtasks.exe",
-)
+from nina_planner.system_time import windows_interop_available
 
 
-def _is_wsl() -> bool:
-    if sys.platform != "linux":
-        return False
-    if os.environ.get("WSL_INTEROP") or os.environ.get("WSL_DISTRO_NAME"):
-        return True
-    try:
-        release = open("/proc/sys/kernel/osrelease", encoding="utf-8").read().lower()
-    except OSError:
-        return False
-    return "microsoft" in release or "wsl" in release
-
-
-def windows_interop_available() -> bool:
-    """True when this host can actually drive Windows executables.
-
-    On Windows this is trivially true. Under WSL it requires interop to be
-    enabled *and* the Windows binaries (``cmd.exe``, ``tasklist.exe``,
-    ``taskkill.exe``, ``schtasks.exe``) to be reachable on ``PATH``. Tests that
-    launch or kill NINA depend on this; tests that only talk to the NINA REST
-    API do not.
-    """
-    if sys.platform == "win32":
-        return True
-    if not _is_wsl():
-        return False
-    return all(shutil.which(exe) for exe in _WINDOWS_INTEROP_EXES)
+def make_metadata_row(
+    image_type="LIGHT",
+    filter_name="LP",
+    duration="60.0",
+    target: str | None = "M31 _plan-abc123_",
+    exposure_start: str | None = None,
+):
+    """One ImageMetaData.csv row as ``progress``/``audit`` consume it."""
+    if exposure_start is None:
+        exposure_start = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+    row = {
+        "image_type": image_type,
+        "filter_name": filter_name,
+        "duration": duration,
+        # The window logic reads ExposureStartUTC only; the naive local
+        # ExposureStart column is deliberately absent so a regression that
+        # reads it sees "no timestamp" rather than silently passing.
+        "exposure_start_utc": exposure_start,
+    }
+    if target is not None:
+        row["file_path"] = f"C:/NINA/LIGHT/{target}__60.00s_0000.fits"
+    return row
 
 
 requires_windows_interop = unittest.skipUnless(
     windows_interop_available(),
-    "requires Windows interop (cmd.exe/tasklist.exe/schtasks.exe "
+    "requires Windows interop (tasklist.exe/taskkill.exe/schtasks.exe "
     "on PATH); REST-only live tests do not need this.",
 )

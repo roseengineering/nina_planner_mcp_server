@@ -6,6 +6,7 @@ from typing import Any
 import anyio
 
 from . import config
+from .imaging import _walk_visible
 from .models.observatory import ObservatoryEquipment
 from .models.plan import ObservationPlan
 from .models.profile import ObservatoryProfile
@@ -53,10 +54,8 @@ def validate_position_angle(plan: ObservationPlan, profile: ObservatoryProfile) 
             "every pointing or omit it from all."
         )
     # "Requests a rotation" is ONE rule — Pointing.requests_rotation — shared
-    # with the emission side (sequence/targets.py picks CenterAndRotate by it),
-    # so 0 and None can never validate one way and emit another: a plan of
-    # 0-valued panes (what plan_mosaic stamps) validates as "no rotation
-    # needed" and must emit a plain center slew too.
+    # with the emission side (sequence/targets.py picks CenterAndRotate by
+    # it), so 0 and None can never validate one way and emit another.
     nonzero_idxs = [
         i for i, p in enumerate(plan.pointings, start=1) if p.requests_rotation()
     ]
@@ -85,20 +84,17 @@ def check_pointing_index(plan: ObservationPlan, pointing_index: int) -> None:
 def require_parkable(equipment: ObservatoryEquipment) -> None:
     """Refuse a sequence the mount could not close at the end (``can_park``).
 
-    THE ONE AUTHORITY for the park guard: ``tools/sequence.load_sequence``
-    and ``scripts/gen_sequence.py`` both call this, so the refusal — and its
-    exact wording — can only ever change in one place. Every loaded list ends
-    with the End-area park and the wait stages park first, so a mount that
-    cannot park would sit unparked through a long wait while
-    ``PARK-STARTING``/``PARK-FINISHED`` announced an instruction list that
-    does nothing. A park that silently does nothing is worse than an error.
+    THE ONE AUTHORITY for the park guard: ``load_sequence`` and
+    ``scripts/gen_sequence.py`` both call this, so the refusal — and its
+    exact wording — can only change in one place. Every loaded list ends
+    with the End-area park and its wait stages park first, so a mount that
+    cannot park would sit unparked around an announcement that does nothing.
+    A park that silently does nothing is worse than an error.
 
     The builders keep their own conditional emission (``sequence_park_scope``
-    and friends return ``[]`` for such a mount) as a defensive default: they
-    are pure functions over whatever equipment they are handed and are called
-    directly by tests with a bare ``ObservatoryEquipment()``. They never raise
-    — raising is this function's job, at the boundary, before anything is
-    sent.
+    and friends return ``[]``) as a defensive default for callers that build
+    payloads directly (tests, inspection): they never raise — raising is
+    this function's job, at the boundary, before anything is sent.
     """
     can_park = bool(equipment.mount and equipment.mount.can_park)
     if can_park:
@@ -127,8 +123,8 @@ def require_light_capabilities(profile: ObservatoryProfile) -> None:
     never emit these instructions and are never checked here.
 
     Callers wrap the message with their own entry position (``request[i]:``
-    in ``load_sequence``), so this only has to name the action and each
-    missing capability.
+    in ``load_sequence``), so this only names the action and each missing
+    capability.
     """
     missing: list[str] = []
     if not (profile.plate_solver or profile.blind_plate_solver):
@@ -156,6 +152,38 @@ def require_light_capabilities(profile: ObservatoryProfile) -> None:
         )
 
 
+def resolve_plan_dir(project_dir: str | None) -> Path:
+    """The directory plan files are discovered in, resolving relative paths
+    against the project directory."""
+    plan_dir = Path(project_dir) if project_dir else config.PROJECT_DIR
+    if not plan_dir.is_absolute():
+        plan_dir = config.PROJECT_DIR / plan_dir
+    return plan_dir
+
+
+def plan_files(plan_dir: Path) -> list[Path]:
+    """All ``*.json`` files under ``plan_dir``, recursively, shallowest first.
+
+    Plans may live in subfolders (``plans/``, ``archive/``, per-month dirs),
+    so discovery recurses — but only through visible, ordinary directories
+    (the ``_walk_visible`` prune: hidden dirs and ``node_modules`` /
+    ``__pycache__`` are never entered, so a project's package JSONs are left
+    alone). Directory symlinks are NOT followed (``os.walk`` default), so a
+    symlink cycle can never hang an unattended audit.
+
+    Results are sorted (depth, name): if two files carry the same plan id —
+    an archived copy next to the live plan — the top-level canonical file
+    wins the claiming pass deterministically instead of whatever plain
+    ``sorted()`` would pick alphabetically (where ``archive/`` sorts before
+    ``m47.json``).
+    """
+    found: list[Path] = []
+    for directory, filenames in _walk_visible(plan_dir):
+        found.extend(directory / name for name in filenames if name.endswith(".json"))
+    found.sort(key=lambda p: (len(p.relative_to(plan_dir).parts), p.name))
+    return found
+
+
 async def load_plan(file_path: str) -> ObservationPlan:
     path = Path(file_path)
     if not path.is_absolute():
@@ -163,14 +191,11 @@ async def load_plan(file_path: str) -> ObservationPlan:
     async with await anyio.open_file(path, "r", encoding="utf-8") as f:
         data = json.loads(await f.read())
     plan = ObservationPlan.model_validate(data)
-    # On-disk invariant: a plan file always carries its pointings. The one
-    # shape that validates with zero — `mosaic` + empty pointings — is
-    # write_plan_file's INPUT form, never its output (it expands before
-    # writing), so finding it here means the file was hand-edited and never
-    # expanded. Refuse every consumer rather than let the oddities through:
-    # get_plan_progress would read it as complete:true with nothing to
-    # shoot, audit_plans would report no work at all, and only a light load
-    # would fail (calibration never indexes pointings).
+    # On-disk invariant: a written plan always carries its pointings — the
+    # one shape that validates with zero (mosaic + empty pointings) is
+    # write_plan_file's INPUT form, never its output, so finding it here
+    # means the file was hand-edited and never expanded. Refuse rather than
+    # let it read as complete with nothing to shoot.
     if not plan.pointings:
         raise ValueError(
             f"{file_path}: plan has no pointings — its mosaic block was "

@@ -107,8 +107,7 @@ class TargetPrefixTest(unittest.TestCase):
         self.assertEqual(_plan(target="", intent="").target_prefix("core"), "core")
         self.assertEqual(_plan(target="").target_prefix(), "")
 
-    """Flats carry no exposure time: N.I.N.A.'s SkyFlat chooses it."""
-
+    # Flats carry no exposure time: N.I.N.A.'s SkyFlat chooses it.
     def test_flat_spec_is_filter_and_count_only(self):
         flat = _plan().flat_frames[0]
         self.assertFalse(hasattr(flat, "exposure_time_seconds"))

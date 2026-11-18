@@ -167,7 +167,7 @@ async def _get_site_equipment_status(
 
 @mcp.tool()
 async def get_site_equipment_status() -> ObservatoryEquipment:
-    """Returns the current connection, operating state, measurements, and capabilities of active observatory equipment, including weather and safety-monitor status (whether the enclosure is open and it is safe to unpark), and mount capabilities (`can_park`, the only way a sequence can park the scope — and `can_find_home`, which gates the `Find home` calibration emitted ahead of `set_tracking` in a lights step: a ~30 s sensor re-sync after the mount loses sync, never a park fallback). Use it for live operational and safety checks. Auto-connects any device that is present but disconnected; if any device is mid-connect the call errors and should be retried after a few seconds. This is N.I.N.A. API state only — the nina-notify wake pipeline (pin target, event-socket health) is `nina_notify_check`, a different tool."""
+    """Returns the current connection, operating state, measurements, and capabilities of active observatory equipment, including weather and safety-monitor status (whether the enclosure is open and it is safe to unpark) and the mount's `can_park` / `can_find_home` capabilities. Use it for live operational and safety checks. Auto-connects any device that is present but disconnected; if any device is mid-connect the call errors and should be retried after a few seconds. This is N.I.N.A. API state only — the nina-notify wake pipeline (pin target, event-socket health) is `nina_notify_check`, a different tool."""
     profile = await get_site_profile()
     equipment = await _get_site_equipment_status(profile)
     client.log_payload("Equipment:", equipment.model_dump_json(indent=2))
@@ -198,7 +198,6 @@ async def get_site_profile() -> ObservatoryProfile:
     # the profile can say a cover exists even though only /equipment/info
     # reports whether it can actually open and close.
     flat_device = raw.get("FlatDeviceSettings", {})
-
     pixel_size = ascom_float(camera.get("PixelSize")) or 0
     gain = ascom_int(camera.get("Gain")) or 0
     camera_xsize = framing.get("CameraWidth", 0)
@@ -230,10 +229,9 @@ async def get_site_profile() -> ObservatoryProfile:
         except (TypeError, ValueError):
             position = None
         if position is None:
-            # Position selects the physical wheel slot and has no safe
-            # default: drop the filter from the profile (a plan referencing
-            # it then fails plan_utils.validate_filters loudly, by name) rather than
-            # ever drive the wheel to a bogus slot mid-sequence.
+            # No safe default for a physical wheel slot: drop the filter so a
+            # plan referencing it fails validate_filters by name, instead of
+            # driving the wheel to a bogus slot mid-sequence.
             client.log_payload(
                 "get_site_profile: skipping filter",
                 f"{name!r}: Position missing or not a number: {f.get('Position')!r}",
@@ -242,8 +240,7 @@ async def get_site_profile() -> ObservatoryProfile:
         try:
             focus_offset = ascom_int(f.get("FocusOffset"))
         except (TypeError, ValueError):
-            # Metadata, not an instruction — FilterInfo's own default of
-            # None ("no offset") is the safe reading; keep the filter.
+            # Metadata, not an instruction: keep the filter with no offset.
             focus_offset = None
         filters.append(
             FilterInfo(name=name, position=position, focus_offset=focus_offset)
@@ -283,8 +280,7 @@ async def get_site_profile() -> ObservatoryProfile:
         file_pattern=image_file.get("FilePattern"),
         equipment=equipment,
         # Second API call, best effort: fetch_horizon degrades to the flat
-        # default when the endpoint is absent, so a profile read never fails
-        # because of the skyline.
+        # default when the endpoint is absent.
         horizon=await fetch_horizon(str(astrometry.get("HorizonFilePath") or "")),
     )
     client.log_payload("Profile:", profile.model_dump_json(indent=2))
@@ -306,11 +302,7 @@ async def get_logs(since: int = 300) -> Any:
     res = await client.api_get("/application/logs?lineCount=1000")
     res = _convert_to_met(res, since=since, name="Timestamp")
     for d in res:
-        if "line" in d:
-            del d["line"]
-        if "member" in d:
-            del d["member"]
-        if "source" in d:
-            del d["source"]
+        for key in ("line", "member", "source"):
+            d.pop(key, None)
     client.log_payload("Logs:", json.dumps(res, indent=2))
     return res

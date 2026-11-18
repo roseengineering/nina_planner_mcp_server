@@ -1,9 +1,9 @@
 """nina-purge — retire archived frames from the N.I.N.A. imaging root.
 
 Where ``nina-archive`` copies completed plans out to a portable folder,
-``nina-purge`` completes the lifecycle: it removes from the imaging root
-the frames an archive already holds. Nothing here deletes on the first
-pass — quarantine first, live with it, then ``--purge`` for real.
+``nina-purge`` completes the lifecycle: it removes from the imaging root the
+frames an archive already holds. Nothing here deletes on the first pass —
+quarantine first, live with it, then ``--purge`` for real.
 
 The rule, per recorded frame F (deletion only ever considers frames the
 Session Metadata plugin recorded):
@@ -12,86 +12,73 @@ Session Metadata plugin recorded):
                                                 # under --dest lists F's source
                      AND every plan P whose selection contains F is released
 
-``released(P)`` needs both halves of "finished AND archived": P must have
-an archive folder (found by plan id across ``<dest>/*``/manifest.json),
-AND at purge time P must still read complete under the shared verdict
-(``_progress_facts``) or its manifest must carry the ``--all`` waiver
-(``complete: false`` — the operator's receipt for shipping an incomplete
-plan). A plan that is complete but NOT yet archived protects its frames:
-archive before you purge. The completeness half is recomputed from live
-rows and has one sharp edge — a plan whose own directory was already
-quarantined reads incomplete (its rows went with its frames) and keeps
-holding any directories of its own that remain; the console's plan-file
-hint is the resolution: move the file out (the archive folder holds the
-verbatim ``plan.json``) and its held frames become prunable on the next
-run. Frames no loaded plan's selection contains are orphans — prunable
-when preserved, reported and kept otherwise.
+``released(P)`` needs both halves of "finished AND archived": P must have an
+archive folder (found by plan id across ``<dest>/*/manifest.json``), AND at
+purge time P must still read complete under the shared verdict
+(``_progress_facts``) or its manifest must carry the ``--all`` waiver. A
+plan that is complete but NOT yet archived protects its frames: archive
+before you purge. The completeness half is recomputed from live rows, so a
+plan whose own directory was already quarantined reads incomplete and keeps
+holding its remaining directories — the console's plan-file hint is the
+resolution (move the file out; the archive holds the verbatim
+``plan.json``). Frames no loaded plan's selection contains are orphans —
+prunable when preserved, reported and kept otherwise.
 
 Claims reuse ``archive._select_frames`` verbatim — the same attribution
 ``nina-archive`` ships — so a light is claimed only by the plan whose
 ``_{plan_id}_`` token it carries, while pooled calibration (flats by
 type+filter, darks by type+exposure, bias by type, inside every claiming
-plan's calibration window) is claimed by EVERY plan that would credit it:
-a finished plan's darks stay put exactly as long as any unarchived plan
-still draws on them.
+plan's calibration window) is claimed by EVERY plan that would credit it: a
+finished plan's darks stay put exactly as long as any unarchived plan still
+draws on them.
 
-Directories are the unit of quarantine and the verdict is an AND over
-every recorded frame in them: one held frame keeps the whole landing
-directory. N.I.N.A. ``BAD_`` reject twins (found by probing a dropped
-row's pre-rename name, exactly as archive's disk report does) are
-prunable garbage: they ride with their directory and never block it.
-Own-token frames no plan ships into a type folder — degenerate captures
-(0.00003s Smart Exposure junk) and real but uncredited ones (outside
-every window, an exposure no group asked for) — are archived by
-``nina-archive`` under ``junk/`` and listed in the manifest like any
-other file, so they read ``preserved`` and ride along too; they used to
-sit in ``disk.not_selected`` and hold the directory for ever as "not
-preserved — run nina-archive first". Files no CSV row ever recorded stay
+Directories are the unit of quarantine and the verdict is an AND over every
+recorded frame in them: one held frame keeps the whole landing directory.
+N.I.N.A. ``BAD_`` reject twins are prunable garbage: they ride with their
+directory and never block it. Own-token frames no plan ships into a type
+folder (degenerate captures and real but uncredited ones) are archived
+under ``junk/`` and listed in the manifest like any other file, so they
+read ``preserved`` and ride along too. Files no CSV row ever recorded stay
 invisible by design (the Session Metadata plugin is trusted): they ride
-along into quarantine, are counted in the index record, and are never
-classified.
+along, are counted in the index record, and are never classified.
 
-Deletion is two deliberate steps. ``--apply`` MOVES each prunable
-directory into ``<imaging-root>/.quarantine/<dir>`` — a dot
-directory every attribution walk prunes (``imaging._prunable_dir``), so
-quarantined frames and their ImageMetaData.csv behave exactly as if
-gone, while one ``mv`` restores them — and only ``--purge`` unlinks.
-``<imaging-root>/purge-index.jsonl`` appends one JSON record per action —
-including one per plan file under ``--purge``, carrying
-``plan_file_deleted``. A run refuses to touch the root while a sequence
-is RUNNING (N.I.N.A. may be appending CSV rows); an unreachable N.I.N.A.
-is treated as idle — the same posture ``nina-archive`` takes — and
-``--imaging-root`` bypasses the profile lookup entirely.
+Deletion is two deliberate steps. ``--apply`` MOVES each prunable directory
+into ``<imaging-root>/.quarantine/<dir>`` — a dot directory every
+attribution walk prunes (``imaging._prunable_dir``), so quarantined frames
+and their ImageMetaData.csv behave exactly as if gone while one ``mv``
+restores them — and only ``--purge`` unlinks. ``<imaging-root>/purge-index.jsonl``
+appends one JSON record per action, including one per plan file under
+``--purge`` carrying ``plan_file_deleted``. A run refuses to touch the root
+while a sequence is RUNNING (N.I.N.A. may be appending CSV rows); an
+unreachable N.I.N.A. is treated as idle, and ``--imaging-root`` bypasses
+the profile lookup entirely.
 
 This tool never deletes or modifies the archive folders under ``--dest``:
 they are the preserved copy. Confirm your own cloud upload and local
 download are intact before running ``--purge``.
 
-Plan files are removed as the LAST step of ``--purge``, once the
-plan's frames are gone: the archive already holds the verbatim
-``plan.json`` (the copy to restore from), while a leftover plan whose
-rows went with its frames reads as NEVER_SHOT to
-``audit_plans``/``get_plan_progress`` and could be re-shot. Three
-gates run BEFORE any frame is deleted, so a refusal leaves everything
-intact: the archive folder ``<dest>/<stem>__<plan-id>/`` must exist
-with its ``plan.json``; that copy must be BYTE-IDENTICAL to the plan
-file (a difference means the plan was edited after archiving — the
-whole plan is refused with "archive is stale, re-run nina-archive
---force first": nothing is deleted for it, the run continues with the
-other plans, exit 1); and the plan file must never live inside
-``--dest`` (never delete the archived copy). Per plan the order is
-fixed — gates, frames, then the file — so a failed frame deletion (or
-frames still held back by another plan's claims) KEEPS the plan file
-for a re-run; a file already gone is simply skipped, and a
-``--purge`` run with nothing left is an idempotent success. A
-plan-shaped JSON that fails to load ABORTS the run: its claims are
-unknown, and unknown claims make deletions unsafe — unrelated project
-JSON is still ignored silently.
+Plan files are removed as the LAST step of ``--purge``, once the plan's
+frames are gone — the archive holds the verbatim ``plan.json``, while a
+leftover plan whose rows went with its frames reads as NEVER_SHOT to
+``audit_plans`` and could be re-shot. Three gates run BEFORE any frame is
+deleted, so a refusal leaves everything intact: the archive folder
+``<dest>/<stem>__<plan-id>/`` must exist with its ``plan.json``; that copy
+must be BYTE-IDENTICAL to the plan file (a difference means the plan was
+edited after archiving — the whole plan is refused with "archive is stale,
+re-run nina-archive --force first", nothing is deleted for it, the run
+continues with the other plans, exit 1); and the plan file must never live
+inside ``--dest``. Per plan the order is fixed — gates, frames, then the
+file — so a failed frame deletion (or frames still held back by another
+plan's claims) KEEPS the plan file for a re-run; a file already gone is
+skipped, and a ``--purge`` run with nothing left is an idempotent success.
+A plan-shaped JSON that fails to load ABORTS the run: its claims are
+unknown, and unknown claims make deletions unsafe — unrelated project JSON
+is still ignored silently.
 
-Exit codes: 0 — something was (or, in a dry run, would be) quarantined
-or purged, and any ``--purge`` run without an error (purging is
-idempotent); 1 — nothing to do or an error, including a stale-archive
-refusal; 2 — bad arguments.
+Exit codes: 0 — something was (or, in a dry run, would be) quarantined or
+purged, and any ``--purge`` run without an error (purging is idempotent);
+1 — nothing to do or an error, including a stale-archive refusal; 2 — bad
+arguments.
 """
 
 from __future__ import annotations
@@ -119,7 +106,6 @@ from .archive import (
 from .client import _sequence_is_running
 from .imaging import _prunable_dir, read_imaging_csv
 from .models.plan import ObservationPlan
-from .tools.plans import _plan_files
 
 _QUARANTINE_DIR = ".quarantine"
 _INDEX_NAME = "purge-index.jsonl"
@@ -197,11 +183,10 @@ def _plan_file_gate(
     - Gate 1 — the archive folder ``dest / _folder_name(plan_file, plan)``
       must exist and hold its ``plan.json``: the durable copy is what makes
       removing the project's copy safe at all.
-    - Gate 2 — that ``plan.json`` must be BYTE-IDENTICAL to the plan file.
-      A difference means the plan was edited after archiving; the whole plan
+    - Gate 2 — that ``plan.json`` must be BYTE-IDENTICAL to the plan file. A
+      difference means the plan was edited after archiving; the whole plan
       is refused with ``archive is stale, re-run nina-archive --force
-      first`` (``stale=True``) — ``nina-archive --force`` rebuilds the
-      folder from the current file and the refusal clears.
+      first`` (``stale=True``).
     - Gate 3 — the plan file must not live inside ``--dest`` (never delete
       the archived copy); discovery already excludes those, kept here as a
       belt-and-braces check.
@@ -661,6 +646,26 @@ def _sweep_plan_files(
     verdict_by_dir = {entry["dir"]: entry["verdict"] for entry in dirs}
     root_resolved = root.resolve()
     removed = kept = failed = 0
+
+    def index_plan_file(
+        record: dict[str, Any],
+        plan_file: Path,
+        *,
+        deleted: bool,
+        reason: str | None = None,
+    ) -> None:
+        entry: dict[str, Any] = {
+            "at": _now().isoformat(timespec="seconds"),
+            "action": "plan-file",
+            "plan_id": record["plan_id"],
+            "plan_file": str(plan_file),
+            "folder": record["folder"],
+            "plan_file_deleted": deleted,
+        }
+        if reason is not None:
+            entry["reason"] = reason
+        _append_index(root, entry)
+
     for record in records:
         plan_file = record["file"]
         if not plan_file.is_file():
@@ -690,18 +695,7 @@ def _sweep_plan_files(
             kept += 1
             print(f"  ⏭ kept plan file {plan_file} ({reason})")
             if purge:
-                _append_index(
-                    root,
-                    {
-                        "at": _now().isoformat(timespec="seconds"),
-                        "action": "plan-file",
-                        "plan_id": record["plan_id"],
-                        "plan_file": str(plan_file),
-                        "folder": record["folder"],
-                        "plan_file_deleted": False,
-                        "reason": reason,
-                    },
-                )
+                index_plan_file(record, plan_file, deleted=False, reason=reason)
             continue
         if not purge:
             print(f"  🗄 would remove plan file {plan_file}")
@@ -711,32 +705,11 @@ def _sweep_plan_files(
         except OSError as exc:
             print(f"  ✗ cannot remove plan file {plan_file}: {exc}", file=sys.stderr)
             failed += 1
-            _append_index(
-                root,
-                {
-                    "at": _now().isoformat(timespec="seconds"),
-                    "action": "plan-file",
-                    "plan_id": record["plan_id"],
-                    "plan_file": str(plan_file),
-                    "folder": record["folder"],
-                    "plan_file_deleted": False,
-                    "reason": str(exc),
-                },
-            )
+            index_plan_file(record, plan_file, deleted=False, reason=str(exc))
             continue
         removed += 1
         print(f"  🗄 removed plan file {plan_file}")
-        _append_index(
-            root,
-            {
-                "at": _now().isoformat(timespec="seconds"),
-                "action": "plan-file",
-                "plan_id": record["plan_id"],
-                "plan_file": str(plan_file),
-                "folder": record["folder"],
-                "plan_file_deleted": True,
-            },
-        )
+        index_plan_file(record, plan_file, deleted=True)
     return removed, kept, failed
 
 
@@ -828,14 +801,11 @@ async def run(args: argparse.Namespace) -> int:
         return 1
 
     try:
-        rows: list[dict[str, Any]] = []
-        dropped_rows: list[dict[str, Any]] = []
-        for image_type in _FRAME_TYPES:
-            kept, dropped = read_imaging_csv(
-                root=root, image_type=image_type, report_dropped=True
-            )
-            rows.extend(kept)
-            dropped_rows.extend(dropped)
+        # One walk over the imaging root for every frame type (was one walk
+        # per type).
+        rows, dropped_rows = read_imaging_csv(
+            root=root, image_type=None, report_dropped=True
+        )
     except FileNotFoundError as exc:
         print(f"✗ {exc}", file=sys.stderr)
         return 1
@@ -858,7 +828,9 @@ async def run(args: argparse.Namespace) -> int:
     plan_records: list[dict[str, Any]] = []
     refusals: list[tuple[Path, str]] = []
     ignored = 0
-    for plan_file in [p for p in _plan_files(project_dir) if not _inside(p, dest)]:
+    for plan_file in [
+        p for p in plan_utils.plan_files(project_dir) if not _inside(p, dest)
+    ]:
         try:
             plan: ObservationPlan = await plan_utils.load_plan(str(plan_file))
         except Exception as exc:  # noqa: BLE001 - report, then refuse below

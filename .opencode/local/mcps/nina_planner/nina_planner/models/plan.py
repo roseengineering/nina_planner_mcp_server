@@ -7,15 +7,21 @@ from pydantic import Field, field_validator, model_validator
 from .pointing import Pointing
 from .strict import StrictModel
 
-# A plan id is stamped into the target name, which N.I.N.A. rewrites on its way
-# into the file path — it turned "[" and "]" into "_" even though NTFS allows
-# them — so an id only works if it survives that rewrite verbatim. This is the
-# deliberately conservative charset proven to survive: every recorded target
-# directory carries its "plan-<hex>" id unchanged. "_" is refused outright
-# because it is the attribution-token delimiter (an id containing it could
-# substring-match inside a longer id's token); everything else outside this set
-# is refused because we cannot prove N.I.N.A. leaves it alone.
+# A plan id is stamped into the target name, which N.I.N.A. rewrites on its
+# way into the file path (it turned "[" and "]" into "_"), so an id only works
+# if it survives that rewrite verbatim. Deliberately conservative charset,
+# proven to survive: ASCII letters, digits, '.' and '-' only. "_" is refused
+# because it is the attribution-token delimiter; everything else is refused
+# because we cannot prove N.I.N.A. leaves it alone.
 _PLAN_ID_ALLOWED = re.compile(r"[A-Za-z0-9.-]+")
+
+# How a plan id reads inside a stamped target name: ``_<id>_``, optionally
+# carrying the pointing suffix ``-<n>`` (mosaic panes). The id part is
+# non-greedy so the suffix binds as ``-(\d+)`` rather than swallowing it.
+# THIS is the one attribution pattern: sequence_state and every consumer
+# derive their view from it, so a custom plan_id can never be recognised in
+# one place and missed in another.
+ATTRIBUTION_RE = re.compile(r"_([A-Za-z0-9.-]+?)(?:-(\d+))?_")
 
 
 class LightExposurePlan(StrictModel):
@@ -25,15 +31,9 @@ class LightExposurePlan(StrictModel):
 
 
 class FlatExposurePlan(StrictModel):
-    # No exposure_time_seconds: N.I.N.A.'s SkyFlat item picks the exposure
-    # itself to hit a target signal level, so a plan-specified duration is
-    # never sent. A plan that still carries one is refused at load rather
-    # than silently reinterpreted — see StrictModel.
-    #
-    # List order is shoot order: dawn flats shoot flat_frames in list order
-    # as written, while dusk flats shoot it reversed. The convention is to
-    # list broadband filters first and narrowband last (e.g. L, R, G, B, Ha)
-    # so narrowband always shoots while twilight is brighter.
+    # No exposure_time_seconds: N.I.N.A.'s SkyFlat picks the exposure itself
+    # to hit a target signal level, so a plan-specified duration is never
+    # sent. List order is shoot order — see the flat_frames description.
     filter_name: str
     total_count: int = Field(ge=1)
 
@@ -96,25 +96,13 @@ class ConstraintsConfig(StrictModel):
 class QualityConfig(StrictModel):
     """Optional light-frame quality thresholds for the progress tools.
 
-    These are the ONLY place quality thresholds live: ``load_sequence`` and
+    The ONLY place quality thresholds live: ``load_sequence`` and
     ``get_plan_progress`` read them from the plan file, so every tool that
-    counts this plan's frames applies the same rules without a caller having
-    to repeat them. There is deliberately no per-call override — one value,
-    one source of truth, and the two tools can never disagree about what
-    counts.
-
-    All four default to ``None`` (no filtering): a plan without a ``quality``
-    section behaves exactly as one written before this field existed, and a
-    threshold is only ever active because someone set it deliberately.
-
-    Lights only. Calibration frames (flat/dark/bias) have no star quality and
-    are matched by filter, exposure and the calibration window alone, so
-    nothing here applies to them.
-
-    Fail-closed when active: a light frame missing the relevant field (or
-    carrying NINA's ``0`` for an unmeasured value) does NOT count toward the
-    plan's ``total_count`` — otherwise a plan could be marked complete on
-    frames nobody measured.
+    counts this plan's frames applies the same rules — there is deliberately
+    no per-call override. All four default to ``None`` (no filtering).
+    Lights only; fail-closed when active: a light frame missing an enabled
+    metric (or carrying NINA's ``0`` for an unmeasured value) does NOT
+    count toward ``total_count``.
     """
 
     max_hfr: float | None = Field(
@@ -145,17 +133,14 @@ class QualityConfig(StrictModel):
 class MosaicConfig(StrictModel):
     """How to derive a mosaic's pointings — intent in, grid recorded out.
 
-    The caller states WHAT to cover (``center`` + ``coverage`` in arcmins)
-    and how much panes may overlap; the tool derives HOW (cols x rows) from
-    the rig's pane field of view at write time and stamps the decision back
-    into ``cols``/``rows``/``pane_fov_arcmins`` as a record of what was
-    actually planned. Those three are therefore ``None`` on input and never
-    drive expansion — an expanded plan's ``pointings`` are the authority.
-
-    ``coverage`` is measured in the grid frame BEFORE ``pa_deg`` rotation:
-    it is the footprint the pane rectangle must span on each axis, and the
-    grid is sized per axis with ``ceil`` so it always covers at least this
-    much (over-covering by up to one pane rather than leaving a gap).
+    The caller states WHAT to cover (``center`` + ``coverage`` in arcmins,
+    measured in the grid frame BEFORE ``pa_deg`` rotation) and how much
+    panes may overlap; write_plan_file derives HOW (cols x rows, sized per
+    axis with ``ceil`` so it never under-covers) from the rig's pane FOV at
+    write time and stamps the decision back into ``cols``/``rows``/
+    ``pane_fov_arcmins`` as provenance. Those three are ``None`` on input
+    and never drive expansion — an expanded plan's ``pointings`` are the
+    authority.
     """
 
     center_ra_hours: float = Field(
@@ -237,10 +222,8 @@ class ObservationPlan(StrictModel):
         default="",
         description="stable identifier for this acquisition goal; stamped on write, "
         "derived from plan content if absent. Empty, or ASCII letters, digits, "
-        "'.' and '-' only: '_' is the frame-attribution token delimiter, and "
-        "N.I.N.A. rewrites other characters when it puts $$TARGETNAME$$ into "
-        "the file path, so an id outside that charset could never be matched "
-        "back to the frames it stamped.",
+        "'.' and '-' only ('_' is the frame-attribution token delimiter, and "
+        "N.I.N.A. rewrites other characters in the file path).",
     )
     description: str = Field(
         default="",
@@ -293,8 +276,7 @@ class ObservationPlan(StrictModel):
     constraints: ConstraintsConfig = Field(default_factory=ConstraintsConfig)
     autofocus: AutofocusConfig = Field(default_factory=AutofocusConfig)
     guiding: GuidingConfig = Field(default_factory=GuidingConfig)
-    # Light-frame quality thresholds, read by load_sequence and
-    # get_plan_progress only — see QualityConfig. Default is "no filtering".
+    # Light-frame quality thresholds — see QualityConfig. Default: no filtering.
     quality: QualityConfig = Field(default_factory=QualityConfig)
 
     # exposures
@@ -331,13 +313,9 @@ class ObservationPlan(StrictModel):
 
     @model_validator(mode="after")
     def _pointings_or_mosaic(self) -> "ObservationPlan":
-        """A plan carries pointings, or a mosaic to derive them from — not neither.
-
-        Empty ``pointings`` with no ``mosaic`` would be a plan that points
-        nowhere, so it is refused here rather than surfacing later as a
-        sequence with nothing to slew to. The reverse (both present) is
-        legal and means the pointings are already expanded: they are the
-        authority, the mosaic block is provenance, and nothing re-derives.
+        """A plan carries pointings, or a mosaic to derive them from — not
+        neither (empty pointings with no mosaic points nowhere). Both present
+        is legal: the pointings are already expanded and are the authority.
         """
         if not self.pointings and self.mosaic is None:
             raise ValueError(
@@ -350,25 +328,17 @@ class ObservationPlan(StrictModel):
     @field_validator("plan_id")
     @classmethod
     def _plan_id_charset(cls, v: str) -> str:
-        """Refuse ids that could not be matched back to their own frames.
-
-        Emitted as ``_{plan_id}_`` in the target name and read back out of the
-        recorded path, so the id must survive N.I.N.A.'s path sanitisation
-        unchanged *and* must not contain the delimiter itself. Empty stays
-        legal: it means "derive one on write" (the derived id is always
-        ``plan-<hex>``, which passes).
+        """Refuse ids that could not be matched back to their own frames
+        (see ``_PLAN_ID_ALLOWED``). Empty stays legal: it means "derive one
+        on write" (the derived id is always ``plan-<hex>``, which passes).
         """
         if v and not _PLAN_ID_ALLOWED.fullmatch(v):
             raise ValueError(
                 f"plan_id {v!r} must be empty (a content-derived id is stamped "
                 "instead) or consist only of ASCII letters, digits, '.' and "
-                "'-'. '_' is the plan-id token delimiter, so an id containing "
-                "it could substring-match inside a longer id's token. Every "
-                "other character is refused because N.I.N.A. rewrites the "
-                "target name on its way into the file path — it turned '[' "
-                "and ']' into '_' although NTFS allows them — and an id that "
-                "does not survive that rewrite verbatim can never be matched "
-                "back to its frames."
+                "'-' — '_' is the token delimiter, and every other character "
+                "is refused because N.I.N.A. rewrites it in the file path, so "
+                "the frames could never be matched back to this id."
             )
         return v
 
@@ -400,20 +370,13 @@ class ObservationPlan(StrictModel):
     def attribution_token(self, pointing_index: int) -> str:
         """Target-name token stamped on frames so they attribute to a pointing.
 
-        Underscore-delimited: N.I.N.A. rewrites ``[`` and ``]`` to ``_``
-        when it substitutes ``$$TARGETNAME$$`` into the file path, so a
-        bracketed token never survives into the recorded path and the
-        frames stop attributing. Emitting ``_plan-x_`` writes exactly what
-        N.I.N.A. would have produced anyway.
-
-        The closing underscore keeps tokens from substring-matching each
-        other: ``_plan-x_`` never appears inside ``_plan-x-1_``, nor
-        ``_plan-x-1_`` inside ``_plan-x-10_`` — as long as the id itself
-        contains no underscore (ids never do when derived; see
-        ``_base_plan_id``). Attribution also accepts the legacy bracketed
-        and parenthesised forms (frames shot under the earlier conventions,
-        or recorded before N.I.N.A. rewrote the brackets) — see
-        ``progress._light_target_matches``.
+        Underscore-delimited (``_plan-x_``): N.I.N.A. rewrites ``[`` and
+        ``]`` to ``_`` when it substitutes ``$$TARGETNAME$$`` into the file
+        path, so a bracketed token never survives and the frames stop
+        attributing. The closing underscore keeps tokens from
+        substring-matching each other (``_plan-x_`` never appears inside
+        ``_plan-x-1_``). Legacy bracketed/parenthesised forms are still
+        accepted on read — see ``progress._light_target_matches``.
         """
         return f"_{self.effective_plan_id(pointing_index)}_"
 
@@ -426,18 +389,11 @@ class ObservationPlan(StrictModel):
         """The readable head of a target name: ``<target> <intent> [- label]``.
 
         ``$$TARGETNAME$$`` turns this (plus the plan-id token) into the
-        imaging directory, so this is what a folder reads as. The intent
-        rides along because the target alone rarely says *why* — "M31" is a
-        catalog designation, not an observation. An empty target or intent
-        is skipped rather than leaving a stray separator, and an empty
-        ``label`` appends nothing, so the pre-intent shapes ("M31",
-        "M31 - core") are reproduced verbatim for plans that leave intent
-        unset.
-
-        Both lights (``sequence_deepsky``) and calibration
-        (``calibration_prefix``) build their prefix here on purpose: two
-        spellings of the same prefix would split one plan's frames across
-        two ``$$TARGETNAME$$`` folders.
+        imaging directory. Empty target/intent segments are skipped (no
+        stray separator), and an empty ``label`` appends nothing. Lights
+        (``sequence_deepsky``) and calibration (``calibration_prefix``) both
+        build their prefix here on purpose: two spellings would split one
+        plan's frames across two folders.
         """
         base = " ".join(part for part in (self.target, self.intent) if part)
         if not label:
@@ -445,22 +401,15 @@ class ObservationPlan(StrictModel):
         return f"{base} - {label}" if base else label
 
     def calibration_prefix(self) -> str:
-        """The ``<target> <intent>`` part of a calibration step's target name.
+        """The ``<target> <intent>`` head of a calibration step's target name.
 
-        Mirrors the prefix ``sequence_deepsky`` builds for lights, but only
-        where the two can actually agree: a single-pointing plan shares its
-        bare plan token with its calibration (see ``effective_plan_id``), so
-        carrying that pointing's label here too keeps lights and calibration
-        in ONE ``$$TARGETNAME$$`` folder instead of splitting them into
-        ``<target> <intent> - <label> _plan-x_`` (lights) and
-        ``<target> <intent> _plan-x_`` (calibration).
-
-        A mosaic's panes use ``-N`` tokens that no plan-level calibration can
-        share, so its label would only make the folder read as one pane's —
-        the label is dropped there (the intent is not: it is plan-level, so
-        the mosaic's calibration folder still reads as this plan's). An empty
-        ``pointings`` list (defensive; the model forbids it) likewise keeps
-        just the target and intent.
+        Mirrors ``sequence_deepsky``'s light prefix. A single-pointing plan
+        shares its bare plan token with its calibration, so carrying that
+        pointing's label here too keeps lights and calibration in ONE
+        ``$$TARGETNAME$$`` folder. A mosaic's ``-N`` pane tokens cannot be
+        shared with plan-level calibration, so its label is dropped there
+        (the intent is not). An empty ``pointings`` list (defensive) keeps
+        just target and intent.
         """
         if len(self.pointings) == 1:
             return self.target_prefix(self.pointings[0].label)

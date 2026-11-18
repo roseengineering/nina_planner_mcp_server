@@ -20,11 +20,8 @@ def park_scope() -> dict[str, Any]:
 
 
 def home_scope() -> dict[str, Any]:
-    # Homing is a calibration: the mount drives its axes to a known physical
-    # reference point — the home position — re-syncing its sensors so the
-    # position readout can be trusted again. It takes ~30 s and is what
-    # restores that trust after the mount loses sync (power outage, bump,
-    # driver restart).
+    # What FindHome is and when it is emitted: see the canonical policy
+    # block above sequence_park_scope in builders.py.
     return _child("NINA.Sequencer.SequenceItem.Telescope.FindHome, NINA.Sequencer")
 
 
@@ -331,7 +328,7 @@ def dither_after_exposures(exposures: int) -> dict[str, Any]:
     ) | {"AfterExposures": exposures}
 
 
-def take_exposure(exposure: float, image_type: str, count: int = 0) -> dict[str, Any]:
+def take_exposure(exposure: float, image_type: str) -> dict[str, Any]:
     return _child(
         "NINA.Sequencer.SequenceItem.Imaging.TakeExposure, NINA.Sequencer"
     ) | {
@@ -339,7 +336,7 @@ def take_exposure(exposure: float, image_type: str, count: int = 0) -> dict[str,
         "ExposureTime": exposure,
         "Gain": -1,
         "Offset": -1,
-        "ExposureCount": count,
+        "ExposureCount": 0,
         "Binning": _child("NINA.Core.Model.Equipment.BinningMode, NINA.Core")
         | {"X": 1, "Y": 1},
     }
@@ -353,30 +350,23 @@ def smart_exposure(
     filter_position: int | None = None,
     dither: int = 0,
 ) -> dict[str, Any]:
+    # N.I.N.A.'s SmartExposure.Validate() reads its children POSITIONALLY
+    # (`Triggers[0]` as the dither trigger, `Items[0]` as SwitchFilter,
+    # `Items[1]` as TakeExposure) and dereferences them unconditionally, so
+    # both children are always emitted — a missing one throws out of
+    # validation and aborts the whole run silently (SEQUENCE-STARTING ->
+    # FINISHED, step stays CREATED).
+    #   * dither=0: AfterExposures=0 is N.I.N.A.'s own "never" (Validate
+    #     checks `if (dither.AfterExposures > 0)`).
+    #   * filter_name=None ("don't touch the wheel"): the SwitchFilter child
+    #     carries Filter=null, which N.I.N.A. skips (SequenceItemSkipped ->
+    #     Status=SKIPPED) instead of failing — covered/shutter darks expose
+    #     with the wheel exactly where it was.
     return _container_base(
         ctype="NINA.Sequencer.SequenceItem.Imaging.SmartExposure, NINA.Sequencer",
         name="Smart Exposure",
         conditions=[loop_for_iterations(count)],
-        # ALWAYS emitted, even for dither=0: N.I.N.A.'s SmartExposure reads
-        # its children positionally — `GetDitherAfterExposures() => Triggers[0]`
-        # — and Validate() calls it unconditionally, so an empty Triggers
-        # collection throws before the first instruction and aborts the whole
-        # run silently (SEQUENCE-STARTING -> FINISHED, step stays CREATED).
-        # AfterExposures=0 is N.I.N.A.'s own "never": Validate only checks the
-        # trigger `if (dither.AfterExposures > 0)`, and darks/bias — which never
-        # dither — have carried this placeholder through every run that worked.
         triggers=[dither_after_exposures(dither)],
-        # ALWAYS emitted, even with no filter: N.I.N.A.'s SmartExposure reads
-        # its children positionally — `GetSwitchFilter() => Items[0]`,
-        # `GetTakeExposure() => Items[1]` — and Validate() dereferences
-        # `sw.Filter` unconditionally, so a missing SwitchFilter child throws
-        # out of validation and aborts the whole run silently before the first
-        # instruction (SEQUENCE-STARTING -> FINISHED, step stays CREATED) —
-        # the same abort as an absent dither trigger, proven live 2026-11-16.
-        # filter_name=None means "don't touch the wheel": the child carries
-        # Filter=null, which N.I.N.A. skips (SequenceItemSkippedException ->
-        # Status=SKIPPED) instead of failing, so covered/shutter darks expose
-        # with the wheel exactly where it was.
         instructions=[
             switch_filter(filter_name, filter_position),
             take_exposure(exposure, image_type),
@@ -441,16 +431,9 @@ def declare_variable(name: str, value: str) -> dict[str, Any]:
     defined". ``value`` is the initial value expression, evaluated when this
     instruction runs.
 
-    Both properties of this node that the countdown depends on are arranged
-    centrally in ``_add_refs`` rather than here: the node keeps its
-    ``Parent`` (an attached node is one whose ``Validate()`` actually sets
-    ``Issues``, which N.I.N.A.'s start-time ``AddRange`` needs), and being a
-    leaf it gets that ``Parent`` moved **after** ``Identifier`` /
-    ``OriginalDefinition`` — JSON.NET applies keys in document order, and
-    ``Symbol.Identifier``'s Parent-sensitive setter mis-stores the name if
-    ``Parent`` is already set. That single ordering is what left ``n``
-    undefined and broke every lights load/start/run on 2026-11-15; see
-    ``nodes._add_refs`` for the full trail.
+    Both node properties the countdown depends on — keeping ``Parent`` and
+    ordering it AFTER ``Identifier`` — are arranged centrally in
+    ``nodes._add_refs``; see that docstring for the JSON.NET rules.
     """
     return _child(
         "NINA.Plugin.SequencerPlus.SetVariable, NINA.Plugin.SequencerPlus"

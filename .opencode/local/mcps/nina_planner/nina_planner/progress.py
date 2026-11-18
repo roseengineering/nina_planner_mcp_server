@@ -11,6 +11,7 @@ __all__ = [
     "filter_metadata_rows",
     "group_verdict",
     "is_junk_row",
+    "path_has_id",
     "plan_progress",
     "plan_with_remaining",
     "progress_verdict",
@@ -24,6 +25,27 @@ Verdict = Literal["complete", "incomplete", "expired_with_deficit"]
 def _path_components(path: str) -> list[str]:
     """Split a metadata path independent of its Windows/POSIX separators."""
     return [part for part in path.replace("\\", "/").split("/") if part]
+
+
+def path_has_id(path: str, plan_id: str) -> bool:
+    """True when any path segment carries ``plan_id`` in a delimited form.
+
+    Covers the bare and pointing-suffixed shapes (``_{id}_`` / ``[{id}]`` /
+    ``({id})`` and ``_{id}-N_``); the trailing "-" keeps ``plan-x`` out of
+    ``plan-xy`` exactly as ``_light_target_matches`` requires.
+    """
+    for component in _path_components(path):
+        for form in (
+            f"_{plan_id}_",
+            f"[{plan_id}]",
+            f"({plan_id})",
+            f"_{plan_id}-",
+            f"[{plan_id}-",
+            f"({plan_id}-",
+        ):
+            if form in component:
+                return True
+    return False
 
 
 def _exposure_matches(row: dict[str, Any], exposure: float | None) -> bool:
@@ -145,21 +167,33 @@ def _quality_accepted(
     max_guiding_rms_arcsec: float | None = None,
     max_hfr_st_dev: float | None = None,
 ) -> bool:
-    # Sentinel contract: NINA serializes
-    # unmeasured ASCOM values as 0 in ImageMetaData.csv, so under an *active*
-    # filter a 0 means "not measured" and cannot pass it (a frame whose HFR
-    # or guiding RMS was never taken must not count toward acquisition, or a
-    # plan would be marked complete on unmeasured frames). With no filter
-    # active the question does not arise and the frame counts as before.
-    if max_hfr is not None:
-        raw_hfr = row.get("hfr")
-        if raw_hfr is None or raw_hfr == "":
+    # Sentinel contract: NINA serializes unmeasured ASCOM values as 0 in
+    # ImageMetaData.csv, so under an *active* filter a 0 means "not
+    # measured" and cannot pass it (a frame whose HFR or guiding RMS was
+    # never taken must not count toward acquisition, or a plan would be
+    # marked complete on unmeasured frames). With no filter active the
+    # question does not arise and the frame counts as before.
+    #
+    # The three float metrics share one rule: a readable, finite, non-zero
+    # value at or below the limit. max_hfr_st_dev is the per-star HFR
+    # spread — mean HFR can pass while sigma is bad (a guiding spike
+    # mid-exposure, tilt, back-focus error, flexure), which max_hfr alone
+    # waves through.
+    for field, limit in (
+        ("hfr", max_hfr),
+        ("guiding_rms_arc_sec", max_guiding_rms_arcsec),
+        ("hfr_st_dev", max_hfr_st_dev),
+    ):
+        if limit is None:
+            continue
+        raw = row.get(field)
+        if raw is None or raw == "":
             return False
         try:
-            hfr = float(raw_hfr)
+            value = float(raw)
         except (TypeError, ValueError):
             return False
-        if not math.isfinite(hfr) or hfr == 0 or hfr > max_hfr:
+        if not math.isfinite(value) or value == 0 or value > limit:
             return False
     if min_detected_stars is not None:
         raw_stars = row.get("detected_stars")
@@ -170,32 +204,6 @@ def _quality_accepted(
         except (TypeError, ValueError):
             return False
         if stars == 0 or stars < min_detected_stars:
-            return False
-    if max_guiding_rms_arcsec is not None:
-        raw_rms = row.get("guiding_rms_arc_sec")
-        if raw_rms is None or raw_rms == "":
-            return False
-        try:
-            rms = float(raw_rms)
-        except (TypeError, ValueError):
-            return False
-        if not math.isfinite(rms) or rms == 0 or rms > max_guiding_rms_arcsec:
-            return False
-    if max_hfr_st_dev is not None:
-        # HFR sigma: the spread of per-star HFR across the frame. mean HFR
-        # can pass while sigma is bad — a frame whose stars are *unevenly*
-        # deformed (a guiding spike mid-exposure, tilt, back-focus error,
-        # flexure) reads an acceptable average over a field of partly ruined
-        # stars, which max_hfr alone waves through. Same sentinel contract as
-        # max_hfr: 0 is "not measured", never a passing reading.
-        raw_sigma = row.get("hfr_st_dev")
-        if raw_sigma is None or raw_sigma == "":
-            return False
-        try:
-            sigma = float(raw_sigma)
-        except (TypeError, ValueError):
-            return False
-        if not math.isfinite(sigma) or sigma == 0 or sigma > max_hfr_st_dev:
             return False
     return True
 
@@ -328,26 +336,13 @@ def frame_group_constraints(
       exposure time, so duration is part of what makes a dark usable.
     - ``BIAS`` — neither: every bias frame is equivalent.
 
-    The frame models already agree with this table by *absence* —
-    ``FlatExposurePlan`` carries no ``exposure_time_seconds``,
-    ``DarkExposurePlan`` no ``filter_name``, ``BiasExposurePlan`` neither — so
-    reading field presence alone would usually reproduce these values. The
-    branches are kept anyway because that absence is a property of the
-    pydantic models, not of the ``dict`` groups can also surface as
-    (``_junk_count``), where a stray key would otherwise widen a match that
-    two call sites had each promised to narrow.
-
-    Both callers used to spell this rule out independently —
-    ``filter_metadata_rows`` as its own ``specs`` table, ``plan_progress`` as
-    ``data.get(...)`` plus an explicit ``exposure=None if image_type ==
-    "FLAT"`` — each carrying a comment claiming to mirror the other. Nothing
-    enforced the claim: a mutation removing the dark exposure gate from one
-    copy left the audit verdict untouched, because the audit reads the other.
+    Branching on ``image_type`` (rather than reading which fields the
+    pydantic group models happen to carry) also covers the plain-dict groups
+    ``_junk_count`` surfaces, where a stray key would widen a match.
     """
 
-    # Frame groups are pydantic models on both call paths, but `_junk_count`
-    # shows they can surface as plain dicts too — attribute access on a dict
-    # would raise, so resolve the field both ways.
+    # Groups are pydantic models on both call paths but can surface as
+    # plain dicts too — attribute access on a dict would raise.
     def field(name: str) -> Any:
         return group.get(name) if isinstance(group, dict) else getattr(group, name)
 
@@ -548,30 +543,16 @@ def plan_progress(
 
     def group(image_type: str, groups: list[Any]) -> list[dict[str, Any]]:
         out: list[dict[str, Any]] = []
-        # First-fit credit across THIS type's groups: `acquired_count` is the
-        # rows this group matches that no EARLIER group claimed, and each
-        # group then removes `total_count` of its matches from the pool (its
-        # claim), so a frame is never credited toward two groups' totals.
-        # Without this, overlapping groups counted the same rows twice:
-        # duplicate light groups (same filter+exposure) read each frame
-        # twice, and two flat groups on one filter — flat matching
-        # deliberately ignores exposure — made 20 LP flats report 40/40 and
-        # the plan complete at half its ask. The claim is capped at
-        # `total_count` so an abundance of pool frames fills group 1 only up
-        # to what it asked for and leaves the rest visible to group 2 (a
-        # claim of ALL matches would starve every later group and invent a
-        # deficit). The sum of a type's `remaining_count`s still equals
-        # `total − unique-matched rows` exactly. The pool is rebuilt as new
-        # lists; `rows` itself is never mutated. Single-group types (the
-        # normal case) see every matching row, exactly as before — surplus
-        # rows beyond `total_count` included.
+        # First-fit credit across THIS type's groups (see the docstring):
+        # each group claims up to `total_count` of its matches from the pool
+        # and removes them, so a frame is never credited twice — the claim
+        # cap keeps an abundant pool from starving later groups. The pool is
+        # rebuilt as new lists; `rows` itself is never mutated.
         unclaimed = rows
         for g in groups:
             data = g.model_dump()
             # Which constraints apply is decided in ONE place — see
-            # frame_group_constraints. Flats carry no exposure and darks no
-            # filter, so this is exactly (filter, None) / (None, exposure)
-            # / (None, None) as before, without restating it here.
+            # frame_group_constraints.
             filter_name, exposure = frame_group_constraints(image_type, g)
             total = data["total_count"]
             matched = _select_matching(
@@ -610,31 +591,18 @@ def plan_progress(
                 **data,
                 "acquired_count": acquired,
                 "remaining_count": max(total - acquired, 0),
-                # The RAW shortfall, never window-adjusted. `remaining_count`
-                # below is an *acquisition* answer — it deliberately reads 0
-                # once the calibration window closes, so no later run wastes
-                # twilight on frames no window could credit. But 0 there is
-                # NOT a completion answer: a window that expired at 8/10
-                # darks must not let completion logic declare the plan done.
-                # Anything asking "is this finished?" must read the shared
-                # rule — group_verdict — which consults deficit_count and
-                # window_open, never remaining_count alone.
+                # Raw shortfall, never window-adjusted — the field any
+                # completion check must read (see deficit_count in the
+                # docstring; `remaining_count` above is the acquisition
+                # answer and reads 0 once the window closes).
                 "deficit_count": max(total - acquired, 0),
             }
             if image_type == "LIGHT":
-                # Frames beyond what the plan asked for. Deliberately
-                # lights-only: calibration is pool-credited by type+filter
-                # across plans, so a flat group routinely reads 103/20 and a
-                # surplus there would be permanent noise on every plan.
-                #
-                # This is the field that catches a truncated mode=full
-                # re-shoot, which `remaining_count` cannot: the re-shoot asks
-                # for `total_count` *more* frames, but acquired is cumulative
-                # across every run, so older frames keep satisfying the plan
-                # and remaining stays 0 no matter what the re-shoot delivered.
-                # M42 read acquired=137 / total=120 / remaining=0 at 17/120
-                # frames for the night; surplus=17 is the only number in this
-                # output that exposes it.
+                # Lights-only: calibration is pool-credited by type+filter
+                # across plans, so a surplus there would be permanent noise
+                # on every plan. This is also the one field that catches a
+                # truncated mode=full re-shoot (acquired is cumulative, so
+                # `remaining_count` stays 0 either way — see the docstring).
                 item["surplus_count"] = max(acquired - total, 0)
             if image_type != "LIGHT":
                 item["window_open"] = window_open
@@ -658,10 +626,7 @@ def group_verdict(item: dict[str, Any]) -> Verdict:
     """The one answer to "is this exposure group satisfied?".
 
     Every consumer that must separate *finished* from *expired with frames
-    still missing* reads this rule instead of re-deriving it — it used to be
-    spelled independently in ``get_plan_progress``, ``load_sequence``, and
-    ``audit_plans`` (and a fourth, naive ``remaining_count == 0`` copy in the
-    archive CLI, which called a window closed at 8/10 darks "complete"):
+    still missing* reads this rule instead of re-deriving it:
 
     - ``acquired_count >= total_count`` → ``complete``. Satisfied means the
       frames EXIST, cumulative across runs.

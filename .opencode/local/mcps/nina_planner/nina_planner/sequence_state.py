@@ -3,11 +3,11 @@
 Horizon data is merged in from ``/sequence/json``.
 """
 
-import re
 from collections.abc import Iterator
 from typing import Any
 
-_ATTRIBUTION = re.compile(r"_(plan-[a-f0-9]{12})(?:-(\d+))?_")
+from .models.plan import ATTRIBUTION_RE
+
 _TARGET_AREA = "Target Sequence_Container"
 
 
@@ -83,8 +83,7 @@ def _counts_exposures(node: dict[str, Any]) -> bool:
     looping wrapper around a group carries ``Iterations`` too and contains a
     ``Take Exposure`` somewhere in it, and ``_walk`` yields the wrapper
     before its children — so an ancestor search let a 2-iteration wrapper
-    around a 5-frame group be collected first and report ``total: 2``. See
-    ``test_a_looping_wrapper_is_not_mistaken_for_the_group_it_holds``.
+    around a 5-frame group be collected first and report ``total: 2``.
     """
     return (
         isinstance(node.get("Conditions"), list)
@@ -179,18 +178,15 @@ def project_sequence_state(state: Any, json_state: Any = None) -> dict[str, Any]
     area = area or {}
     json_steps = (_target_area(json_state) or {}).get("Items") or []
     state_steps = area.get("Items") or []
-    # Horizon data is merged from the other endpoint by index, and neither
-    # endpoint can pair it any better: /sequence/json steps carry no Target
-    # key, so TargetName pairing is impossible, and the step names repeat
-    # (seven identical Deep Sky containers), so name-matching cannot
-    # disambiguate either. The one thing that does hold when the two agree
-    # end to end is the order — so verify the full Name sequence and, on any
-    # mismatch, fail safe to a missing horizon rather than a wrong one.
+    # Horizon data is merged from the other endpoint by index: neither can
+    # pair it any better (/sequence/json steps carry no Target key and step
+    # names repeat), so verify the full Name sequence and, on any mismatch,
+    # fail safe to a missing horizon rather than a wrong one.
     paired = [s.get("Name") for s in json_steps] == [s.get("Name") for s in state_steps]
     steps: list[dict[str, Any]] = []
     for i, step in enumerate(state_steps):
         name = ((step.get("Target") or {}).get("TargetName")) or None
-        match = _ATTRIBUTION.search(name or "")
+        match = ATTRIBUTION_RE.search(name or "")
         take = _find(step, "Take Exposure")
         running = next(
             (
@@ -222,10 +218,9 @@ def project_sequence_state(state: Any, json_state: Any = None) -> dict[str, Any]
                 "status": step.get("Status"),
                 "phase": running,
                 "issues": failed,
-                # `exposure` is the FIRST group and must keep meaning exactly
-                # what it always has (tests/test_live.py, README and the tool
-                # docstring all read it as "the step's exposure"); the full
-                # list lives beside it in `exposure_groups`.
+                # `exposure` is the FIRST group (full list beside it in
+                # `exposure_groups`); it must keep meaning what it always
+                # has for the tool docstring, README and callers.
                 "exposure": _exposure(step, groups[0] if groups else None),
                 "exposure_groups": [_exposure(step, group) for group in groups],
                 "horizon": _horizon(json_steps[i]) if paired else None,

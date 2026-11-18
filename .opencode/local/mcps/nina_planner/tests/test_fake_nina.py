@@ -27,10 +27,6 @@ def _equipment(can_park: bool = True, can_find_home: bool = False):
     )
 
 
-def _end_area(payload):
-    return payload["Items"]["$values"][2]
-
-
 class FakeNinaTest(unittest.IsolatedAsyncioTestCase):
     def _patched(self, equipment=None):
         # Equipment/profile parsing is a separate layer; only the sequence

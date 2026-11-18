@@ -1,6 +1,7 @@
 import unittest
 from datetime import UTC, datetime, timedelta
 
+from conftest import make_metadata_row as _row
 from pydantic import ValidationError
 
 from nina_planner.models.plan import ObservationPlan
@@ -11,29 +12,6 @@ from nina_planner.progress import (
     plan_with_remaining,
     progress_verdict,
 )
-
-
-def _row(
-    image_type="LIGHT",
-    filter_name="LP",
-    duration="60.0",
-    target: str | None = "M31 _plan-abc123_",
-    exposure_start: str | None = None,
-):
-    if exposure_start is None:
-        exposure_start = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
-    row = {
-        "image_type": image_type,
-        "filter_name": filter_name,
-        "duration": duration,
-        # The window logic reads ExposureStartUTC only; the naive local
-        # ExposureStart column is deliberately absent so a regression that
-        # reads it sees "no timestamp" rather than silently passing.
-        "exposure_start_utc": exposure_start,
-    }
-    if target is not None:
-        row["file_path"] = f"C:/NINA/LIGHT/{target}__60.00s_0000.fits"
-    return row
 
 
 def _plan(**overrides):
@@ -401,77 +379,31 @@ class QualityFilterTest(unittest.TestCase):
         ][0]
         self.assertEqual(lights["acquired_count"], 1)
 
-    def test_nan_hfr_string_rejected_when_threshold_set(self):
+    def test_non_finite_and_out_of_range_rejected_per_metric(self):
+        # Every float metric: NaN/±inf never pass an active threshold, and
+        # neither does a reading above the limit.
         plan = _plan()
-        rows = [self._hfr_row("NaN")]
-        lights = plan_progress(plan, rows, max_hfr=5.0)["light"][0]
-        self.assertEqual(lights["acquired_count"], 0)
+        cases = (
+            ("max_hfr", 5.0, self._hfr_row, 6.0),
+            ("max_guiding_rms_arcsec", 2.0, self._guiding_rms_row, 3.0),
+            ("max_hfr_st_dev", 0.6, self._sigma_row, 1.2),
+        )
+        bad = ("NaN", "nan", float("inf"), float("-inf"))
+        for metric, limit, make_row, over in cases:
+            for value in (*bad, over):
+                with self.subTest(metric=metric, value=value):
+                    lights = plan_progress(plan, [make_row(value)], **{metric: limit})[
+                        "light"
+                    ][0]
+                    self.assertEqual(lights["acquired_count"], 0)
 
-    def test_lowercase_nan_hfr_rejected(self):
+    def test_nan_accepted_when_no_threshold(self):
+        # With no threshold active the sentinel question does not arise.
         plan = _plan()
-        rows = [self._hfr_row("nan")]
-        lights = plan_progress(plan, rows, max_hfr=5.0)["light"][0]
-        self.assertEqual(lights["acquired_count"], 0)
-
-    def test_inf_hfr_rejected(self):
-        plan = _plan()
-        rows = [self._hfr_row(float("inf"))]
-        lights = plan_progress(plan, rows, max_hfr=5.0)["light"][0]
-        self.assertEqual(lights["acquired_count"], 0)
-
-    def test_neg_inf_hfr_rejected(self):
-        plan = _plan()
-        rows = [self._hfr_row(float("-inf"))]
-        lights = plan_progress(plan, rows, max_hfr=5.0)["light"][0]
-        self.assertEqual(lights["acquired_count"], 0)
-
-    def test_hfr_above_threshold_rejected(self):
-        plan = _plan()
-        rows = [self._hfr_row(6.0)]
-        lights = plan_progress(plan, rows, max_hfr=5.0)["light"][0]
-        self.assertEqual(lights["acquired_count"], 0)
-
-    def test_nan_hfr_accepted_when_no_threshold(self):
-        plan = _plan()
-        rows = [self._hfr_row("NaN")]
-        lights = plan_progress(plan, rows)["light"][0]
-        self.assertEqual(lights["acquired_count"], 1)
-
-    def test_nan_rms_string_rejected_when_threshold_set(self):
-        plan = _plan()
-        rows = [self._guiding_rms_row("NaN")]
-        lights = plan_progress(plan, rows, max_guiding_rms_arcsec=2.0)["light"][0]
-        self.assertEqual(lights["acquired_count"], 0)
-
-    def test_lowercase_nan_rms_rejected(self):
-        plan = _plan()
-        rows = [self._guiding_rms_row("nan")]
-        lights = plan_progress(plan, rows, max_guiding_rms_arcsec=2.0)["light"][0]
-        self.assertEqual(lights["acquired_count"], 0)
-
-    def test_inf_rms_rejected(self):
-        plan = _plan()
-        rows = [self._guiding_rms_row(float("inf"))]
-        lights = plan_progress(plan, rows, max_guiding_rms_arcsec=2.0)["light"][0]
-        self.assertEqual(lights["acquired_count"], 0)
-
-    def test_neg_inf_rms_rejected(self):
-        plan = _plan()
-        rows = [self._guiding_rms_row(float("-inf"))]
-        lights = plan_progress(plan, rows, max_guiding_rms_arcsec=2.0)["light"][0]
-        self.assertEqual(lights["acquired_count"], 0)
-
-    def test_rms_above_threshold_rejected(self):
-        plan = _plan()
-        rows = [self._guiding_rms_row(3.0)]
-        lights = plan_progress(plan, rows, max_guiding_rms_arcsec=2.0)["light"][0]
-        self.assertEqual(lights["acquired_count"], 0)
-
-    def test_nan_rms_accepted_when_no_threshold(self):
-        plan = _plan()
-        rows = [self._guiding_rms_row("NaN")]
-        lights = plan_progress(plan, rows)["light"][0]
-        self.assertEqual(lights["acquired_count"], 1)
+        for make_row in (self._hfr_row, self._guiding_rms_row, self._sigma_row):
+            with self.subTest(row=make_row.__name__):
+                lights = plan_progress(plan, [make_row("NaN")])["light"][0]
+                self.assertEqual(lights["acquired_count"], 1)
 
     # --- HFR sigma (max_hfr_st_dev) ---
 
@@ -505,12 +437,6 @@ class QualityFilterTest(unittest.TestCase):
         lights = plan_progress(plan, rows, max_hfr_st_dev=0.6)["light"][0]
         self.assertEqual(lights["acquired_count"], 1)
 
-    def test_hfr_st_dev_above_threshold_rejected(self):
-        plan = _plan()
-        rows = [self._sigma_row(1.2)]
-        lights = plan_progress(plan, rows, max_hfr_st_dev=0.6)["light"][0]
-        self.assertEqual(lights["acquired_count"], 0)
-
     def test_no_sigma_threshold_counts_all(self):
         plan = _plan()
         rows = [self._sigma_row(9.0), self._sigma_row(0.2)]
@@ -528,12 +454,6 @@ class QualityFilterTest(unittest.TestCase):
         ]
         lights = plan_progress(plan, rows, max_hfr=2.5, max_hfr_st_dev=0.6)["light"][0]
         self.assertEqual(lights["acquired_count"], 1)
-
-    def test_inf_hfr_st_dev_rejected(self):
-        plan = _plan()
-        rows = [self._sigma_row(float("inf"))]
-        lights = plan_progress(plan, rows, max_hfr_st_dev=0.6)["light"][0]
-        self.assertEqual(lights["acquired_count"], 0)
 
     def test_calibration_unaffected_by_hfr_st_dev(self):
         plan = _plan()
@@ -1047,8 +967,7 @@ class PointingIndexTest(unittest.TestCase):
 
 
 class PrivateHelperDefensivePathsTest(unittest.TestCase):
-    """Defensive branches in the private helpers of progress.py. Each test
-    targets one of the missed lines reported by coverage."""
+    """Defensive branches in the private helpers of progress.py."""
 
     def _plan(self, **overrides):
         data = {
@@ -1065,7 +984,7 @@ class PrivateHelperDefensivePathsTest(unittest.TestCase):
         data.update(overrides)
         return ObservationPlan(**data)
 
-    # ---- _exposure_matches (lines 57, 60-61) ----
+    # ---- _exposure_matches ----
 
     def test_exposure_matches_returns_false_when_duration_empty(self):
         from nina_planner.progress import _exposure_matches
@@ -1080,7 +999,7 @@ class PrivateHelperDefensivePathsTest(unittest.TestCase):
         self.assertFalse(_exposure_matches({"duration": "abc"}, 60.0))
         self.assertFalse(_exposure_matches({"duration": "not a number"}, 60.0))
 
-    # ---- _light_target_matches (line 72) ----
+    # ---- _light_target_matches ----
 
     def test_light_target_matches_returns_false_when_file_path_empty(self):
         from nina_planner.progress import _light_target_matches
@@ -1155,34 +1074,23 @@ class PrivateHelperDefensivePathsTest(unittest.TestCase):
         self.assertFalse(_light_target_matches(plan, other, pointing_index=1))
         self.assertFalse(_light_target_matches(plan, other_bracket, pointing_index=1))
 
-    # ---- _quality_accepted (lines 88-89, 95, 98-99, 108-109) ----
+    # ---- _quality_accepted ----
 
-    def test_quality_hfr_invalid_string_returns_false(self):
+    def test_quality_unparseable_metric_strings_return_false(self):
         from nina_planner.progress import _quality_accepted
 
-        # HFR="abc" → float() raises ValueError → returns False.
-        self.assertFalse(_quality_accepted({"hfr": "abc"}, 5.0, None))
-
-    def test_quality_stars_empty_string_returns_false(self):
-        from nina_planner.progress import _quality_accepted
-
-        # detected_stars missing or "" → returns False.
-        self.assertFalse(_quality_accepted({}, None, 10))
-        self.assertFalse(_quality_accepted({"detected_stars": ""}, None, 10))
-
-    def test_quality_stars_invalid_string_returns_false(self):
-        from nina_planner.progress import _quality_accepted
-
-        # detected_stars="abc" → int() raises ValueError → returns False.
-        self.assertFalse(_quality_accepted({"detected_stars": "abc"}, None, 10))
-
-    def test_quality_rms_invalid_string_returns_false(self):
-        from nina_planner.progress import _quality_accepted
-
-        # guiding_rms_arc_sec="abc" → float() raises ValueError → returns False.
-        self.assertFalse(
-            _quality_accepted({"guiding_rms_arc_sec": "abc"}, None, None, 2.0)
-        )
+        # A parse quirk must never invent a passing OR a failing reading.
+        for args in (
+            ({"hfr": "abc"}, 5.0, None),
+            ({}, None, 10),
+            ({"detected_stars": ""}, None, 10),
+            ({"detected_stars": "abc"}, None, 10),
+            ({"guiding_rms_arc_sec": "abc"}, None, None, 2.0),
+            ({"hfr_st_dev": "abc"}, None, None, None, 1.0),
+        ):
+            with self.subTest(args=args):
+                self.assertFalse(_quality_accepted(*args))
+        self.assertTrue(_quality_accepted({"hfr_st_dev": "0.3"}, None, None, None, 1.0))
 
     def test_quality_hfr_zero_sentinel_rejected(self):
         from nina_planner.progress import _quality_accepted
@@ -1348,7 +1256,7 @@ class PrivateHelperDefensivePathsTest(unittest.TestCase):
             _within_age({"exposure_start_utc": "2026-09-20T17:00:00Z"}, 2, session)
         )
 
-    # ---- filter_metadata_rows (line 230) ----
+    # ---- filter_metadata_rows ----
 
     def test_filter_metadata_returns_empty_for_unknown_image_type(self):
         from nina_planner.progress import filter_metadata_rows

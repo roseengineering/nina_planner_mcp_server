@@ -3,6 +3,7 @@ from typing import Any
 from ..models.observatory import ObservatoryEquipment
 from ..models.plan import ObservationPlan
 from ..models.profile import ObservatoryProfile
+from ..models.request import DARK_VARIANTS
 from .builders import (
     COUNT_ARRAY,
     COUNT_VARIABLE,
@@ -61,15 +62,6 @@ from .nodes import (
     trigger_meridian_flip,
     trigger_restore_guiding,
 )
-
-## LISTS
-#
-# A `request` list composes its steps into one Target area under a single
-# End area that always parks then warms — or, for an empty list, is
-# the whole sequence, making the empty list the park (see
-# build_sequence_many). A non-empty run is bracketed by RUN-STARTING in
-# the Start area and RUN-FINISHED at the head of the End area, the one
-# event that proves every step has run (see _sequence_with_steps).
 
 
 def _contains_type(node: Any, needle: str) -> bool:
@@ -132,9 +124,10 @@ def target_payload_darks(
     ``shutter`` exposes with the wheel untouched, relying on the camera's
     shutter.
     """
-    if variant not in ("wheel", "cover", "shutter"):
+    if variant not in DARK_VARIANTS:
         raise ValueError(
-            f"Unsupported dark variant: {variant!r} (use 'wheel', 'cover', or 'shutter')"
+            f"Unsupported dark variant: {variant!r} "
+            f"(use {', '.join(map(repr, DARK_VARIANTS))})"
         )
 
     def instructions() -> list[dict[str, Any]]:
@@ -172,17 +165,11 @@ def target_payload_darks(
             # wheel and shutter differ only in how the light is cut, which is
             # settled above: neither wraps the exposures in anything.
             built = base + exposures
-        # THE DARK/BIAS SKY-GATE EXEMPTION, stated where it is emitted.
-        # Darks and biases are NOT sky-dependent: they may be loaded and
-        # started with the enclosure closed (is_safe=false), because this
-        # step parks first and NEVER unparks, cuts the light at the camera
-        # (Dark filter slot / cover / shutter) and needs no open sky — no
-        # slew, no center, no guiding. That is the whole reason a dark can
-        # run behind a closed roof while lights and dawn/dusk sky flats stay
-        # gated. The assertion pins the half of that claim a later edit
-        # could break silently: one UnparkScope (or a slew/center/guiding
-        # instruction) in here would make the exemption a lie while every
-        # test that only counts exposures kept passing.
+        # THE DARK/BIAS SKY-GATE EXEMPTION: this step parks first and NEVER
+        # unparks, and takes no slew/center/guiding — the whole reason darks
+        # can run behind a closed roof while lights and sky flats stay gated
+        # (canonical policy: sequence_park_scope in builders.py). The assert
+        # pins that half a later edit could break silently.
         for needle in ("UnparkScope", "Platesolving", "StartGuiding"):
             assert not _contains_type(built, needle), (
                 f"darks/bias must never emit {needle}: the is_safe gate "
@@ -390,11 +377,10 @@ def target_payload_lights(
                             ),
                         ]
                         + [
-                            # Same rule validate_position_angle checks
-                            # (Pointing.requests_rotation): 0 == None == no
-                            # rotation, so a rotator-less rig — whose mosaic
-                            # panes carry the explicitly-stamped 0 — gets a
-                            # plain Center, never CenterAndRotate.
+                            # Same rule as validate_position_angle:
+                            # Pointing.requests_rotation — 0 == None == no
+                            # rotation, so a rotator-less rig's 0-stamped
+                            # mosaic panes get a plain Center.
                             slew_center_and_rotate()
                             if pointing.requests_rotation()
                             else slew_and_center()

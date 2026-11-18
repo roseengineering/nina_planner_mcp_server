@@ -24,18 +24,10 @@ from . import equipment as equipment_tools
 
 # --- name resolution --------------------------------------------------------
 #
-# Two layers, fastest/most-likely-live first:
-#
-# 1. SIMBAD's web interface on its live mirrors -- CfA Harvard, then IDIA
-#    (South Africa). Both answer in well under a second.
-# 2. Astropy's `SkyCoord.from_name` (SESAME), whose mirrors are CDS Strasbourg
-#    + Harvard's Sesame -- kept as a backstop because it also consults NED/VizieR.
-#
-# Layer 2 leads only when layer 1 is down. CDS Strasbourg has been dark since
-# its 2026-10-28 cybersecurity incident (its whole 130.79.128.x subnet silently
-# drops SYNs), and Harvard's Sesame hangs on any name not already in its cache
-# because its backend is that same Strasbourg -- so going to the mirrors
-# directly is what keeps `resolve_target` working through the outage.
+# Two layers, fastest/most-likely-live first: SIMBAD's web interface on its
+# live mirrors (CfA Harvard, then IDIA), then Astropy's `SkyCoord.from_name`
+# (SESAME, whose CDS Strasbourg backend has been unreliable) as a backstop —
+# so `resolve_target` keeps working while one source is down.
 
 _SIMBAD_MIRRORS: tuple[str, ...] = (
     "https://simbad.cfa.harvard.edu",
@@ -284,15 +276,31 @@ _SUN_FORWARD_H = 48.0
 _SUN_STEP_MIN = 5
 
 
-def _sun_altitudes(times: Time, location: EarthLocation) -> list[float]:
-    """Geometric sun altitude in degrees for each time (no refraction).
+def _body_altitudes(
+    body: SkyCoord, times: Time, location: EarthLocation
+) -> list[float]:
+    """Geometric (no refraction) altitude of ``body`` at each time, degrees.
 
-    Accepts a scalar or vector `Time`; always returns a list.
+    Accepts a scalar or vector `Time`; always returns a list. Astropy's
+    ``AltAz`` applies no refraction at its default pressure of 0, which is
+    why the crossing thresholds absorb it.
     """
-    sun = get_sun(times)
-    altaz = sun.transform_to(AltAz(obstime=times, location=location))
-    alts = np.atleast_1d(altaz.alt.deg)
-    return [float(a) for a in alts]
+    altaz = body.transform_to(AltAz(obstime=times, location=location))
+    return [float(a) for a in np.atleast_1d(altaz.alt.deg)]
+
+
+def _sun_altitudes(times: Time, location: EarthLocation) -> list[float]:
+    """Geometric sun altitude in degrees for each time (no refraction)."""
+    return _body_altitudes(get_sun(times), times, location)
+
+
+def _site_dict(location: EarthLocation) -> dict[str, float]:
+    """The site block both ``_sun_events`` and ``_moon_events`` report."""
+    return {
+        "latitude_deg": round(float(location.lat.deg), 4),
+        "longitude_deg": round(float(location.lon.deg), 4),
+        "elevation_m": round(float(location.height.to_value(u.m)), 1),
+    }
 
 
 def _interp_time(times: Time, alts: list[float], i: int, threshold: float) -> Time:
@@ -396,11 +404,7 @@ def _sun_events(when: Time, location: EarthLocation) -> dict[str, Any]:
 
     return {
         "time_utc": when.utc.isot,
-        "site": {
-            "latitude_deg": round(float(location.lat.deg), 4),
-            "longitude_deg": round(float(location.lon.deg), 4),
-            "elevation_m": round(float(location.height.to_value(u.m)), 1),
-        },
+        "site": _site_dict(location),
         "is_dark_now": is_dark_now,
         "night_phase": night_phase,
         "events": {
@@ -423,17 +427,10 @@ def _sun_events(when: Time, location: EarthLocation) -> dict[str, Any]:
 # distance and rise/set are topocentric, i.e. what this site actually sees.
 # Fully offline: astropy's builtin ephemeris, no network.
 
-# Moon rise/set altitude. Meeus's standard altitude for the Moon is
-# h0 = 0.7275*pi - 0.5667 deg (pi ~0.95 deg horizontal parallax) = +0.125
-# deg, but that is the GEOCENTRIC figure: it folds in the parallax that drops
-# the Moon's apparent position by up to ~0.95 deg. `get_body(..., location)`
-# is already topocentric, so what is left is the usual apparent-upper-limb
-# condition -- -(refraction + semidiameter) = -(0.5667 + 0.259) ~ -0.83 deg,
-# the same number the sun events use (the Sun's and Moon's semidiameters are
-# both ~0.26 deg). Measured against Ottawa's published table for 2026-11-07:
-# -0.833 gives rise 10:11:15 / set 20:30:42 UTC against a published 10:11 /
-# 20:30, while Meeus's +0.125 applied to topocentric altitudes lands 6
-# minutes late on rise.
+# Moon rise/set altitude: the usual apparent-upper-limb line
+# -(refraction + semidiameter) = -0.833 deg — the same number the sun events
+# use (both semidiameters ~0.26 deg). ``get_body(..., location)`` is already
+# topocentric, so no geocentric-parallax correction is needed here.
 _MOON_HORIZON_ALT = -0.833
 
 # One lunar day runs ~24h50m, so 48 h forward always contains a moonrise and
@@ -475,16 +472,8 @@ _PHASE_QUARTER_BAND = 0.03
 
 
 def _moon_altitudes(times: Time, location: EarthLocation) -> list[float]:
-    """Topocentric geometric moon altitude in degrees for each time.
-
-    No refraction -- astropy's `AltAz` applies none at its default pressure
-    of 0, which is why the crossing threshold above absorbs it. Accepts a
-    scalar or vector `Time`; always returns a list.
-    """
-    moon = get_body("moon", times, location)
-    altaz = moon.transform_to(AltAz(obstime=times, location=location))
-    alts = np.atleast_1d(altaz.alt.deg)
-    return [float(a) for a in alts]
+    """Topocentric geometric moon altitude in degrees for each time."""
+    return _body_altitudes(get_body("moon", times, location), times, location)
 
 
 def _elongation_series(times: Time) -> np.ndarray:
@@ -617,11 +606,7 @@ def _moon_events(when: Time, location: EarthLocation) -> dict[str, Any]:
 
     return {
         "time_utc": when.utc.isot,
-        "site": {
-            "latitude_deg": round(float(location.lat.deg), 4),
-            "longitude_deg": round(float(location.lon.deg), 4),
-            "elevation_m": round(float(location.height.to_value(u.m)), 1),
-        },
+        "site": _site_dict(location),
         "moon_up_now": bool(float(altaz.alt.deg) > _MOON_HORIZON_ALT),
         "altitude_deg": round(float(altaz.alt.deg), 2),
         "azimuth_deg": round(float(altaz.az.deg), 2),
@@ -683,12 +668,9 @@ def _rank_catalog(
     times = when + np.arange(samples) * 30 * u.min
     dark = [s < _DARKNESS_SUN_ALT for s in _sun_altitudes(times, location)]
     if not any(dark):
-        # No astronomical darkness in the sampled 12 h at all — midsummer at
-        # a high latitude. `is_dark_now` is part of this tool's documented
-        # shape on EVERY return (best_targets spreads it into its result and
-        # callers read it unconditionally), and here it is False by
-        # construction: the first sample is not dark. Dropping the key here
-        # used to surface as a caller KeyError.
+        # No astronomical darkness in the sampled 12 h (midsummer at a high
+        # latitude): `is_dark_now` is part of this tool's documented shape on
+        # EVERY return, and here it is False by construction.
         return {
             "is_dark_now": False,
             "visible_now": [],
@@ -833,6 +815,17 @@ async def best_targets(
     )
 
 
+async def _site_location_and_now() -> tuple[EarthLocation, Time]:
+    """The active site's ``EarthLocation`` and the current UTC instant."""
+    site = (await equipment_tools.get_site_profile()).site
+    location = EarthLocation(
+        lat=site.latitude_deg * u.deg,
+        lon=site.longitude_deg * u.deg,
+        height=site.elevation_m * u.m,
+    )
+    return location, Time(datetime.now(timezone.utc))
+
+
 @mcp.tool()
 async def sun_times() -> dict[str, Any]:
     """Returns the site's next sunrise, sunset, and all four twilight boundaries (civil, nautical, astronomical dusk and dawn), plus the astronomical-darkness window currently in effect or next to open -- the source of truth for "is the night over", "when does darkness start", and dusk/dawn scheduling.
@@ -840,14 +833,7 @@ async def sun_times() -> dict[str, Any]:
     Events use standard definitions against apparent sun altitude: sunrise/sunset at -0.833 deg (refraction + solar semidiameter), civil twilight -6 deg, nautical -12 deg, astronomical -18 deg. Each time is the FIRST occurrence after now (UTC ISO). `darkness` pairs with `night_phase`: while "dark" it is the window containing now (`start_utc` in the past); while "morning" the night that just ended (what a night report documents); while "evening" the window about to open. Either side is `null` only in polar-day/polar-night conditions where the crossing does not occur within the window. `is_dark_now` is sun below -18 deg at this instant -- the same gate `best_targets` uses, so the two tools never disagree.
 
     `night_phase` classifies the moment for end-of-night decisions: "dark" (inside astronomical darkness), "morning" (darkness just ended / nearest boundary is astronomical dawn -- the night is over), "evening" (darkness begins before the last dawn recedes -- the night is still ahead). Use `night_phase == "morning"` rather than "no targets above the floor" as the signal to end a night: a mid-night gap between targets is not the end of the night. Read-only; takes no action, makes no N.I.N.A. calls beyond reading the site profile."""
-    profile = await equipment_tools.get_site_profile()
-    site = profile.site
-    location = EarthLocation(
-        lat=site.latitude_deg * u.deg,
-        lon=site.longitude_deg * u.deg,
-        height=site.elevation_m * u.m,
-    )
-    when = Time(datetime.now(timezone.utc))
+    location, when = await _site_location_and_now()
     return await anyio.to_thread.run_sync(_sun_events, when, location)
 
 
@@ -862,12 +848,5 @@ async def moon_times() -> dict[str, Any]:
     `moon_up_now`, `altitude_deg`, `azimuth_deg` and `distance_km` describe the Moon at this instant (topocentric, so `distance_km` can differ from an almanac's geocentric figure by up to Earth's radius). `moon_up_now` is defined against the same -0.833 deg line `moonrise`/`moonset` cross, so it is consistent with those two events.
 
     Combine with `sun_times`: `events.moonrise`/`moonset` against `darkness.start_utc`/`end_utc` says whether the Moon will be up during astronomical darkness, and `phase.illumination_fraction` says how bright it will be when it is. Read-only; no N.I.N.A. calls beyond reading the site profile, and no network."""
-    profile = await equipment_tools.get_site_profile()
-    site = profile.site
-    location = EarthLocation(
-        lat=site.latitude_deg * u.deg,
-        lon=site.longitude_deg * u.deg,
-        height=site.elevation_m * u.m,
-    )
-    when = Time(datetime.now(timezone.utc))
+    location, when = await _site_location_and_now()
     return await anyio.to_thread.run_sync(_moon_events, when, location)

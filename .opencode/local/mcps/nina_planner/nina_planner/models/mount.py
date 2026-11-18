@@ -58,13 +58,9 @@ class MountDevice(BaseModel):
                 hours_to_flip=ascom_float(data.get("time_to_meridian_flip")),
                 side_of_pier=data.get("side_of_pier"),
             )
-            # ASCOM sentinel: NINA's Mount.TimeToMeridianFlip returns exactly
-            # 24.0 (the field's maximum value) when the mount is parked,
-            # stopped, or otherwise won't flip in the foreseeable future —
-            # i.e. "no flip pending". Normalize to None so downstream code
-            # can use a uniform `if hours_to_flip is None` check instead of
-            # also remembering the magic 24.0. Real values (0.0–23.99) pass
-            # through unchanged.
+            # ASCOM sentinel: NINA reports exactly 24.0 (the field's max)
+            # when no flip is pending; normalize to None so downstream code
+            # reads a uniform `is None` check.
             if data["meridian"].hours_to_flip == 24.0:
                 data["meridian"].hours_to_flip = None
 

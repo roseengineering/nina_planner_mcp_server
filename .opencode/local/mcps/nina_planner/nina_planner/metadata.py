@@ -12,9 +12,4 @@ async def resolve_imaging_root() -> Path:
 
 async def read_metadata(image_type: str | None = None) -> list[dict[str, Any]]:
     root = await resolve_imaging_root()
-    if image_type is not None:
-        return read_imaging_csv(root=root, image_type=image_type)
-    rows: list[dict[str, Any]] = []
-    for t in ("light", "dark", "bias", "flat"):
-        rows += read_imaging_csv(root=root, image_type=t)
-    return rows
+    return read_imaging_csv(root=root, image_type=image_type)

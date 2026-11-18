@@ -3,9 +3,6 @@ from __future__ import annotations
 import math
 import re
 from datetime import datetime
-from typing import TypeVar
-
-T = TypeVar("T")
 
 
 def to_snake(name: str) -> str:
@@ -45,22 +42,12 @@ def ascom_float(value: object) -> float | None:
 
 
 def ascom_int(value: object) -> int | None:
-    if value is None:
-        return None
-    if isinstance(value, str):
-        stripped = value.strip()
-        if _missing_string(stripped):
-            return None
-        return int(float(stripped))
-    if isinstance(value, float):
-        if math.isnan(value):
-            return None
-        return int(value)
+    # Exact pass-through for real ints (keeps big values precise); every
+    # other shape goes through ascom_float's sentinel handling first.
     if isinstance(value, int) and not isinstance(value, bool):
         return value
-    if isinstance(value, bool):
-        return int(value)
-    return int(float(str(value)))
+    parsed = ascom_float(value)
+    return None if parsed is None else int(parsed)
 
 
 def ascom_datetime(value: object) -> datetime | None:

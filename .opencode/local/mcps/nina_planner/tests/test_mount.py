@@ -6,98 +6,86 @@ from nina_planner.models.mount import MountDevice
 from nina_planner.models.pointing import PointingInfo
 
 
-class MountDeviceHoursParsingTest(unittest.TestCase):
-    def _base(self, **overrides) -> dict:
-        data = {
-            "connected": True,
-            "name": "TestMount",
-            "description": "test mount",
-        }
-        data.update(overrides)
-        return data
+def _base(**overrides) -> dict:
+    data = {
+        "connected": True,
+        "name": "TestMount",
+        "description": "test mount",
+    }
+    data.update(overrides)
+    return data
 
+
+class MountDeviceHoursParsingTest(unittest.TestCase):
     def test_coordinates_ra_in_hours_populates_pointing_ra_hours(self):
-        mount = MountDevice(**self._base(coordinates={"ra": 5.5, "dec": 10.0}))
+        mount = MountDevice(**_base(coordinates={"ra": 5.5, "dec": 10.0}))
         self.assertEqual(mount.pointing.ra_hours, 5.5)
 
     def test_top_level_right_ascension_fallback_when_coordinates_missing(self):
-        mount = MountDevice(**self._base(right_ascension=12.0))
+        mount = MountDevice(**_base(right_ascension=12.0))
         self.assertEqual(mount.pointing.ra_hours, 12.0)
 
     def test_top_level_right_ascension_fallback_when_coordinates_ra_is_none(self):
         mount = MountDevice(
-            **self._base(coordinates={"ra": None, "dec": None}, right_ascension=18.25)
+            **_base(coordinates={"ra": None, "dec": None}, right_ascension=18.25)
         )
         self.assertEqual(mount.pointing.ra_hours, 18.25)
 
     def test_ra_hours_boundary_zero_accepted(self):
-        mount = MountDevice(**self._base(coordinates={"ra": 0.0, "dec": 0.0}))
+        mount = MountDevice(**_base(coordinates={"ra": 0.0, "dec": 0.0}))
         self.assertEqual(mount.pointing.ra_hours, 0.0)
 
     def test_ra_hours_just_under_24_accepted(self):
-        mount = MountDevice(**self._base(coordinates={"ra": 23.9999, "dec": 0.0}))
+        mount = MountDevice(**_base(coordinates={"ra": 23.9999, "dec": 0.0}))
         self.assertEqual(mount.pointing.ra_hours, 23.9999)
 
     def test_ra_hours_string_value_coerced(self):
-        mount = MountDevice(**self._base(coordinates={"ra": "5.5", "dec": "10.0"}))
+        mount = MountDevice(**_base(coordinates={"ra": "5.5", "dec": "10.0"}))
         self.assertEqual(mount.pointing.ra_hours, 5.5)
 
     def test_ra_minus_one_caught_by_pydantic_range_check(self):
         # -1 is preserved by ascom_float now, but RA must be in [0, 24);
         # Pydantic validation rejects it.
         with self.assertRaises(ValidationError):
-            MountDevice(**self._base(coordinates={"ra": -1, "dec": 10.0}))
+            MountDevice(**_base(coordinates={"ra": -1, "dec": 10.0}))
 
     def test_ra_nan_string_sentinel_is_none(self):
-        mount = MountDevice(**self._base(coordinates={"ra": "NaN", "dec": 10.0}))
+        mount = MountDevice(**_base(coordinates={"ra": "NaN", "dec": 10.0}))
         self.assertIsNone(mount.pointing.ra_hours)
 
     def test_missing_ra_leaves_ra_hours_none(self):
-        mount = MountDevice(**self._base())
+        mount = MountDevice(**_base())
         self.assertIsNone(mount.pointing.ra_hours)
 
-    def test_dec_parses_alongside_ra_hours(self):
-        mount = MountDevice(**self._base(coordinates={"ra": 5.5, "dec": 22.5}))
-        self.assertEqual(mount.pointing.dec_deg, 22.5)
-
     def test_disconnected_mount_skips_validator(self):
-        mount = MountDevice(**self._base(connected=False, right_ascension=12.0))
+        mount = MountDevice(**_base(connected=False, right_ascension=12.0))
         self.assertIsNone(mount.pointing.ra_hours)
 
 
 class MountDeviceRaHoursValidationTest(unittest.TestCase):
-    def _base(self, **overrides) -> dict:
-        data = {
-            "connected": True,
-            "name": "TestMount",
-            "description": "test mount",
-        }
-        data.update(overrides)
-        return data
-
     def test_ra_hours_180_raises_validation_error(self):
         with self.assertRaises(ValidationError):
-            MountDevice(**self._base(coordinates={"ra": 180.0, "dec": 10.0}))
+            MountDevice(**_base(coordinates={"ra": 180.0, "dec": 10.0}))
 
     def test_ra_hours_just_over_24_raises_validation_error(self):
         with self.assertRaises(ValidationError):
-            MountDevice(**self._base(coordinates={"ra": 24.001, "dec": 10.0}))
+            MountDevice(**_base(coordinates={"ra": 24.001, "dec": 10.0}))
 
     def test_ra_hours_exactly_24_raises_validation_error(self):
         with self.assertRaises(ValidationError):
-            MountDevice(**self._base(coordinates={"ra": 24.0, "dec": 10.0}))
+            MountDevice(**_base(coordinates={"ra": 24.0, "dec": 10.0}))
 
     def test_ra_hours_negative_raises_validation_error(self):
         with self.assertRaises(ValidationError):
-            MountDevice(**self._base(coordinates={"ra": -0.001, "dec": 10.0}))
+            MountDevice(**_base(coordinates={"ra": -0.001, "dec": 10.0}))
 
     def test_top_level_right_ascension_180_raises_validation_error(self):
         with self.assertRaises(ValidationError):
-            MountDevice(**self._base(right_ascension=180.0, declination=10.0))
+            MountDevice(**_base(right_ascension=180.0, declination=10.0))
 
     def test_validation_error_message_mentions_ra_hours(self):
         with self.assertRaises(ValidationError) as ctx:
-            MountDevice(**self._base(coordinates={"ra": 180.0, "dec": 10.0}))
+            MountDevice(**_base(coordinates={"ra": 180.0, "dec": 10.0}))
         self.assertIn("ra_hours", str(ctx.exception))
 
     def test_pointing_info_direct_construction_180_raises(self):
@@ -110,102 +98,70 @@ class MountDeviceRaHoursValidationTest(unittest.TestCase):
 
 
 class MountDeviceDecParsingTest(unittest.TestCase):
-    def _base(self, **overrides) -> dict:
-        data = {
-            "connected": True,
-            "name": "TestMount",
-            "description": "test mount",
-        }
-        data.update(overrides)
-        return data
-
     def test_coordinates_dec_populates_pointing_dec_deg(self):
-        mount = MountDevice(**self._base(coordinates={"ra": 5.5, "dec": 22.5}))
+        mount = MountDevice(**_base(coordinates={"ra": 5.5, "dec": 22.5}))
         self.assertEqual(mount.pointing.dec_deg, 22.5)
 
     def test_top_level_declination_fallback_when_coordinates_missing(self):
-        mount = MountDevice(**self._base(declination=45.0))
+        mount = MountDevice(**_base(declination=45.0))
         self.assertEqual(mount.pointing.dec_deg, 45.0)
 
     def test_top_level_declination_fallback_when_coordinates_dec_is_none(self):
         mount = MountDevice(
-            **self._base(coordinates={"ra": None, "dec": None}, declination=-30.0)
+            **_base(coordinates={"ra": None, "dec": None}, declination=-30.0)
         )
         self.assertEqual(mount.pointing.dec_deg, -30.0)
 
-    def test_dec_boundary_positive_90_accepted(self):
-        mount = MountDevice(**self._base(coordinates={"ra": 5.5, "dec": 90.0}))
-        self.assertEqual(mount.pointing.dec_deg, 90.0)
-
-    def test_dec_boundary_negative_90_accepted(self):
-        mount = MountDevice(**self._base(coordinates={"ra": 5.5, "dec": -90.0}))
-        self.assertEqual(mount.pointing.dec_deg, -90.0)
-
-    def test_dec_zero_accepted(self):
-        mount = MountDevice(**self._base(coordinates={"ra": 5.5, "dec": 0.0}))
-        self.assertEqual(mount.pointing.dec_deg, 0.0)
-
     def test_dec_string_value_coerced(self):
-        mount = MountDevice(**self._base(coordinates={"ra": 5.5, "dec": "22.5"}))
+        mount = MountDevice(**_base(coordinates={"ra": 5.5, "dec": "22.5"}))
         self.assertEqual(mount.pointing.dec_deg, 22.5)
 
-    def test_dec_minus_one_caught_by_pydantic_range_check(self):
-        # Dec must be in [-90, 90]; -1 actually IS valid for declination
-        # (it's a real value, e.g., near the celestial equator going south),
-        # so this just verifies that -1 passes through cleanly.
-        mount = MountDevice(**self._base(coordinates={"ra": 5.5, "dec": -1}))
+    def test_dec_minus_one_passes_through(self):
+        # -1 is a valid declination; this pins that it is NOT rejected.
+        mount = MountDevice(**_base(coordinates={"ra": 5.5, "dec": -1}))
         self.assertEqual(mount.pointing.dec_deg, -1.0)
 
     def test_dec_nan_string_sentinel_is_none(self):
-        mount = MountDevice(**self._base(coordinates={"ra": 5.5, "dec": "NaN"}))
+        mount = MountDevice(**_base(coordinates={"ra": 5.5, "dec": "NaN"}))
         self.assertIsNone(mount.pointing.dec_deg)
 
     def test_missing_dec_leaves_dec_deg_none(self):
-        mount = MountDevice(**self._base())
+        mount = MountDevice(**_base())
         self.assertIsNone(mount.pointing.dec_deg)
 
     def test_disconnected_mount_skips_validator_for_dec(self):
-        mount = MountDevice(**self._base(connected=False, declination=45.0))
+        mount = MountDevice(**_base(connected=False, declination=45.0))
         self.assertIsNone(mount.pointing.dec_deg)
 
 
 class MountDeviceDecValidationTest(unittest.TestCase):
-    def _base(self, **overrides) -> dict:
-        data = {
-            "connected": True,
-            "name": "TestMount",
-            "description": "test mount",
-        }
-        data.update(overrides)
-        return data
-
     def test_dec_just_over_90_raises_validation_error(self):
         with self.assertRaises(ValidationError):
-            MountDevice(**self._base(coordinates={"ra": 5.5, "dec": 90.001}))
+            MountDevice(**_base(coordinates={"ra": 5.5, "dec": 90.001}))
 
     def test_dec_exactly_90_accepted(self):
-        mount = MountDevice(**self._base(coordinates={"ra": 5.5, "dec": 90.0}))
+        mount = MountDevice(**_base(coordinates={"ra": 5.5, "dec": 90.0}))
         self.assertEqual(mount.pointing.dec_deg, 90.0)
 
     def test_dec_exactly_minus_90_accepted(self):
-        mount = MountDevice(**self._base(coordinates={"ra": 5.5, "dec": -90.0}))
+        mount = MountDevice(**_base(coordinates={"ra": 5.5, "dec": -90.0}))
         self.assertEqual(mount.pointing.dec_deg, -90.0)
 
     def test_dec_just_under_minus_90_raises_validation_error(self):
         with self.assertRaises(ValidationError):
-            MountDevice(**self._base(coordinates={"ra": 5.5, "dec": -90.001}))
+            MountDevice(**_base(coordinates={"ra": 5.5, "dec": -90.001}))
 
     def test_dec_180_raises_validation_error(self):
         with self.assertRaises(ValidationError):
-            MountDevice(**self._base(coordinates={"ra": 5.5, "dec": 180.0}))
+            MountDevice(**_base(coordinates={"ra": 5.5, "dec": 180.0}))
 
     def test_top_level_declination_180_raises_validation_error(self):
         with self.assertRaises(ValidationError):
-            MountDevice(**self._base(declination=180.0))
+            MountDevice(**_base(declination=180.0))
 
     def test_validation_error_message_mentions_dec_deg(self):
         with self.assertRaises(ValidationError) as ctx:
-            MountDevice(**self._base(coordinates={"ra": 5.5, "dec": 180.0}))
+            MountDevice(**_base(coordinates={"ra": 5.5, "dec": 180.0}))
         self.assertIn("dec_deg", str(ctx.exception))
 
     def test_pointing_info_direct_construction_dec_180_raises(self):
@@ -218,70 +174,52 @@ class MountDeviceDecValidationTest(unittest.TestCase):
 
     def test_ra_valid_with_dec_invalid_still_raises(self):
         with self.assertRaises(ValidationError):
-            MountDevice(**self._base(coordinates={"ra": 5.5, "dec": 91.0}))
+            MountDevice(**_base(coordinates={"ra": 5.5, "dec": 91.0}))
 
 
 class MountDeviceStatusTest(unittest.TestCase):
-    def _base(self, **overrides) -> dict:
-        data = {
-            "connected": True,
-            "name": "TestMount",
-            "description": "test mount",
-        }
-        data.update(overrides)
-        return data
-
     def test_slewing_status_yields_slewing(self):
         # slewing=True wins over tracking_enabled=False.
-        mount = MountDevice(**self._base(slewing=True, tracking_enabled=False))
+        mount = MountDevice(**_base(slewing=True, tracking_enabled=False))
         self.assertEqual(mount.mount_status, "SLEWING")
 
     def test_slewing_status_yields_slewing_even_when_tracking(self):
         # slewing=True wins over tracking_enabled=True (priority order).
-        mount = MountDevice(**self._base(slewing=True, tracking_enabled=True))
+        mount = MountDevice(**_base(slewing=True, tracking_enabled=True))
         self.assertEqual(mount.mount_status, "SLEWING")
 
     def test_tracking_enabled_yields_tracking(self):
-        mount = MountDevice(**self._base(slewing=False, tracking_enabled=True))
+        mount = MountDevice(**_base(slewing=False, tracking_enabled=True))
         self.assertEqual(mount.mount_status, "TRACKING")
 
     def test_idle_when_neither_slewing_nor_tracking(self):
-        mount = MountDevice(**self._base(slewing=False, tracking_enabled=False))
+        mount = MountDevice(**_base(slewing=False, tracking_enabled=False))
         self.assertEqual(mount.mount_status, "IDLE")
 
 
 class MountDeviceMeridianFlipTest(unittest.TestCase):
-    def _base(self, **overrides) -> dict:
-        data = {
-            "connected": True,
-            "name": "TestMount",
-            "description": "test mount",
-        }
-        data.update(overrides)
-        return data
-
     def test_hours_to_flip_exactly_24_normalized_to_none(self):
         """ASCOM sentinel: NINA returns 24.0 for time_to_meridian_flip when
         the mount is parked/stopped ("no flip pending"). The validator
         normalizes this to None so downstream code can use a uniform
         `is None` check instead of remembering the magic 24.0.
         """
-        mount = MountDevice(**self._base(time_to_meridian_flip=24.0))
+        mount = MountDevice(**_base(time_to_meridian_flip=24.0))
         self.assertIsNone(mount.meridian.hours_to_flip)
 
     def test_hours_to_flip_real_value_preserved(self):
         """A genuine fractional value (e.g. 4.5 hours) is NOT normalized."""
-        mount = MountDevice(**self._base(time_to_meridian_flip=4.5))
+        mount = MountDevice(**_base(time_to_meridian_flip=4.5))
         self.assertEqual(mount.meridian.hours_to_flip, 4.5)
 
     def test_hours_to_flip_zero_preserved(self):
         """Zero is a real value (flip is imminent) — not normalized."""
-        mount = MountDevice(**self._base(time_to_meridian_flip=0.0))
+        mount = MountDevice(**_base(time_to_meridian_flip=0.0))
         self.assertEqual(mount.meridian.hours_to_flip, 0.0)
 
     def test_hours_to_flip_missing_yields_none(self):
         """Missing time_to_meridian_flip → ascom_float returns None → None."""
-        mount = MountDevice(**self._base())
+        mount = MountDevice(**_base())
         self.assertIsNone(mount.meridian.hours_to_flip)
 
 

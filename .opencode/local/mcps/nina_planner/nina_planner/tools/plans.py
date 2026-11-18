@@ -22,6 +22,7 @@ from ..progress import (
     _light_target_matches,
     group_verdict,
     is_junk_row,
+    path_has_id,
     plan_progress,
     progress_verdict,
 )
@@ -220,14 +221,9 @@ async def get_plan_progress(file_path: str) -> dict[str, Any]:
     expired_any = False
     for index in range(1, len(plan.pointings) + 1):
         pointings_progress = progress_for(index)
-        # Completion is decided from ACQUIRED COUNTS and WINDOW STATE — the
-        # rule now lives in ONE place (progress.group_verdict, rolled up by
-        # progress_verdict) instead of being re-derived here: plan_progress
-        # zeroes a calibration group's remaining once its window closes, so
-        # `remaining_count == 0` alone would call a window that expired at
-        # 8/10 darks complete. A closed window with frames missing is
-        # expired_with_deficit, and shooting cannot fix it (only a raised
-        # calibration_window_days or a new plan can).
+        # Completion from acquired counts + window state via the shared rule
+        # (progress_verdict) — remaining_count alone would call a window
+        # that expired with frames missing "complete".
         verdict = progress_verdict(pointings_progress)
         pane_status = str(verdict["status"])
         pane_done = bool(verdict["complete"])
@@ -241,9 +237,7 @@ async def get_plan_progress(file_path: str) -> dict[str, Any]:
                 "plan_id": plan.effective_plan_id(index),
                 "complete": pane_done,
                 # Named separately from `incomplete`: an expired deficit is
-                # not something a sequence run can fix, so a caller must be
-                # able to tell "shoot more frames" apart from "write a new
-                # plan / raise calibration_window_days".
+                # not something a sequence run can fix.
                 "status": pane_status,
                 "frame_types": pointings_progress,
             }
@@ -251,9 +245,8 @@ async def get_plan_progress(file_path: str) -> dict[str, Any]:
     res = {
         "plan_id": plan._base_plan_id(),
         "target": plan.target,
-        # Only the thresholds actually set — `{}` means no filtering. Echoed
-        # because the counts below are meaningless without knowing which rules
-        # produced them, and the caller no longer passes those rules itself.
+        # Only the thresholds actually set — `{}` means no filtering; echoed
+        # because the counts below are meaningless without them.
         "quality": plan.quality.model_dump(exclude_none=True),
         "pointing_count": len(plan.pointings),
         "complete": complete,
@@ -262,13 +255,9 @@ async def get_plan_progress(file_path: str) -> dict[str, Any]:
         "warning": None,
         "pointings": entries,
     }
-    # A plan can be `complete` and still have lost frames: a mode=full
-    # re-shoot asks for total_count *more* frames, but acquired_count is
-    # cumulative, so the older frames keep the plan complete no matter what
-    # the re-shoot delivered. Surplus is the only trace of that here, and it
-    # is worth shouting about because the default reading — complete:true,
-    # remaining:0 — is exactly what an operator sees after a truncated
-    # re-shoot (M42: 17 of 120 frames landed, plan read complete).
+    # `complete: true` with surplus means frames exist, not that the latest
+    # re-shoot delivered — acquired counts are cumulative across runs (see
+    # the docstring), so surplus is the only trace here.
     surplus = sum(
         item.get("surplus_count", 0)
         for entry in entries
@@ -286,11 +275,8 @@ async def get_plan_progress(file_path: str) -> dict[str, Any]:
             "imaging drive."
         )
     if expired_any:
-        # Reported apart from `complete` because the fix differs: no sequence
-        # run can close an expired calibration deficit (the window would have
-        # to be open for a frame shot now to be credited), so an operator who
-        # only reads "not complete" would re-shoot lights that are already
-        # fine. Name the two remedies instead.
+        # Reported apart from `complete` because the fix differs: only a
+        # raised window or a new plan can close an expired deficit.
         expired_types = sorted(
             {
                 image_type
@@ -319,33 +305,17 @@ async def get_plan_progress(file_path: str) -> dict[str, Any]:
     return res
 
 
-# ---------------------------------------------------------------------
-# get_plan_progress FORBIDS unknown arguments.
-#
-# The function's only parameter is `file_path` — thresholds live in that
-# file's `quality` section, one source of truth — and FastMCP builds each
-# tool's argument model from the signature with extra keys IGNORED, so a
-# caller still passing max_hfr would have it silently dropped: unfiltered
-# counts, no error, exactly the split-brain the docstring forbids. The
-# function never sees the dropped key, so the guard cannot live in the
-# body; it is applied to the generated `get_plan_progressArguments` model
-# instead. There is no legacy-key list and no migration message — an
-# unexpected field is refused as invalid input whatever it is called.
-# ---------------------------------------------------------------------
-
-
 def _forbid_unknown_arguments() -> None:
     """Swap in an argument model that refuses unknown fields.
 
-    ``@mcp.tool()`` registered the function above when it was defined;
-    this replaces the registered tool's generated argument model with an
-    ``extra="forbid"`` subclass of it. The FIELDS are untouched, so the
-    published schema only gains ``additionalProperties: false`` — a
-    caller passing ``max_hfr`` (or any other stray key) now gets a
-    validation error naming that key instead of silently unfiltered
-    counts. Fails loudly if FastMCP's registration surface ever moves:
-    silently losing this helper would silently reintroduce the
-    ignored-key bug.
+    ``get_plan_progress`` takes only ``file_path`` — thresholds live in the
+    plan file's ``quality`` section — but FastMCP's generated argument model
+    ignores extra keys, so a caller passing ``max_hfr`` would silently get
+    unfiltered counts. This subclasses the registered model with
+    ``extra="forbid"`` (fields untouched; the published schema only gains
+    ``additionalProperties: false``) so a stray key is a validation error.
+    Raises if FastMCP's registration surface ever moves: silently losing
+    this helper would silently reintroduce the ignored-key bug.
     """
     tool = mcp._tool_manager.get_tool("get_plan_progress")
     if tool is None:
@@ -412,53 +382,6 @@ def _plan_ids_in_path(path: str) -> list[str]:
     return out
 
 
-def _path_has_id(path: str, plan_id: str) -> bool:
-    """True when any path segment carries ``plan_id`` in a delimited form.
-
-    Covers the bare and pointing-suffixed shapes (``_{id}_`` / ``[{id}]`` /
-    ``({id})`` and ``_{id}-N_``); the trailing "-" keeps ``plan-x`` out of
-    ``plan-xy`` exactly as progress._light_target_matches requires.
-    """
-    for component in path.replace("\\", "/").split("/"):
-        if not component:
-            continue
-        for form in (
-            f"_{plan_id}_",
-            f"[{plan_id}]",
-            f"({plan_id})",
-            f"_{plan_id}-",
-            f"[{plan_id}-",
-            f"({plan_id}-",
-        ):
-            if form in component:
-                return True
-    return False
-
-
-def _plan_files(plan_dir: Path) -> list[Path]:
-    """All ``*.json`` files under ``plan_dir``, recursively, shallowest first.
-
-    Plans may live in subfolders (``plans/``, ``archive/``, per-month dirs),
-    so discovery recurses — but only through visible, ordinary directories
-    (the ``_walk_visible`` prune: hidden dirs like ``.opencode``/``.venv``/
-    ``.archive`` and ``node_modules``/``__pycache__`` are never entered; on
-    this project that prunes 476 of 500 JSON files, leaving exactly the
-    observation plans). Directory symlinks are NOT followed (os.walk default),
-    so a symlink cycle can never hang an unattended audit.
-
-    Results are sorted (depth, name): if two files carry the same plan id —
-    an archived copy next to the live plan — the top-level canonical file
-    wins the claiming pass deterministically instead of whatever plain
-    ``sorted()`` would pick alphabetically (where ``archive/`` sorts before
-    ``m47.json``).
-    """
-    found: list[Path] = []
-    for directory, filenames in _walk_visible(plan_dir):
-        found.extend(directory / name for name in filenames if name.endswith(".json"))
-    found.sort(key=lambda p: (len(p.relative_to(plan_dir).parts), p.name))
-    return found
-
-
 async def _load_project_plans(
     plan_dir: Path, selected: list[str] | None = None
 ) -> tuple[list[tuple[Path, ObservationPlan]], list[dict[str, str]]]:
@@ -469,7 +392,7 @@ async def _load_project_plans(
     whole-project sweep, so every failure is collected into ``errors`` as
     ``{file, reason}`` and the rest keep going — the audit reports partial
     truth rather than none. Default discovery walks ``plan_dir`` recursively
-    through unpruned directories only (see ``_plan_files``).
+    through unpruned directories only (see ``plan_utils.plan_files``).
     """
     if selected:
         files = []
@@ -479,7 +402,7 @@ async def _load_project_plans(
                 path = plan_dir / path
             files.append(path)
     else:
-        files = _plan_files(plan_dir)
+        files = plan_utils.plan_files(plan_dir)
     plans: list[tuple[Path, ObservationPlan]] = []
     errors: list[dict[str, str]] = []
     for file in files:
@@ -513,35 +436,23 @@ def _plan_type_totals(
 def _count_fits(token_dir: Path) -> dict[str, int]:
     """Count frame files under ``token_dir``, bucketed by parent directory name.
 
-    Layout (verified): ``<token_dir>/<YYYY-MM-DD>/<TYPE>/<file>.fits.fz`` —
-    the immediate parent directory name is the image type in the normal case.
-    Counting by parent name at any depth tolerates N.I.N.A. writing extra
-    date folders or skipping them, and the ``.fits.fz``/``.fits`` suffix
-    filter keeps the ImageMetaData/AcquisitionDetails sidecars out.
+    Layout: ``<token_dir>/<YYYY-MM-DD>/<TYPE>/<file>.fits.fz`` — the
+    immediate parent is the image type in the normal case, but the name is
+    NOT gated on the LIGHT/DARK/BIAS/FLAT list: every fits file lands in
+    *some* bucket (keyed by parent name, lowercased), so the sum is always
+    the truth about what is on disk, and an unexpected folder is reported
+    under its own name rather than skipped. The ``.fits``/``.fits.fz``
+    filter keeps sidecar CSVs out; hidden dirs are never walked (see
+    ``_walk_visible``), so snapshot/trash copies cannot inflate the count.
 
-    The parent name is **not** gated on the LIGHT/DARK/BIAS/FLAT list. A
-    frame whose folder is called anything else is still a frame, and
-    silently dropping it is what made ``orphans[].frames`` read ``0`` for a
-    directory that plainly held fits files (an "unclassified, no fits
-    images" reading of a real disk). Every fits file under ``token_dir``
-    lands in *some* bucket, keyed by its parent directory lowercased, so the
-    sum is always the truth about what is on disk. Hidden dirs
-    (a share's ``.snapshot``/``.Trashes`` copies) are never walked, so
-    copies can't inflate the count.
-
-    N.I.N.A. marks a rejected frame by prefixing its filename with ``BAD_``
-    (verified against the live landing dir: ``2026-10-22_04-46-37_L_...fits.fz``
-    -> ``BAD_2026-10-22_04-46-37_L_...fits.fz``). Those count under
-    ``bad_<parent>`` instead of ``<parent>``, so the light row's ``bad``
-    (which reads ``bad_light``) still reports rejects without a rejected
-    frame ever landing in the plain ``light`` bucket. The CSV row points at
-    the pre-rename name, so the frame is dropped from attribution anyway —
-    ``bad`` is what names the cause of that ``remaining`` deficit.
+    N.I.N.A. marks a rejected frame with a ``BAD_`` filename prefix — those
+    count under ``bad_<parent>`` instead of ``<parent>``, so the light
+    row's ``bad`` field (which reads ``bad_light``) reports rejects while
+    the CSV row (pointing at the pre-rename name) stays out of attribution.
     """
     counts: dict[str, int] = {}
     for directory, filenames in _walk_visible(token_dir):
-        # The immediate parent of the frames IS the directory. No TYPE
-        # allow-list here: an unexpected folder name must be counted and
+        # No TYPE allow-list: an unexpected folder name is counted and
         # reported under its own name, never skipped.
         key = directory.name.lower()
         for name in filenames:
@@ -648,11 +559,8 @@ def _status_for(
     "the plan-wide pool satisfied this plan".
     """
     is_calibration = image_type != "light"
-    # EXPIRED is progress.group_verdict's rule ("a closed window with frames
-    # still missing"), read off this row's summed numbers: one shared rule
-    # for "expired", never a second spelling of it. Synthesizing the item
-    # keeps audit's own aggregation (summed expected/attributed per type)
-    # exactly as it was.
+    # EXPIRED is progress.group_verdict's rule read off this row's summed
+    # numbers — one shared rule for "expired", never a second spelling.
     if (
         is_calibration
         and group_verdict(
@@ -666,23 +574,17 @@ def _status_for(
     ):
         return "EXPIRED"
     if not is_calibration and expected > 0 and attributed == 0:
-        # Never attempted, which is a different fact from a partial
-        # deficit: MISSING_FILES means frames were shot and some did not
-        # count (rejects, truncation, junk), while here NOTHING was ever
-        # attributed to this pointing — no run ever delivered a frame, so
-        # the whole ask is untried work, exactly like a whole never-shot
-        # plan. Identified from the light attribution count itself, never
-        # from remaining_count (which is just expected - attributed and
-        # cannot tell the two cases apart).
+        # Never attempted: nothing was ever attributed to this pointing (a
+        # different fact from a partial deficit, and identified from the
+        # attribution count itself — remaining_count cannot tell them apart).
         return "NEVER_SHOT"
     if remaining > 0:
         return "MISSING_FILES"
     if junk > 0:
         return "SUSPECT_JUNK"
     if is_calibration and attributed >= expected and own_rows < expected:
-        # Satisfied by the plan-wide calibration pool: enough frames exist
-        # plan-wide, but this plan's own recorded frames fall short of what
-        # it asks for — they were shot under a different plan's token.
+        # Enough frames exist plan-wide, but this plan's own recorded frames
+        # fall short — shot under a different plan's token.
         return "POOL_CREDITED"
     if not is_calibration and attributed > expected:
         return "OVERSHOT"  # full-mode re-acquisition extras; harmless
@@ -712,13 +614,10 @@ def _audit_row(
         window_open=window_open,
         junk=junk,
     )
-    # Lights carry the pointing-specific id (base for single-pointing plans,
-    # base-N for a mosaic pane); calibration is plan-level and always uses
-    # the bare base id — the very token a single-pointing plan's lights
-    # carry, so the two landing dirs coincide (the label, and the intent
-    # both carry, ride along in both via plan.calibration_prefix); a
-    # mosaic's calibration keeps its own bare "<target> <intent> _<base>_"
-    # dir.
+    # Lights carry the pointing-specific id (base, or base-N for a mosaic
+    # pane); calibration is plan-level and always the bare base id — the
+    # token a single-pointing plan's lights carry too, so their landing
+    # dirs coincide (see plan.calibration_prefix).
     effective = (
         plan.effective_plan_id(pointing_index or 1)
         if image_type == "light"
@@ -738,29 +637,18 @@ def _audit_row(
         "status": status,
     }
     if image_type == "light":
-        # The pointing's label — mosaic pane name ("r2_c3", "Pane 2") or a
-        # single-pointing subtitle ("M47 center") — is the human handle for
-        # what pointing_index/effective_plan_id express only numerically,
-        # and it is the middle segment of the landing dir name
-        # ("<target> <intent> - <label> _<token>_"); a single-pointing
-        # plan's calibration lands in that same dir
-        # (plan.calibration_prefix), though its rows still carry no label.
-        # Light-only, like `bad`:  calib rows are plan-level and have no
-        # pointing to label. Normalized to "" when unset, the same contract
-        # as `intent`.
+        # The pointing's label (mosaic pane name or subtitle) — the human
+        # handle for what pointing_index expresses numerically. Light-only,
+        # like `bad`; "" when unset, the same contract as `intent`.
         row["label"] = plan.pointings[(pointing_index or 1) - 1].label or ""
-        # Frames deliberately rejected via N.I.N.A.'s BAD_ filename prefix.
-        # The CSV row still names the pre-rename file, so a rejected frame
-        # never reaches `attributed`; `bad` reports how many were rejected,
-        # which explains a remaining deficit without implying a lost frame.
+        # N.I.N.A.'s BAD_ rejects: the CSV row names the pre-rename file, so
+        # a rejected frame never reaches `attributed`; `bad` names the cause.
         row["bad"] = bad
     if image_type != "light":
         row["window_open"] = window_open
         row["window_end"] = window_end
-        # Rows of this type recorded under THIS plan's own token — the
-        # evidence behind a POOL_CREDITED verdict, and the CSV-side stand-in
-        # for the removed on-disk count. Calibration-only, like the window
-        # fields: for lights, `attributed` already requires the token.
+        # This plan's OWN-token rows — the evidence behind POOL_CREDITED.
+        # Calibration-only: for lights, `attributed` already requires it.
         row["own_rows"] = own_rows
     return row
 
@@ -793,16 +681,7 @@ def _light_expected_per_pointing(plan: ObservationPlan) -> int:
     independently, so the plan's whole light ask is this times the pointing
     count (what a `load_sequence light` per pointing resolves to).
     """
-
-    def _count_of(group: Any) -> int:
-        value = (
-            group.get("total_count")
-            if isinstance(group, dict)
-            else getattr(group, "total_count", 0)
-        )
-        return int(value or 0)
-
-    return sum(_count_of(group) for group in (plan.light_frames or []))
+    return sum(group.total_count for group in plan.light_frames)
 
 
 def _never_shot_report(
@@ -811,22 +690,19 @@ def _never_shot_report(
     """Report the loadable plans no recorded frame references.
 
     Discovery is a LEFT JOIN driven by ImageMetaData.csv, so a plan that was
-    written but never shot has nothing to join on: it gets no rows, and by
-    construction it used to vanish from the audit entirely. That is a real
-    blind spot for the work-list question this tool answers — on Oct 24 the
-    audit showed two 1-frame deficits while six whole unshot plans (240
-    frames) were only found by manually diffing list_plans against the
-    audited id set. The frames are as missing as any MISSING_FILES deficit;
-    they are just missing all of them.
+    written but never shot has no row to join on and would vanish from the
+    audit entirely — a real blind spot for the work-list question this tool
+    answers: those frames are as missing as any MISSING_FILES deficit, just
+    missing all of them.
 
-    So these plans are reported here (plan-level, and matched on the base
-    plan id: a twin file of an already-shot plan is NOT never-shot, and two
-    unshot copies of one plan report once, from the shallowest file) and as
+    These plans are reported here (plan-level, matched on the base plan id:
+    a twin file of an already-shot plan is NOT never-shot, and two unshot
+    copies of one plan report once, from the shallowest file) and as
     ``left_to_do`` entries with ``reason="NEVER_SHOT"`` and ``missing`` = the
     full light ask — nothing else in the audit can cover that work. They
-    still get no ``rows``: expected-vs-attributed is meaningless
-    for frames that were never attempted, and a row would read as "0 of 40
-    captured, 40 missing", drowning the real per-plan deficits.
+    still get no ``rows``: expected-vs-attributed is meaningless for frames
+    that were never attempted, and a row would drown the real per-plan
+    deficits.
 
     Returns ``(never_shot, left_to_do)``; the todo entries carry one
     pointing each (mosaic panes load one at a time, exactly like the light
@@ -898,9 +774,7 @@ async def audit_plans(
 
     A missing/unmounted imaging root RAISES rather than reporting empty counts — "no frames" and "no mount" must never look alike (check the site profile's image save path and, on non-Windows hosts, `NINA_DRIVE_MOUNT`). There is deliberately no disk-vs-CSV cross-check: a frame the Session Metadata plugin never recorded appears in neither source and surfaces as an ordinary MISSING_FILES deficit — rare and safe to re-shoot. Read-only; makes no N.I.N.A. calls beyond the site profile.
     """
-    plan_dir = Path(project_dir) if project_dir else config.PROJECT_DIR
-    if not plan_dir.is_absolute():
-        plan_dir = config.PROJECT_DIR / plan_dir
+    plan_dir = plan_utils.resolve_plan_dir(project_dir)
 
     wanted = tuple(t.lower() for t in (types or _AUDIT_TYPES))
     unknown = [t for t in wanted if t not in _AUDIT_TYPES]
@@ -938,7 +812,7 @@ async def audit_plans(
             # surface as zero frames.
             root = await metadata.resolve_imaging_root()
             rows = await metadata.read_metadata()
-    elif not _plan_files(plan_dir):
+    elif not plan_utils.plan_files(plan_dir):
         # Nothing to join against: report before touching the imaging root,
         # so an empty project dir stays NINA-free (root: null below).
         pass
@@ -962,12 +836,10 @@ async def audit_plans(
         # single-pointing legacy) counts as a reference here too.
         #
         # LIGHT rows only decide whether a plan was referenced. Calibration
-        # is pool-credited and lands under the shared `_{base}_` token, so a
-        # plan whose id appears only on flat/dark/bias rows has never had a
-        # single light acquired — it IS never-shot, and letting calibration
-        # rows join it into `audited` hid exactly the blind spot this report
-        # exists to expose (written but never imaged, discovered only by
-        # manually diffing list_plans against the audited id set).
+        # is pool-credited under the shared `_{base}_` token, so a plan whose
+        # id appears only on flat/dark/bias rows has never had a single light
+        # acquired — it IS never-shot, and joining it into `audited` on
+        # calibration rows would hide exactly that blind spot.
         claimed_by: list[int | None] = []
         for row in path_rows:
             hit: int | None = None
@@ -984,13 +856,11 @@ async def audit_plans(
             claimed_by.append(hit)
         referenced = {i for i in claimed_by if i is not None}
         audited = [pair for idx, pair in enumerate(all_loaded) if idx in referenced]
-        # The same pass's other side: plans no LIGHT row claims — a real
-        # plan with zero lights (see _never_shot_report). ID-level, not
-        # file-level: two files may share one plan id (a rewritten plan, an
-        # archived copy) and only the shallowest claims the rows, but their
-        # frames DO exist — reporting the twin as never-shot would
-        # double-count one target's work (live: NGC 1931's Oct-24 rewrite
-        # beside its Oct-23 original).
+        # The same pass's other side: plans no LIGHT row claims (see
+        # _never_shot_report). ID-level, not file-level: two files may share
+        # one plan id (a rewritten plan, an archived copy) and only the
+        # shallowest claims the rows — reporting the twin as never-shot
+        # would double-count one target's work.
         claimed_ids = {all_loaded[i][1]._base_plan_id() for i in referenced}
         unreferenced = [
             pair for pair in all_loaded if pair[1]._base_plan_id() not in claimed_ids
@@ -1009,7 +879,7 @@ async def audit_plans(
                 plan_id
                 and plan_id not in loadable_ids
                 and any(
-                    _path_has_id((r.get("file_path") or ""), plan_id) for r in path_rows
+                    path_has_id((r.get("file_path") or ""), plan_id) for r in path_rows
                 )
             ):
                 failed_ids.add(plan_id)
@@ -1032,7 +902,7 @@ async def audit_plans(
             if (row.get("image_type") or "").upper() != "LIGHT":
                 continue
             path = row.get("file_path") or ""
-            if any(_path_has_id(path, fid) for fid in failed_ids):
+            if any(path_has_id(path, fid) for fid in failed_ids):
                 continue  # already reported as that file's load failure
             candidates = _plan_ids_in_path(path)
             key = candidates[0] if candidates else None
@@ -1300,20 +1170,10 @@ async def list_plans(project_dir: str | None = None) -> dict[str, Any]:
     (file mtime, ISO-8601 local with offset). Unparseable JSON files are
     reported per file under ``errors`` instead of failing the call.
     Read-only."""
-    plan_dir = Path(project_dir) if project_dir else config.PROJECT_DIR
-    if not plan_dir.is_absolute():
-        plan_dir = config.PROJECT_DIR / plan_dir
+    plan_dir = plan_utils.resolve_plan_dir(project_dir)
     plans, errors = await _load_project_plans(plan_dir)
     entries = []
     for path, plan in plans:
-        try:
-            written: str | None = (
-                datetime.fromtimestamp(path.stat().st_mtime)
-                .astimezone()
-                .isoformat(timespec="seconds")
-            )
-        except OSError:
-            written = None
         entries.append(
             {
                 "file": path.name,
@@ -1322,7 +1182,7 @@ async def list_plans(project_dir: str | None = None) -> dict[str, Any]:
                 "target": plan.target,
                 "intent": plan.intent,
                 "pointing_count": len(plan.pointings),
-                "written": written,
+                "written": _written_iso(path),
             }
         )
     res = {"plans": entries, "errors": errors}

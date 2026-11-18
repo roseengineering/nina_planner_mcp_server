@@ -143,17 +143,13 @@ def sequence_calibration(
     """Wrap calibration instructions (darks/bias/flats) in a container.
 
     Calibration is plan-level, not per-pointing: this never indexes
-    ``plan.pointings``, so an empty pointings list is fine and no pane
-    attribution is claimed. The target name carries the bare plan token —
-    for a single-pointing plan that is also the lights token, so both share
-    one ``$$TARGETNAME$$`` folder (``plan.calibration_prefix`` spells the
-    readable head the same way ``sequence_deepsky`` does — ``<target>
-    <intent>`` plus that pointing's label — because a light prefix and a
-    calibration prefix that disagreed would split the folder again); a
-    mosaic's panes keep their own ``-N`` folders. ``kind`` names the step in
-    the NINA UI ("Dark Sequence", ...) and deliberately stays out of the
-    target name, where ``$$TARGETNAME$$`` would put it in the file path and
-    split the folder again.
+    ``plan.pointings`` (an empty list is fine) and claims no pane
+    attribution. The target name is ``calibration_prefix()`` plus the bare
+    plan token — for a single-pointing plan that is the same token the
+    lights carry, so both share one ``$$TARGETNAME$$`` folder; a mosaic's
+    panes keep their own ``-N`` folders. ``kind`` names the step in the NINA
+    UI ("Dark Sequence") and stays out of the target name, where
+    ``$$TARGETNAME$$`` would put it in the file path and split the folder.
 
     ``tag`` ("dark", "bias", "dawn flats", "dusk flats") is ``kind``'s
     event-only counterpart: it reaches the ACQUISITION messages through
@@ -208,68 +204,54 @@ def sequence_cool_camera(
 # sequence_unpark_scope) is the ONE source of truth for the policy below.
 # Two other places summarise it for readers who land there first — the MCP
 # server instructions (nina_planner/app.py) and the load_sequence docstring
-# (nina_planner/tools/sequence.py) — and each now points here. To change the
+# (nina_planner/tools/sequence.py) — and each points here. To change the
 # policy: change it here, then re-state it in those two; they are summaries,
-# never sources, so the three can no longer drift silently.
+# never sources, so the three can not drift silently.
 #
 #   * Park is the ONLY closing maneuver. Sequences emit Park Scope whenever
-#     the mount reports can_park=true, and a mount that cannot park — or no
-#     mount at all — is rejected before anything is sent, by the one shared
-#     refusal plan_utils.require_parkable (called by tools/sequence's
-#     load_sequence and by scripts/gen_sequence.py). The conditional
-#     emission in the three functions below is a defensive default for
-#     callers that build payloads directly (tests, inspection), not the
-#     guard: a park that silently does nothing is worse than an error.
-#   * Find home is NEVER a park fallback. It is emitted once per lights
-#     step, ahead of set_tracking(0), when can_find_home=true. Homing is a
-#     calibration — the mount drives its axes to a known physical reference
-#     (the home position) and re-syncs its sensors, ~30 s — and it is what
-#     restores a trustworthy position readout after the mount loses sync
-#     (power outage, bump, driver restart). Park closes up; homing does not.
+#     the mount reports can_park=true; a mount that cannot park — or no mount
+#     at all — is rejected before anything is sent by the one shared refusal
+#     plan_utils.require_parkable (called by load_sequence and
+#     scripts/gen_sequence.py). The conditional emission below is a defensive
+#     default for callers that build payloads directly (tests, inspection),
+#     not the guard: a park that silently does nothing is worse than an error.
+#   * Find home is NEVER a park fallback. Emitted once per lights step,
+#     ahead of set_tracking(0), when can_find_home=true. Homing is a
+#     calibration — the mount drives its axes to the home position and
+#     re-syncs its sensors, ~30 s — restoring a trustworthy position readout
+#     after the mount loses sync (power outage, bump, driver restart).
 #   * Safety: the safety monitor's is_safe reflects whether the enclosure is
-#     open and it is safe to unpark and expose. is_safe=true means the scope
-#     may be unparked and sky-dependent acquisition may proceed;
-#     is_safe=false means the scope must remain parked and lights and
-#     dawn/dusk sky flats are gated until it clears. Darks and biases are
-#     NOT sky-dependent and are exempt: they may be loaded and started with
-#     the enclosure closed, because the step parks first and never unparks,
-#     cuts the light at the camera (Dark filter slot, cover or shutter) and
-#     needs no open sky. Weather is a separate input, reported by the
-#     weather device.
+#     open and it is safe to unpark and expose. is_safe=false parks the scope
+#     and gates lights and dawn/dusk sky flats until it clears. Darks and
+#     biases are NOT sky-dependent and are exempt: they may be loaded and
+#     started with the enclosure closed — the step parks first and never
+#     unparks, cuts the light at the camera (Dark filter slot, cover or
+#     shutter) and needs no open sky. Weather is a separate input, reported
+#     by the weather device.
 # ---------------------------------------------------------------------------
 
 
 def sequence_park_scope(equipment: ObservatoryEquipment) -> list[dict[str, Any]]:
-    # Park only: home is not a fallback for it. Park is the closing maneuver —
-    # the scope goes to its parked position for the night — while homing is a
-    # sensor calibration (see sequence_home_scope), not a way to close up. A
-    # mount that cannot park is rejected at load time (see tools/sequence.py).
+    # Park only — home is not a fallback for it (canonical policy above).
     return [park_scope()] if equipment.mount and equipment.mount.can_park else []
 
 
 def sequence_home_scope(equipment: ObservatoryEquipment) -> list[dict[str, Any]]:
-    # Homing is a calibration: the mount drives its axes to a known physical
-    # reference point — the home position — re-syncing its sensors so the
-    # position readout can be trusted again (~30 s). It is what restores that
-    # trust after the mount loses sync (power outage, bump, driver restart),
-    # which is exactly when a slew/center would otherwise be slewing from a
-    # fiction. Emitted at the start of a lights step, ahead of set_tracking(0)
-    # so the rate is normalized after it. The order is an API constraint, not
-    # a style choice: GET /equipment/mount/home answers 409 "Mount parked"
+    # Emitted at the start of a lights step, ahead of set_tracking(0), so the
+    # tracking rate is normalized after it — an API constraint, not a style
+    # choice: GET /equipment/mount/home answers 409 "Mount parked"
     # (scripts/api_spec.yaml), so sequence_unpark_scope must run first. Gated
-    # on can_find_home alone: it is extra, not a park fallback, and the
-    # load-time guard still rejects a mount that cannot park.
+    # on can_find_home alone: homing is extra, not a park fallback (canonical
+    # policy above).
     return [home_scope()] if equipment.mount and equipment.mount.can_find_home else []
 
 
 def sequence_unpark_scope(equipment: ObservatoryEquipment) -> list[dict[str, Any]]:
     # Gated on can_park as a DELIBERATE proxy for "can unpark": neither ASCOM
-    # nor N.I.N.A. exposes a CanUnpark — the mount schema carries CanFindHome,
-    # CanPark and CanSetPark only (scripts/api_spec.yaml, MountInfo), and the
-    # unpark surface is the action GET /equipment/mount/unpark, not a
-    # capability. So can_park is the only park-family capability there is to
-    # read, and a mount that reports cannot-park never reaches here anyway:
-    # plan_utils.require_parkable rejects it before anything is sent.
+    # nor N.I.N.A. exposes a CanUnpark (MountInfo carries CanFindHome,
+    # CanPark, CanSetPark only — scripts/api_spec.yaml), and the unpark
+    # surface is the action GET /equipment/mount/unpark, not a capability.
+    # can_park is the only park-family capability there is to read.
     return [unpark_scope()] if equipment.mount and equipment.mount.can_park else []
 
 
@@ -418,22 +400,17 @@ def sequence_safetynet(
 def sequence_end(
     equipment: ObservatoryEquipment, *, step_count: int = 0
 ) -> dict[str, Any]:
-    # close observatory for the night:
-    # wait out one bounded "On Safe" pass, then park the telescope and warm
-    # the camera. The wait is a single 3-minute iteration gated on the safety
-    # monitor, so it is skipped entirely when the enclosure is already closed
-    # and never idles until sunrise (see test_end_area_waits_three_minutes_*).
-    # Equipment connects in the Start area (see _sequence_with_steps) and
-    # again here before park, so the park is self-contained even if the
-    # run never connected.
+    # Close for the night: one bounded 3-minute "On Safe" pass (skipped when
+    # the enclosure is already closed, never idling until sunrise), then park
+    # and warm. Equipment connects again here before park, so the park is
+    # self-contained even if the run never connected.
     #
-    # With steps behind it, the very first instruction announces the finished
-    # run: the End area is reached only when the Target area has nothing
-    # left, so this fires before the wait and before park — while the night
-    # can still be re-planned. An empty request passes step_count=0 and stays
-    # silent, so a park never reads as a finished run. The park and the warm
-    # are each bracketed by their own event so the log shows exactly when
-    # the scope went away and when it is safe to open the dome.
+    # With steps behind it, the head announces the finished run: the End area
+    # is reached only when the Target area has nothing left, so RUN-FINISHED
+    # fires before the wait and before park — while the night can still be
+    # re-planned. step_count=0 (the park) stays silent, so a park never reads
+    # as a finished run (see _sequence_with_steps). Park and warm are each
+    # bracketed by their own event.
     delay_minutes = 3
     head = [run_finished_event(step_count)] if step_count else []
     return container_end(

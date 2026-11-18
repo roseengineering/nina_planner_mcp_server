@@ -12,10 +12,14 @@ from .nina_utils import to_snake
 # Tool/cache trees that must never be searched for frame or plan data:
 # dependency dirs (npm/uv) and byte-code caches hold hundreds of unrelated
 # files. Hidden dirs (.git, .opencode, .venv — and on SMB mounts .snapshot
-# and .Trashes) are excluded by _walk_visible itself: their copied trees
-# would otherwise duplicate CSV rows (double attribution) and inflate frame
-# counts with snapshot/trash copies.
+# and .Trashes) are excluded by _walk_visible itself, so their copied trees
+# can never duplicate CSV rows (double attribution) or inflate frame counts.
 _PRUNED_DIR_NAMES = frozenset({"node_modules", "__pycache__"})
+
+# The frame types ImageMetaData.csv rows are attributed under. A read that
+# does not ask for one specific type matches exactly these, in one pass.
+FRAME_TYPES = ("light", "dark", "bias", "flat")
+_FRAME_TYPES_UPPER = tuple(t.upper() for t in FRAME_TYPES)
 
 
 def _prunable_dir(name: str) -> bool:
@@ -29,11 +33,10 @@ def _walk_visible(root: Path) -> Iterator[tuple[Path, list[str]]]:
     Yields ``(directory, sorted file names)`` for every *visible* directory,
     depth-first. Directories are pruned in place, so a share's snapshot or
     trash copies (``.snapshot``, ``.Trashes``) can never be mistaken for
-    fresh frames — on SMB mounts those copies would otherwise duplicate CSV
-    rows and double-count attribution. Directory symlinks are not followed
-    (``os.walk`` default), so a symlink cycle cannot hang an unattended
-    audit. Hidden *files* are yielded as-is; only directory descent is
-    restricted.
+    fresh frames (see ``_PRUNED_DIR_NAMES`` above). Directory symlinks are
+    not followed (``os.walk`` default), so a symlink cycle cannot hang an
+    unattended audit. Hidden *files* are yielded as-is; only directory
+    descent is restricted.
     """
     for dirpath, dirnames, filenames in os.walk(root):
         dirnames[:] = sorted(d for d in dirnames if not _prunable_dir(d))
@@ -43,9 +46,7 @@ def _walk_visible(root: Path) -> Iterator[tuple[Path, list[str]]]:
 def visible_rglob(root: Path, name: str) -> list[Path]:
     """Files named ``name`` anywhere under ``root``, hidden/tool dirs skipped.
 
-    ``root.rglob(name)`` equivalent with the ``_walk_visible`` prune rule —
-    a ``.snapshot``/``.Trashes`` copy of ``ImageMetaData.csv`` must never be
-    read alongside the live one, or every frame in it would be counted twice.
+    ``root.rglob(name)`` equivalent with the ``_walk_visible`` prune rule.
     """
     return [
         directory / name for directory, names in _walk_visible(root) if name in names
@@ -124,9 +125,7 @@ def _require_root(root: Path) -> None:
 
     A missing root (unmounted drive, wrong NINA_DRIVE_MOUNT, stale profile
     path) must not masquerade as "no frames yet": callers would report an
-    empty plan and re-acquire everything. Hidden/tool directories are never
-    searched (see ``visible_rglob``), so a snapshot/trash copy of a CSV
-    cannot double-count a session.
+    empty plan and re-acquire everything.
     """
     if root.is_dir():
         return
@@ -139,23 +138,27 @@ def _require_root(root: Path) -> None:
 
 @overload
 def read_imaging_csv(
-    root: Path, image_type: str, *, report_dropped: Literal[False] = False
+    root: Path, image_type: str | None, *, report_dropped: Literal[False] = False
 ) -> list[dict[str, Any]]: ...
 
 
 @overload
 def read_imaging_csv(
-    root: Path, image_type: str, *, report_dropped: Literal[True]
+    root: Path, image_type: str | None, *, report_dropped: Literal[True]
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]: ...
 
 
 def read_imaging_csv(
     root: Path,
-    image_type: str,
+    image_type: str | None = None,
     *,
     report_dropped: bool = False,
 ) -> list[dict[str, Any]] | tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     """Rows of ``image_type`` from every visible ImageMetaData.csv under root.
+
+    ``image_type=None`` matches every frame type (``FRAME_TYPES``) in ONE
+    directory walk — callers that want all four used to loop and re-walk the
+    tree once per type.
 
     Rows whose recorded ``file_path`` no longer exists on disk are DROPPED:
     the view must never credit a frame nobody can open. That includes N.I.N.A.
@@ -174,28 +177,30 @@ def read_imaging_csv(
     _require_root(root)
     rows: list[dict[str, Any]] = []
     dropped: list[dict[str, Any]] = []
-    image_type_upper = image_type.upper()
+    image_type_upper = image_type.upper() if image_type is not None else None
     for meta_path in visible_rglob(root, "ImageMetaData.csv"):
         csv_dir = meta_path.parent
         parent_dir = csv_dir.parent
         bases = (csv_dir, parent_dir, root)
         for row in _read_csv(meta_path):
             row_image_type = (row.get("image_type") or "").upper()
-            if row_image_type != image_type_upper:
+            if image_type_upper is None:
+                if row_image_type not in _FRAME_TYPES_UPPER:
+                    continue
+            elif row_image_type != image_type_upper:
                 continue
             raw_path = row.get("file_path")
             resolved = _resolve_existing_file(raw_path, bases=bases)
             if raw_path and resolved is None:
                 if report_dropped:
-                    record = dict(row)
-                    record["file_path"] = _resolve_image_path(raw_path, bases)
-                    dropped.append(record)
+                    row["file_path"] = _resolve_image_path(raw_path, bases)
+                    dropped.append(row)
                 continue
             if resolved:
                 row["file_path"] = resolved
-            enriched = dict(row)
-            enriched.update({"frame_type": row_image_type, "source": "image_metadata"})
-            rows.append(enriched)
+            row["frame_type"] = row_image_type
+            row["source"] = "image_metadata"
+            rows.append(row)
     if report_dropped:
         return rows, dropped
     return rows

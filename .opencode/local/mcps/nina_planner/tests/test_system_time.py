@@ -452,12 +452,6 @@ class StartNinaTest(unittest.TestCase):
                 "NINA is already running. Call stop_nina() first.", str(ctx.exception)
             )
 
-            with self.assertRaises(RuntimeError) as ctx:
-                asyncio.run(start_nina())
-            self.assertIn(
-                "NINA is already running. Call stop_nina() first.", str(ctx.exception)
-            )
-
     def test_start_when_running_on_a_remote_host_without_interop(self):
         from nina_planner.server import start_nina
 

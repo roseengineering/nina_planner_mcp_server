@@ -21,31 +21,13 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from unittest import mock
 
+from conftest import make_metadata_row as _row
+
 from nina_planner import metadata
 from nina_planner.models.plan import ObservationPlan
 from nina_planner.tools import plans as plans_mod
 
 _TOKEN = "M31 _plan-abc123_"
-
-
-def _row(
-    image_type="LIGHT",
-    filter_name="LP",
-    duration="60.0",
-    target: str | None = _TOKEN,
-    exposure_start: str | None = None,
-):
-    if exposure_start is None:
-        exposure_start = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
-    row = {
-        "image_type": image_type,
-        "filter_name": filter_name,
-        "duration": duration,
-        "exposure_start_utc": exposure_start,
-    }
-    if target is not None:
-        row["file_path"] = f"C:/NINA/LIGHT/{target}__60.00s_0000.fits"
-    return row
 
 
 def _plan(**overrides):

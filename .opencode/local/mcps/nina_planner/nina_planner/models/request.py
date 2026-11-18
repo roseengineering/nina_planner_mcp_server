@@ -1,6 +1,8 @@
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import Field, model_validator
+
+from .strict import StrictModel
 
 # Everything load_sequence understands: the four plan-backed frame sequences.
 # Every action builds from a plan — there are no plan-less actions, and an
@@ -13,6 +15,11 @@ Action = Literal[
     "flat",
 ]
 
+# The dark/bias vocabulary, in preference order: the wheel method first
+# because it is the default, then the two ways to cut light without one.
+# The single source of truth — sequence/variants.py validates against it.
+DARK_VARIANTS = ("wheel", "cover", "shutter")
+
 # HOW an action runs, kept out of the action enum so the two axes don't
 # multiply into values (dawn_flat, dusk_flat, cover_dark, ...): an action
 # says which of the plan's frames to shoot, its variant says the recipe —
@@ -20,25 +27,20 @@ Action = Literal[
 # action-scoped: an empty set means the action has no variants at all.
 VARIANTS: dict[str, frozenset[str]] = {
     "light": frozenset(),
-    "dark": frozenset({"wheel", "cover", "shutter"}),
-    "bias": frozenset({"wheel", "cover", "shutter"}),
+    "dark": frozenset(DARK_VARIANTS),
+    "bias": frozenset(DARK_VARIANTS),
     "flat": frozenset({"dawn", "dusk"}),
 }
 
 
-class SequenceRequest(BaseModel):
+class SequenceRequest(StrictModel):
     """One entry of the `request` list `load_sequence` takes: what to load and
     how."""
 
-    # Unknown keys are refused outright, not ignored. Quality thresholds are
-    # NOT request fields — they live in the plan file's `quality` section, so
-    # load_sequence and get_plan_progress always agree about what counts — and
-    # pydantic's default (ignore) would be the worst answer: a caller passing
-    # max_hfr would silently get unfiltered counts while believing it was
-    # filtering. There is no legacy-key list and no migration message; an
-    # unexpected field is simply invalid input, whatever it is named.
-    model_config = ConfigDict(extra="forbid")
-
+    # extra="forbid" (StrictModel) refuses unknown keys outright: quality
+    # thresholds live in the plan file's `quality` section, so a stray
+    # `max_hfr` must fail as invalid input rather than look like it was
+    # applied while the counts stayed unfiltered.
     plan: str | None = Field(
         default=None,
         description=(
@@ -87,10 +89,9 @@ class SequenceRequest(BaseModel):
         ),
     )
 
-    # Quality thresholds are NOT request fields: they live in the plan file's
-    # `quality` section, so load_sequence and get_plan_progress always agree
-    # about what counts. `extra="forbid"` above is what keeps an unknown key
-    # from being silently dropped.
+    # Quality thresholds are NOT request fields (see the model's head
+    # comment); `extra="forbid"` is what keeps an unknown key from being
+    # silently dropped.
     @model_validator(mode="after")
     def _check_variant(self) -> "SequenceRequest":
         """Enforce the action-scoped variant vocabulary.

@@ -29,8 +29,6 @@ class DomeDevice(BaseModel):
             if azimuth is not None:
                 data["azimuth_deg"] = azimuth
 
-            data["shutter_status"] = data.get("shutter_status")
-
             slewing = data.get("slewing", False)
             is_following = data.get("is_following", False)
             is_synchronized = data.get("is_synchronized", False)

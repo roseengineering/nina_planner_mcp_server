@@ -6,12 +6,10 @@ from pydantic import BaseModel, model_validator
 
 from ..nina_utils import ascom_datetime, ascom_float, ascom_int
 
-# The exact camelCase field set N.I.N.A.'s live ``GET /v2/api/image-history``
-# returns for its single (current-frame) record, mapped to snake_case model
-# fields. Explicit rather than derived via ``to_snake`` because a few names
-# (``RmsText`` -> ``rm_text``, ``HFRStDev`` -> ``hfr_st_dev``) do not survive
-# the generic conversion, and because pinning the map documents the endpoint's
-# full contract in one place.
+# The camelCase field set ``GET /v2/api/image-history`` returns for its
+# single (current-frame) record, mapped to snake_case. Explicit rather than
+# ``to_snake``: a few names (``RmsText``, ``HFRStDev``) do not survive the
+# generic conversion, and pinning the map documents the endpoint's contract.
 _FIELD_MAP = {
     "ExposureTime": "exposure_time",
     "ImageType": "image_type",
@@ -54,18 +52,13 @@ class FrameStats(BaseModel):
     """Per-frame statistics for N.I.N.A.'s *current* (most recent) frame.
 
     Sourced from ``GET /v2/api/image-history``, which despite the name returns
-    only the most recent frame's record — a single element, with no paging. The
-    full field set is preserved so the frame-quality discrimators the
-    frame-quality-diagnostics skill relies on (HFR vs HFRStDev vs star count vs
-    background ADU) are all present, and so a calibration frame is never
-    mistaken for a science frame.
+    only the most recent frame's record — a single element, no paging.
 
-    Unlike the ``ImageMetaData.csv`` path — where NINA serializes unmeasured
-    values as ``0``, so a ``0`` there means "not measured" — a genuine ``0``
-    is preserved as ``0`` here: ``Stars: 0`` is a real star-count
-    reading (the star-count failure condition), not a missing value. Unmeasured
-    values arrive as NaN and are normalized to ``None`` here by the
-    ``ascom_*`` helpers, so ``0`` always means a true reading.
+    Unlike ``ImageMetaData.csv`` (where NINA serializes unmeasured values as
+    ``0``), a genuine ``0`` here is preserved as ``0``: ``Stars: 0`` is a
+    real star-count reading, not a missing value. Unmeasured values arrive as
+    NaN and are normalized to ``None`` by the ``ascom_*`` helpers, so ``0``
+    always means a true reading.
     """
 
     filename: str | None = None
