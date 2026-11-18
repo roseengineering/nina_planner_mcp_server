@@ -1,3 +1,5 @@
+"""Optical-train FOV, filter lookup and local save-path mapping."""
+
 import math
 import os
 import unittest
@@ -14,6 +16,8 @@ from nina_planner.models.profile import (
 
 
 class OpticalTrainInfoFovTest(unittest.TestCase):
+    """Deriving field_of_view_deg from focal length and sensor size."""
+
     def _build(self, **overrides) -> OpticalTrainInfo:
         defaults = dict(
             telescope_name="TestScope",
@@ -28,6 +32,7 @@ class OpticalTrainInfoFovTest(unittest.TestCase):
         return OpticalTrainInfo(**defaults)
 
     def test_normal_case_computes_fov(self):
+        """FOV matches the atan formula over the sensor dimensions."""
         info = self._build()
         assert info.field_of_view_deg is not None
         fov_x, fov_y = info.field_of_view_deg
@@ -39,23 +44,29 @@ class OpticalTrainInfoFovTest(unittest.TestCase):
         assert fov_y == round(expected_y, 4)
 
     def test_zero_focal_length_does_not_produce_180(self):
+        """A zero focal length yields no FOV instead of 180 degrees."""
         info = self._build(focal_length_mm=0)
         assert info.field_of_view_deg is None
 
     def test_missing_focal_length_no_fov(self):
+        """A missing focal length yields no FOV."""
         info = self._build(focal_length_mm=None)
         assert info.field_of_view_deg is None
 
     def test_zero_pixel_size_no_fov(self):
+        """A zero pixel size yields no FOV."""
         info = self._build(pixel_size_microns=0)
         assert info.field_of_view_deg is None
 
     def test_zero_camera_dimensions_no_fov(self):
+        """Zero camera dimensions yield no FOV."""
         info = self._build(camera_xsize_px=0, camera_ysize_px=0)
         assert info.field_of_view_deg is None
 
 
 class ObservatoryProfileFilterPositionTest(unittest.TestCase):
+    """filter_position lookup and the contents of its error message."""
+
     def _build(self, filters):
         return ObservatoryProfile(
             profile_name="TestProfile",
@@ -80,6 +91,7 @@ class ObservatoryProfileFilterPositionTest(unittest.TestCase):
         )
 
     def test_returns_position_for_known_filter(self):
+        """Known filters map to their configured wheel positions."""
         profile = self._build(
             [
                 FilterInfo(name="L", position=2, focus_offset=0),
@@ -90,6 +102,7 @@ class ObservatoryProfileFilterPositionTest(unittest.TestCase):
         assert profile.filter_position("R") == 3
 
     def test_missing_filter_raises_value_error_naming_filter_and_profile(self):
+        """A missing filter error names the filter, profile and known names."""
         profile = self._build([FilterInfo(name="L", position=2, focus_offset=0)])
         with self.assertRaises(ValueError) as ctx:
             profile.filter_position("X")
@@ -100,7 +113,10 @@ class ObservatoryProfileFilterPositionTest(unittest.TestCase):
 
 
 class ObservatoryProfileLocalSavePathTest(unittest.TestCase):
+    """local_image_save_path translation for non-Windows hosts."""
+
     def setUp(self):
+        """Run against an environment with no NINA_DRIVE_MOUNT set."""
         self.enterContext(patch.dict(os.environ))
         os.environ.pop("NINA_DRIVE_MOUNT", None)
 
@@ -128,6 +144,7 @@ class ObservatoryProfileLocalSavePathTest(unittest.TestCase):
         )
 
     def test_windows_drive_translated_to_local_mount(self):
+        """A Windows save path maps to the default /mnt/c mount."""
         with (
             patch("nina_planner.imaging.sys.platform", "linux"),
             patch("nina_planner.imaging.Path", PurePosixPath),
@@ -136,6 +153,7 @@ class ObservatoryProfileLocalSavePathTest(unittest.TestCase):
             assert profile.local_image_save_path == "/mnt/c/Users/me/Documents/N.I.N.A"
 
     def test_env_drive_mount_honored(self):
+        """NINA_DRIVE_MOUNT overrides the default drive translation."""
         with (
             patch("nina_planner.imaging.sys.platform", "linux"),
             patch("nina_planner.imaging.Path", PurePosixPath),
@@ -145,6 +163,7 @@ class ObservatoryProfileLocalSavePathTest(unittest.TestCase):
             assert profile.local_image_save_path == "/mnt/windows/N.I.N.A"
 
     def test_path_without_drive_passes_through(self):
+        """A path without a drive letter passes through unchanged."""
         with (
             patch("nina_planner.imaging.sys.platform", "linux"),
             patch("nina_planner.imaging.Path", PurePosixPath),
@@ -153,6 +172,7 @@ class ObservatoryProfileLocalSavePathTest(unittest.TestCase):
             assert profile.local_image_save_path == "/tmp/save"
 
     def test_on_windows_the_profile_path_is_used_directly(self):
+        """On Windows the profile path is used directly, mount ignored."""
         with (
             patch("nina_planner.imaging.sys.platform", "win32"),
             patch("nina_planner.imaging.Path", PureWindowsPath),
@@ -162,6 +182,7 @@ class ObservatoryProfileLocalSavePathTest(unittest.TestCase):
             assert profile.local_image_save_path == r"C:\Users\me\N.I.N.A"
 
     def test_serialized_but_not_an_input_field(self):
+        """local_image_save_path serializes but is not an input field."""
         profile = self._build(r"C:\N.I.N.A")
         assert "local_image_save_path" in profile.model_dump()
         assert "local_image_save_path" in profile.model_dump_json()

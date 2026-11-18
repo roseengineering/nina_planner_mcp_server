@@ -1,3 +1,5 @@
+"""Tests for nina_planner.imaging: CSV reads, drive mapping, weather rows."""
+
 import csv
 import os
 import tempfile
@@ -21,13 +23,17 @@ def _write_csv(path: Path, header: list[str], rows: list[list[str]]):
 
 
 class ReadImagingCsvTest(unittest.TestCase):
+    """read_imaging_csv over a temp imaging root: rows, drops, path bases."""
+
     def setUp(self):
+        """Create a temporary imaging root with one dated LIGHT folder."""
         self._tmp = tempfile.TemporaryDirectory()
         self.root = Path(self._tmp.name)
         self.light_dir = self.root / "2026-09-21" / "LIGHT"
         self.light_dir.mkdir(parents=True)
 
     def tearDown(self):
+        """Remove the temporary imaging root."""
         self._tmp.cleanup()
 
     def _write_images(self, rows: list[list[str]], header: list[str] | None = None):
@@ -36,6 +42,7 @@ class ReadImagingCsvTest(unittest.TestCase):
         _write_csv(self.light_dir / "ImageMetaData.csv", header, rows)
 
     def test_missing_root_raises_instead_of_returning_empty(self):
+        """A nonexistent root raises instead of masquerading as no frames."""
         # A nonexistent root (unmounted drive, wrong NINA_DRIVE_MOUNT, stale
         # profile path) must raise, not masquerade as "no frames yet" — which
         # would make callers re-acquire the whole plan.
@@ -45,6 +52,7 @@ class ReadImagingCsvTest(unittest.TestCase):
         self.assertIn("imaging root does not exist", str(ctx.exception))
 
     def test_returns_rows_with_frametype(self):
+        """Rows carry frame_type, duration and filter_name, not NINA's date."""
         self._write_images([["LIGHT", "60.0", "LP"]])
 
         rows = read_imaging_csv(root=self.root, image_type="light")
@@ -56,6 +64,7 @@ class ReadImagingCsvTest(unittest.TestCase):
         self.assertEqual(rows[0]["filter_name"], "LP")
 
     def test_hidden_snapshot_copy_not_read(self):
+        """A share's .snapshot copy of the CSV never doubles the rows."""
         # A share's .snapshot/.Trashes copy of the CSV must never be read
         # alongside the live one — its rows would double-count the session.
         self._write_images([["LIGHT", "60.0", "LP"]])
@@ -75,6 +84,7 @@ class ReadImagingCsvTest(unittest.TestCase):
         self.assertEqual(len(rows), 1)  # only the visible CSV was read
 
     def test_injects_into_all_image_rows(self):
+        """All rows of the CSV come back, one entry per image."""
         self._write_images(
             [
                 ["LIGHT", "60.0", "L"],
@@ -87,6 +97,7 @@ class ReadImagingCsvTest(unittest.TestCase):
         self.assertEqual(len(rows), 2)
 
     def test_missing_file_row_dropped(self):
+        """A row whose FITS file is gone is dropped; live rows survive."""
         mount = self.root / "mnt"
         img_dir = mount / "NINA" / "2026-09-21" / "LIGHT"
         img_dir.mkdir(parents=True)
@@ -108,6 +119,7 @@ class ReadImagingCsvTest(unittest.TestCase):
         self.assertTrue(rows[0]["file_path"].startswith(str(mount)))
 
     def test_report_dropped_returns_dropped_rows_for_classification(self):
+        """report_dropped returns gone rows with a path for the BAD_ probe."""
         # Default contract unchanged (plain list); report_dropped adds the
         # dropped rows with a best-effort path so a caller can classify WHY
         # the file is gone — e.g. probe for N.I.N.A.'s BAD_ reject rename,
@@ -148,6 +160,7 @@ class ReadImagingCsvTest(unittest.TestCase):
         self.assertEqual(len(default), 1)
 
     def test_relative_path_resolved_against_csv_sibling(self):
+        """A relative FilePath resolves against the CSV's own folder, not CWD."""
         # Regression: a relative FilePath like "foo.fits" previously checked
         # against process CWD, so it was silently dropped unless the MCP
         # server happened to be launched from the imaging root.
@@ -164,6 +177,7 @@ class ReadImagingCsvTest(unittest.TestCase):
         self.assertEqual(rows[0]["file_path"], str(self.light_dir / fits_name))
 
     def test_relative_path_resolved_against_date_folder(self):
+        """Paths like "LIGHT/foo.fits" resolve against the date folder."""
         # NINA sometimes writes paths like "LIGHT/foo.fits" relative to the
         # 2026-09-21/ folder (one tier above the metadata file's parent).
         fits_name = "2026-09-21_00-00-00_Clear__60.00s_0000.fits"
@@ -179,6 +193,7 @@ class ReadImagingCsvTest(unittest.TestCase):
         self.assertEqual(rows[0]["file_path"], str(self.light_dir / fits_name))
 
     def test_relative_path_resolved_against_imaging_root(self):
+        """Paths like "2026-09-21/LIGHT/foo.fits" resolve against the root."""
         # Or NINA may write paths from the imaging root, e.g.
         # "2026-09-21/LIGHT/foo.fits".
         fits_name = "2026-09-21_00-00-00_Clear__60.00s_0000.fits"
@@ -195,6 +210,7 @@ class ReadImagingCsvTest(unittest.TestCase):
         self.assertEqual(rows[0]["file_path"], str(self.light_dir / fits_name))
 
     def test_relative_path_with_no_match_dropped(self):
+        """A relative path matching no declared base is dropped, not CWD."""
         # Relative path that doesn't resolve under any declared base is
         # dropped — same as the prior behavior of returning None and gating
         # at the caller. CWD is no longer probed.
@@ -229,6 +245,7 @@ class RealNinaSampleTest(unittest.TestCase):
     )
 
     def test_read_imaging_csv_handles_real_nina_shapes(self):
+        """All 60 captured rows map into the temp mount and verify as files."""
         with (
             tempfile.TemporaryDirectory() as tmp,
             patch("nina_planner.imaging.sys.platform", "linux"),
@@ -265,6 +282,7 @@ class RealNinaSampleTest(unittest.TestCase):
             )
 
     def test_resolver_transforms_real_nina_absolute_path(self):
+        """The resolver rewrites a real N.I.N.A. C:/ path onto the mount."""
         # Pure paths model POSIX semantics without requiring a POSIX host.
         with (
             patch("nina_planner.imaging.sys.platform", "linux"),
@@ -282,25 +300,31 @@ class RealNinaSampleTest(unittest.TestCase):
 
 
 class WindowsToLocalTest(unittest.TestCase):
+    """windows_to_local drive-mount mapping across platforms and env vars."""
+
     def setUp(self):
+        """Run on a POSIX-like host with no NINA_DRIVE_MOUNT set."""
         self.enterContext(patch("nina_planner.imaging.sys.platform", "linux"))
         self.enterContext(patch("nina_planner.imaging.Path", PurePosixPath))
         self.enterContext(patch.dict(os.environ))
         os.environ.pop("NINA_DRIVE_MOUNT", None)
 
     def test_drive_letter_replaced(self):
+        """An explicit mount replaces the drive letter of the path."""
         self.assertEqual(
             windows_to_local(r"C:\Users\me\N.I.N.A", "/mnt/c"),
             PurePosixPath("/mnt/c/Users/me/N.I.N.A"),
         )
 
     def test_default_mount_from_drive(self):
+        """With no argument, /mnt/<drive> is derived from the drive letter."""
         self.assertEqual(
             windows_to_local(r"C:\Users\me\N.I.N.A"),
             PurePosixPath("/mnt/c/Users/me/N.I.N.A"),
         )
 
     def test_env_mount_when_no_arg(self):
+        """NINA_DRIVE_MOUNT supplies the mount when no argument is given."""
         os.environ["NINA_DRIVE_MOUNT"] = "/mnt/windows"
         self.assertEqual(
             windows_to_local(r"C:\Users\me\N.I.N.A"),
@@ -308,12 +332,14 @@ class WindowsToLocalTest(unittest.TestCase):
         )
 
     def test_no_drive_passthrough(self):
+        """A path with no drive letter passes through unchanged."""
         self.assertEqual(
             windows_to_local(r"\share\N.I.N.A", "/mnt"),
             PurePosixPath(r"\share\N.I.N.A"),
         )
 
     def test_windows_ignores_mount_overrides(self):
+        """On win32 the original Windows path is returned, mount ignored."""
         with (
             patch("nina_planner.imaging.sys.platform", "win32"),
             patch("nina_planner.imaging.Path", PureWindowsPath),
@@ -331,11 +357,13 @@ class ImagingDefensivePathsTest(unittest.TestCase):
     """Malformed input and platform branches in imaging.py."""
 
     def test_resolve_image_path_returns_none_when_file_path_none(self):
+        """A None file path resolves to None rather than raising."""
         from nina_planner.imaging import _resolve_image_path
 
         self.assertIsNone(_resolve_image_path(None))
 
     def test_resolve_image_path_returns_none_when_file_path_empty(self):
+        """An empty file path resolves to None rather than raising."""
         from nina_planner.imaging import _resolve_image_path
 
         self.assertIsNone(_resolve_image_path(""))
@@ -363,12 +391,14 @@ class ImagingDefensivePathsTest(unittest.TestCase):
             self.assertTrue(all(r["frame_type"] == "LIGHT" for r in rows))
 
     def test_read_weather_rows_missing_file_returns_empty_dict(self):
+        """A missing WeatherData.csv reads as no weather, not an error."""
         from nina_planner.imaging import read_weather_rows
 
         with tempfile.TemporaryDirectory() as tmp:
             self.assertEqual(read_weather_rows(Path(tmp)), {})
 
     def test_read_weather_rows_returns_snake_cased_dict_by_exposure_number(self):
+        """Weather rows come back keyed by exposure number, snake_cased."""
         from nina_planner.imaging import read_weather_rows
 
         with tempfile.TemporaryDirectory() as tmp:
@@ -390,6 +420,7 @@ class ImagingDefensivePathsTest(unittest.TestCase):
             self.assertEqual(wx["1"]["cloud_cover"], "25")
 
     def test_read_weather_rows_unreadable_file_returns_empty_dict(self):
+        """An undecodable WeatherData.csv degrades to no weather, never raises."""
         from nina_planner.imaging import read_weather_rows
 
         # A file that exists but cannot be decoded (a truncated/renamed

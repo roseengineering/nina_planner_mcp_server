@@ -1,3 +1,5 @@
+"""N.I.N.A. lifecycle MCP tools: start, stop and status of the application."""
+
 import subprocess
 from collections.abc import Awaitable, Callable
 from typing import Any
@@ -18,9 +20,11 @@ from ..system_time import (
 
 
 async def _run_launch_command(argv: list[str], timeout: float, action: str) -> Any:
-    """Run one launch command, folding a timeout into the shared failure shape
-    (action + command), like a nonzero exit gets from
-    ``_raise_for_command_failure``."""
+    """Run one launch command, folding a timeout into the shared failure shape.
+
+    The shape is action + command, like a nonzero exit gets from
+    ``_raise_for_command_failure``.
+    """
     try:
         return await client.run_blocking(argv, timeout=timeout)
     except subprocess.TimeoutExpired as e:

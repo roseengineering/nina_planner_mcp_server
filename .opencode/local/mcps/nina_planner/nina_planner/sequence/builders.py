@@ -1,3 +1,11 @@
+"""Composable sequence builders: acquire, wait, safeguard, park.
+
+The canonical park/home/safety policy for generated sequences lives in the
+comment block above :func:`sequence_park_scope` — the one source of truth
+that ``app.py``'s server instructions and ``load_sequence``'s docstring
+summarise.
+"""
+
 from typing import Any
 
 from ..models.observatory import ObservatoryEquipment
@@ -180,6 +188,7 @@ def sequence_calibration(
 
 
 def sequence_warm_camera(equipment: ObservatoryEquipment) -> list[dict[str, Any]]:
+    """Warm-camera step for a camera with a cooler, else an empty list."""
     return (
         [warm_camera()]
         if equipment.camera and equipment.camera.thermal.has_cooler
@@ -190,6 +199,7 @@ def sequence_warm_camera(equipment: ObservatoryEquipment) -> list[dict[str, Any]
 def sequence_cool_camera(
     plan: ObservationPlan, equipment: ObservatoryEquipment
 ) -> list[dict[str, Any]]:
+    """Cool to the plan's setpoint when its cooler is on, else warm; empty without a cooler."""
     return (
         [cool_camera(plan.cooler.setpoint_celsius) if plan.cooler.on else warm_camera()]
         if equipment.camera and equipment.camera.thermal.has_cooler
@@ -232,11 +242,13 @@ def sequence_cool_camera(
 
 
 def sequence_park_scope(equipment: ObservatoryEquipment) -> list[dict[str, Any]]:
+    """Park step when the mount can park, else an empty list (canonical policy)."""
     # Park only — home is not a fallback for it (canonical policy above).
     return [park_scope()] if equipment.mount and equipment.mount.can_park else []
 
 
 def sequence_home_scope(equipment: ObservatoryEquipment) -> list[dict[str, Any]]:
+    """Find-home step when the mount can home, else an empty list (never a park fallback)."""
     # Emitted at the start of a lights step, ahead of set_tracking(0), so the
     # tracking rate is normalized after it — an API constraint, not a style
     # choice: GET /equipment/mount/home answers 409 "Mount parked"
@@ -247,6 +259,11 @@ def sequence_home_scope(equipment: ObservatoryEquipment) -> list[dict[str, Any]]
 
 
 def sequence_unpark_scope(equipment: ObservatoryEquipment) -> list[dict[str, Any]]:
+    """Unpark step when the mount reports ``can_park``, else an empty list.
+
+    ``can_park`` is used as a deliberate proxy for "can unpark": neither
+    ASCOM nor N.I.N.A. exposes a CanUnpark capability.
+    """
     # Gated on can_park as a DELIBERATE proxy for "can unpark": neither ASCOM
     # nor N.I.N.A. exposes a CanUnpark (MountInfo carries CanFindHome,
     # CanPark, CanSetPark only — scripts/api_spec.yaml), and the unpark
@@ -322,6 +339,7 @@ def sequence_count_exposure(
 
 
 def sequence_wait_until_sunset(equipment: ObservatoryEquipment) -> dict[str, Any]:
+    """Parked wait until the sun sets, bounded by the sunset loop condition."""
     name = "Wait For Sunset"
     return container_sequential(
         name=name,
@@ -341,6 +359,7 @@ def sequence_wait_until_sunset(equipment: ObservatoryEquipment) -> dict[str, Any
 
 
 def sequence_wait_until_dawn(equipment: ObservatoryEquipment) -> dict[str, Any]:
+    """Parked wait for astronomical dawn, exiting once the sun clears −8°."""
     name = "Wait For Dawn"
     return container_sequential(
         name=name,
@@ -358,6 +377,7 @@ def sequence_wait_until_dawn(equipment: ObservatoryEquipment) -> dict[str, Any]:
 
 
 def sequence_wait_until_dusk(equipment: ObservatoryEquipment) -> dict[str, Any]:
+    """Parked wait for astronomical dusk."""
     name = "Wait For Dusk"
     return container_sequential(
         name=name,
@@ -373,6 +393,12 @@ def sequence_safetynet(
     conditions: list[Any] | None = None,
     triggers: list[Any] | None = None,
 ) -> dict[str, Any]:
+    """Safety-gated container: run ``instructions`` while safe, else park and wait.
+
+    The whole set is bounded by ``loop_until_sunrise`` so it can never idle
+    past dawn: on unsafe the inner "On Safe" set parks, waits for the
+    monitor, and (when safe again) resumes the instructions.
+    """
     if instructions is None:
         instructions = []
     if conditions is None:
@@ -400,6 +426,11 @@ def sequence_safetynet(
 def sequence_end(
     equipment: ObservatoryEquipment, *, step_count: int = 0
 ) -> dict[str, Any]:
+    """End area: bounded pre-park delay, then park (and warm) for the night.
+
+    ``step_count`` > 0 heads the area with the ``RUN-FINISHED`` event; 0 (a
+    bare park) stays silent so a park never reads as a finished run.
+    """
     # Close for the night: one bounded 3-minute "On Safe" pass (skipped when
     # the enclosure is already closed, never idling until sunrise), then park
     # and warm. Equipment connects again here before park, so the park is

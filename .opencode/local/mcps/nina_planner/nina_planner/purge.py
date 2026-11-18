@@ -151,12 +151,11 @@ def _tree_size(path: Path) -> tuple[int, int]:
 
 
 def _unrecorded_count(path: Path, recorded: int) -> int:
-    """Files under ``path`` that are neither recorded frames, rejects,
-    nor plugin sidecars — the honest anomaly count for an index record.
+    """Files under ``path`` that are neither frames, rejects nor sidecars.
 
-    Sidecars are excluded because EVERY frame directory carries its
-    ``ImageMetaData.csv`` (one per type), so counting them would flag
-    every healthy quarantine as anomalous.
+    The honest anomaly count for an index record. Sidecars are excluded
+    because EVERY frame directory carries its ``ImageMetaData.csv`` (one per
+    type), so counting them would flag every healthy quarantine as anomalous.
     """
     count = 0
     for child in path.rglob("*"):
@@ -774,6 +773,12 @@ def _build_parser() -> argparse.ArgumentParser:
 
 
 async def run(args: argparse.Namespace) -> int:
+    """Execute the purge pipeline for ``args``; return the process exit code.
+
+    Dry-run by default: frames are only quarantined with ``--apply`` and
+    only deleted with ``--purge``. Exit 0 means the requested work (or an
+    idempotent no-op) happened; 1 means an error or nothing found to act on.
+    """
     project_dir = (
         Path(args.project_dir).expanduser() if args.project_dir else config.PROJECT_DIR
     )
@@ -1087,6 +1092,11 @@ async def run(args: argparse.Namespace) -> int:
 
 
 def main(argv: list[str] | None = None) -> int:
+    """CLI entry point: parse ``argv`` (default ``sys.argv[1:]``) and purge.
+
+    Returns:
+        The exit code from :func:`run`; argparse exits 2 on bad usage itself.
+    """
     args = _build_parser().parse_args(argv)
     return asyncio.run(run(args))
 

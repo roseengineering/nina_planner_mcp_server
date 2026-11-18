@@ -1,3 +1,11 @@
+"""Coercion helpers for ASCOM/N.I.N.A. field values and name formatting.
+
+ASCOM drivers send "no value" as a surprising variety of shapes — ``None``,
+``"NaN"``, ``"N/A"``, ``.NET DateTime.MinValue`` — so the ``ascom_*`` helpers
+normalize them to ``None`` instead of raising, keeping one odd driver value
+from failing a whole equipment-status call.
+"""
+
 from __future__ import annotations
 
 import math
@@ -23,6 +31,12 @@ def _missing_string(value: str) -> bool:
 
 
 def ascom_float(value: object) -> float | None:
+    """Coerce an ASCOM value to ``float``, mapping every "no value" shape to ``None``.
+
+    Accepts ``None``, numeric strings (``"NaN"``/``"N/A"``/blank → ``None``),
+    ``NaN``, ints and bools; anything else is passed through ``float()`` and may
+    raise ``ValueError``/``TypeError`` for genuinely non-numeric input.
+    """
     if value is None:
         return None
     if isinstance(value, str):
@@ -42,6 +56,13 @@ def ascom_float(value: object) -> float | None:
 
 
 def ascom_int(value: object) -> int | None:
+    """Coerce an ASCOM value to ``int``, or ``None`` when it means "no value".
+
+    Real ints pass through unchanged (preserving large values exactly); other
+    shapes go through ``ascom_float``'s sentinel handling first, so ``"NaN"``
+    and friends become ``None`` rather than an exception. Fractional input is
+    truncated toward zero.
+    """
     # Exact pass-through for real ints (keeps big values precise); every
     # other shape goes through ascom_float's sentinel handling first.
     if isinstance(value, int) and not isinstance(value, bool):
@@ -51,6 +72,15 @@ def ascom_int(value: object) -> int | None:
 
 
 def ascom_datetime(value: object) -> datetime | None:
+    """Parse an ASCOM timestamp to ``datetime``, or ``None`` for "never set".
+
+    Accepts ISO-8601 strings in any of the forms drivers emit (naive, with
+    ticks, ``Z``-suffixed, or explicitly offset) and returns them with their
+    original timezone info; ``None``, blank, ``"NaN"`` and unparseable text
+    yield ``None``. The .NET ``DateTime.MinValue`` sentinel
+    (``0001-01-01T00:00:00``) also yields ``None`` — it means "no timestamp",
+    not the year 1.
+    """
     if value is None:
         return None
     if isinstance(value, str):

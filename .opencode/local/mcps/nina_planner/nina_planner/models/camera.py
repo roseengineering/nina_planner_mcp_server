@@ -1,3 +1,5 @@
+"""Camera device model: sensor, exposure, gain, binning, thermal and readout."""
+
 from __future__ import annotations
 
 from datetime import datetime
@@ -32,6 +34,8 @@ def _parse_binning_mode(mode: object) -> tuple[int, int] | None:
 
 
 class SensorInfo(BaseModel):
+    """Imaging sensor geometry: resolution in pixels, pixels in microns."""
+
     bayer_offset: tuple[int, int] | None = None
     sensor_type: str | None = None
     resolution_px: tuple[int, int] | None = None
@@ -40,6 +44,8 @@ class SensorInfo(BaseModel):
 
 
 class GainInfo(BaseModel):
+    """Camera gain settings; ``electrons_per_adu`` is the sensor's read noise scale."""
+
     current: int | None = None
     default: int | None = None
     range: tuple[int, int] | None = None
@@ -48,6 +54,8 @@ class GainInfo(BaseModel):
 
 
 class ExposureInfo(BaseModel):
+    """Exposure limits in seconds and the end time of the last exposure."""
+
     is_exposing: bool | None = None
     min_seconds: float | None = None
     max_seconds: float | None = None
@@ -55,6 +63,8 @@ class ExposureInfo(BaseModel):
 
 
 class OffsetInfo(BaseModel):
+    """Sensor offset setting and its controllable range."""
+
     current: int | None = None
     default: int | None = None
     range: tuple[int, int] | None = None
@@ -62,11 +72,15 @@ class OffsetInfo(BaseModel):
 
 
 class BinningInfo(BaseModel):
+    """Current ``(x, y)`` binning and the modes the driver advertises."""
+
     current: tuple[int, int] | None = None
     supported_modes: list[tuple[int, int]] = Field(default_factory=list)
 
 
 class ThermalInfo(BaseModel):
+    """Cooler and dew-heater state; temperatures in Celsius, power in percent."""
+
     temperature_c: float | None = None
     has_cooler: bool = False
     cooler_on: bool = False
@@ -77,11 +91,21 @@ class ThermalInfo(BaseModel):
 
 
 class ReadoutInfo(BaseModel):
+    """Current readout mode name and the modes the driver supports."""
+
     current: str | None = None
     supported_modes: list[str] = Field(default_factory=list)
 
 
 class CameraDevice(BaseModel):
+    """A connected camera as ``/equipment/info`` reports it.
+
+    The flat ``SensorInfo``/``GainInfo``/... groups are derived from
+    ninaAPI's scattered ``CameraInfo`` keys by the ``_derive_fields``
+    validator; a disconnected camera is returned with its raw payload
+    unexpanded, so every group then reads as empty rather than invented.
+    """
+
     connected: bool
     name: str
     description: str | None = None

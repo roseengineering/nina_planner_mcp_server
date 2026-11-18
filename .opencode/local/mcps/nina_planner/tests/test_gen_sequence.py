@@ -97,7 +97,10 @@ def _equipment() -> ObservatoryEquipment:
 
 @unittest.skipUnless(SCRIPT.is_file(), f"{SCRIPT} is not present")
 class GenSequenceScriptTest(unittest.TestCase):
+    """In-process runs of gen_sequence.py with the N.I.N.A. reads stubbed."""
+
     def setUp(self) -> None:
+        """Load the script, write the plan, stub metadata reads to fail."""
         self.script = _load_script()
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
@@ -164,6 +167,7 @@ class GenSequenceScriptTest(unittest.TestCase):
     # ------------------------------------------------------------ defaults
 
     def test_default_action_is_lights_written_to_stdout(self):
+        """The default run emits the lights sequence as pure JSON on stdout."""
         code, out, err = self._run(str(self.plan))
 
         self.assertEqual(code, 0)
@@ -177,6 +181,7 @@ class GenSequenceScriptTest(unittest.TestCase):
         self.assertNotIn("✅", err)
 
     def test_sequence_shape_matches_what_load_sequence_would_send(self):
+        """The JSON has the Start/Target/End area shape load_sequence POSTs."""
         code, out, _ = self._run(str(self.plan))
 
         self.assertEqual(code, 0)
@@ -193,6 +198,7 @@ class GenSequenceScriptTest(unittest.TestCase):
     # ------------------------------------------------------------ actions
 
     def test_action_dark_builds_a_dark_sequence(self):
+        """--action dark builds a Dark Sequence and notes the choice on stderr."""
         code, out, err = self._run(str(self.plan), "--action", "dark")
 
         self.assertEqual(code, 0)
@@ -201,6 +207,7 @@ class GenSequenceScriptTest(unittest.TestCase):
         self.assertIn("`dark`", err)
 
     def test_action_bias_builds_a_bias_sequence(self):
+        """--action bias builds a Bias Sequence and notes the choice on stderr."""
         code, out, err = self._run(str(self.plan), "--action", "bias")
 
         self.assertEqual(code, 0)
@@ -208,6 +215,7 @@ class GenSequenceScriptTest(unittest.TestCase):
         self.assertIn("`bias`", err)
 
     def test_action_flat_dawn_builds_dawn_flats(self):
+        """--action flat --variant dawn builds Dawn Flats and notes it."""
         code, out, err = self._run(
             str(self.plan), "--action", "flat", "--variant", "dawn"
         )
@@ -219,18 +227,21 @@ class GenSequenceScriptTest(unittest.TestCase):
     # ------------------------------------------------------- usage errors
 
     def test_flat_without_variant_is_a_usage_error(self):
+        """--action flat with no variant exits 2 as an argparse usage error."""
         with self.assertRaises(SystemExit) as ctx:
             self._run(str(self.plan), "--action", "flat")
 
         self.assertEqual(ctx.exception.code, 2)
 
     def test_variant_on_a_light_action_is_a_usage_error(self):
+        """--variant on a light action exits 2 as a usage error."""
         with self.assertRaises(SystemExit) as ctx:
             self._run(str(self.plan), "--action", "light", "--variant", "wheel")
 
         self.assertEqual(ctx.exception.code, 2)
 
     def test_pointing_index_on_calibration_is_a_usage_error(self):
+        """--pointing-index on a calibration action exits 2 as a usage error."""
         with self.assertRaises(SystemExit) as ctx:
             self._run(str(self.plan), "--action", "dark", "--pointing-index", "2")
 
@@ -239,6 +250,7 @@ class GenSequenceScriptTest(unittest.TestCase):
     # -------------------------------------------------------- refusals
 
     def test_missing_plan_file_exits_1_with_empty_stdout(self):
+        """A missing plan file exits 1 with empty stdout and an error."""
         missing = self.plan.parent / "nope.json"
         code, out, err = self._run(str(missing))
 
@@ -247,6 +259,7 @@ class GenSequenceScriptTest(unittest.TestCase):
         self.assertIn("✗", err)
 
     def test_light_without_targetname_in_filepattern_is_refused(self):
+        """A lights build without $$TARGETNAME$$ in the pattern exits 1."""
         profile = _profile(file_pattern="$$DATETIME$$")
         code, out, err = self._run(str(self.plan), profile=profile)
 
@@ -255,6 +268,7 @@ class GenSequenceScriptTest(unittest.TestCase):
         self.assertIn("$$TARGETNAME$$", err)
 
     def test_allow_unattributed_bypasses_the_filepattern_guard(self):
+        """--allow-unattributed bypasses the $$TARGETNAME$$ guard and builds."""
         profile = _profile(file_pattern="$$DATETIME$$")
         code, out, err = self._run(
             str(self.plan), "--allow-unattributed", profile=profile
@@ -303,6 +317,7 @@ class GenSequenceScriptTest(unittest.TestCase):
         self.assertIn("Wait For Object", out)
 
     def test_pointing_index_out_of_range_exits_1(self):
+        """A --pointing-index beyond the plan's pointings exits 1."""
         code, out, err = self._run(str(self.plan), "--pointing-index", "9")
 
         self.assertEqual(code, 1)
@@ -310,6 +325,7 @@ class GenSequenceScriptTest(unittest.TestCase):
         self.assertIn("out of range", err)
 
     def test_mount_that_cannot_park_is_refused(self):
+        """A mount that cannot park is refused with empty stdout."""
         equipment = ObservatoryEquipment(
             mount=MountDevice(connected=True, name="m", can_park=False),
             camera=CameraDevice(connected=True, name="cam"),
@@ -323,6 +339,8 @@ class GenSequenceScriptTest(unittest.TestCase):
     # ------------------------------------------------------- remaining mode
 
     def test_remaining_mode_with_no_frames_acquired_generates_them(self):
+        """--mode remaining generates the frames when none were acquired."""
+
         async def no_rows(image_type: str | None = None):
             return []
 
@@ -334,6 +352,8 @@ class GenSequenceScriptTest(unittest.TestCase):
         self.assertIn("5 frame(s) to acquire", err)
 
     def test_remaining_mode_reports_a_complete_plan_and_prints_nothing(self):
+        """--mode remaining on a finished plan prints no JSON, says complete."""
+
         async def no_rows(image_type: str | None = None):
             return []
 
@@ -362,6 +382,8 @@ class GenSequenceScriptTest(unittest.TestCase):
         self.assertIn("is complete", err)
 
     def test_remaining_mode_unreadable_metadata_suggests_full(self):
+        """Unreadable metadata in remaining mode exits 1 and suggests full."""
+
         async def broken_rows(image_type: str | None = None):
             raise FileNotFoundError("imaging root is not mounted")
 
@@ -375,6 +397,7 @@ class GenSequenceScriptTest(unittest.TestCase):
     # -------------------------------------------------------------- --load
 
     def test_load_posts_the_sequence_and_reports_acceptance(self):
+        """--load posts exactly the JSON printed on stdout, then reports it."""
         posted: list[dict] = []
 
         async def fake_load(sequence):
@@ -390,6 +413,8 @@ class GenSequenceScriptTest(unittest.TestCase):
         self.assertIn("accepted by N.I.N.A.", err)
 
     def test_load_refusal_is_reported_with_ninas_own_error(self):
+        """A refused --load exits 1 but still prints the built JSON."""
+
         async def refuse(_sequence):
             raise RuntimeError("Sequence is running")
 
@@ -403,6 +428,8 @@ class GenSequenceScriptTest(unittest.TestCase):
         self.assertIn("Sequence is running", err)
 
     def test_without_load_nothing_is_posted(self):
+        """Without --load, load_sequence_payload is never called."""
+
         async def unexpected_load(_sequence):
             raise AssertionError("load_sequence_payload must not be called")
 
@@ -527,7 +554,10 @@ class _StubNina(BaseHTTPRequestHandler):
 
 @unittest.skipUnless(SCRIPT.is_file(), f"{SCRIPT} is not present")
 class GenSequenceLoadOverHttpTest(unittest.TestCase):
+    """The script as a subprocess against a local stub of N.I.N.A.'s API."""
+
     def setUp(self) -> None:
+        """Start the stub server, write the plan, isolate the imaging root."""
         _StubNina.loaded = []
         _StubNina.load_error = None
         self.server = ThreadingHTTPServer(("127.0.0.1", 0), _StubNina)
@@ -566,6 +596,7 @@ class GenSequenceLoadOverHttpTest(unittest.TestCase):
         )
 
     def test_load_posts_the_built_sequence_to_nina(self):
+        """The subprocess's --load POSTs exactly the JSON it printed."""
         proc = self._run_subprocess(str(self.plan), "--load")
 
         self.assertEqual(proc.returncode, 0, proc.stderr)
@@ -575,6 +606,7 @@ class GenSequenceLoadOverHttpTest(unittest.TestCase):
         self.assertIn("Wait For Object", proc.stdout)
 
     def test_load_surfaces_ninas_own_refusal(self):
+        """A stub refusal exits 1, keeps the JSON on stdout, posts nothing."""
         _StubNina.load_error = "Sequence is running"
         proc = self._run_subprocess(str(self.plan), "--load")
 
@@ -627,6 +659,7 @@ class GenSequenceLoadOverHttpTest(unittest.TestCase):
         self.assertIn("already complete", proc.stderr)
 
     def test_without_load_nothing_is_posted(self):
+        """A run without --load never POSTs to the stub server."""
         proc = self._run_subprocess(str(self.plan))
 
         self.assertEqual(proc.returncode, 0, proc.stderr)

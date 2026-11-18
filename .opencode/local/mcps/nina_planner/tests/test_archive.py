@@ -54,6 +54,7 @@ class ArchiveBase(unittest.TestCase):
     """Tmp project dir + landing root + explicit-plan CLI invocation."""
 
     def setUp(self):
+        """Create the tmp project, landing root, and archive destination."""
         self._tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self._tmp.cleanup)
         base = Path(self._tmp.name)
@@ -70,11 +71,13 @@ class ArchiveBase(unittest.TestCase):
     # -------------------------------------------------------- fixtures
 
     def write_plan(self, plan: ObservationPlan, name: str = "m31.json") -> Path:
+        """Write a plan JSON into the project dir and return its path."""
         path = self.proj / name
         path.write_text(plan.model_dump_json(indent=2), encoding="utf-8")
         return path
 
     def frame(self, image_type: str, name: str, *, date: str = "2026-09-20") -> Path:
+        """Write a fake frame file under the token dir, returning its path."""
         directory = self.root / self.token_dir / date / image_type
         directory.mkdir(parents=True, exist_ok=True)
         path = directory / name
@@ -93,6 +96,7 @@ class ArchiveBase(unittest.TestCase):
     def write_metadata(
         self, image_type: str, rows: list[dict[str, str]], *, date: str = "2026-09-20"
     ) -> None:
+        """Write an ImageMetaData.csv for one type under the token dir."""
         directory = self.root / self.token_dir / date / image_type
         directory.mkdir(parents=True, exist_ok=True)
         fieldnames = sorted({k for row in rows for k in row})
@@ -106,6 +110,7 @@ class ArchiveBase(unittest.TestCase):
     def write_weather(
         self, image_type: str, rows: list[dict[str, str]], *, date: str = "2026-09-20"
     ) -> None:
+        """Write a WeatherData.csv for one type under the token dir."""
         directory = self.root / self.token_dir / date / image_type
         directory.mkdir(parents=True, exist_ok=True)
         fieldnames = sorted({k for row in rows for k in row})
@@ -211,6 +216,7 @@ class ArchiveBase(unittest.TestCase):
     # -------------------------------------------------------------- run
 
     def run_cli(self, *extra: str) -> tuple[int, str, str]:
+        """Run the archive CLI with output captured, returning (code, out, err)."""
         argv = [
             "--dest",
             str(self.dest),
@@ -226,6 +232,7 @@ class ArchiveBase(unittest.TestCase):
         return code, out.getvalue(), err.getvalue()
 
     def folders(self) -> list[str]:
+        """Sorted visible archive folder names under dest (empty if absent)."""
         if not self.dest.exists():
             return []
         return sorted(
@@ -235,6 +242,7 @@ class ArchiveBase(unittest.TestCase):
         )
 
     def index_lines(self) -> list[str]:
+        """Non-empty lines of the append-only archive index (none if absent)."""
         index = self.dest / archive_mod._INDEX_NAME
         if not index.exists():
             return []
@@ -242,7 +250,10 @@ class ArchiveBase(unittest.TestCase):
 
 
 class ArchiveHappyPathTest(ArchiveBase):
+    """A complete plan archives with structure, sidecars, and manifest."""
+
     def test_complete_plan_archived_with_structure_and_sidecars(self):
+        """A complete plan archives every credited frame with sidecars and manifest."""
         plan = self.seed_full()
         plan_file = self.proj / "m31.json"
 
@@ -307,6 +318,7 @@ class ArchiveHappyPathTest(ArchiveBase):
         self.assertFalse(any(p.name.startswith(".") for p in self.dest.iterdir()))
 
     def test_weather_joined_per_folder_into_light_imagemetadata(self):
+        """Weather joins per folder into lights only; darks keep no columns."""
         plan = _plan(
             light_frames=[
                 {"filter_name": "L", "exposure_time_seconds": 60.0, "total_count": 2}
@@ -457,6 +469,7 @@ class ArchiveHappyPathTest(ArchiveBase):
         self.assertNotIn("cloud_cover", dark_rows[0])
 
     def test_no_weather_flag_skips_weather_join(self):
+        """The --no-weather flag skips the join: no cloud_cover column."""
         plan = _plan(
             light_frames=[
                 {"filter_name": "L", "exposure_time_seconds": 60.0, "total_count": 1}
@@ -539,6 +552,7 @@ class ArchiveHappyPathTest(ArchiveBase):
         self.assertNotIn("cloud_cover", rows[0])
 
     def test_frame_bytes_survive_copy_verified_by_checksum(self):
+        """Copied frames match their sources byte-for-byte under --checksum."""
         plan = _plan(
             light_frames=[
                 {"filter_name": "L", "exposure_time_seconds": 60.0, "total_count": 3}
@@ -574,8 +588,11 @@ class ArchiveHappyPathTest(ArchiveBase):
 
 
 class ArchiveGateTest(ArchiveBase):
+    """The completeness gate: incomplete plans skip unless --all waives."""
+
     def test_incomplete_plan_skipped_without_all_flag(self):
         # 12 of 20 lights on disk -> remaining 8 -> not complete.
+        """A plan short of its light total is skipped with a 12/20 reason."""
         self.seed_full(light_count=20, write_light_files=12)
 
         code, out, err = self.run_cli()
@@ -586,6 +603,7 @@ class ArchiveGateTest(ArchiveBase):
         self.assertIn("12/20", out)  # LIGHT acquired/expected in the reason
 
     def test_all_flag_forces_incomplete_plan_with_warning(self):
+        """The --all flag forces an incomplete plan in, flagged incomplete."""
         self.seed_full(light_count=20, write_light_files=12)
 
         code, out, _err = self.run_cli("--all")
@@ -602,6 +620,7 @@ class ArchiveGateTest(ArchiveBase):
         )
 
     def test_never_shot_plan_never_archives(self):
+        """An unshot plan reports incomplete, and --all refuses with no frames."""
         self.write_plan(_plan())  # no CSV, no frames at all
 
         # Default: the completeness gate reports it as incomplete.
@@ -625,6 +644,7 @@ class ArchiveGateTest(ArchiveBase):
         # `remaining_count == 0` gate archived this as complete. The shared
         # verdict reads acquired vs total + window_open: expired_with_deficit
         # → not archivable without --all.
+        """A closed calibration window with a deficit blocks the archive gate."""
         self.seed_full(light_count=20, flat_count=0, dark_count=0, bias_count=0)
 
         code, out, err = self.run_cli()
@@ -644,6 +664,7 @@ class ArchiveGateTest(ArchiveBase):
         self.assertTrue(any("incomplete" in w for w in manifest["warnings"]))
 
     def test_dry_run_writes_nothing(self):
+        """A dry run reports what it would archive and writes nothing."""
         self.seed_full()
 
         code, out, _err = self.run_cli("--dry-run")
@@ -656,7 +677,10 @@ class ArchiveGateTest(ArchiveBase):
 
 
 class ArchiveIdempotencyTest(ArchiveBase):
+    """Re-runs: existing folders skip unless --force rebuilds them."""
+
     def test_second_run_skips_existing_folder_unless_forced(self):
+        """A second run skips the existing folder; --force rebuilds and re-indexes."""
         self.seed_full()
 
         code1, _out1, _err1 = self.run_cli()
@@ -674,6 +698,7 @@ class ArchiveIdempotencyTest(ArchiveBase):
     def test_dest_inside_project_not_rediscovered(self):
         # --dest inside the project dir: archived plan.json copies must not
         # be discovered as fresh plans on the next run.
+        """An in-project dest never rediscovers its own archived plan.json copies."""
         self.seed_full()
         inner_dest = self.proj / "archive"
         argv = [
@@ -698,9 +723,12 @@ class ArchiveIdempotencyTest(ArchiveBase):
 
 
 class ArchiveAttributionTest(ArchiveBase):
+    """Attribution: only rows under the plan's token get archived."""
+
     def test_plan_token_in_filename_only_archives_matching_rows(self):
         # A light row whose path lacks the plan token: recorded on disk but
         # never attributed -> must not be archived.
+        """A row lacking the plan token is recorded on disk but never archived."""
         plan = self.seed_full(
             # The gate now reads the shared verdict: calibration must be
             # SATISFIED (5/5 here) for the plan to archive by default —
@@ -759,6 +787,7 @@ class ArchiveAttributionTest(ArchiveBase):
         # semantics). It is still this plan's OWN live frame, so it now
         # ships to junk/ rather than sitting in disk.not_selected and
         # holding the landing directory in nina-purge for ever.
+        """An out-of-window own dark ships to junk/, not darks/ or not_selected."""
         plan = self.seed_full()
         late = self.root / "M31_plan-abc123_" / "2026-10-25" / "DARK"
         late.mkdir(parents=True, exist_ok=True)
@@ -847,6 +876,7 @@ class ArchiveJunkTest(ArchiveBase):
         return path
 
     def manifest(self, plan_file: Path, plan: ObservationPlan) -> dict:
+        """Load the manifest dict for a plan's archive folder."""
         base = self.dest / archive_mod._folder_name(plan_file, plan)
         return json.loads((base / archive_mod._MANIFEST_NAME).read_text())
 
@@ -856,6 +886,7 @@ class ArchiveJunkTest(ArchiveBase):
         return {p.name for p in junk.iterdir()} if junk.is_dir() else set()
 
     def test_degenerate_dark_ships_to_junk(self):
+        """A degenerate dark lands in junk/ without inflating darks counts."""
         plan = self.seed_full()
         junk = self.seed_junk_dark()
 
@@ -892,6 +923,7 @@ class ArchiveJunkTest(ArchiveBase):
         # Lights are selected on their token ALONE, so without the
         # degenerate filter this 0.00s frame would ship inside lights/ —
         # exactly where a stacking pipeline would pick it up.
+        """A degenerate light stays out of lights/, where a stacker would grab it."""
         plan = self.seed_full()
         name = "2026-09-21_05-00-00_L__0.00s_junk.fits"
         junk = self.frame("LIGHT", name, date="2026-09-21")
@@ -933,6 +965,7 @@ class ArchiveJunkTest(ArchiveBase):
         # In-window, perfectly real 120s dark — but no group asked for a
         # 120s dark, so it is not selected. Real data, not degenerate:
         # diverted to junk/ with reason "uncredited", never "degenerate".
+        """A real dark no group credits ships to junk/ as uncredited."""
         plan = self.seed_full()
         name = "2026-09-21_05-00-00_dark_120.00s.fits"
         path = self.frame("DARK", name, date="2026-09-21")
@@ -965,6 +998,7 @@ class ArchiveJunkTest(ArchiveBase):
         # darks/. Diverting it into A's junk/ would duplicate a good dark
         # and mislabel it, so A leaves it in disk.not_selected — preserved
         # by B's manifest instead.
+        """A dark another plan's window claims is left alone, shipped once."""
         plan_a = self.seed_full()
         late_dir = self.root / "M31_plan-abc123_" / "2026-10-25" / "DARK"
         late_dir.mkdir(parents=True, exist_ok=True)
@@ -1047,6 +1081,8 @@ class ArchiveJunkTest(ArchiveBase):
 
 
 class ArchiveErrorPathTest(ArchiveBase):
+    """Error paths: refused commits, vanished frames, and CLI failures."""
+
     def test_all_selected_frames_missing_refuses_empty_archive_and_cleans_staging(
         self,
     ):
@@ -1057,6 +1093,7 @@ class ArchiveErrorPathTest(ArchiveBase):
         # Individual misses are skipped (next test), but a selection where
         # NOTHING could be copied must not commit an empty archive, and
         # staging must not survive the refusal.
+        """A selection where nothing copied refuses the archive and cleans staging."""
         plan = self.seed_full()
         plan_file = self.proj / "m31.json"
         stale = {
@@ -1102,6 +1139,7 @@ class ArchiveErrorPathTest(ArchiveBase):
         # so — losing one frame must not lose the archive.  (Rows already
         # missing at read time never reach here: read_imaging_csv drops
         # them, which is also how BAD_ rejects stay out of selection.)
+        """A frame vanishing before copy is skipped, reported, and not fatal."""
         plan = _plan(
             light_frames=[
                 {"filter_name": "L", "exposure_time_seconds": 60.0, "total_count": 3}
@@ -1149,6 +1187,7 @@ class ArchiveErrorPathTest(ArchiveBase):
         # and never selected — which is what keeps it out of the copy loop
         # entirely: no "recorded frame missing on disk" abort, no BAD_ file
         # in the archive.
+        """A BAD_ reject row is dropped: no abort, no credit, no shipped file."""
         self.seed_full()
         light_dir = self.root / "M31_plan-abc123_" / "2026-09-20" / "LIGHT"
         victim = sorted(light_dir.glob("*.fits"))[0]
@@ -1192,6 +1231,7 @@ class ArchiveErrorPathTest(ArchiveBase):
         # dropped by the reader exactly like a reject, but classified
         # differently: disk.gone + a manifest warning + the 💽 console line.
         # The gate still reads the shortfall honestly (19/20).
+        """A recorded-but-gone file is disk.gone with a warning, not copy-missing."""
         self.seed_full()
         light_dir = self.root / "M31_plan-abc123_" / "2026-09-20" / "LIGHT"
         victim = sorted(light_dir.glob("*.fits"))[0]
@@ -1220,6 +1260,7 @@ class ArchiveErrorPathTest(ArchiveBase):
     def test_copy_failure_is_wrapped_as_archive_error(self):
         # An OSError mid-copy must not crash the whole run: it surfaces as
         # ArchiveError, which the CLI records per plan and exits 1.
+        """An OSError mid-copy surfaces as ArchiveError, not a crash."""
         plan = self.seed_full(light_count=2, flat_count=1, dark_count=1, bias_count=1)
         plan_file = self.proj / "m31.json"
         light = next(
@@ -1258,6 +1299,7 @@ class ArchiveErrorPathTest(ArchiveBase):
         self.assertEqual(self.folders(), [])
 
     def test_missing_imaging_root_is_an_error_not_empty_archive(self):
+        """A missing --imaging-root errors without creating the dest."""
         self.seed_full()
         argv = [
             "--dest",
@@ -1275,6 +1317,7 @@ class ArchiveErrorPathTest(ArchiveBase):
         self.assertFalse(self.dest.exists())
 
     def test_dest_inside_imaging_root_refused(self):
+        """A --dest inside the imaging root is refused (double-count)."""
         self.seed_full()
         argv = [
             "--dest",
@@ -1292,12 +1335,14 @@ class ArchiveErrorPathTest(ArchiveBase):
         self.assertFalse((self.root / "archive").exists())
 
     def test_explicit_missing_plan_path_is_an_error(self):
+        """Naming a plan path that does not exist is an error, exit 1."""
         self.seed_full()
         code, _out, err = self.run_cli(str(self.proj / "ghost.json"))
         self.assertEqual(code, 1)
         self.assertIn("not found", err)
 
     def test_unrelated_json_in_project_is_ignored_silently(self):
+        """Unrelated JSON in the project is counted and ignored, not an error."""
         self.seed_full()
         (self.proj / "smb_opencode.json").write_text(
             json.dumps({"model": "x", "provider": "y"}), encoding="utf-8"
@@ -1366,6 +1411,7 @@ class ArchiveDetailTest(ArchiveBase):
     # ------------------------------------------------------- small helpers
 
     def test_unreadable_json_is_not_plan_shaped(self):
+        """Unreadable and unparseable JSON never look like plan files."""
         ghost = self.proj / "ghost.json"  # never written → OSError
         junk = self.proj / "smb_opencode.json"
         junk.write_text("{not json", encoding="utf-8")
@@ -1375,16 +1421,19 @@ class ArchiveDetailTest(ArchiveBase):
     def test_merge_weather_keeps_rows_without_a_file_path(self):
         # A row with no path has no folder to read weather from: it must
         # ride through untouched rather than raise or be dropped.
+        """A row without a path rides through the weather merge untouched."""
         row = {"image_type": "LIGHT", "duration": "60.0"}
         self.assertEqual(archive_mod._merge_weather([row]), [row])
         self.assertEqual(archive_mod._merge_weather([]), [])
 
     def test_write_metadata_csv_of_no_rows_writes_nothing(self):
+        """Writing a sidecar for zero rows creates no file."""
         target = self.dest / "ImageMetaData.csv"
         archive_mod._write_image_metadata_csv(target, [], {})
         self.assertFalse(target.exists())
 
     def test_copy_file_detects_a_short_copy(self):
+        """A truncated copy is caught by the post-copy size check."""
         src = self.proj / "src.fits"
         src.write_bytes(b"0123456789")
         dst = self.dest / "dst.fits"
@@ -1402,6 +1451,7 @@ class ArchiveDetailTest(ArchiveBase):
 
     def test_copy_file_detects_a_checksum_mismatch(self):
         # Same byte count, different bytes: only the checksum catches it.
+        """A same-size corrupt copy is caught only by --checksum verification."""
         src = self.proj / "src.fits"
         src.write_bytes(b"0123456789")
         dst = self.dest / "dst.fits"
@@ -1421,6 +1471,7 @@ class ArchiveDetailTest(ArchiveBase):
         # An interrupted earlier run leaves dest/.<folder>.partial behind;
         # the next run must start that folder from scratch, not merge into
         # whatever half-copy survived.
+        """A stale .partial staging dir is cleared, never merged into."""
         plan = self.seed_small()
         folder = archive_mod._folder_name(self.proj / "m31.json", plan)
         stale = self.dest / f".{folder}.partial"
@@ -1435,6 +1486,7 @@ class ArchiveDetailTest(ArchiveBase):
         self.assertEqual(list((self.dest / folder).glob("*.partial")), [])
 
     def test_same_filename_from_two_date_folders_keeps_both(self):
+        """Same-named frames from two dates both ship, one with a _dup name."""
         plan = self.seed_full(light_count=2, flat_count=1, dark_count=1, bias_count=1)
         first = self.frame("LIGHT", "same.fits", date="2026-09-20")
         second = self.frame("LIGHT", "same.fits", date="2026-09-21")
@@ -1460,6 +1512,7 @@ class ArchiveDetailTest(ArchiveBase):
         self.assertTrue(any(name.startswith("same_dup") for name in lights), lights)
 
     def test_vanishing_junk_frame_is_recorded_under_missing(self):
+        """A divert that vanished before copy lands in manifest.missing."""
         plan = self.seed_full(light_count=2, flat_count=1, dark_count=1, bias_count=1)
         light = next(
             (self.root / "M31_plan-abc123_" / "2026-09-20" / "LIGHT").glob("*.fits")
@@ -1486,6 +1539,7 @@ class ArchiveDetailTest(ArchiveBase):
         self.assertIn({"type": "JUNK", "source": gone}, manifest["missing"])
 
     def test_duplicate_filenames_inside_junk_are_renamed(self):
+        """Duplicate junk filenames are renamed with a _dup suffix, both kept."""
         plan = self.seed_full(light_count=2, flat_count=1, dark_count=1, bias_count=1)
         light = next(
             (self.root / "M31_plan-abc123_" / "2026-09-20" / "LIGHT").glob("*.fits")
@@ -1522,6 +1576,7 @@ class ArchiveDetailTest(ArchiveBase):
         # No --imaging-root: the root comes from N.I.N.A.'s profile, and a
         # dead NINA must be reported as such (with the --imaging-root
         # escape hatch named) rather than raising out of main().
+        """A dead NINA profile is reported with --imaging-root, not raised."""
         self.seed_full(light_count=2, flat_count=1, dark_count=1, bias_count=1)
         argv = ["--dest", str(self.dest), "--project-dir", str(self.proj)]
         err = io.StringIO()
@@ -1542,6 +1597,7 @@ class ArchiveDetailTest(ArchiveBase):
         # Relative arguments must not depend on where the process was
         # started from: --dest roots at the cwd, --project-dir at
         # PROJECT_DIR, and a named plan at the resolved project dir.
+        """Relative --dest, --project-dir, and plan paths resolve at their roots."""
         self.seed_small()
         argv = [
             "--dest",
@@ -1565,6 +1621,7 @@ class ArchiveDetailTest(ArchiveBase):
         self.assertEqual(len(self.folders()), 1)
 
     def test_missing_metadata_csv_is_reported_not_raised(self):
+        """A missing ImageMetaData.csv is reported on stderr, not raised."""
         self.seed_full(light_count=2, flat_count=1, dark_count=1, bias_count=1)
         argv = [
             "--dest",
@@ -1589,6 +1646,7 @@ class ArchiveDetailTest(ArchiveBase):
     def test_explicit_broken_plan_is_an_error(self):
         # Naming a file IS the request to archive it: a load failure counts
         # (discovery mode would ignore it as unrelated JSON).
+        """Naming a broken plan file is an error, not silently ignored."""
         self.seed_full(light_count=2, flat_count=1, dark_count=1, bias_count=1)
         (self.proj / "broken.json").write_text("{not json", encoding="utf-8")
 
@@ -1600,6 +1658,7 @@ class ArchiveDetailTest(ArchiveBase):
     def test_dry_run_totals_junk_and_notes_disk_anomalies(self):
         # The dry-run report is the only place the divert byte total and
         # the rejected/gone annotation are computed.
+        """The dry-run report totals junk bytes and notes disk anomalies."""
         self.seed_full(light_count=3, flat_count=2, dark_count=2, bias_count=2)
         junk = self.frame(
             "DARK", "2026-09-21_05-00-00_dark_junk.fits", date="2026-09-21"
@@ -1630,6 +1689,7 @@ class ArchiveDetailTest(ArchiveBase):
         self.assertEqual(self.folders(), [])  # nothing written
 
     def test_archive_error_is_collected_per_plan(self):
+        """An ArchiveError is collected per plan and reported, exit 1."""
         self.seed_small()
         with mock.patch(
             "nina_planner.archive._archive_one",
@@ -1642,6 +1702,7 @@ class ArchiveDetailTest(ArchiveBase):
         self.assertEqual(self.folders(), [])
 
     def test_module_entry_point_exits_with_main_status(self):
+        """Running as __main__ exits 0 after archiving to the destination."""
         import runpy
         import sys
         import warnings
@@ -1673,18 +1734,23 @@ class ArchiveDetailTest(ArchiveBase):
 
 
 class FolderNameTest(unittest.TestCase):
+    """The folder name derived from a plan file stem and plan id."""
+
     def test_folder_name_is_stem_plus_plan_id(self):
+        """The folder name is the plan file stem plus the plan id."""
         plan = _plan()
         name = archive_mod._folder_name(Path("plans/m31_galaxy_20261003.json"), plan)
         self.assertEqual(name, "m31_galaxy_20261003__plan-abc123")
 
     def test_folder_name_not_double_suffixed(self):
         # A stem already carrying the id (e.g. written that way) stays as-is.
+        """A stem already carrying the plan id is not suffixed twice."""
         plan = _plan()
         name = archive_mod._folder_name(Path("m31__plan-abc123.json"), plan)
         self.assertEqual(name, "m31__plan-abc123")
 
     def test_sanitize_applied(self):
+        """Unsafe characters are sanitized while the plan id survives."""
         plan = _plan(plan_id="plan-abc123")
         name = archive_mod._folder_name(Path("we/ird:name.json"), plan)
         self.assertNotIn(":", name)
@@ -1732,10 +1798,13 @@ class FolderNameTest(unittest.TestCase):
 
 
 class MainAsyncTest(unittest.IsolatedAsyncioTestCase):
+    """The async run() contract that main() wraps."""
+
     async def test_run_returns_exit_code_without_raising(self):
         # run() takes parsed args and returns an int exit code (main() is
         # the asyncio wrapper) — pin that contract, using an empty project
         # dir so the answer does not depend on NINA or local plans.
+        """The async run() returns an exit code instead of raising."""
         parser = archive_mod._build_parser()
         args = parser.parse_args(
             ["--dry-run", "--dest", "unused-dest", "--project-dir", "."]
@@ -1772,6 +1841,7 @@ class ArchiveDefaultsTest(unittest.TestCase):
     """
 
     def test_archive_and_purge_share_the_hidden_default_dest(self):
+        """Both CLIs default --dest to the hidden .archive directory."""
         from nina_planner import purge as purge_mod
 
         archive_dest = archive_mod._build_parser().parse_args([]).dest

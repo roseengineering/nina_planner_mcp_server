@@ -1,9 +1,13 @@
+"""FilterWheelDevice selected_filter parsing into position."""
+
 import unittest
 
 from nina_planner.models.filter_wheel import FilterWheelDevice
 
 
 class FilterWheelDeviceDeriveFieldsTest(unittest.TestCase):
+    """Deriving the wheel position from selected_filter payloads."""
+
     def _base(self, **overrides) -> dict:
         data = {
             "connected": True,
@@ -24,16 +28,12 @@ class FilterWheelDeviceDeriveFieldsTest(unittest.TestCase):
         self.assertEqual(fw.position, 0)
 
     def test_filter_wheel_selected_filter_not_dict_skips(self):
-        """`selected_filter="L"` (string) → position stays None.
-        Only dict-valued selected_filter is unpacked.
-        """
+        """A string selected_filter leaves position None; only dicts unpack."""
         fw = FilterWheelDevice(**self._base(selected_filter="L"))
         self.assertIsNone(fw.position)
 
     def test_filter_wheel_selected_filter_int_skips(self):
-        """`selected_filter=2` (int) → position stays None.
-        Only dict-valued selected_filter is unpacked.
-        """
+        """An int selected_filter leaves position None; only dicts unpack."""
         fw = FilterWheelDevice(**self._base(selected_filter=2))
         self.assertIsNone(fw.position)
 

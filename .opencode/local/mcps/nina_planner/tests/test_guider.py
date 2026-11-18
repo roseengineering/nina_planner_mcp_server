@@ -1,3 +1,5 @@
+"""GuiderDevice state, pixel scale and nested RMSError parsing."""
+
 import unittest
 
 from nina_planner.models.guider import GuiderDevice
@@ -14,27 +16,35 @@ def _base(**overrides) -> dict:
 
 
 class GuiderDeviceDeriveFieldsTest(unittest.TestCase):
+    """Guider state and pixel-scale derivation from driver payloads."""
+
     def test_guider_state_from_app_state(self):
+        """The app_state field becomes the reported guider state."""
         guider = GuiderDevice(**_base(app_state="Guiding"))
         self.assertEqual(guider.state, "Guiding")
 
     def test_guider_state_falls_back_to_state_key(self):
+        """The state field is used when app_state is absent."""
         guider = GuiderDevice(**_base(state="Idle"))
         self.assertEqual(guider.state, "Idle")
 
     def test_guider_state_prefers_app_state_over_state(self):
+        """app_state wins when both app_state and state are present."""
         guider = GuiderDevice(**_base(app_state="Guiding", state="Idle"))
         self.assertEqual(guider.state, "Guiding")
 
     def test_guider_pixel_scale_mapped(self):
+        """pixel_scale passes through unchanged."""
         guider = GuiderDevice(**_base(pixel_scale=1.5))
         self.assertEqual(guider.pixel_scale, 1.5)
 
     def test_guider_pixel_scale_none_preserves_default(self):
+        """A null pixel_scale stays None instead of defaulting."""
         guider = GuiderDevice(**_base(pixel_scale=None))
         self.assertIsNone(guider.pixel_scale)
 
     def test_guider_full_integration(self):
+        """A full payload populates state, scale and RMS metrics."""
         guider = GuiderDevice(
             **_base(
                 app_state="Guiding",
@@ -55,6 +65,7 @@ class GuiderDeviceNestedRmsErrorTest(unittest.TestCase):
     """ninaAPI nests guiding error under `RMSError`."""
 
     def test_nested_rms_error_populates_all_metrics(self):
+        """Every nested RMSError metric lands on its field."""
         guider = GuiderDevice(
             **_base(
                 rms_error={
@@ -78,16 +89,19 @@ class GuiderDeviceNestedRmsErrorTest(unittest.TestCase):
         self.assertEqual(guider.peak_dec_excursion.pixel, 0.9)
 
     def test_nested_metric_missing_pixel_leaves_pixel_none(self):
+        """A metric without pixel keeps arcseconds and leaves pixel None."""
         guider = GuiderDevice(**_base(rms_error={"ra": {"arcseconds": 0.43}}))
         self.assertEqual(guider.ra_rms_error.arcseconds, 0.43)
         self.assertIsNone(guider.ra_rms_error.pixel)
 
     def test_non_dict_nested_block_is_ignored(self):
+        """A non-dict RMSError block is ignored, not coerced."""
         guider = GuiderDevice(**_base(rms_error="n/a"))
         self.assertIsNone(guider.ra_rms_error.arcseconds)
         self.assertIsNone(guider.total_rms_error.pixel)
 
     def test_non_dict_metric_entry_is_ignored(self):
+        """A non-dict metric entry is ignored, not coerced."""
         guider = GuiderDevice(**_base(rms_error={"ra": "n/a"}))
         self.assertIsNone(guider.ra_rms_error.arcseconds)
 

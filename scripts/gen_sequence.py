@@ -384,6 +384,14 @@ async def _run(args: argparse.Namespace) -> int:
 
 
 def main(argv: list[str] | None = None) -> int:
+    """Parse ``argv`` (default ``sys.argv[1:]``) and generate the sequence.
+
+    Returns:
+        0 when the sequence was built (and accepted, with ``--load``) or
+        when there was nothing to build; 1 when the plan, the rig, or
+        N.I.N.A. refused; 130 on KeyboardInterrupt. Bad arguments exit 2
+        via argparse itself.
+    """
     parser = _build_parser()
     args = parser.parse_args(argv)
     _validate(parser, args)

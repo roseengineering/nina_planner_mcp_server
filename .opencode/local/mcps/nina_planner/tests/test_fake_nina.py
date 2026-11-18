@@ -28,6 +28,8 @@ def _equipment(can_park: bool = True, can_find_home: bool = False):
 
 
 class FakeNinaTest(unittest.IsolatedAsyncioTestCase):
+    """Load/start/stop round trips through the fake NINA HTTP server."""
+
     def _patched(self, equipment=None):
         # Equipment/profile parsing is a separate layer; only the sequence
         # endpoints are faked over HTTP.
@@ -48,6 +50,7 @@ class FakeNinaTest(unittest.IsolatedAsyncioTestCase):
         return stack
 
     async def test_park_loads_over_http_without_starting(self):
+        """An empty load POSTs /sequence/load and builds a park sequence."""
         fake = FakeNina()
         with fake.installed(), self._patched():
             await load_sequence([])
@@ -62,6 +65,7 @@ class FakeNinaTest(unittest.IsolatedAsyncioTestCase):
         )
 
     async def test_start_runs_the_loaded_sequence(self):
+        """Starting the loaded sequence reports Status RUNNING."""
         fake = FakeNina()
         with fake.installed(), self._patched():
             await load_sequence([])
@@ -76,6 +80,7 @@ class FakeNinaTest(unittest.IsolatedAsyncioTestCase):
         )
 
     async def test_start_without_a_loaded_sequence_surfaces_ninas_error(self):
+        """Starting with nothing loaded surfaces NINA's error message."""
         fake = FakeNina()
         with (
             fake.installed(),
@@ -85,6 +90,7 @@ class FakeNinaTest(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(fake.running)
 
     async def test_load_over_a_running_sequence_is_rejected_and_not_replaced(self):
+        """Loading over a running sequence fails and keeps the first load."""
         fake = FakeNina()
         with fake.installed(), self._patched():
             await load_sequence([])
@@ -97,6 +103,7 @@ class FakeNinaTest(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(fake.running)
 
     async def test_stop_then_reload_succeeds(self):
+        """Stop clears the running flag so a reload succeeds."""
         fake = FakeNina()
         with fake.installed(), self._patched():
             await load_sequence([])
@@ -108,6 +115,7 @@ class FakeNinaTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(fake.posts, ["/sequence/load", "/sequence/load"])
 
     async def test_unparkable_mount_never_reaches_nina(self):
+        """An unparkable mount raises before any HTTP request is sent."""
         fake = FakeNina()
         with (
             fake.installed(),
@@ -118,10 +126,7 @@ class FakeNinaTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(fake.requests, [])
 
     async def test_park_rejected_even_when_the_mount_can_home(self):
-        """`can_find_home` is not a park fallback: a mount that cannot park is
-        rejected at load time instead of being homed, even when it can home.
-        (Home still appears in a lights step — sequence_home_scope — but never
-        to rescue this guard.)"""
+        """A mount that cannot park is rejected even if it can find home."""
         fake = FakeNina()
         with (
             fake.installed(),

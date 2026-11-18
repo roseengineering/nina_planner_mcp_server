@@ -1,3 +1,10 @@
+"""The FastMCP application instance and the server instructions sent to clients.
+
+The instructions text is the safety/lifecycle contract every agent session is
+handed: what ``is_safe`` gates, when park vs. find-home runs, and how progress
+is tracked. Editing it changes what every connected client is told.
+"""
+
 from mcp.server.fastmcp import FastMCP
 
 mcp = FastMCP(

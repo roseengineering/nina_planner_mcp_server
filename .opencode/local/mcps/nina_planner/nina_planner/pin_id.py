@@ -145,6 +145,11 @@ def _build_parser() -> argparse.ArgumentParser:
 
 
 async def run(args: argparse.Namespace) -> int:
+    """Pin every plan named on the command line; return the process exit code.
+
+    Per-plan failures (missing file, unloadable or unwritable plan) are
+    printed to stderr and counted, but never abort the remaining plans.
+    """
     errors = 0
     for entry in args.plans:
         path = _resolve(entry)
@@ -168,6 +173,12 @@ async def run(args: argparse.Namespace) -> int:
 
 
 def main(argv: list[str] | None = None) -> int:
+    """CLI entry point: parse ``argv`` (default ``sys.argv[1:]``) and run the pins.
+
+    Returns:
+        0 when every plan was pinned (or already was, or a dry run), 1 when any
+        plan failed. Argparse exits 2 on bad usage itself.
+    """
     args = _build_parser().parse_args(argv)
     return asyncio.run(run(args))
 

@@ -1,3 +1,5 @@
+"""Live integration tests against a running NINA instance."""
+
 import asyncio
 import json
 import time
@@ -67,8 +69,11 @@ def _wait_for_nina_status(*, running: bool, timeout: float = 120.0):
 
 @pytest.mark.live
 class LiveNinaTest(unittest.TestCase):
+    """REST API tests that require a reachable NINA instance."""
+
     @classmethod
     def setUpClass(cls):
+        """Start NINA when this host can, else skip the whole class."""
         status = asyncio.run(get_nina_status())
         if status["running"]:
             # NINA is up, so the REST-only tests can run even when Windows
@@ -95,6 +100,7 @@ class LiveNinaTest(unittest.TestCase):
                 time.sleep(3)
 
     def test_get_nina_status(self):
+        """get_nina_status reports running and lifecycle control."""
         result = asyncio.run(get_nina_status())
         self.assertIsInstance(result, dict)
         self.assertIn("running", result)
@@ -103,6 +109,7 @@ class LiveNinaTest(unittest.TestCase):
     # @pytest.mark.skip
     @requires_windows_interop
     def test_zz_stop_and_restart_nina(self):
+        """Stopping and restarting NINA through the lifecycle API."""
         initial_status = asyncio.run(get_nina_status())
         if not initial_status["running"]:
             self.skipTest("NINA must already be running and reachable for this test")
@@ -122,22 +129,26 @@ class LiveNinaTest(unittest.TestCase):
             _wait_for_nina_status(running=True)
 
     def test_get_site_equipment_status(self):
+        """Equipment status carries the mount and camera sections."""
         result = asyncio.run(get_site_equipment_status())
         result_dict = result.model_dump()
         self.assertIn("mount", result_dict)
         self.assertIn("camera", result_dict)
 
     def test_get_site_profile(self):
+        """Site profile carries profile_name and site."""
         result = asyncio.run(get_site_profile())
         result_dict = result.model_dump()
         self.assertIn("profile_name", result_dict)
         self.assertIn("site", result_dict)
 
     def test_get_sequence_state(self):
+        """Sequence state comes back as a dict or a list."""
         result = asyncio.run(get_sequence_state())
         self.assertIsInstance(result, (dict, list))
 
     def test_sequence_summary_invariants(self):
+        """A loaded sequence reports one step with a plan id and exposure."""
         plan_path = str(_FIXTURES_DIR / "veil.json")
         asyncio.run(
             load_sequence(
@@ -152,18 +163,22 @@ class LiveNinaTest(unittest.TestCase):
         asyncio.run(stop_sequence())
 
     def test_get_events(self):
+        """get_events returns a list for a recent window."""
         result = asyncio.run(get_events(since=60))
         self.assertIsInstance(result, list)
 
     def test_get_logs(self):
+        """get_logs returns a list for a recent window."""
         result = asyncio.run(get_logs(since=60))
         self.assertIsInstance(result, list)
 
     def test_stop_sequence(self):
+        """stop_sequence answers with a string summary."""
         result = asyncio.run(stop_sequence())
         self.assertIsInstance(result, str)
 
     def test_run_light_sequence(self):
+        """Loading a light sequence reports success and a state payload."""
         plan_path = str(_FIXTURES_DIR / "veil.json")
         result = asyncio.run(
             load_sequence(
@@ -176,6 +191,7 @@ class LiveNinaTest(unittest.TestCase):
         asyncio.run(stop_sequence())
 
     def test_run_dark_sequence(self):
+        """Loading a dark sequence reports success and a state payload."""
         plan_path = str(_FIXTURES_DIR / "veil.json")
         result = asyncio.run(
             load_sequence([SequenceRequest(plan=plan_path, action="dark", mode="full")])
@@ -186,6 +202,7 @@ class LiveNinaTest(unittest.TestCase):
         asyncio.run(stop_sequence())
 
     def test_run_bias_sequence(self):
+        """Loading a bias sequence reports success and a state payload."""
         plan_path = str(_FIXTURES_DIR / "veil.json")
         result = asyncio.run(
             load_sequence([SequenceRequest(plan=plan_path, action="bias", mode="full")])
@@ -196,6 +213,7 @@ class LiveNinaTest(unittest.TestCase):
         asyncio.run(stop_sequence())
 
     def test_run_dawn_flat_sequence(self):
+        """Loading a dawn-flat sequence reports success and state."""
         plan_path = str(_FIXTURES_DIR / "veil.json")
         result = asyncio.run(
             load_sequence(
@@ -212,6 +230,7 @@ class LiveNinaTest(unittest.TestCase):
         asyncio.run(stop_sequence())
 
     def test_run_dusk_flat_sequence(self):
+        """Loading a dusk-flat sequence reports success and state."""
         plan_path = str(_FIXTURES_DIR / "veil.json")
         result = asyncio.run(
             load_sequence(
@@ -228,6 +247,7 @@ class LiveNinaTest(unittest.TestCase):
         asyncio.run(stop_sequence())
 
     def test_get_plan_progress(self):
+        """Veil fixture progress names the target and all four frame types."""
         plan_path = str(_FIXTURES_DIR / "veil.json")
         result = asyncio.run(get_plan_progress(file_path=plan_path))
         self.assertIsInstance(result, dict)
@@ -244,6 +264,7 @@ class LiveNinaTest(unittest.TestCase):
             self.assertIn(frame_type, first["frame_types"])
 
     def test_enter_teardown(self):
+        """An empty load builds the park teardown, not a target sequence."""
         result = asyncio.run(load_sequence())
         self.assertIn("`park` sequence loaded", result)
         # The summary only counts Target Sequence items, and a park lives in

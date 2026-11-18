@@ -101,10 +101,14 @@ ROW_WIND = r"Wind Speed/Direction \([^)]+\)"
 
 
 class FetchError(Exception):
+    """The forecast page could not be downloaded (network or HTTP failure)."""
+
     pass
 
 
 class ParseError(Exception):
+    """The downloaded page is not a parseable Clear Outside forecast."""
+
     pass
 
 
@@ -261,8 +265,10 @@ def _row_cells(block: str, label: str) -> list[tuple[str, str | None]] | None:
 
 
 def _fit(seq: list, n: int, name: str = "") -> list:
-    """Align a row to the hour columns: pad short, truncate long, all-None
-    when the row is missing entirely.
+    """Align a row to the hour columns.
+
+    Pads short rows, truncates long ones, and returns all-``None`` when the
+    row is missing entirely.
 
     A present-but-short row is suspicious: padding appends at the END, which
     keeps every cell at its correct hour, but a markup change that dropped a
@@ -693,6 +699,12 @@ def summarize_conditions(
 
 
 def main(argv: list[str] | None = None) -> int:
+    """Fetch the forecast for <lat>/<lon> and print the report.
+
+    Returns:
+        0 on success, 1 on fetch/parse failure; argparse exits 2 on bad
+        usage itself.
+    """
     ap = argparse.ArgumentParser(
         description="Clear Outside hourly forecast for an observing site."
     )

@@ -6,8 +6,8 @@ down to a workstation for calibration and stacking::
 
     <dest>/<plan-file-stem>__<plan-id>/
         plan.json              verbatim copy of the plan file
-        manifest.json          identity, per-type counts, file list, disk
-                               report (rejected/gone/not_selected/junk),
+        manifest.json          identity, per-type counts, file list, a disk
+                               report (rejected/gone/not_selected/junk) and
                                warnings
         lights/ImageMetaData.csv archived light metadata (+ joined weather)
         lights/*.fits.fz       attributed light frames
@@ -569,13 +569,14 @@ def _archive_one(
         rel_map: dict[str, str],
         used_names: set[str],
     ) -> tuple[Path, str, int] | None:
-        """Copy one row's file into ``type_dir``; ``(src, rel_path, size)``,
-        or None when the source vanished BETWEEN the metadata read and this
-        copy (recorded under ``missing``). read_imaging_csv already drops rows
-        gone at read time — which is also how N.I.N.A. BAD_ rejects never
-        reach selection (the CSV names the pre-rename file) — so a vanish
-        here is a genuine mid-run change: skip the file, record it, and keep
-        the otherwise-complete archive.
+        """Copy one row's file into ``type_dir``; ``(src, rel_path, size)``.
+
+        Returns None when the source vanished BETWEEN the metadata read and
+        this copy (recorded under ``missing``). read_imaging_csv already
+        drops rows gone at read time — which is also how N.I.N.A. BAD_
+        rejects never reach selection (the CSV names the pre-rename file) —
+        so a vanish here is a genuine mid-run change: skip the file, record
+        it, and keep the otherwise-complete archive.
         """
         src = Path(str(row.get("file_path") or ""))
         if not src.is_file():
@@ -895,6 +896,12 @@ async def _resolve_root(args: argparse.Namespace) -> Path:
 
 
 async def run(args: argparse.Namespace) -> int:
+    """Archive the plans selected by ``args``; return the process exit code.
+
+    Discoverable plans are gated on the shared completion verdict unless
+    ``--all``; per-plan failures are reported and counted without aborting
+    the remaining archives.
+    """
     project_dir = (
         Path(args.project_dir).expanduser() if args.project_dir else config.PROJECT_DIR
     )
@@ -1146,6 +1153,13 @@ async def run(args: argparse.Namespace) -> int:
 
 
 def main(argv: list[str] | None = None) -> int:
+    """CLI entry point: parse ``argv`` (default ``sys.argv[1:]``) and archive.
+
+    Returns:
+        0 when at least one plan was archived (or already was), 1 when
+        nothing was archived or any plan failed; argparse exits 2 on bad
+        usage itself.
+    """
     args = _build_parser().parse_args(argv)
     return asyncio.run(run(args))
 

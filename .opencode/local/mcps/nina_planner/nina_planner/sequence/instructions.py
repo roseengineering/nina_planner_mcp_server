@@ -1,3 +1,10 @@
+"""N.I.N.A. sequence-item factories: one function per instruction or condition.
+
+Each returns the JSON node dict N.I.N.A.'s sequencer expects — a type name
+plus its properties — with no side effects; ``builders``/``targets`` compose
+them into a runnable sequence.
+"""
+
 from typing import Any
 
 from .nodes import _azalt_coordinates, _child, _container_base
@@ -6,32 +13,38 @@ from .nodes import _azalt_coordinates, _child, _container_base
 
 
 def connect_all_equipment() -> dict[str, Any]:
+    """Instruction that connects every equipment device the profile declares."""
     return _child(
         "NINA.Sequencer.SequenceItem.Connect.ConnectAllEquipment, NINA.Sequencer"
     )
 
 
 def unpark_scope() -> dict[str, Any]:
+    """Instruction that unparks the mount."""
     return _child("NINA.Sequencer.SequenceItem.Telescope.UnparkScope, NINA.Sequencer")
 
 
 def park_scope() -> dict[str, Any]:
+    """Instruction that parks the mount — the sequence's closing maneuver."""
     return _child("NINA.Sequencer.SequenceItem.Telescope.ParkScope, NINA.Sequencer")
 
 
 def home_scope() -> dict[str, Any]:
+    """Instruction that drives the mount to home (a calibration, not a park)."""
     # What FindHome is and when it is emitted: see the canonical policy
     # block above sequence_park_scope in builders.py.
     return _child("NINA.Sequencer.SequenceItem.Telescope.FindHome, NINA.Sequencer")
 
 
 def warm_camera() -> dict[str, Any]:
+    """Instruction that warms the camera to ambient immediately (``Duration`` 0)."""
     return _child("NINA.Sequencer.SequenceItem.Camera.WarmCamera, NINA.Sequencer") | {
         "Duration": 0,
     }
 
 
 def cool_camera(temperature: float) -> dict[str, Any]:
+    """Instruction that cools the camera to ``temperature`` (Celsius, ``Duration`` 0)."""
     return _child("NINA.Sequencer.SequenceItem.Camera.CoolCamera, NINA.Sequencer") | {
         "Temperature": temperature,
         "Duration": 0,
@@ -39,16 +52,23 @@ def cool_camera(temperature: float) -> dict[str, Any]:
 
 
 def start_guiding(calibration: bool = False) -> dict[str, Any]:
+    """Instruction that starts autoguiding, optionally forcing a recalibration."""
     return _child("NINA.Sequencer.SequenceItem.Guider.StartGuiding, NINA.Sequencer") | {
         "ForceCalibration": calibration
     }
 
 
 def stop_guiding() -> dict[str, Any]:
+    """Instruction that stops autoguiding."""
     return _child("NINA.Sequencer.SequenceItem.Guider.StopGuiding, NINA.Sequencer")
 
 
 def set_tracking(mode: int) -> dict[str, Any]:
+    """Instruction that sets the mount's tracking rate.
+
+    ``mode`` is the ASCOM tracking mode code: 0 sidereal, 1 lunar, 2 solar,
+    3 King, 4 stopped.
+    """
     # ASCOM tracking modes (per GET /equipment/mount/tracking in
     # scripts/api_spec.yaml): 0=Sidereal, 1=Lunar, 2=Solar, 3=King,
     # 4=Stopped.
@@ -60,12 +80,14 @@ def set_tracking(mode: int) -> dict[str, Any]:
 
 
 def slew_and_center() -> dict[str, Any]:
+    """Instruction that slews to the target and plate-solves to center it."""
     return _child("NINA.Sequencer.SequenceItem.Platesolving.Center, NINA.Sequencer") | {
         "Inherited": True,
     }
 
 
 def slew_center_and_rotate() -> dict[str, Any]:
+    """Instruction that centers by solving *and* rotates to the position angle."""
     return _child(
         "NINA.Sequencer.SequenceItem.Platesolving.CenterAndRotate, NINA.Sequencer"
     ) | {
@@ -74,16 +96,19 @@ def slew_center_and_rotate() -> dict[str, Any]:
 
 
 def slew_to_azalt(az: float, alt: float) -> dict[str, Any]:
+    """Instruction that slews to an alt-az position; ``az``/``alt`` in degrees."""
     return _child(
         "NINA.Sequencer.SequenceItem.Telescope.SlewScopeToAltAz, NINA.Sequencer"
     ) | {"Coordinates": _azalt_coordinates(az, alt)}
 
 
 def run_autofocus() -> dict[str, Any]:
+    """Instruction that runs an autofocus run on the current filter."""
     return _child("NINA.Sequencer.SequenceItem.Autofocus.RunAutofocus, NINA.Sequencer")
 
 
 def annotation() -> dict[str, Any]:
+    """Textless annotation — a visual separator between steps in the run log."""
     return _child("NINA.Sequencer.SequenceItem.Utility.Annotation, NINA.Sequencer") | {
         "Text": None
     }
@@ -98,6 +123,11 @@ def switch_filter(
     filter_name: str | None,
     filter_position: int | None,
 ) -> dict[str, Any]:
+    """SwitchFilter instruction selecting ``filter_name`` at ``filter_position``.
+
+    ``filter_name=None`` emits N.I.N.A.'s own "no filter" so the item is
+    SKIPPED and the wheel stays put — see the note above.
+    """
     return _child(
         "NINA.Sequencer.SequenceItem.FilterWheel.SwitchFilter, NINA.Sequencer"
     ) | {
@@ -111,15 +141,22 @@ def switch_filter(
 
 
 def close_cover() -> dict[str, Any]:
+    """Instruction that closes the flat panel/cover (N.I.N.A. validates it can)."""
     # NINA validates the flat device is connected and can open/close.
     return _child("NINA.Sequencer.SequenceItem.FlatDevice.CloseCover, NINA.Sequencer")
 
 
 def open_cover() -> dict[str, Any]:
+    """Instruction that opens the flat panel/cover."""
     return _child("NINA.Sequencer.SequenceItem.FlatDevice.OpenCover, NINA.Sequencer")
 
 
 def sky_flats(count: int, filter_name: str, filter_position: int) -> dict[str, Any]:
+    """Twilight sky-flat container: ``count`` FLAT exposures on one filter.
+
+    N.I.N.A. picks each exposure's duration (0–30 s) to hit a 50 % histogram
+    target; dithering is disabled for flats.
+    """
     return _container_base(
         ctype="NINA.Sequencer.SequenceItem.FlatDevice.SkyFlat, NINA.Sequencer",
         name="Twilight Sky Flats",
@@ -149,12 +186,14 @@ def sky_flats(count: int, filter_name: str, filter_position: int) -> dict[str, A
 
 
 def wait_until_safe() -> dict[str, Any]:
+    """Wait instruction that blocks until the safety monitor reports safe."""
     return _child(
         "NINA.Sequencer.SequenceItem.SafetyMonitor.WaitUntilSafe, NINA.Sequencer"
     )
 
 
 def wait_until_above_horizon(degrees: float) -> dict[str, Any]:
+    """Wait instruction that blocks until the target clears ``degrees`` altitude."""
     return _child(
         "NINA.Sequencer.SequenceItem.Utility.WaitUntilAboveHorizon, NINA.Sequencer"
     ) | {
@@ -167,6 +206,7 @@ def wait_until_above_horizon(degrees: float) -> dict[str, Any]:
 
 
 def wait_until_above_altitude(degrees: float) -> dict[str, Any]:
+    """Wait instruction that blocks until altitude rises above ``degrees``."""
     return _child(
         "NINA.Sequencer.SequenceItem.Utility.WaitForAltitude, NINA.Sequencer"
     ) | {
@@ -180,6 +220,7 @@ def wait_until_above_altitude(degrees: float) -> dict[str, Any]:
 
 
 def wait_until_time(source: str) -> dict[str, Any]:
+    """Wait instruction that blocks until the named date/time provider fires."""
     return _child("NINA.Sequencer.SequenceItem.Utility.WaitForTime, NINA.Sequencer") | {
         "MinutesOffset": 0,
         "SelectedProvider": _child(source),
@@ -187,24 +228,31 @@ def wait_until_time(source: str) -> dict[str, Any]:
 
 
 def wait_until_dusk() -> dict[str, Any]:
+    """Wait until the dusk provider (sun below the horizon)."""
     return wait_until_time(
         "NINA.Sequencer.Utility.DateTimeProvider.DuskProvider, NINA.Sequencer"
     )
 
 
 def wait_until_dawn() -> dict[str, Any]:
+    """Wait until the dawn provider (sun below the horizon before sunrise)."""
     return wait_until_time(
         "NINA.Sequencer.Utility.DateTimeProvider.DawnProvider, NINA.Sequencer"
     )
 
 
 def wait_until_sunset() -> dict[str, Any]:
+    """Wait until the sunset provider."""
     return wait_until_time(
         "NINA.Sequencer.Utility.DateTimeProvider.SunsetProvider, NINA.Sequencer"
     )
 
 
 def wait_if_sun_altitude(degrees: float, comparator: int) -> dict[str, Any]:
+    """Wait instruction keyed on the sun's altitude in ``degrees``.
+
+    ``comparator`` is N.I.N.A.'s comparison code (3 = above, 1 = below).
+    """
     return _child(
         "NINA.Sequencer.SequenceItem.Utility.WaitForSunAltitude, NINA.Sequencer"
     ) | {
@@ -216,14 +264,17 @@ def wait_if_sun_altitude(degrees: float, comparator: int) -> dict[str, Any]:
 
 
 def wait_if_sun_altitude_above(degrees: float) -> dict[str, Any]:
+    """Sun-altitude wait using the above comparator (3)."""
     return wait_if_sun_altitude(degrees, 3)
 
 
 def wait_if_sun_altitude_below(degrees: float) -> dict[str, Any]:
+    """Sun-altitude wait using the below comparator (1)."""
     return wait_if_sun_altitude(degrees, 1)
 
 
 def wait_for_timespan(seconds: float) -> dict[str, Any]:
+    """Wait instruction that sleeps for ``seconds``."""
     return _child(
         "NINA.Sequencer.SequenceItem.Utility.WaitForTimeSpan, NINA.Sequencer"
     ) | {
@@ -235,6 +286,10 @@ def wait_for_timespan(seconds: float) -> dict[str, Any]:
 
 
 def loop_until_sun_altitude(degrees: float, comparator: int) -> dict[str, Any]:
+    """Loop condition keyed on the sun's altitude in ``degrees``.
+
+    ``comparator`` is N.I.N.A.'s comparison code (3 = above, 1 = below).
+    """
     return _child("NINA.Sequencer.Conditions.SunAltitudeCondition, NINA.Sequencer") | {
         "Data": _child(
             "NINA.Sequencer.SequenceItem.Utility.WaitLoopData, NINA.Sequencer"
@@ -244,14 +299,17 @@ def loop_until_sun_altitude(degrees: float, comparator: int) -> dict[str, Any]:
 
 
 def loop_until_sun_altitude_above(degrees: float) -> dict[str, Any]:
+    """Sun-altitude loop condition using the above comparator (3)."""
     return loop_until_sun_altitude(degrees, 3)
 
 
 def loop_until_sun_altitude_below(degrees: float) -> dict[str, Any]:
+    """Sun-altitude loop condition using the below comparator (1)."""
     return loop_until_sun_altitude(degrees, 1)
 
 
 def loop_until_time(source: str, minutes: float) -> dict[str, Any]:
+    """Loop condition that ends when the provider fires, offset by ``minutes``."""
     return _child("NINA.Sequencer.Conditions.TimeCondition, NINA.Sequencer") | {
         "MinutesOffset": minutes,
         "SelectedProvider": _child(source),
@@ -259,6 +317,7 @@ def loop_until_time(source: str, minutes: float) -> dict[str, Any]:
 
 
 def loop_until_sunset(minutes: float = 0) -> dict[str, Any]:
+    """Loop until sunset plus ``minutes``."""
     return loop_until_time(
         "NINA.Sequencer.Utility.DateTimeProvider.SunsetProvider, NINA.Sequencer",
         minutes,
@@ -266,6 +325,7 @@ def loop_until_sunset(minutes: float = 0) -> dict[str, Any]:
 
 
 def loop_until_sunrise(minutes: float = 0) -> dict[str, Any]:
+    """Loop until sunrise plus ``minutes``."""
     return loop_until_time(
         "NINA.Sequencer.Utility.DateTimeProvider.SunriseProvider, NINA.Sequencer",
         minutes,
@@ -273,18 +333,21 @@ def loop_until_sunrise(minutes: float = 0) -> dict[str, Any]:
 
 
 def loop_until_dawn(minutes: float = 0) -> dict[str, Any]:
+    """Loop until astronomical dawn plus ``minutes``."""
     return loop_until_time(
         "NINA.Sequencer.Utility.DateTimeProvider.DawnProvider, NINA.Sequencer", minutes
     )
 
 
 def loop_until_dusk(minutes: float = 0) -> dict[str, Any]:
+    """Loop until astronomical dusk plus ``minutes``."""
     return loop_until_time(
         "NINA.Sequencer.Utility.DateTimeProvider.DuskProvider, NINA.Sequencer", minutes
     )
 
 
 def loop_until_meridian(minutes: float = 0) -> dict[str, Any]:
+    """Loop until the meridian crossing plus ``minutes``."""
     return loop_until_time(
         "NINA.Sequencer.Utility.DateTimeProvider.MeridianProvider, NINA.Sequencer",
         minutes,
@@ -292,10 +355,12 @@ def loop_until_meridian(minutes: float = 0) -> dict[str, Any]:
 
 
 def loop_while_safe() -> dict[str, Any]:
+    """Loop condition that holds while the safety monitor reports safe."""
     return _child("NINA.Sequencer.Conditions.SafetyMonitorCondition, NINA.Sequencer")
 
 
 def loop_while_above_horizon(degrees: float) -> dict[str, Any]:
+    """Loop condition that holds while the target stays above ``degrees``."""
     return _child("NINA.Sequencer.Conditions.AboveHorizonCondition, NINA.Sequencer") | {
         "HasDsoParent": True,
         "Data": _child(
@@ -306,6 +371,7 @@ def loop_while_above_horizon(degrees: float) -> dict[str, Any]:
 
 
 def loop_while_above_altitude(degrees: float) -> dict[str, Any]:
+    """Loop condition that holds while altitude stays above ``degrees``."""
     return _child("NINA.Sequencer.Conditions.AltitudeCondition, NINA.Sequencer") | {
         "HasDsoParent": True,
         "Data": _child(
@@ -316,6 +382,7 @@ def loop_while_above_altitude(degrees: float) -> dict[str, Any]:
 
 
 def loop_for_iterations(count: int) -> dict[str, Any]:
+    """Loop condition that runs the container exactly ``count`` times."""
     return _child("NINA.Sequencer.Conditions.LoopCondition, NINA.Sequencer") | {
         "CompletedIterations": 0,
         "Iterations": count,
@@ -323,12 +390,14 @@ def loop_for_iterations(count: int) -> dict[str, Any]:
 
 
 def dither_after_exposures(exposures: int) -> dict[str, Any]:
+    """Dither trigger after every ``exposures`` frames; 0 means never dither."""
     return _child(
         "NINA.Sequencer.Trigger.Guider.DitherAfterExposures, NINA.Sequencer"
     ) | {"AfterExposures": exposures}
 
 
 def take_exposure(exposure: float, image_type: str) -> dict[str, Any]:
+    """Single exposure: ``exposure`` seconds, camera-default gain/offset, 1×1 binning."""
     return _child(
         "NINA.Sequencer.SequenceItem.Imaging.TakeExposure, NINA.Sequencer"
     ) | {
@@ -350,6 +419,13 @@ def smart_exposure(
     filter_position: int | None = None,
     dither: int = 0,
 ) -> dict[str, Any]:
+    """Container of ``count`` exposures, with optional filter switch and dither.
+
+    Both children are ALWAYS emitted — N.I.N.A. validates them positionally
+    and a missing one aborts the run silently (see the note below). ``dither``
+    is an exposure count, 0 disabling the trigger; ``filter_name=None`` leaves
+    the wheel untouched.
+    """
     # N.I.N.A.'s SmartExposure.Validate() reads its children POSITIONALLY
     # (`Triggers[0]` as the dither trigger, `Items[0]` as SwitchFilter,
     # `Items[1]` as TakeExposure) and dereferences them unconditionally, so
@@ -378,6 +454,7 @@ def smart_exposure(
 
 
 def send_event(text: str) -> dict[str, Any]:
+    """Instruction from the ninaAPI plugin that logs ``text`` as a sequence event."""
     return _child("ninaAPI.SequenceItems.SendEventInstruction, ninaAPI") | {
         "Message": text
     }
@@ -417,6 +494,7 @@ def run_finished_event(step_count: int) -> dict[str, Any]:
 
 
 def end_instruction(name: str) -> dict[str, Any]:
+    """Sequencer+ instruction that runs the named end-instruction set."""
     return _child(
         "NINA.Plugin.SequencerPlus.EndInstructionSet, NINA.Plugin.SequencerPlus"
     ) | {"InstructionSetName": name}

@@ -1,3 +1,5 @@
+"""Client helpers, plan validators and MCP tool bodies exercised without dispatch."""
+
 import asyncio
 import json
 import tempfile
@@ -63,6 +65,8 @@ def _end_park_items(payload: dict) -> list[dict]:
 
 
 class ConvertToMetTest(unittest.TestCase):
+    """_convert_to_met: timestamp conversion, windowing and bad-record drops."""
+
     def _now(self) -> datetime:
         return datetime(2026, 9, 22, 3, 0, 0, tzinfo=UTC)
 
@@ -83,16 +87,19 @@ class ConvertToMetTest(unittest.TestCase):
         )
 
     def test_utc_z_seconds(self):
+        """A `Z` timestamp renders as the same instant in the local zone."""
         data = [{"Time": "2026-09-22T02:16:25Z"}]
         res = _convert_to_met(data, since=3600, name="Time", now=self._now())
         self._assert_local_instant(res[0]["timestamp"], "2026-09-22T02:16:25Z")
 
     def test_offset_shifted_to_utc_z(self):
+        """An offset-shifted timestamp normalises to the same UTC instant."""
         data = [{"Time": "2026-09-21T21:16:25-05:00"}]
         res = _convert_to_met(data, since=3600, name="Time", now=self._now())
         self._assert_local_instant(res[0]["timestamp"], "2026-09-22T02:16:25Z")
 
     def test_microseconds_stripped(self):
+        """Sub-second precision is stripped from the rendered timestamp."""
         data = [{"Time": "2026-09-22T02:16:25.123456Z"}]
         res = _convert_to_met(data, since=3600, name="Time", now=self._now())
         self._assert_local_instant(res[0]["timestamp"], "2026-09-22T02:16:25Z")
@@ -100,13 +107,17 @@ class ConvertToMetTest(unittest.TestCase):
         self.assertNotIn(".", res[0]["timestamp"].split("T")[1].rsplit("-", 1)[0])
 
     def test_naive_uses_now_tzinfo(self):
+        """A naive event time is interpreted in `now`'s timezone."""
         data = [{"Time": "2026-09-22 02:16:25"}]
         res = _convert_to_met(data, since=3600, name="Time", now=self._now())
         self._assert_local_instant(res[0]["timestamp"], "2026-09-22T02:16:25Z")
 
     def test_naive_now_tagged_local_with_z_events(self):
-        """A naive `now` is tagged host-local so it can be compared against
-        offset-aware event timestamps without raising."""
+        """A naive `now` is tagged host-local so comparisons cannot raise.
+
+        It is then compared against offset-aware event timestamps without
+        raising.
+        """
         data = [{"Time": "2026-09-22T03:00:00Z"}]
         res = _convert_to_met(
             data, since=86400, name="Time", now=datetime(2026, 9, 22, 3, 0, 0)
@@ -118,14 +129,17 @@ class ConvertToMetTest(unittest.TestCase):
         )
 
     def test_aware_now_tags_naive_events(self):
+        """An aware `now` tags naive events with a comparable offset."""
         data = [{"Time": "2026-09-22 03:00:00"}]
         res = _convert_to_met(data, since=3600, name="Time", now=self._now())
         self.assertEqual(len(res), 1)
         self._assert_local_instant(res[0]["timestamp"], "2026-09-22T03:00:00Z")
 
     def test_now_defaults_to_host_clock(self):
-        """Omitting `now` anchors the window on the host clock, so a recent
-        event survives and an old one does not."""
+        """Omitting `now` anchors the window on the host clock.
+
+        A recent event survives the window and an old one does not.
+        """
         now = datetime.now(UTC).replace(microsecond=0)
         recent = [{"Time": (now - timedelta(seconds=300)).isoformat()}]
         stale = [{"Time": (now - timedelta(seconds=7200)).isoformat()}]
@@ -137,6 +151,7 @@ class ConvertToMetTest(unittest.TestCase):
         self.assertEqual(res, [])
 
     def test_old_entries_filtered(self):
+        """Events older than the `since` window are dropped."""
         data = [{"Time": "2026-09-20T00:00:00Z"}]
         res = _convert_to_met(data, since=3600, name="Time", now=self._now())
         self.assertEqual(res, [])
@@ -144,6 +159,7 @@ class ConvertToMetTest(unittest.TestCase):
     def test_missing_timestamp_record_dropped(self):
         # A record without the timestamp field cannot be sorted or windowed;
         # it is dropped instead of crashing the whole listing.
+        """A record without a timestamp field is dropped, not a crash."""
         data = [
             {"Time": "2026-09-22T02:16:25Z", "Message": "good"},
             {"Message": "no timestamp field"},
@@ -153,6 +169,7 @@ class ConvertToMetTest(unittest.TestCase):
         self.assertEqual(res[0]["message"], "good")
 
     def test_unusable_timestamp_record_dropped(self):
+        """Unusable timestamps are dropped; only the good record survives."""
         data = [
             {"Time": "not-a-date", "Message": "bad"},
             {"Time": None, "Message": "null"},
@@ -165,6 +182,7 @@ class ConvertToMetTest(unittest.TestCase):
         self.assertEqual(res[0]["message"], "good")
 
     def test_all_records_dropped_returns_empty(self):
+        """A listing with no usable records returns an empty list."""
         data = [{"Message": "orphan"}]
         res = _convert_to_met(data, since=3600, name="Time", now=self._now())
         self.assertEqual(res, [])
@@ -174,6 +192,7 @@ class HelperFunctionsTest(unittest.TestCase):
     """Pure-logic helpers in server.py."""
 
     def test_sanitize_filename_strips_invalid_chars(self):
+        """Filesystem-hostile characters become dashes; plain names pass."""
         self.assertEqual(
             _sanitize_filename('a/b\\c:d*e?f"g<h>i|j'),
             "a-b-c-d-e-f-g-h-i-j",
@@ -181,23 +200,28 @@ class HelperFunctionsTest(unittest.TestCase):
         self.assertEqual(_sanitize_filename("plain_name"), "plain_name")
 
     def test_convert_keys_dict(self):
+        """CamelCase keys become snake_case at the top level."""
         result = _convert_keys({"CamelCase": 1, "snake_case": 2})
         self.assertEqual(result, {"camel_case": 1, "snake_case": 2})
 
     def test_convert_keys_nested(self):
+        """Key conversion recurses through nested dicts and lists."""
         result = _convert_keys({"OuterKey": {"InnerKey": [{"DeepKey": 1}]}})
         self.assertEqual(result, {"outer_key": {"inner_key": [{"deep_key": 1}]}})
 
     def test_convert_keys_list(self):
+        """A list of dicts is converted element by element."""
         result = _convert_keys([{"ListKey": 1}, {"OtherKey": 2}])
         self.assertEqual(result, [{"list_key": 1}, {"other_key": 2}])
 
     def test_convert_keys_passthrough_non_dict_non_list(self):
+        """Scalars and None pass through _convert_keys unchanged."""
         self.assertEqual(_convert_keys(42), 42)
         self.assertEqual(_convert_keys("string"), "string")
         self.assertEqual(_convert_keys(None), None)
 
     def test_log_payload_writes_to_file(self):
+        """With NINA_PLANNER_LOG set, payloads land in that file."""
         with tempfile.TemporaryDirectory() as tmp:
             log_path = Path(tmp) / "test.log"
             with patch("nina_planner.config.NINA_PLANNER_LOG", str(log_path)):
@@ -210,6 +234,7 @@ class HelperFunctionsTest(unittest.TestCase):
         # When NINA_PLANNER_LOG is unset, log_payload silently returns —
         # it never writes to stderr or anywhere else (client.py log_payload:
         # `if path is None: return`).
+        """With NINA_PLANNER_LOG unset, log_payload writes nothing."""
         import io
         from contextlib import redirect_stderr
 
@@ -222,8 +247,11 @@ class HelperFunctionsTest(unittest.TestCase):
         self.assertEqual(buf.getvalue(), "")
 
     def test_log_payload_windows_path_relocated_on_posix(self):
-        """The sample config's C:/... log path must not build a literal C: tree
-        on macOS/WSL — it lands in the system temp dir under the same name."""
+        """A Windows `C:/` log path is relocated into the system temp dir.
+
+        On macOS/WSL the sample config's path must not build a literal C:
+        tree — it lands in the temp dir under the same name.
+        """
         import os
 
         if os.name == "nt":
@@ -240,11 +268,12 @@ class HelperFunctionsTest(unittest.TestCase):
         self.assertIn("Test", expected.read_text())
 
     def test_log_payload_swallows_an_unwritable_log_path(self):
-        """Debug logging runs AFTER the real work succeeded — an unwritable
-        NINA_PLANNER_LOG must never fail the read-only tool that just did
-        its job. Both failure modes are OSError: a directory where the log
-        FILE should be (open fails), and a parent that is not a directory
-        (mkdir fails)."""
+        """An unwritable NINA_PLANNER_LOG never fails the tool that just ran.
+
+        Debug logging runs AFTER the real work succeeded. Both failure modes
+        are OSError: a directory where the log FILE should be (open fails),
+        and a parent that is not a directory (mkdir fails).
+        """
         with tempfile.TemporaryDirectory() as tmp:
             # The log path IS a directory: append-open raises
             # IsADirectoryError.
@@ -261,6 +290,7 @@ class HelperFunctionsTest(unittest.TestCase):
             self.assertFalse(log_path.exists())
 
     def test_api_probe_reports_liveness_and_reason(self):
+        """api_probe reports (True, None) when live, the reason when not."""
         from nina_planner.client import api_probe as _api_probe
 
         with patch(
@@ -278,8 +308,10 @@ class HelperFunctionsTest(unittest.TestCase):
             )
 
     def test_api_post_logs_its_response(self):
-        """A POST response is never handed back to the caller, so the debug
-        log is its only home — /sequence/load's reply included."""
+        """A POST response is logged, because the caller never sees it.
+
+        The debug log is its only home — /sequence/load's reply included.
+        """
         import httpx
 
         from nina_planner.client import api_post as _api_post
@@ -325,8 +357,10 @@ class HelperFunctionsTest(unittest.TestCase):
         return httpx.Response(status, text=text, request=request)
 
     def test_api_error_surfaces_nina_body_behind_http_status(self):
-        """A non-2xx refusal must carry NINA's own reason — httpx's
-        raise_for_status would report only the status line."""
+        """A non-2xx refusal carries NINA's own reason, not just the status.
+
+        httpx's raise_for_status would report only the status line.
+        """
         from nina_planner.client import unwrap_response as _unwrap_response
 
         resp = self._api_response(
@@ -340,6 +374,7 @@ class HelperFunctionsTest(unittest.TestCase):
         self.assertIn("400", message)
 
     def test_api_error_surfaces_and_truncates_plain_text_body(self):
+        """A non-JSON error body is surfaced, truncated, in the error."""
         from nina_planner.client import unwrap_response as _unwrap_response
 
         resp = self._api_response(502, text="upstream " + "x" * 600)
@@ -350,6 +385,7 @@ class HelperFunctionsTest(unittest.TestCase):
         self.assertLess(len(message), 700)
 
     def test_api_error_on_empty_body_reports_status(self):
+        """An empty error body still reports the HTTP status."""
         from nina_planner.client import unwrap_response as _unwrap_response
 
         resp = self._api_response(500)
@@ -359,6 +395,7 @@ class HelperFunctionsTest(unittest.TestCase):
             _unwrap_response("GET", "/time", resp)
 
     def test_api_200_with_success_false_keeps_nina_error_verbatim(self):
+        """Success:false on HTTP 200 raises NINA's Error string verbatim."""
         from nina_planner.client import unwrap_response as _unwrap_response
 
         resp = self._api_response(
@@ -368,6 +405,7 @@ class HelperFunctionsTest(unittest.TestCase):
             _unwrap_response("GET", "/profile", resp)
 
     def test_api_200_with_non_json_body_reports_body(self):
+        """A 200 HTML body raises an error quoting the body it got."""
         from nina_planner.client import unwrap_response as _unwrap_response
 
         resp = self._api_response(200, text="<html>gateway exploded</html>")
@@ -380,6 +418,7 @@ class HelperFunctionsTest(unittest.TestCase):
         # NINA always pairs Success:false with an Error string; a body that
         # does not still must not read as a success, and the reported error
         # must carry method, URL, status and body either way.
+        """Success:false without an Error still reports full context."""
         from nina_planner.client import unwrap_response as _unwrap_response
 
         resp = self._api_response(200, json_body={"Success": False, "Response": ""})
@@ -395,6 +434,7 @@ class HelperFunctionsTest(unittest.TestCase):
     def test_api_200_non_object_json_body_reports_full_context(self):
         # The sibling shape of the same branch: HTTP 200 whose body is JSON
         # but not an envelope object — also contextual, never bare.
+        """A 200 non-object JSON body raises a contextual, bare-free error."""
         from nina_planner.client import unwrap_response as _unwrap_response
 
         resp = self._api_response(200, json_body=["not", "an", "envelope"])
@@ -407,6 +447,7 @@ class HelperFunctionsTest(unittest.TestCase):
         self.assertIn("non-object JSON body", message)
 
     def test_run_blocking_runs_a_real_subprocess(self):
+        """run_blocking runs a real subprocess and captures its output."""
         import sys
 
         from nina_planner.client import run_blocking as _run_blocking
@@ -416,6 +457,7 @@ class HelperFunctionsTest(unittest.TestCase):
         self.assertIn("ok", result.stdout)
 
     def test_stop_running_sequence_and_wait_times_out(self):
+        """A sequence still RUNNING past the deadline raises, not polls."""
         from nina_planner.client import stop_running_sequence_and_wait as _stop_wait
 
         # NINA keeps reporting RUNNING past the deadline: the wait must give
@@ -476,6 +518,7 @@ class HelperFunctionsTest(unittest.TestCase):
         )
 
     def test_validate_filters_all_known(self):
+        """A plan using only profile filters validates without raising."""
         filters = [FilterInfo(name="L", position=1, focus_offset=0)]
         profile = self._make_profile(filters=filters)
         plan = self._make_plan()
@@ -483,6 +526,7 @@ class HelperFunctionsTest(unittest.TestCase):
         asyncio.run(_validate_filters(plan, profile))
 
     def test_validate_filters_unknown_filter_raises(self):
+        """An unknown filter name raises, naming the offending filter."""
         filters = [FilterInfo(name="L", position=1, focus_offset=0)]
         profile = self._make_profile(filters=filters)
         plan = self._make_plan(
@@ -499,6 +543,7 @@ class HelperFunctionsTest(unittest.TestCase):
         self.assertIn("UNKNOWN", str(ctx.exception))
 
     def test_validate_filters_includes_reference_filter(self):
+        """The autofocus reference filter counts as known even if unused."""
         filters = [
             FilterInfo(name="L", position=1, focus_offset=0),
             FilterInfo(name="R", position=2, focus_offset=0),
@@ -514,6 +559,7 @@ class HelperFunctionsTest(unittest.TestCase):
         asyncio.run(_validate_filters(plan, profile))
 
     def test_validate_position_angle_all_set(self):
+        """A position angle on every pointing with a rotator validates."""
         profile = self._make_profile(has_rotator=True)
         plan = self._make_plan(
             pointings=[
@@ -524,6 +570,7 @@ class HelperFunctionsTest(unittest.TestCase):
         _validate_position_angle(plan, profile)
 
     def test_validate_position_angle_mixed_raises(self):
+        """Mixing set and unset position angles across pointings raises."""
         profile = self._make_profile(has_rotator=True)
         plan = self._make_plan(
             pointings=[
@@ -536,6 +583,7 @@ class HelperFunctionsTest(unittest.TestCase):
         self.assertIn("mixes position_angle_deg", str(ctx.exception))
 
     def test_validate_position_angle_no_rotator_raises(self):
+        """A position angle on a rig without a rotator raises."""
         profile = self._make_profile(has_rotator=False)
         plan = self._make_plan(
             pointings=[{"ra_hours": 5.0, "dec_deg": 10.0, "position_angle_deg": 90.0}]
@@ -545,6 +593,7 @@ class HelperFunctionsTest(unittest.TestCase):
         self.assertIn("no rotator", str(ctx.exception))
 
     def test_check_pointing_index_in_range(self):
+        """Pointing indexes within the plan's range pass."""
         plan = self._make_plan(
             pointings=[
                 {"ra_hours": 5.0, "dec_deg": 10.0},
@@ -555,11 +604,13 @@ class HelperFunctionsTest(unittest.TestCase):
         _check_pointing_index(plan, 2)
 
     def test_check_pointing_index_below_raises(self):
+        """A pointing index below 1 raises."""
         plan = self._make_plan()
         with self.assertRaises(ValueError):
             _check_pointing_index(plan, 0)
 
     def test_check_pointing_index_above_raises(self):
+        """A pointing index beyond the plan raises."""
         plan = self._make_plan()
         with self.assertRaises(ValueError):
             _check_pointing_index(plan, 99)
@@ -605,9 +656,9 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
         )
 
     def _full_profile(self, filters=None, has_flat_device: bool = False):
-        """The usual rig for load tests: filter wheel with a `Dark` slot, so
-        the default (wheel) dark/bias variant passes its capability check.
+        """The usual rig for load tests: filter wheel with a `Dark` slot.
 
+        The default (wheel) dark/bias variant passes its capability check.
         `filters` overrides the wheel contents for tests that need a
         different one (a profile with no `Dark` slot, say), and
         `has_flat_device` turns on the flat panel the `cover` variant needs.
@@ -687,6 +738,7 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
         )
 
     async def test_resolve_imaging_root(self):
+        """The imaging root is the profile's Windows save path, localised."""
         from nina_planner.imaging import windows_to_local
         from nina_planner.metadata import resolve_imaging_root as _resolve_imaging_root
 
@@ -700,6 +752,7 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result, expected)
 
     async def test_load_plan_with_relative_path(self):
+        """A plan file under PROJECT_DIR loads by bare filename."""
         from nina_planner.plan_utils import load_plan as _load_plan
 
         plan_dict = {
@@ -724,6 +777,7 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result.target, "M31")
 
     async def test_read_metadata_with_image_type(self):
+        """read_metadata passes the requested image type to read_imaging_csv."""
         from nina_planner.metadata import read_metadata as _read_metadata
 
         def fake_read(root, image_type):
@@ -762,6 +816,7 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(rows), 1)
 
     async def test_get_site_profile_returns_observatory_profile(self):
+        """The raw NINA profile becomes an ObservatoryProfile with equipment."""
         from nina_planner.server import get_site_profile
 
         raw = {
@@ -802,6 +857,7 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result.guider_name, "Direct_Guider")
 
     async def test_get_site_profile_no_guider(self):
+        """A No_Guider profile reports has_guider=False."""
         from nina_planner.server import get_site_profile
 
         raw = {
@@ -828,6 +884,7 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(result.equipment.has_guider)
 
     async def test_get_site_profile_with_filters(self):
+        """Filter wheel entries become FilterInfo rows in order."""
         from nina_planner.server import get_site_profile
 
         filters = [
@@ -861,6 +918,7 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result.filters[1].name, "R")
 
     async def test_get_site_profile_bad_filter_fields_do_not_crash(self):
+        """Malformed filter rows are dropped or defaulted, never a crash."""
         from nina_planner.server import get_site_profile
 
         filters = [
@@ -907,6 +965,7 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(kept["L"].focus_offset, 0)
 
     async def test_get_site_equipment_status_returns_empty_when_all_false(self):
+        """A profile with every capability false yields empty equipment."""
         from nina_planner.tools.equipment import (
             _get_site_equipment_status as _get_site_equipment_status,
         )
@@ -922,6 +981,7 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
         # A device section that reports neither a connection nor a name
         # (NINA writing a stub entry for hardware it does not see) is not a
         # device: it must not be turned into a MountDevice with empty fields.
+        """A stub device section with no name and no connection is not a device."""
         from nina_planner.tools.equipment import (
             _get_site_equipment_status as _get_site_equipment_status,
         )
@@ -933,6 +993,7 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(equipment.mount)
 
     async def test_get_site_equipment_status_connects_missing_devices(self):
+        """Connecting a configured-but-disconnected mount raises naming it."""
         from nina_planner.tools.equipment import (
             _get_site_equipment_status as _get_site_equipment_status,
         )
@@ -969,6 +1030,7 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn("Mount", str(ctx.exception))
 
     async def test_get_site_equipment_status_connected_device(self):
+        """A connected mount is reported with its name and connection state."""
         from nina_planner.tools.equipment import (
             _get_site_equipment_status as _get_site_equipment_status,
         )
@@ -999,6 +1061,7 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(equipment.mount.connected)
 
     async def test_get_site_equipment_status_connects_direct_guider(self):
+        """A Direct_Guider rig attempts the guider connect, then fails loudly."""
         from nina_planner.tools.equipment import (
             _get_site_equipment_status as _get_site_equipment_status,
         )
@@ -1039,6 +1102,7 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn("Guider", str(ctx.exception))
 
     async def test_get_events_returns_filtered(self):
+        """Events outside the `since` window drop; timestamps render local."""
         from nina_planner.server import get_events
 
         # The window is anchored on the host clock, so fixtures must be
@@ -1059,6 +1123,7 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
         )
 
     async def test_get_logs_strips_internal_fields(self):
+        """Internal log fields (line, member, source) are stripped."""
         from nina_planner.server import get_logs
 
         now = datetime.now(UTC).replace(microsecond=0)
@@ -1107,6 +1172,7 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
     }
 
     async def test_get_frame_stats_returns_full_record(self):
+        """The current frame record is returned in snake_case, timestamp parsed."""
         from nina_planner.server import get_frame_stats
 
         with patch(
@@ -1129,6 +1195,7 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(frame["date"], "2026-10-27T23:56:32.119002-05:00")
 
     async def test_get_frame_stats_passes_image_type_filter(self):
+        """image_type becomes an imageType query parameter on the request."""
         from nina_planner.server import get_frame_stats
 
         with patch(
@@ -1140,6 +1207,7 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["count"], 1)
 
     async def test_get_frame_stats_no_matching_type_is_empty_not_raised(self):
+        """An 'Index out of range' answer reads as an empty frame, not an error."""
         from nina_planner.server import get_frame_stats
 
         # NINA answers an unmatchable imageType with a failed envelope that
@@ -1155,6 +1223,7 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn("no DARK frame", result["note"])
 
     async def test_get_frame_stats_zero_stars_is_a_real_reading(self):
+        """Stars=0 survives as a real reading rather than being nulled."""
         from nina_planner.server import get_frame_stats
 
         record = dict(self._FRAME_RECORD, Stars=0)
@@ -1167,6 +1236,7 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["frame"]["stars"], 0)
 
     async def test_get_frame_stats_empty_history_is_empty(self):
+        """An empty image history returns count 0 with a note, not an error."""
         from nina_planner.server import get_frame_stats
 
         with patch(
@@ -1181,6 +1251,7 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
     async def test_get_frame_stats_accepts_a_bare_record_object(self):
         # The endpoint is documented as a one-element list, but a bare
         # object is tolerated rather than read as "no frame".
+        """A bare record object, not a one-element list, is still read."""
         from nina_planner.server import get_frame_stats
 
         with patch(
@@ -1192,6 +1263,7 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["frame"]["stars"], self._FRAME_RECORD["Stars"])
 
     async def test_get_frame_stats_unrecognised_payload_reads_as_empty(self):
+        """An unrecognised payload reads as an empty frame, not a raise."""
         from nina_planner.server import get_frame_stats
 
         with patch(
@@ -1206,6 +1278,7 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
     async def test_get_frame_stats_reraises_an_unexpected_api_error(self):
         # "Index out of range" is the expected empty state; every other
         # failure is a fault the caller must see.
+        """Only 'Index out of range' is swallowed; other errors propagate."""
         from nina_planner.server import get_frame_stats
 
         with patch(
@@ -1216,6 +1289,7 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
                 await get_frame_stats()
 
     async def test_write_plan_file_creates_file(self):
+        """A plan is written into the project dir and its path is reported."""
         from nina_planner.server import write_plan_file
 
         plan = ObservationPlan(
@@ -1246,6 +1320,7 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(result.endswith(".json"))
 
     async def test_write_plan_file_auto_fills_plan_id(self):
+        """An empty plan_id is derived from the target name in the filename."""
         from nina_planner.server import write_plan_file
 
         plan = ObservationPlan(
@@ -1276,6 +1351,7 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(result.endswith(".json"))
 
     async def test_get_plan_progress_returns_summary(self):
+        """Progress summarises the plan, its pointings and frame groups."""
         from nina_planner.server import get_plan_progress
 
         plan_dict = {
@@ -1443,8 +1519,7 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn("nonsense", str(ctx.exception))
 
     async def test_get_plan_progress_flags_overshoot_with_warning(self):
-        """`complete: true` plus `overshot` is how a truncated mode=full
-        re-shoot becomes visible.
+        """`complete: true` plus `overshot` exposes a mode=full re-shoot.
 
         The plan's frames genuinely exist, so complete stays true — but more
         of them exist than the plan ever asked for, which is the only trace
@@ -1530,6 +1605,7 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn("does NOT", result["warning"])
 
     async def test_get_plan_progress_no_overshoot_when_within_total(self):
+        """Frames within the planned total report no surplus and no warning."""
         from nina_planner.server import get_plan_progress
 
         plan_dict = {
@@ -1570,8 +1646,7 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(result["warning"])
 
     async def test_get_plan_progress_expired_window_is_not_complete(self):
-        """A calibration window that closed with frames missing must not
-        read `complete: true`.
+        """A closed calibration window with frames missing reads incomplete.
 
         `remaining_count` is deliberately 0 once the window closes (no frame
         shot now could be credited), so completion is decided from
@@ -1655,10 +1730,12 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(pane["frame_types"]["light"][0]["deficit_count"], 0)
 
     async def test_get_plan_progress_open_window_deficit_stays_incomplete(self):
-        """Same counts as the expired test, but inside the window: the pane
-        is `incomplete` (shoot more), not `expired_with_deficit`, and
-        deficit_count agrees with remaining_count because no window
-        adjustment applies."""
+        """The same deficit inside an open window reads `incomplete`.
+
+        The pane is `incomplete` (shoot more), not `expired_with_deficit`,
+        and deficit_count agrees with remaining_count because no window
+        adjustment applies.
+        """
         from nina_planner.server import get_plan_progress
 
         plan_dict = {
@@ -1738,6 +1815,7 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
         )
 
     async def test_write_plan_file_mosaic_derives_grid_from_coverage(self):
+        """Coverage derives a labelled 2x2 grid with stamped provenance."""
         from nina_planner.server import write_plan_file
 
         plan = self._mosaic_plan()
@@ -1803,6 +1881,7 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
     async def test_write_plan_file_mosaic_missing_optics_raises(self):
         # No guessed FOV: a mosaic sized against missing optics would be
         # sized wrong, so every missing value is named instead.
+        """Missing optics raise by name before any file is written."""
         from nina_planner.server import write_plan_file
 
         profile = self._full_profile().model_copy(update={"optics": OpticalTrainInfo()})
@@ -1824,6 +1903,7 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(list(Path(tmp).glob("*.json")), [])
 
     async def test_write_plan_file_mosaic_zero_pa_without_rotator_ok(self):
+        """A zero position angle needs no rotator to derive the grid."""
         from nina_planner.server import write_plan_file
 
         profile = self._full_profile().model_copy(
@@ -1848,6 +1928,7 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
     async def test_write_plan_file_mosaic_nonzero_pa_without_rotator_raises(self):
         # PA can't be enforced without a rotator, so a plan that asks for
         # a nonzero position angle fails loudly.
+        """A nonzero position angle without a rotator fails before writing."""
         from nina_planner.server import write_plan_file
 
         profile = self._full_profile().model_copy(
@@ -1876,6 +1957,7 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
         # symptom of degrees passed where arcmins were expected — so the
         # response warns, and the plan behaves as an ordinary
         # single-pointing plan (bare id shared with its calibration).
+        """A one-pane derivation warns about the arcmins-vs-degrees mixup."""
         from nina_planner.server import write_plan_file
 
         plan = self._mosaic_plan(coverage=(5.0, 5.0))
@@ -1904,6 +1986,7 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
     async def test_write_plan_file_mosaic_with_pointings_passes_through(self):
         # Both present means the pointings are already expanded: they are
         # the authority, nothing re-derives, and the stamp stays as it was.
+        """Existing pointings pass through untouched; nothing re-derives."""
         from nina_planner.models.pointing import Pointing
         from nina_planner.server import write_plan_file
 
@@ -1930,6 +2013,7 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
             self.assertIsNone(data["mosaic"]["cols"])
 
     async def test_get_plan_progress_all_pointings(self):
+        """Each pointing reports its index, label and derived plan id."""
         from nina_planner.server import get_plan_progress
 
         plan_dict = {
@@ -1966,8 +2050,10 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(result["pointings"][0]["complete"])
 
     async def test_load_sequence_remaining_mode(self):
-        """Nothing outstanding in any group: remaining mode reports the plan
-        complete and loads nothing."""
+        """Remaining mode reports the plan complete when nothing is left.
+
+        Nothing outstanding in any group, so nothing is loaded.
+        """
         outcome, _ = await self._load_entry(
             "light",
             request={"pointing_index": 1},
@@ -1977,10 +2063,12 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn("nothing to load", outcome)
 
     async def test_load_sequence_unpinned_plan_keeps_its_token_in_remaining_mode(self):
-        """Remaining mode rewrites frame counts, but the emitted plan token
-        must stay the id the plan FILE derives — otherwise frames
-        re-attribute every night as remaining shrinks and the plan never
-        completes."""
+        """Remaining mode rewrites counts, not the plan's file-derived token.
+
+        The emitted plan token must stay the id the plan FILE derives —
+        otherwise frames re-attribute every night as remaining shrinks and
+        the plan never completes.
+        """
         import re
 
         # Deliberately NO plan_id: the id is derived from this content.
@@ -2049,9 +2137,11 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn("nothing to load", outcome)
 
     def test_load_sequence_request_refuses_each_stray_key(self):
-        """An unknown request field fails loudly instead of being ignored —
-        pydantic would drop it, and the caller would believe it was filtering
-        while every frame counted."""
+        """An unknown request field fails loudly instead of vanishing.
+
+        pydantic would drop it, and the caller would believe it was
+        filtering while every frame counted.
+        """
         for key in (
             "max_hfr",
             "max_hfr_st_dev",
@@ -2065,8 +2155,10 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
                 self.assertIn("Extra inputs are not permitted", str(ctx.exception))
 
     async def test_load_sequence_read_metadata_fails(self):
-        """Remaining mode cannot count frames without metadata: the error
-        names mode='full' as the escape hatch."""
+        """Remaining mode cannot count frames without metadata.
+
+        The error names `mode='full'` as the escape hatch.
+        """
         outcome, _ = await self._load_entry(
             "light",
             request={"pointing_index": 1},
@@ -2077,9 +2169,11 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn("Pass mode='full'", str(outcome))
 
     async def test_load_sequence_missing_plan_file_names_the_entry(self):
-        """A plan file that cannot be READ gets the `request[i]:` prefix too —
-        the 0-based entry position must wrap FileNotFoundError, not just
-        ValueError."""
+        """An unreadable plan file is prefixed with `request[i]:` too.
+
+        The 0-based entry position must wrap FileNotFoundError, not just
+        ValueError.
+        """
         from nina_planner.server import load_sequence
 
         with tempfile.TemporaryDirectory() as tmp:
@@ -2104,6 +2198,7 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
     async def test_load_sequence_request_must_be_a_list(self):
         # A single object (or any non-list) is a caller bug, caught before a
         # plan is read: the error names the type so the shape is obvious.
+        """A non-list request raises naming the type, before any read."""
         from nina_planner.server import load_sequence
 
         with self.assertRaises(ValueError) as ctx:
@@ -2135,9 +2230,12 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn("start_sequence()", result)
 
     async def test_load_sequence_dark_skipped_when_window_closed(self):
-        """A plan whose lights are older than `calibration_window_days` cannot
-        credit any dark shot now, so `mode="remaining"` must report the darks
-        as done rather than re-shoot them forever."""
+        """Darks are reported done when the lights aged past the window.
+
+        A plan whose lights are older than `calibration_window_days` cannot
+        credit any dark shot now, so `mode="remaining"` must report the
+        darks as done rather than re-shoot them forever.
+        """
         from unittest.mock import MagicMock as _MM
 
         old_light = {
@@ -2182,9 +2280,12 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn("Sequence loaded (1 of 1 step(s))", result)
 
     async def test_load_sequence_pointing_index_rejected_for_calibration(self):
-        """Calibration is plan-level: any pointing_index — including the
-        habit-shaped pointing_index=1 — is rejected with a teaching error,
-        while lights range-check theirs instead."""
+        """Calibration rejects any pointing_index; lights range-check theirs.
+
+        Any pointing_index — including the habit-shaped pointing_index=1 —
+        is rejected with a teaching error, while lights range-check their
+        index instead.
+        """
         from unittest.mock import MagicMock as _MM
 
         darks_step = _MM(return_value=[{"$type": "darks"}])
@@ -2246,8 +2347,11 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn("Sequence loaded (1 of 1 step(s))", result)
 
     async def test_load_light_sequence_requires_targetname_file_pattern(self):
-        """Light frames attribute through $$TARGETNAME$$, so a profile whose
-        FilePattern lacks it fails the load before anything is POSTed."""
+        """A FilePattern without $$TARGETNAME$$ fails the light load.
+
+        Light frames attribute through $$TARGETNAME$$, so the profile is
+        rejected before anything is POSTed.
+        """
         outcome, api_post = await self._load_entry(
             "light",
             profile=self._full_profile().model_copy(update={"file_pattern": None}),
@@ -2258,8 +2362,11 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
         api_post.assert_not_awaited()
 
     async def test_load_sequence_full_mode(self):
-        """A full-mode light load reads exactly one thing from N.I.N.A.
-        first — the plugin list — then one POST carries the sequence."""
+        """A full-mode light load reads only the plugin list before POSTing.
+
+        One read — the plugin list, which must include Sequencer+ — then one
+        POST carries the sequence.
+        """
         mocks: dict[str, Any] = {}
         result, api_post = await self._load_entry(
             "light",
@@ -2280,9 +2387,11 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
         )
 
     async def test_full_mode_note_swallows_every_metadata_failure(self):
-        """`_full_mode_note` is advisory: any metadata read/parse failure
-        (unreadable file, bad UTF-8, malformed row) returns "" instead of
-        aborting the load."""
+        """`_full_mode_note` swallows every metadata failure.
+
+        Any read/parse failure (unreadable file, bad UTF-8, malformed row)
+        returns "" instead of aborting the load.
+        """
         from nina_planner.plan_utils import load_plan
         from nina_planner.tools.sequence import _full_mode_note
 
@@ -2377,9 +2486,11 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
         )
 
     async def test_load_sequence_full_mode_warns_when_already_complete(self):
-        """A full-mode re-shoot over an already-complete plan says so at load:
-        nothing downstream can verify the outcome afterwards, so the load
-        line is the only place the operator is told."""
+        """A full-mode re-shoot of a complete plan warns at load time.
+
+        Nothing downstream can verify the outcome afterwards, so the load
+        line is the only place the operator is told.
+        """
         # One already-attributed light, so the group reads complete.
         rows = [
             {
@@ -2406,8 +2517,11 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn("Sequence loaded (1 of 1 step(s))", result)
 
     async def test_load_sequence_full_mode_silent_when_frames_outstanding(self):
-        """No warning when the group still has frames to acquire — that is an
-        ordinary full-mode load, not a re-shoot over a finished plan."""
+        """No warning when the group still has frames to acquire.
+
+        That is an ordinary full-mode load, not a re-shoot over a finished
+        plan.
+        """
         plan = self._entry_plan_dict(
             light_frames=[
                 {"filter_name": "L", "exposure_time_seconds": 60.0, "total_count": 5}
@@ -2422,9 +2536,12 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn("Sequence loaded (1 of 1 step(s))", result)
 
     async def test_load_sequence_full_mode_calibration_never_warns(self):
-        """Calibration is pool-credited across plans, so a dark group reads
-        "already complete" on nearly every plan — warning there would fire on
-        every routine calibration load and mean nothing."""
+        """Calibration groups never warn about a full-mode re-shoot.
+
+        Calibration is pool-credited across plans, so a dark group reads
+        "already complete" on nearly every plan — warning there would fire
+        on every routine calibration load and mean nothing.
+        """
         # Every frame type already present and inside its window, so the dark
         # group reads complete — the exemption under test is the only reason
         # no warning appears. The stamp is relative to the host clock: the
@@ -2449,10 +2566,13 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("already complete", result)
 
     async def test_start_sequence(self):
-        """start_sequence waits for the start to take: the start GET, then a
-        `/sequence/json` read proving a node left CREATED — it returns once
-        the sequencer has actually started, not when N.I.N.A. accepted the
-        request (see client.wait_until_sequence_started)."""
+        """start_sequence waits until the sequencer has actually started.
+
+        The start GET, then a `/sequence/json` read proving a node left
+        CREATED — it returns once the sequencer has started, not when
+        N.I.N.A. accepted the request (see
+        client.wait_until_sequence_started).
+        """
         from nina_planner.server import start_sequence
 
         with patch(
@@ -2466,8 +2586,11 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn("/sequence/json", paths, "the start is verified")
 
     async def test_start_sequence_raises_when_nothing_leaves_created(self):
-        """A start N.I.N.A. accepts but never runs (every node still CREATED
-        after the budget) must not be reported as started."""
+        """A start N.I.N.A. accepts but never runs must not read as started.
+
+        Every node is still CREATED after the budget, so the wait gives up
+        loudly instead.
+        """
         from nina_planner.server import start_sequence
 
         with (
@@ -2485,8 +2608,11 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn("get_logs()", message)
 
     async def test_start_sequence_accepts_a_sequence_that_finished_first(self):
-        """A short park can legitimately complete between the start and the
-        first read: FINISHED nodes prove it ran, so this is not a failure."""
+        """A sequence that finished before the first read is not a failure.
+
+        A short park can legitimately complete between the start and that
+        read: FINISHED nodes prove it ran.
+        """
         from nina_planner.server import start_sequence
 
         reads = iter(
@@ -2505,9 +2631,11 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(api_get.await_count, 2)
 
     async def test_load_sequence_empty_list_parks_without_starting(self):
-        """The default (and only) park: no arguments loads the closing
-        sequence — empty Target area, End area parks then warms — but never
-        starts it."""
+        """No arguments loads the closing park sequence — and never starts it.
+
+        The default (and only) park: empty Target area, End area parks then
+        warms.
+        """
         with patch(
             "nina_planner.client.api_get",
             AsyncMock(side_effect=AssertionError("no NINA reads expected")),
@@ -2525,8 +2653,10 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(any("WarmCamera" in t for t in end_types), "End warms")
 
     async def test_load_sequence_rejects_a_mount_that_cannot_park(self):
-        """No park, no fallback: `can_park=false` is rejected outright even
-        when the mount reports `can_find_home=true`, and nothing is POSTed."""
+        """A mount with `can_park=false` is rejected — no home fallback.
+
+        `can_find_home=true` does not save it, and nothing is POSTed.
+        """
         with self.assertRaises(ValueError) as ctx:
             await self._load_list(
                 [], equipment=self._equipment(can_park=False, can_find_home=True)
@@ -2535,8 +2665,11 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn("nothing to park", str(ctx.exception))
 
     async def test_load_sequence_park_is_safe_gated_and_not_a_run(self):
-        """The park waits one bounded, safety-gated pass in its End area and
-        carries no RUN-* bracket, so it never reads as a finished run."""
+        """The park is one safety-gated wait, with no RUN-* bracket.
+
+        It never carries RUN-STARTING/RUN-FINISHED markers, so it never
+        reads as a finished run.
+        """
         _, api_post = await self._load_list([])
 
         _, payload = api_post.await_args.args
@@ -2548,8 +2681,11 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(text.count("WaitForTimeSpan"), 1)
 
     async def test_park_without_a_parkable_mount_sends_nothing(self):
-        """An empty park still needs a parkable mount: rejected with a
-        'cannot park' / 'nothing to park' error before anything is POSTed."""
+        """An empty park still needs a parkable mount.
+
+        It is rejected with a 'cannot park' / 'nothing to park' error
+        before anything is POSTed.
+        """
         from nina_planner.server import load_sequence
 
         api_post = AsyncMock(return_value={})
@@ -2573,10 +2709,11 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
         api_post.assert_not_awaited()
 
     async def test_load_sequence_with_an_unparkable_mount_sends_nothing(self):
-        """The park guardrail is the sequence guardrail: every loaded list
-        ends with the End-area park, so a mount that cannot park fails a
-        real plan exactly as it fails the empty park — before anything
-        reaches N.I.N.A."""
+        """An unparkable mount fails a real plan exactly like the empty park.
+
+        Every loaded list ends with the End-area park, so the failure
+        happens before anything reaches N.I.N.A.
+        """
         from nina_planner.server import load_sequence
 
         api_post = AsyncMock(return_value={})
@@ -2612,9 +2749,11 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
         api_post.assert_not_awaited()
 
     async def test_load_sequence_with_no_mount_reported_sends_nothing(self):
-        """NINA reporting no Mount is the same rejection, park or plan: with
-        nothing that can park, the End-area park is a no-op, and there is no
-        scope sitting unparked through the wait stages either."""
+        """No reported Mount is the same rejection, park or plan.
+
+        With nothing that can park, the End-area park is a no-op, and there
+        is no scope sitting unparked through the wait stages either.
+        """
         from nina_planner.server import load_sequence
 
         api_post = AsyncMock(return_value={})
@@ -2750,8 +2889,11 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
         return outcome, api_post
 
     async def test_light_load_rejects_a_rig_without_a_plate_solver(self):
-        """Every lights step emits a slew/center, so no solver at all —
-        neither plate_solver nor blind_plate_solver — fails the load."""
+        """A rig with no plate solver at all fails the lights load.
+
+        Every lights step emits a slew/center, so neither plate_solver nor
+        blind_plate_solver may be missing.
+        """
         profile = self._full_profile().model_copy(
             update={"plate_solver": None, "blind_plate_solver": None}
         )
@@ -2765,8 +2907,11 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
         api_post.assert_not_awaited()
 
     async def test_light_load_rejects_a_rig_without_a_guider(self):
-        """start_guiding/stop_guiding are emitted unconditionally, so a
-        profile reporting no guider fails the load instead of the run."""
+        """A rig reporting no guider fails the lights load.
+
+        start_guiding/stop_guiding are emitted unconditionally, so the
+        profile fails the load instead of the run.
+        """
         profile = self._full_profile().model_copy(
             update={
                 "equipment": self._full_profile().equipment.model_copy(
@@ -2784,8 +2929,11 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
         api_post.assert_not_awaited()
 
     async def test_light_load_rejects_a_rig_without_a_focuser(self):
-        """run_autofocus is emitted unconditionally too, so a profile
-        reporting no focuser fails the load rather than the night."""
+        """A rig reporting no focuser fails the lights load.
+
+        run_autofocus is emitted unconditionally too, so the profile fails
+        the load rather than the night.
+        """
         profile = self._full_profile().model_copy(
             update={
                 "equipment": self._full_profile().equipment.model_copy(
@@ -2803,9 +2951,12 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
         api_post.assert_not_awaited()
 
     async def test_calibration_loads_are_not_capability_checked(self):
-        """Darks, bias and flats never emit center/guiding/autofocus, so the
-        lights capability check must leave them alone — the same rig with no
-        solver, no guider and no focuser still loads all three."""
+        """Calibration loads skip the lights capability check.
+
+        Darks, bias and flats never emit center/guiding/autofocus — the
+        same rig with no solver, no guider and no focuser still loads all
+        three.
+        """
         profile = self._full_profile().model_copy(
             update={
                 "plate_solver": None,
@@ -2827,8 +2978,11 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
     # Sequencer+ plugin presence at load
 
     async def test_light_load_requires_the_sequencer_plus_plugin(self):
-        """A readable plugin list without Sequencer+ refuses the load, naming
-        the plugin and the two actions that need it — before the POST."""
+        """A plugin list without Sequencer+ refuses the light load.
+
+        It names the plugin and the two actions that need it — before the
+        POST.
+        """
         outcome, api_post = await self._load_entry(
             "light", plugins=["Advanced API", "Session Metadata"]
         )
@@ -2842,8 +2996,10 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
         api_post.assert_not_awaited()
 
     async def test_flat_load_requires_the_sequencer_plus_plugin(self):
-        """Flats carry the safetynet's Sequencer+ End Instruction Set, so they
-        are checked exactly like lights."""
+        """Flats require Sequencer+ exactly like lights.
+
+        They carry the safetynet's Sequencer+ End Instruction Set.
+        """
         outcome, api_post = await self._load_entry(
             "flat", variant="dusk", plugins=["Advanced API"]
         )
@@ -2853,6 +3009,7 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
         api_post.assert_not_awaited()
 
     async def test_light_loads_when_the_sequencer_plus_plugin_is_present(self):
+        """With Sequencer+ present, the light load POSTs the sequence."""
         outcome, api_post = await self._load_entry(
             "light", plugins=["Advanced API", "Sequencer+", "Session Metadata"]
         )
@@ -2862,9 +3019,12 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
         api_post.assert_awaited_once()
 
     async def test_light_load_accepts_the_alternate_plugin_spelling(self):
-        """Both known spellings count as installed: README says "Sequencer+",
-        the plugin's own csproj installs it as "Sequencer Plus", and no rig
-        response has confirmed which one /application/plugins reports."""
+        """Both "Sequencer+" and "Sequencer Plus" count as installed.
+
+        README says "Sequencer+", the plugin's own csproj installs it as
+        "Sequencer Plus", and no rig response has confirmed which one
+        /application/plugins reports.
+        """
         outcome, api_post = await self._load_entry(
             "light", plugins=["Advanced API", "Sequencer Plus"]
         )
@@ -2874,8 +3034,11 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
         api_post.assert_awaited_once()
 
     async def test_dark_load_never_reads_the_plugin_list(self):
-        """Darks/bias emit no Sequencer+ node, so the empty-park rule extends
-        to them: no plugin read, and an absent Sequencer+ changes nothing."""
+        """Dark loads never read the plugin list, Sequencer+ or not.
+
+        Darks/bias emit no Sequencer+ node, so the empty-park rule extends
+        to them: no plugin read at all.
+        """
         outcome, api_post = await self._load_entry("dark", plugins=[])
 
         self.assertNotIsInstance(outcome, Exception, outcome)
@@ -2883,9 +3046,12 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
         api_post.assert_awaited_once()
 
     async def test_load_continues_when_the_plugin_list_cannot_be_read(self):
-        """An endpoint we cannot read — it 404s, or answers something that is
-        not a list of names — must not block the night: verification is best
-        effort, so the load proceeds with a logged warning instead."""
+        """An unreadable plugin list does not block the load.
+
+        The endpoint may 404 or answer something that is not a list of
+        names: verification is best effort, so the load proceeds with a
+        logged warning instead.
+        """
         unreadable = (RuntimeError("HTTP 404 Not Found"), {}, "", None)
         for answer in unreadable:
             with self.subTest(answer=answer):
@@ -2992,8 +3158,11 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
         return result, api_post
 
     async def test_load_sequence_list_composes_one_sequence(self):
-        """One list, one sequence: a single Start/Target/End with one deep-sky
-        container per step, in list order, and an End that parks."""
+        """One request list composes one Start/Target/End sequence.
+
+        A single deep-sky container per step, in list order, and an End
+        that parks and warms.
+        """
         with tempfile.TemporaryDirectory() as tmp:
             plan_path = Path(tmp) / "plan.json"
             plan_path.write_text(json.dumps(self._list_plan_dict()))
@@ -3026,8 +3195,10 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn("start_sequence()", result)
 
     async def test_load_sequence_list_skips_completed_entry(self):
-        """An entry with nothing left contributes no container and is reported;
-        the rest of the night still loads."""
+        """An entry with nothing left contributes no container.
+
+        It is reported, and the rest of the night still loads.
+        """
         with tempfile.TemporaryDirectory() as tmp:
             plan_path = Path(tmp) / "plan.json"
             plan_path.write_text(json.dumps(self._list_plan_dict()))
@@ -3051,6 +3222,7 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn("Sequence loaded (1 of 2 step(s))", result)
 
     async def test_load_sequence_list_all_complete_sends_nothing(self):
+        """An all-complete request list POSTs nothing and says so."""
         with tempfile.TemporaryDirectory() as tmp:
             plan_path = Path(tmp) / "plan.json"
             plan_path.write_text(json.dumps(self._list_plan_dict()))
@@ -3068,9 +3240,11 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("start_sequence()", result)
 
     async def test_load_sequence_all_complete_needs_no_park(self):
-        """Nothing sent means nothing guarded: with every entry complete the
-        load POSTs no sequence, so an unparkable mount is only an error when
-        a sequence — and its End-area park — would actually load."""
+        """An all-complete load POSTs nothing, so no park guard runs.
+
+        An unparkable mount is only an error when a sequence — and its
+        End-area park — would actually load.
+        """
         with tempfile.TemporaryDirectory() as tmp:
             plan_path = Path(tmp) / "plan.json"
             plan_path.write_text(json.dumps(self._list_plan_dict()))
@@ -3096,8 +3270,11 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn("action", message)
 
     async def test_load_sequence_flat_requires_variant(self):
-        """Dawn or dusk is a real choice, so `action='flat'` alone is an
-        error naming the entry rather than an arbitrary default."""
+        """`action='flat'` without a variant is an error.
+
+        Dawn or dusk is a real choice, so the error names the entry rather
+        than picking an arbitrary default.
+        """
         from nina_planner.server import load_sequence
 
         with self.assertRaises(ValueError) as ctx:
@@ -3107,8 +3284,10 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn("variant", message)
 
     async def test_load_sequence_variant_must_fit_the_action(self):
-        """A variant belonging to another action fails loudly instead of
-        being silently ignored."""
+        """A variant belonging to another action fails loudly.
+
+        It is never silently ignored.
+        """
         from nina_planner.server import load_sequence
 
         with self.assertRaises(ValueError) as ctx:
@@ -3119,8 +3298,10 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn("light", message)
 
     async def test_load_sequence_dark_cover_variant_reaches_the_builder(self):
-        """The requested `cover` variant reaches the darks builder unchanged
-        (and never as a bias), on a rig whose flat device can cover."""
+        """The `cover` variant reaches the darks builder unchanged.
+
+        It is never a bias, and the rig's flat device can cover.
+        """
         captured_kwargs = {}
 
         def fake_darks(plan, equipment, profile, bias=False, variant="wheel"):
@@ -3153,8 +3334,10 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn("Sequence loaded (1 of 1 step(s))", result)
 
     async def test_load_sequence_dark_shutter_variant_reaches_the_builder(self):
-        """The requested `shutter` variant reaches the darks builder unchanged
-        (and never as a bias), on a rig whose camera has a shutter."""
+        """The `shutter` variant reaches the darks builder unchanged.
+
+        It is never a bias, and the rig's camera has a shutter.
+        """
         captured_kwargs = {}
 
         def fake_darks(plan, equipment, profile, bias=False, variant="wheel"):
@@ -3182,9 +3365,12 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
     # dark/bias variant capability checks (fail closed at load time)
 
     async def test_load_sequence_dark_wheel_needs_a_dark_filter_slot(self):
-        """The default (wheel) variant is checked like an explicit one: a
-        profile with no `Dark` slot fails at load, naming what this rig can
-        run instead of letting N.I.N.A. discover it mid-sequence."""
+        """The default wheel variant needs a `Dark` filter slot.
+
+        It is checked like an explicit variant: a profile with no `Dark`
+        slot fails at load, naming what this rig can run instead of letting
+        N.I.N.A. discover it mid-sequence.
+        """
         no_dark_slot = self._full_profile(
             filters=[FilterInfo(name="L", position=1, focus_offset=0)],
             has_flat_device=True,
@@ -3212,9 +3398,11 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn("Supported here: cover, shutter", message)
 
     async def test_load_sequence_dark_cover_needs_a_flat_device(self):
-        """`cover` closes a motorized cover, so a profile without one fails
-        the load rather than emitting CloseCover instructions N.I.N.A. cannot
-        run."""
+        """`cover` needs a flat device, or the load fails.
+
+        It closes a motorized cover, so a profile without one fails rather
+        than emitting CloseCover instructions N.I.N.A. cannot run.
+        """
         # Camera reports a shutter so only `cover` is unsupported here.
         capable_rig = ObservatoryEquipment(
             camera=CameraDevice(connected=True, name="cam", has_shutter=True)
@@ -3237,9 +3425,12 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn("Supported here: wheel, shutter", message)
 
     async def test_load_sequence_dark_shutter_needs_a_camera_shutter(self):
-        """A camera reporting HasShutter=false cannot cut the light, so
-        `shutter` fails instead of producing light-contaminated darks that
-        would otherwise look like a successful run."""
+        """`shutter` fails when the camera reports HasShutter=false.
+
+        A camera without a shutter cannot cut the light, so the load fails
+        instead of producing light-contaminated darks that would otherwise
+        look like a successful run.
+        """
         # The rest of the rig is capable, so the message lists `cover` too.
         no_shutter = ObservatoryEquipment(
             camera=CameraDevice(connected=True, name="cam", has_shutter=False),
@@ -3266,10 +3457,12 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn("Supported here: wheel, cover", message)
 
     async def test_load_sequence_dark_guard_fires_before_metadata_read(self):
-        """The capability check runs ahead of the remaining-mode metadata
-        read, so a rig that cannot take the dark fails on the variant even
-        when the imaging root is unreadable — the two errors must not be
-        able to mask each other."""
+        """The dark capability check runs before the metadata read.
+
+        A rig that cannot take the dark fails on the variant even when the
+        imaging root is unreadable — the two errors must not be able to
+        mask each other.
+        """
         from nina_planner.server import load_sequence
 
         no_shutter = ObservatoryEquipment(
@@ -3308,8 +3501,10 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("imaging root", message)
 
     async def test_load_sequence_list_error_names_the_entry(self):
-        """A failure in entry i says `request[i]:`, so the agent knows which
-        one to fix."""
+        """A failure in entry i is prefixed with `request[i]:`.
+
+        That prefix is how the agent knows which entry to fix.
+        """
         with tempfile.TemporaryDirectory() as tmp:
             plan_path = Path(tmp) / "plan.json"
             plan_path.write_text(json.dumps(self._list_plan_dict()))
@@ -3324,6 +3519,7 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn("requires a plan", message)
 
     async def test_stop_sequence(self):
+        """stop_sequence POSTs stop and polls until the root stops running."""
         from nina_planner.server import stop_sequence
 
         calls: list[str] = []
@@ -3344,6 +3540,7 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
         self.assertGreaterEqual(calls.count("/sequence/json"), 2)
 
     async def test_stop_sequence_when_not_running_does_not_post_stop(self):
+        """A sequence already stopped posts nothing but reports stopped."""
         from nina_planner.server import stop_sequence
 
         calls: list[str] = []
@@ -3375,6 +3572,7 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
         api_get.assert_not_awaited()
 
     async def test_get_sequence_state_returns_json(self):
+        """detail="raw" returns NINA's /sequence/json payload verbatim."""
         from nina_planner.server import get_sequence_state
 
         expected = {"Sequence": {"Name": "Root"}}
@@ -3386,6 +3584,7 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result, expected)
 
     async def test_get_sequence_state_rejects_unknown_detail(self):
+        """An unknown detail is rejected before anything is fetched."""
         from nina_planner.server import get_sequence_state
 
         with self.assertRaisesRegex(ValueError, 'detail must be "summary" or "raw"'):
@@ -3399,6 +3598,7 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
     async def test_get_sequence_state_without_sequence_json(self):
         # /sequence/json is an optional merge: when it fails the summary is
         # still built from /sequence/state, with no horizon data.
+        """A failed /sequence/json merge still yields an empty summary."""
         from nina_planner.server import get_sequence_state
 
         with patch(
@@ -3432,8 +3632,11 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn("responsive", result["summary"])
 
     async def test_get_nina_status_api_down_is_not_running(self):
-        """running follows the API: an unreachable REST API means NINA is not
-        running, regardless of any local process visibility."""
+        """An unreachable REST API means NINA is not running.
+
+        Running follows the API, regardless of any local process
+        visibility.
+        """
         from nina_planner.server import get_nina_status
 
         with (
@@ -3457,8 +3660,11 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn("connection refused", result["summary"])
 
     async def test_get_nina_status_remote_running(self):
-        """API responsive but no Windows interop: running, but lifecycle
-        control is unavailable because NINA is remote."""
+        """A responsive API without Windows interop reads as remote.
+
+        NINA is running, but lifecycle control is unavailable because it
+        is remote.
+        """
         from nina_planner.server import get_nina_status
 
         with (
@@ -3480,8 +3686,10 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn("lifecycle control unavailable", result["summary"])
 
     async def test_get_nina_status_remote_down(self):
-        """API unresponsive and no Windows interop: down and not restartable
-        from this host."""
+        """An unresponsive API without interop reads as down and remote.
+
+        NINA cannot be restarted from this host.
+        """
         from nina_planner.server import get_nina_status
 
         with (
@@ -3502,8 +3710,9 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn("cannot be restarted", result["summary"])
 
     async def test_get_site_equipment_status_calls_log_payload(self):
-        """When get_site_equipment_status runs, it calls _log_payload with
-        the equipment dump. Don't mock _log_payload — let it run.
+        """get_site_equipment_status logs its equipment dump unmocked.
+
+        Don't mock _log_payload — let it run and write the file.
         """
         from nina_planner.server import get_site_equipment_status
 
@@ -3524,9 +3733,10 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
             self.assertIn("Equipment:", content)
 
     async def test_get_site_equipment_status_missing_device_data(self):
-        """When a device is marked has_X=True but the raw response has no
-        entry for it (empty dict), _build returns None without trying to
-        construct the model."""
+        """A has_X=True device with no raw entry builds as None.
+
+        _build returns None without trying to construct the model.
+        """
         from nina_planner.tools.equipment import (
             _get_site_equipment_status as _get_site_equipment_status,
         )
@@ -3558,6 +3768,7 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
     # flat device / camera shutter: the capabilities the dark variants check
 
     async def test_get_site_profile_reads_the_flat_device_settings(self):
+        """has_flat_device follows FlatDeviceSettings, honouring NINA marker."""
         from nina_planner.server import get_site_profile
 
         def raw_with(flat_settings: dict | None) -> dict:
@@ -3599,6 +3810,7 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(profile.equipment.has_flat_device, expected)
 
     async def test_get_site_equipment_status_reads_the_flat_device(self):
+        """The FlatDevice block becomes a model; absent block means None."""
         from nina_planner.tools.equipment import _get_site_equipment_status
 
         profile = self._full_profile(has_flat_device=True)
@@ -3630,6 +3842,7 @@ class McpToolDirectTest(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(equipment.flat_device)
 
     async def test_get_site_equipment_status_reads_camera_has_shutter(self):
+        """The camera's HasShutter flag is reported on the camera device."""
         from nina_planner.tools.equipment import _get_site_equipment_status
 
         profile = self._full_profile()

@@ -46,6 +46,7 @@ class PurgeBase(ArchiveBase):
     """ArchiveBase + purge CLI runner + sequence-state mock."""
 
     def setUp(self):
+        """Patch the sequence-state probe to an idle AsyncMock for every test."""
         super().setUp()
         self.seq_mock = mock.AsyncMock(return_value=False)
         patcher = mock.patch.object(
@@ -57,6 +58,7 @@ class PurgeBase(ArchiveBase):
     # -------------------------------------------------------------- runs
 
     def run_archive(self, *extra: str) -> int:
+        """Drive the real archive CLI with output captured, returning its exit code."""
         argv = [
             "--dest",
             str(self.dest),
@@ -71,6 +73,7 @@ class PurgeBase(ArchiveBase):
             return archive_mod.main(argv)
 
     def run_purge(self, *extra: str) -> tuple[int, str, str]:
+        """Run the purge CLI with output captured, returning (code, out, err)."""
         argv = [
             "--dest",
             str(self.dest),
@@ -89,13 +92,16 @@ class PurgeBase(ArchiveBase):
 
     @property
     def quarantine(self) -> Path:
+        """The quarantine directory inside the imaging root."""
         return self.root / ".quarantine"
 
     @property
     def purge_index(self) -> Path:
+        """The append-only purge index JSONL file inside the root."""
         return self.root / "purge-index.jsonl"
 
     def index_records(self) -> list[dict]:
+        """Parse the purge index into record dicts; empty when absent."""
         if not self.purge_index.exists():
             return []
         return [
@@ -105,6 +111,7 @@ class PurgeBase(ArchiveBase):
         ]
 
     def root_dirs(self) -> list[str]:
+        """Sorted visible directory names under the imaging root."""
         return sorted(
             p.name
             for p in self.root.iterdir()
@@ -155,7 +162,10 @@ class PurgeBase(ArchiveBase):
 
 
 class PurgeDryRunTest(PurgeBase):
+    """Dry-run verdicts: what purge reports without touching a file."""
+
     def test_dry_run_prunable_exits_zero_and_writes_nothing(self):
+        """A prunable dry run exits 0 and writes nothing."""
         self.seed_full()
         self.assertEqual(self.run_archive(), 0)
 
@@ -170,6 +180,7 @@ class PurgeDryRunTest(PurgeBase):
         self.assertEqual(self.root_dirs(), ["M31_plan-abc123_"])
 
     def test_unarchived_frames_held_not_preserved(self):
+        """Unarchived frames hold the directory until nina-archive runs."""
         self.seed_full()
 
         code, out, _err = self.run_purge()
@@ -180,6 +191,7 @@ class PurgeDryRunTest(PurgeBase):
         self.assertIn("nothing to do (dry run)", out)
 
     def test_unrecorded_only_dir_held(self):
+        """A directory of frames no manifest recorded is held, not pruned."""
         stray = self.root / "mystery_dir"
         stray.mkdir()
         (stray / "unrecorded.fits").write_bytes(b"no row ever saw this")
@@ -191,6 +203,7 @@ class PurgeDryRunTest(PurgeBase):
         self.assertIn("no recorded frames", out)
 
     def test_unrelated_json_ignored(self):
+        """An unrelated JSON file in the project is reported and ignored."""
         self.seed_full()
         self.assertEqual(self.run_archive(), 0)
         (self.proj / "notes.json").write_text('{"foo": 1}', encoding="utf-8")
@@ -202,6 +215,7 @@ class PurgeDryRunTest(PurgeBase):
         self.assertIn("PRUNE", out)
 
     def test_broken_plan_aborts_before_any_mutation(self):
+        """A malformed plan file aborts --apply before anything is moved."""
         self.seed_full()
         self.assertEqual(self.run_archive(), 0)
         (self.proj / "bad.json").write_text('{"pointings": "oops"}', encoding="utf-8")
@@ -215,6 +229,7 @@ class PurgeDryRunTest(PurgeBase):
         self.assertEqual(self.root_dirs(), ["M31_plan-abc123_"])
 
     def test_dest_inside_root_refused(self):
+        """A --dest inside the imaging root is refused to avoid double-counting."""
         code, _out, err = self.run_purge("--dest", str(self.root / "inner"))
 
         self.assertEqual(code, 1)
@@ -226,7 +241,10 @@ class PurgeDryRunTest(PurgeBase):
 
 
 class PurgeApplyTest(PurgeBase):
+    """The apply leg: quarantine moves, index records, and its gates."""
+
     def test_apply_quarantines_moves_and_indexes(self):
+        """The apply leg moves the prunable dir to quarantine and indexes it."""
         self.seed_full()
         self.assertEqual(self.run_archive(), 0)
 
@@ -253,6 +271,7 @@ class PurgeApplyTest(PurgeBase):
         self.assertIn("plan-abc123", rec["claimants"])
 
     def test_quarantined_dir_invisible_on_next_run(self):
+        """A quarantined directory is invisible to later runs (dot-dir pruned)."""
         self.seed_full()
         self.assertEqual(self.run_archive(), 0)
         self.assertEqual(self.run_purge("--apply")[0], 0)
@@ -265,6 +284,7 @@ class PurgeApplyTest(PurgeBase):
         self.assertIn("nothing to do", out)
 
     def test_quarantine_collision_gets_suffix(self):
+        """An occupied quarantine target gets a ~1 suffix instead of merging."""
         self.seed_full()
         self.assertEqual(self.run_archive(), 0)
         (self.quarantine / "M31_plan-abc123_").mkdir(parents=True)
@@ -278,6 +298,7 @@ class PurgeApplyTest(PurgeBase):
         )
 
     def test_sequence_running_refuses_apply(self):
+        """An apply run refuses while N.I.N.A. reports a RUNNING sequence."""
         self.seed_full()
         self.assertEqual(self.run_archive(), 0)
         self.seq_mock.return_value = True
@@ -291,6 +312,7 @@ class PurgeApplyTest(PurgeBase):
         self.assertEqual(self.root_dirs(), ["M31_plan-abc123_"])
 
     def test_nina_unreachable_proceeds_with_warning(self):
+        """An unreachable sequence probe warns and the purge proceeds as idle."""
         self.seed_full()
         self.assertEqual(self.run_archive(), 0)
         self.seq_mock.side_effect = RuntimeError("connection refused")
@@ -303,6 +325,7 @@ class PurgeApplyTest(PurgeBase):
         self.assertTrue(self.quarantine.is_dir())
 
     def test_purge_deletes_quarantine_for_real(self):
+        """The purge leg deletes the quarantine and plan file; a re-run is a no-op."""
         self.seed_full()
         self.assertEqual(self.run_archive(), 0)
         self.assertEqual(self.run_purge("--apply")[0], 0)
@@ -323,6 +346,7 @@ class PurgeApplyTest(PurgeBase):
         self.assertIn("nothing to purge", out)
 
     def test_purge_without_quarantine_is_idempotent(self):
+        """A purge with nothing quarantined exits 0 as a no-op."""
         code, out, _err = self.run_purge("--purge")
 
         self.assertEqual(code, 0)
@@ -334,6 +358,8 @@ class PurgeApplyTest(PurgeBase):
 
 
 class PurgeReleaseTest(PurgeBase):
+    """Release rules: what holds a preserved directory and what frees it."""
+
     def test_reopened_plan_held_then_released_by_moving_plan_file(self):
         """Archived complete, then frames lost → held; plan file out → prunable."""
         self.seed_full()
@@ -377,6 +403,7 @@ class PurgeReleaseTest(PurgeBase):
         self.assertIn("PRUNE", out)
 
     def test_orphan_not_preserved_held(self):
+        """An unarchived dir whose plan file vanished is held as not preserved."""
         self.seed_full()
         (self.proj / "m31.json").unlink()  # no plan claims the frames
 
@@ -388,6 +415,7 @@ class PurgeReleaseTest(PurgeBase):
 
     def test_bad_reject_twin_rides_with_prunable_dir(self):
         # Surplus light so a reject still leaves acquired >= expected.
+        """A BAD_ reject twin rides into quarantine with its prunable dir."""
         self.seed_full(light_count=21)
         light_dir = self.root / "M31_plan-abc123_" / "2026-09-20" / "LIGHT"
         victim = sorted(light_dir.glob("*.fits"))[5]
@@ -415,6 +443,7 @@ class PurgeReleaseTest(PurgeBase):
         )
 
     def test_outside_root_frames_reported_never_pruned(self):
+        """A frame recorded outside the root is reported but never pruned."""
         self.seed_full()
         self.assertEqual(self.run_archive(), 0)
         # One row whose recorded path escaped the root.
@@ -459,8 +488,7 @@ class PurgeReleaseTest(PurgeBase):
 
 
 class PurgeJunkTest(PurgeBase):
-    """The ``junk/`` invariant: a degenerate own-token frame stops holding
-    its landing directory.
+    """The ``junk/`` invariant: junk holds until archived, then prunes.
 
     Regression for the deadlock where two 0.00003s Smart Exposure darks
     sat in ImageMetaData.csv, matched no exposure group (so archive
@@ -471,6 +499,7 @@ class PurgeJunkTest(PurgeBase):
     """
 
     def seed_junk_dark(self) -> Path:
+        """Seed the capture set plus a degenerate dark no group can credit."""
         self.seed_full()
         name = "2026-09-21_05-00-00_dark_60.00s_junk.fits"
         path = self.frame("DARK", name, date="2026-09-21")
@@ -489,6 +518,7 @@ class PurgeJunkTest(PurgeBase):
         return path
 
     def test_junk_holds_directory_until_archived_then_prunes(self):
+        """Unarchived junk holds the dir; once archived the same dir prunes."""
         junk = self.seed_junk_dark()
 
         code, out, _err = self.run_purge()
@@ -515,6 +545,7 @@ class PurgeJunkTest(PurgeBase):
         self.assertNotIn("not preserved", out)
 
     def test_full_chain_quarantines_then_purges_the_junk_frame(self):
+        """The junk frame rides into quarantine and out again with its dir."""
         junk = self.seed_junk_dark()
         self.assertEqual(self.run_archive(), 0)
 
@@ -546,12 +577,16 @@ class PurgePlanFileTest(PurgeBase):
     """
 
     def archive_plan_path(self) -> Path:
+        """Path of the plan's durable copy inside the archive folder."""
         return self.dest / "m31__plan-abc123" / "plan.json"
 
     def plan_file_records(self) -> list[dict]:
+        """Index records whose action is plan-file."""
         return [r for r in self.index_records() if r["action"] == "plan-file"]
 
     def audit(self) -> dict:
+        """Run audit_plans against the tmp project with the root patched in."""
+
         async def _resolve():
             return self.root
 
@@ -561,6 +596,7 @@ class PurgePlanFileTest(PurgeBase):
     # ----------------------------------------------------------- happy path
 
     def test_purge_removes_plan_file_after_frames(self):
+        """The purge removes the original plan JSON only after its frames are gone."""
         self.seed_full()
         self.assertEqual(self.run_archive(), 0)
         archived_bytes = self.archive_plan_path().read_bytes()
@@ -582,6 +618,7 @@ class PurgePlanFileTest(PurgeBase):
         self.assertEqual(records[0]["plan_id"], "plan-abc123")
 
     def test_dry_run_reports_would_remove_plan_file(self):
+        """A dry run announces the plan-file removal but deletes nothing."""
         self.seed_full()
         self.assertEqual(self.run_archive(), 0)
 
@@ -595,6 +632,7 @@ class PurgePlanFileTest(PurgeBase):
         self.assertFalse(self.purge_index.exists())  # a dry run writes nothing
 
     def test_report_keeps_unarchived_plan_file(self):
+        """Without an archive folder the report keeps the plan file and exits 1."""
         self.seed_full()
 
         code, out, _err = self.run_purge()
@@ -605,6 +643,7 @@ class PurgePlanFileTest(PurgeBase):
         self.assertTrue((self.proj / "m31.json").is_file())
 
     def test_re_run_after_full_purge_is_clean_success(self):
+        """Re-running a finished purge is a clean, warning-free success."""
         self.seed_full()
         self.assertEqual(self.run_archive(), 0)
         self.assertEqual(self.run_purge("--apply")[0], 0)
@@ -620,6 +659,7 @@ class PurgePlanFileTest(PurgeBase):
     # ------------------------------------------------------------- refusals
 
     def test_plan_edited_after_archive_refused(self):
+        """A plan edited after archiving refuses the sweep, keeping everything."""
         self.seed_full()
         self.assertEqual(self.run_archive(), 0)
         self.assertEqual(self.run_purge("--apply")[0], 0)
@@ -640,6 +680,7 @@ class PurgePlanFileTest(PurgeBase):
         self.assertFalse(self.plan_file_records()[-1]["plan_file_deleted"])
 
     def test_archive_folder_missing_refused(self):
+        """A missing archive folder refuses the sweep and keeps frames and file."""
         self.seed_full()
         self.assertEqual(self.run_archive(), 0)
         self.assertEqual(self.run_purge("--apply")[0], 0)
@@ -655,6 +696,7 @@ class PurgePlanFileTest(PurgeBase):
         self.assertTrue((self.proj / "m31.json").is_file())
 
     def test_archive_plan_json_missing_refused(self):
+        """A missing archived plan.json refuses the sweep with a clear reason."""
         self.seed_full()
         self.assertEqual(self.run_archive(), 0)
         self.assertEqual(self.run_purge("--apply")[0], 0)
@@ -670,6 +712,7 @@ class PurgePlanFileTest(PurgeBase):
         self.assertTrue((self.proj / "m31.json").is_file())
 
     def test_frame_deletion_failure_keeps_plan_file(self):
+        """A failed frame deletion keeps the plan file so a re-run can finish."""
         self.seed_full()
         self.assertEqual(self.run_archive(), 0)
         self.assertEqual(self.run_purge("--apply")[0], 0)
@@ -696,6 +739,7 @@ class PurgePlanFileTest(PurgeBase):
         # The frames are gone and the gates passed, but the original JSON
         # itself cannot be unlinked: the run reports it, records the failed
         # removal in the index, and exits 1 so the next run retries.
+        """A failed plan-file unlink is recorded and exits 1 for a retry."""
         self.seed_full()
         self.assertEqual(self.run_archive(), 0)
         self.assertEqual(self.run_purge("--apply")[0], 0)
@@ -754,6 +798,7 @@ class PurgePlanFileTest(PurgeBase):
     # ------------------------------------------------------------- audit
 
     def test_audit_plans_does_not_list_purged_plan(self):
+        """After a purge the plan stops reading as never-shot in the audit."""
         self.seed_full()
         self.assertEqual(self.run_archive(), 0)
         self.assertEqual(self.run_purge("--apply")[0], 0)
@@ -777,7 +822,10 @@ class PurgePlanFileTest(PurgeBase):
 
 
 class PurgeNoStagingLegTest(PurgeBase):
+    """The removed rclone/staging leg: gone flags and a read-only dest."""
+
     def test_removed_cloud_flags_are_rejected(self):
+        """The removed --verify-remote and --prune-dest flags exit with usage 2."""
         for flag in (["--verify-remote", "remote:arch"], ["--prune-dest"]):
             with self.subTest(flag=flag), contextlib.redirect_stderr(io.StringIO()):
                 with self.assertRaises(SystemExit) as caught:
@@ -785,6 +833,7 @@ class PurgeNoStagingLegTest(PurgeBase):
                 self.assertEqual(caught.exception.code, 2)
 
     def test_apply_never_modifies_the_archive_dest(self):
+        """The apply leg never writes into the archive destination."""
         self.seed_full()
         self.assertEqual(self.run_archive(), 0)
         before = sorted(str(p) for p in self.dest.rglob("*"))
@@ -809,6 +858,7 @@ class PurgeDetailTest(PurgeBase):
     # ------------------------------------------------------------ helpers
 
     def test_unique_join_truncates_past_the_limit(self):
+        """Reasons join with '; ', deduped, then truncated past the limit."""
         self.assertEqual(purge_mod._unique_join(["a", "b"]), "a; b")
         # Duplicates collapse first: the limit counts distinct reasons.
         self.assertEqual(
@@ -817,6 +867,7 @@ class PurgeDetailTest(PurgeBase):
         )
 
     def test_plan_file_gate_refuses_a_plan_inside_dest(self):
+        """The plan-file gate refuses a plan file that sits inside --dest."""
         plan_file = self.dest / "m31.json"  # the archived copy itself
         _folder, ok, stale, reason = purge_mod._plan_file_gate(
             plan_file, _plan(), self.dest
@@ -828,6 +879,7 @@ class PurgeDetailTest(PurgeBase):
     def test_plan_file_gate_reports_an_unreadable_comparison(self):
         # The project's plan file is unreadable (here: a directory where a
         # file should be) — the refusal must name the comparison, not raise.
+        """An unreadable plan file yields a refusal, not an exception."""
         plan = _plan()
         plan_file = self.proj / "m31.json"
         plan_file.mkdir()
@@ -844,6 +896,7 @@ class PurgeDetailTest(PurgeBase):
         self.assertIn("cannot compare against the archive", reason)
 
     def test_resolve_root_rejects_a_missing_imaging_root(self):
+        """A --imaging-root path that does not exist raises PurgeError."""
         args = purge_mod._build_parser().parse_args(
             ["--imaging-root", str(self.proj / "no-such-root")]
         )
@@ -851,6 +904,7 @@ class PurgeDetailTest(PurgeBase):
             asyncio.run(purge_mod._resolve_root(args))
 
     def test_resolve_root_reports_a_profile_failure(self):
+        """A profile failure is wrapped in PurgeError naming --imaging-root."""
         args = purge_mod._build_parser().parse_args([])
         with mock.patch.object(
             metadata_mod,
@@ -865,6 +919,7 @@ class PurgeDetailTest(PurgeBase):
         self.assertIn("--imaging-root", message)
 
     def test_read_manifests_skips_folders_without_a_usable_manifest(self):
+        """Unusable manifests are skipped, each producing one warning."""
         (self.dest / "no-manifest").mkdir(parents=True)
         broken = self.dest / "broken"
         broken.mkdir()
@@ -884,6 +939,7 @@ class PurgeDetailTest(PurgeBase):
         self.assertTrue(any("no plan_id" in w for w in warnings), warnings)
 
     def test_classify_tolerates_pathless_rows_and_outside_rejects(self):
+        """Pathless rows never reach the outside report; vanished frames hold."""
         vanished = self.root / "tok" / "2026-09-20" / "LIGHT" / "gone.fits"
         outside_reject = Path("/elsewhere/BAD_renamed.fits")
         inside_reject = self.root / "tok" / "2026-09-20" / "LIGHT" / "BAD_gone.fits"
@@ -910,6 +966,7 @@ class PurgeDetailTest(PurgeBase):
         self.assertEqual(by_name["tok"]["verdict"], "hold")
 
     def test_quarantine_skips_a_directory_that_vanished(self):
+        """A directory that vanished before the move is skipped with a note."""
         entry = {"dir": "ghost", "frames": 0, "rejects": 0, "plan_ids": set()}
         err = io.StringIO()
         with contextlib.redirect_stderr(err):
@@ -918,6 +975,7 @@ class PurgeDetailTest(PurgeBase):
         self.assertIn("vanished before the move", err.getvalue())
 
     def test_quarantine_reports_a_failed_move(self):
+        """A failed move is reported to stderr and nothing is moved."""
         (self.root / "tok").mkdir()
         entry = {"dir": "tok", "frames": 1, "rejects": 0, "plan_ids": set()}
         err = io.StringIO()
@@ -934,6 +992,7 @@ class PurgeDetailTest(PurgeBase):
         self.assertTrue((self.root / "tok").is_dir())  # nothing moved
 
     def test_quarantine_warns_about_unrecorded_files_riding_along(self):
+        """Unrecorded loose files ride along with a warning."""
         token = self.root / "tok"
         token.mkdir()
         (token / "loose.fits").write_bytes(b"x")
@@ -948,6 +1007,7 @@ class PurgeDetailTest(PurgeBase):
     def test_purge_quarantine_unlinks_loose_files(self):
         # Loose files are never claimed by any plan, so they always ride
         # along with a purge rather than being kept for manual inspection.
+        """Unclaimed loose files are unlinked by --purge, not kept for inspection."""
         self.quarantine.mkdir(parents=True)
         (self.quarantine / "stray.fits").write_bytes(b"1234")
         out = io.StringIO()
@@ -958,6 +1018,7 @@ class PurgeDetailTest(PurgeBase):
         self.assertIn("purged 1 quarantined item(s)", out.getvalue())
 
     def test_quarantine_gates_reads_claimants_and_skips_unknown_children(self):
+        """The gates read claimants from the index and skip unknown children."""
         self.quarantine.mkdir(parents=True)
         (self.quarantine / "loose.fits").write_bytes(b"x")  # never claimed
         (self.quarantine / "hand-made").mkdir()  # moved in by hand
@@ -1016,11 +1077,13 @@ class PurgeDetailTest(PurgeBase):
         return result, out.getvalue(), err.getvalue()
 
     def test_sweep_skips_a_plan_file_that_is_already_gone(self):
+        """The sweep skips a plan file that is already gone."""
         record = self._record(self.proj / "ghost.json")
         result, _out, _err = self._sweep(record, purge=True)
         self.assertEqual(result, (0, 0, 0))
 
     def test_sweep_treats_a_vanished_frame_as_the_state_it_waits_for(self):
+        """A vanished selected frame reads as gone, so the plan file is removed."""
         plan_file = self.write_plan(_plan())
         record = self._record(plan_file, selected=[str(self.proj / "gone.fits")])
 
@@ -1031,6 +1094,7 @@ class PurgeDetailTest(PurgeBase):
         self.assertFalse(plan_file.exists())
 
     def test_sweep_keeps_the_file_while_frames_are_present_under_purge(self):
+        """The sweep keeps the plan file while any selected frame is present."""
         frame = self.frame("LIGHT", "still-here.fits")
         plan_file = self.write_plan(_plan())
         record = self._record(plan_file, selected=[str(frame)])
@@ -1044,6 +1108,7 @@ class PurgeDetailTest(PurgeBase):
     def test_sweep_keeps_a_frame_that_lives_outside_the_root(self):
         # A frame outside the imaging root can never be proven gone by this
         # run's verdicts, so the plan file stays for the re-run.
+        """An outside-root frame can never be proven gone, so the file stays."""
         outside = self.proj / "outside.fits"
         outside.write_bytes(b"x")
         plan_file = self.write_plan(_plan())
@@ -1061,6 +1126,7 @@ class PurgeDetailTest(PurgeBase):
         # Relative --dest roots at the cwd, relative --project-dir at
         # PROJECT_DIR, and a profile failure is reported (not raised) with
         # the --imaging-root escape hatch named.
+        """Relative flags resolve per their roots; a dead NINA is reported."""
         argv = ["--dest", self.dest.name, "--project-dir", self.proj.name]
         out, err = io.StringIO(), io.StringIO()
         with (
@@ -1080,6 +1146,7 @@ class PurgeDetailTest(PurgeBase):
         self.assertIn("NINA is down", err.getvalue())
 
     def test_missing_metadata_csv_is_reported_not_raised(self):
+        """A missing ImageMetaData.csv is reported, not raised out of main."""
         with mock.patch(
             "nina_planner.purge.read_imaging_csv",
             side_effect=FileNotFoundError("ImageMetaData.csv is missing"),
@@ -1091,6 +1158,7 @@ class PurgeDetailTest(PurgeBase):
     def test_dropped_rows_without_a_path_are_ignored(self):
         # The BAD_ twin scan reads dropped rows; one with no path cannot
         # name a twin and must not be treated as a gone reject either.
+        """A dropped row with no path names no BAD_ twin and no gone reject."""
         with mock.patch(
             "nina_planner.purge.read_imaging_csv",
             return_value=([], [{"image_type": "LIGHT"}]),
@@ -1101,6 +1169,7 @@ class PurgeDetailTest(PurgeBase):
         self.assertNotIn("gone", out)
 
     def test_apply_with_nothing_to_quarantine_says_so(self):
+        """An apply run with nothing prunable says so and writes nothing."""
         code, out, _err = self.run_purge("--apply")
         self.assertIn("nothing to quarantine", out)
         self.assertFalse(self.quarantine.exists())
@@ -1108,6 +1177,7 @@ class PurgeDetailTest(PurgeBase):
     def test_report_run_previews_quarantine_keeps(self):
         # The report leg prints what --apply → --purge would refuse, so an
         # operator sees the held directories before acting.
+        """The report previews the quarantine keeps a later purge would refuse."""
         self.quarantine.mkdir(parents=True)
         (self.quarantine / "hand-made").mkdir()
 
@@ -1116,6 +1186,7 @@ class PurgeDetailTest(PurgeBase):
         self.assertIn("would keep in quarantine — no quarantine record", out)
 
     def test_module_entry_point_exits_with_main_status(self):
+        """Running the module as __main__ exits with main's status code."""
         import runpy
         import sys
         import warnings

@@ -1,3 +1,12 @@
+"""Shared plan validation and discovery rules for tools and the CLI.
+
+Each ``validate_*``/``require_*`` guard raises ``ValueError`` with an
+operator-facing message before anything is sent to N.I.N.A., so a bad plan
+never auto-connects a device on the way to failing. Discovery walks only
+visible directories and sorts shallowest-first so an archived copy of a plan
+never shadows the live one.
+"""
+
 import json
 import re
 from pathlib import Path
@@ -15,10 +24,23 @@ _INVALID_FILENAME_CHARS = re.compile(r'[\\/:*?"<>|\x00-\x1f\x7f]')
 
 
 def sanitize_filename(s: str) -> str:
+    """Replace characters forbidden in Windows filenames with ``-``.
+
+    Also strips ASCII control characters, so the result is safe to embed in
+    a frame path or archive folder name on any host.
+    """
     return _INVALID_FILENAME_CHARS.sub("-", s)
 
 
 async def validate_filters(plan: ObservationPlan, profile: ObservatoryProfile) -> None:
+    """Check every filter the plan references exists in the profile.
+
+    Covers light and flat frames plus the autofocus reference filter; a
+    profile with no filters can only pass a plan that names none.
+
+    Raises:
+        ValueError: The plan names a filter the profile does not define.
+    """
     profile_filter_names = {f.name for f in profile.filters}
     plan_filter_names: set[str] = set()
     for light in plan.light_frames:
@@ -39,6 +61,17 @@ async def validate_filters(plan: ObservationPlan, profile: ObservatoryProfile) -
 
 
 def validate_position_angle(plan: ObservationPlan, profile: ObservatoryProfile) -> None:
+    """Enforce the plan's rotator rules across all of its pointings.
+
+    ``position_angle_deg`` (degrees, 0–360 as written) must be set on every
+    pointing or none, and a nonzero value requires the profile to report a
+    rotator — 0 and ``None`` both mean "no rotation" and always validate and
+    emit the same way.
+
+    Raises:
+        ValueError: The plan mixes set/unset angles, or requests a rotation
+            the rig has no rotator to perform.
+    """
     set_idxs = [
         i
         for i, p in enumerate(plan.pointings, start=1)
@@ -74,6 +107,11 @@ def validate_position_angle(plan: ObservationPlan, profile: ObservatoryProfile) 
 
 
 def check_pointing_index(plan: ObservationPlan, pointing_index: int) -> None:
+    """Check a 1-based ``pointing_index`` names a pointing this plan has.
+
+    Raises:
+        ValueError: The index is below 1 or past the plan's last pointing.
+    """
     if pointing_index < 1 or pointing_index > len(plan.pointings):
         raise ValueError(
             f"pointing_index={pointing_index} out of range (plan has "
@@ -153,8 +191,11 @@ def require_light_capabilities(profile: ObservatoryProfile) -> None:
 
 
 def resolve_plan_dir(project_dir: str | None) -> Path:
-    """The directory plan files are discovered in, resolving relative paths
-    against the project directory."""
+    """The directory plan files are discovered in.
+
+    A relative path resolves against the project directory; ``None`` selects
+    the project directory itself. No I/O — the directory need not exist yet.
+    """
     plan_dir = Path(project_dir) if project_dir else config.PROJECT_DIR
     if not plan_dir.is_absolute():
         plan_dir = config.PROJECT_DIR / plan_dir
@@ -185,6 +226,17 @@ def plan_files(plan_dir: Path) -> list[Path]:
 
 
 async def load_plan(file_path: str) -> ObservationPlan:
+    """Load and validate a plan JSON file into an ``ObservationPlan``.
+
+    Relative paths resolve against the project directory. A plan whose mosaic
+    block was never expanded (zero pointings) is refused rather than read as
+    complete with nothing to shoot.
+
+    Raises:
+        OSError: The file cannot be read.
+        ValueError: The JSON is malformed, fails validation, or has no
+            pointings.
+    """
     path = Path(file_path)
     if not path.is_absolute():
         path = config.PROJECT_DIR / path

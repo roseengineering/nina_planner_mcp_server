@@ -1,9 +1,18 @@
+"""Filter-wheel device model: current position and motion state."""
+
 from __future__ import annotations
 
 from pydantic import BaseModel, model_validator
 
 
 class FilterWheelDevice(BaseModel):
+    """A connected filter wheel as ``/equipment/info`` reports it.
+
+    ``position`` is the 1-based slot the profile's ``FilterInfo.position``
+    values must match; N.I.N.A. nests it under ``selected_filter.id``, which
+    the validator lifts to the top level.
+    """
+
     connected: bool
     name: str
     description: str | None = None

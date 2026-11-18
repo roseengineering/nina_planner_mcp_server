@@ -1,3 +1,5 @@
+"""Per-frame image-history statistics model (HFR, star counts, ADU)."""
+
 from __future__ import annotations
 
 from datetime import datetime

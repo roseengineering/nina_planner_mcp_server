@@ -1,3 +1,5 @@
+"""Mosaic geometry: pane FOV, grid sizing, spherical offsets, pointings."""
+
 import math
 import unittest
 
@@ -20,7 +22,10 @@ TEST_OPTICS = OpticalTrainInfo(
 
 
 class PaneFovTest(unittest.TestCase):
+    """Per-pane field of view derived from focal length and sensor size."""
+
     def test_known_values(self):
+        """Known rig (600mm, 3000x2000 @3.76um) yields 64.63' x 43.09'."""
         # fov = 2 * atan(sensor_mm / (2 * focal_length)) in arcmins:
         # 11.28mm wide -> 64.63', 7.52mm high -> 43.09'.
         width, height = pane_fov_arcmins(TEST_OPTICS)
@@ -28,6 +33,7 @@ class PaneFovTest(unittest.TestCase):
         self.assertAlmostEqual(height, 43.09, places=2)
 
     def test_missing_optics_raise_naming_the_values(self):
+        """Missing optic values are each named rather than defaulted to guesses."""
         # No default: a mosaic sized against a guessed FOV would be sized
         # wrong, so every missing value is named instead.
         with self.assertRaises(ValueError) as ctx:
@@ -42,35 +48,44 @@ class PaneFovTest(unittest.TestCase):
             self.assertIn(name, msg)
 
     def test_zero_pixel_size_is_missing_not_zero_fov(self):
+        """A zero pixel size counts as missing, not as a zero-FOV pane."""
         optics = TEST_OPTICS.model_copy(update={"pixel_size_microns": 0})
         with self.assertRaisesRegex(ValueError, "pixel_size_microns"):
             pane_fov_arcmins(optics)
 
 
 class GridSizeTest(unittest.TestCase):
-    """cols/rows derived from coverage against a 60' x 40' pane, 20% overlap
-    (step 48' x 32')."""
+    """Grid cols/rows derived from coverage against a 60' x 40' pane.
+
+    Default overlap is 20%, i.e. a step of 48' x 32'.
+    """
 
     def coverage(self, width, height, overlap=20.0):
+        """Run grid_size for a fixed 60' x 40' pane at the given overlap."""
         return grid_size(width, height, 60.0, 40.0, overlap)
 
     def test_coverage_within_one_pane_is_1x1(self):
+        """Coverage up to one pane is a 1x1 grid, exact fit or well inside."""
         self.assertEqual(self.coverage(60.0, 40.0), (1, 1))  # exact fit
         self.assertEqual(self.coverage(12.0, 5.0), (1, 1))  # well inside
 
     def test_just_over_one_pane_is_two(self):
+        """A span a hair over one pane rounds up to 2x2."""
         self.assertEqual(self.coverage(60.1, 40.1), (2, 2))
 
     def test_exact_two_pane_span(self):
+        """Exactly two panes of span (108' x 72') stay a 2x2 grid."""
         # 60 + 48 = 108 across, 40 + 32 = 72 down: exactly two panes.
         self.assertEqual(self.coverage(108.0, 72.0), (2, 2))
 
     def test_over_cover_never_under_covers(self):
+        """A span needing 2.1 panes gets 3, never 2 with an edge gap."""
         # The safety direction: a span that needs 2.1 panes gets 3, never 2
         # with a gap at the edge.
         self.assertEqual(self.coverage(108.1, 72.1), (3, 3))
 
     def test_never_under_covers_any_coverage(self):
+        """Every coverage sweep is met or exceeded by the achieved grid span."""
         for coverage in [x / 2.0 for x in range(2, 600)]:
             cols, rows = self.coverage(coverage, coverage)
             pane_w, pane_h, step_w, step_h = 60.0, 40.0, 48.0, 32.0
@@ -81,53 +96,63 @@ class GridSizeTest(unittest.TestCase):
                 self.assertGreaterEqual(achieved_h, coverage)
 
     def test_axes_are_independent(self):
+        """Axes size independently: a wide, short span is 4x1, not 4x4."""
         # Wide but short: four columns, one row.
         self.assertEqual(self.coverage(200.0, 10.0), (4, 1))
 
     def test_small_overlap_still_covers(self):
+        """At 1% overlap a 121' span needs 3 columns, never 2 with a gap."""
         # Near-abutting panes (1% overlap -> step 59.4'/39.6'): coverage
         # 121' over a 60' pane needs 3 (60, 119.4, 178.8), never 2 with a
         # 1.6' gap.
         self.assertEqual(self.coverage(121.0, 41.0, overlap=1.0), (3, 2))
 
     def test_invalid_overlap_rejected(self):
+        """Overlap outside (0, 100) — including 0 and 100 — is rejected."""
         for overlap in (100.0, 150.0, -1.0, 0.0):
             with self.subTest(overlap=overlap):
                 with self.assertRaises(ValueError):
                     self.coverage(100.0, 100.0, overlap=overlap)
 
     def test_nonpositive_coverage_rejected(self):
+        """Non-positive coverage dimensions are rejected."""
         with self.assertRaises(ValueError):
             grid_size(0.0, 40.0, 60.0, 40.0, 20.0)
         with self.assertRaises(ValueError):
             grid_size(60.0, -5.0, 60.0, 40.0, 20.0)
 
     def test_nonpositive_pane_rejected(self):
+        """A zero-width pane dimension is rejected."""
         with self.assertRaises(ValueError):
             grid_size(60.0, 40.0, 0.0, 40.0, 20.0)
 
 
 class SphericalOffsetTest(unittest.TestCase):
-    """The SkyOffsetFrame rotation that replaced astropy's
-    spherical_offsets_by: exact at the equator, correct across the pole and
-    across RA 0/24."""
+    """The SkyOffsetFrame rotation replacing astropy's spherical_offsets_by.
+
+    Exact at the equator, correct across the pole and across RA 0/24.
+    """
 
     def test_due_east_at_equator(self):
+        """An east offset at the equator is pure RA, exactly 10 degrees."""
         ra, dec = _spherical_offset(0.0, 0.0, 10.0, 0.0)
         self.assertAlmostEqual(math.degrees(ra), 10.0, places=9)
         self.assertAlmostEqual(math.degrees(dec), 0.0, places=9)
 
     def test_due_north_at_equator(self):
+        """A north offset at the equator is pure dec, exactly 10 degrees."""
         ra, dec = _spherical_offset(0.0, 0.0, 0.0, 10.0)
         self.assertAlmostEqual(math.degrees(ra), 0.0, places=9)
         self.assertAlmostEqual(math.degrees(dec), 10.0, places=9)
 
     def test_zero_offset_is_the_center(self):
+        """A zero offset returns the center coordinates unchanged."""
         ra, dec = _spherical_offset(1.234, 0.5, 0.0, 0.0)
         self.assertAlmostEqual(ra, 1.234, places=12)
         self.assertAlmostEqual(dec, 0.5, places=12)
 
     def test_ra_wraps_across_midnight(self):
+        """East of 360 wraps to 1.5 degrees — never clamped or negative."""
         # 358.5 degrees east by 3 lands at 1.5 degrees — wrapped, not
         # clamped to [0, 360) minus an overshoot, and never negative.
         ra, dec = _spherical_offset(math.radians(358.5), 0.0, 3.0, 0.0)
@@ -136,6 +161,7 @@ class SphericalOffsetTest(unittest.TestCase):
         self.assertLess(ra, 2.0 * math.pi)
 
     def test_north_over_the_pole_lands_beyond_it(self):
+        """Crossing the pole lands 180 degrees of RA away, on the far side."""
         # From dec 89.9 due north by 1 degree crosses the pole and comes
         # down the far side at dec 89.1 (a meridian walk adds the offset to
         # dec exactly) with RA flipped 180 degrees.
@@ -144,6 +170,7 @@ class SphericalOffsetTest(unittest.TestCase):
         self.assertAlmostEqual(math.degrees(ra), 255.0, places=6)  # 17h
 
     def test_stays_valid_near_the_pole_for_large_offsets(self):
+        """Large offsets near the pole still yield in-range RA and dec."""
         # A big grid at a high declination must still produce parseable
         # coordinates: RA in range, dec in range.
         ra, dec = _spherical_offset(math.radians(350.0), math.radians(88.0), 40.0, 40.0)
@@ -153,7 +180,10 @@ class SphericalOffsetTest(unittest.TestCase):
 
 
 class PlanMosaicTest(unittest.TestCase):
+    """Grid pointings from plan_mosaic: labels, spacing, rotation, wrapping."""
+
     def test_single_pane_is_the_center(self):
+        """A 1x1 grid is the center point itself, labeled r1_c1."""
         [p] = plan_mosaic(10.5, 30.0, 1, 1, 1.0, 1.0, 0.0)
         self.assertAlmostEqual(p.ra_hours, 10.5, places=6)
         self.assertAlmostEqual(p.dec_deg, 30.0, places=6)
@@ -163,6 +193,7 @@ class PlanMosaicTest(unittest.TestCase):
         self.assertEqual(p.position_angle_deg, 0.0)
 
     def test_count_labels_and_metadata_row_major(self):
+        """Pointings come out row-major with rN_cN labels and row/column."""
         pointings = plan_mosaic(5.0, 10.0, 3, 2, 1.0, 1.0, 0.0)
         self.assertEqual(len(pointings), 6)
         self.assertEqual(
@@ -173,6 +204,7 @@ class PlanMosaicTest(unittest.TestCase):
         self.assertEqual([p.column for p in pointings], [1, 2, 3, 1, 2, 3])
 
     def test_grid_is_symmetric_about_center(self):
+        """At dec 0 the three columns land exactly 1 degree either side of center."""
         # At dec 0 an east offset is a pure RA offset, so the three columns
         # of a 3x3 land exactly 1 degree either side of the center, on all
         # three rows.
@@ -183,6 +215,7 @@ class PlanMosaicTest(unittest.TestCase):
                 self.assertAlmostEqual((p.ra_hours - 8.0) * 15.0, expected, places=4)
 
     def test_rows_step_south_and_spacing_is_the_step(self):
+        """Rows step south: consecutive row decs differ by exactly the step."""
         # Row 1 is the top (north); on the center column (no east offset)
         # a north/south offset shifts dec by exactly the offset, so the
         # row-to-row dec difference IS the step height.
@@ -196,6 +229,7 @@ class PlanMosaicTest(unittest.TestCase):
         self.assertAlmostEqual(r2.dec_deg - r3.dec_deg, 1.25, places=6)
 
     def test_columns_step_in_ra_at_the_equator(self):
+        """Columns step east in RA by the step, compared in degrees to 4 dp."""
         # Exact at dec 0, then rounded to 6 dp of hours for the file (~0.5"),
         # so compare at 4 dp of degrees.
         pointings = plan_mosaic(8.0, 0.0, 3, 1, 2.0, 1.0, 0.0)
@@ -204,6 +238,7 @@ class PlanMosaicTest(unittest.TestCase):
         self.assertAlmostEqual((ras[2] - ras[1]) * 15.0, 2.0, places=4)
 
     def test_position_angle_rotates_the_grid(self):
+        """At PA 90 the row axis rotates onto RA, separating panes in RA."""
         # At PA 90 the rows axis (north/south) rotates onto RA: with one
         # column the panes separate in RA instead of dec. Run at dec 0 so an
         # east offset is a pure RA offset (away from the equator a
@@ -217,12 +252,14 @@ class PlanMosaicTest(unittest.TestCase):
         self.assertTrue(all(p.position_angle_deg == 90.0 for p in pointings))
 
     def test_zero_pa_leaves_dec_symmetric(self):
+        """At PA 0 the two panes sit symmetrically about the center dec."""
         pointings = plan_mosaic(6.0, 20.0, 1, 2, 1.0, 0.5, 0.0)
         decs = sorted(p.dec_deg for p in pointings)
         self.assertAlmostEqual(decs[1] - 20.0, 20.0 - decs[0], places=6)
         self.assertTrue(all(p.position_angle_deg == 0.0 for p in pointings))
 
     def test_pane_centers_wrap_across_ra_zero(self):
+        """A grid straddling 0h wraps centers into [0, 24) instead of clamping."""
         # A grid straddling 0h: every center must stay in [0, 24) hours —
         # wrapped, not clamped or dropped.
         pointings = plan_mosaic(23.9, 0.0, 4, 1, 1.0, 1.0, 0.0)
@@ -231,12 +268,14 @@ class PlanMosaicTest(unittest.TestCase):
         self.assertEqual(sorted(ras), [0.0, 23.8, 23.866667, 23.933333])
 
     def test_zero_grid_rejected(self):
+        """A zero-row or zero-column grid is rejected."""
         with self.assertRaises(ValueError):
             plan_mosaic(5.0, 10.0, 0, 2, 1.0, 1.0, 0.0)
         with self.assertRaises(ValueError):
             plan_mosaic(5.0, 10.0, 2, 0, 1.0, 1.0, 0.0)
 
     def test_pole_adjacent_grid_stays_parseable(self):
+        """Pole-crossing panes still yield pointings valid in [0,24)/[-90,90]."""
         # Big steps at dec 89: some panes cross the pole. Every pointing
         # must still be a valid Pointing (ra in [0,24), dec in [-90,90]).
         pointings = plan_mosaic(2.0, 89.0, 3, 3, 5.0, 5.0, 0.0)

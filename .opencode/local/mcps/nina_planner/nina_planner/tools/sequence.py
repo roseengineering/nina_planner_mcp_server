@@ -1,3 +1,5 @@
+"""Sequence MCP tools: load, start, stop and inspect N.I.N.A. sequences."""
+
 from datetime import UTC, datetime
 from typing import Any, cast
 
@@ -42,7 +44,8 @@ async def load_sequence(
 
     Steps run in order as the sequence reaches them; a step carrying its own wait conditions (lights, flats) waits, or is skipped when its window has passed, without blocking the steps behind it, so list order controls timing. Entries already complete in `remaining` mode are skipped and reported; if every entry is complete, nothing is sent to N.I.N.A. Profile, equipment, and metadata are fetched once per call, one POST carries the whole sequence, and a validation failure — or a plan file that cannot be read — names the entry's 0-based position (`request[1]: ...`). A mount that cannot park — or no mount at all — is rejected as soon as a sequence would load: the End area could not park it, and the wait stages that park first would leave it unparked. An all-complete list sends nothing and so needs no park, and loads without that error. A `light` entry is additionally rejected when the profile reports no plate solver, no guider or no focuser (its payload emits slew/center, guiding and autofocus unconditionally), and a `light`/`flat` entry when N.I.N.A. has no `Sequencer+` plugin (its payload carries Sequencer+ nodes that would deserialize to nothing). See the server instructions for the full park/home/safety policy.
 
-    Fails if a sequence is already running — NINA's own error is reported; call stop_sequence() first."""
+    Fails if a sequence is already running — NINA's own error is reported; call stop_sequence() first.
+    """
     if not isinstance(request, list):
         raise ValueError(
             "`request` must be a list of SequenceRequest objects "
@@ -424,7 +427,8 @@ async def stop_sequence() -> str:
 async def start_sequence() -> str:
     """Starts the currently loaded NINA sequence immediately. Use this after load_sequence(), which only loads a sequence and never starts it.
 
-    It returns once the sequencer has ACTUALLY started — every node has left `CREATED` — mirroring stop_sequence()'s "returns once NINA reports the sequencer has stopped" contract. N.I.N.A. answers `GET /sequence/start` the moment it accepts the request, and a start can still abort in its first milliseconds (a start-time validation failure leaves every node `CREATED`, no RUN-STARTING and nothing logged), so the state is polled afterwards instead of trusting the 200. A sequence that starts and finishes before the first read (a fast park) is NOT a failure: N.I.N.A. leaves FINISHED nodes behind, and leaving `CREATED` is the signal. If nothing leaves `CREATED` within the budget the call raises with a status summary — check get_logs() and get_sequence_state() before retrying."""
+    It returns once the sequencer has ACTUALLY started — every node has left `CREATED` — mirroring stop_sequence()'s "returns once NINA reports the sequencer has stopped" contract. N.I.N.A. answers `GET /sequence/start` the moment it accepts the request, and a start can still abort in its first milliseconds (a start-time validation failure leaves every node `CREATED`, no RUN-STARTING and nothing logged), so the state is polled afterwards instead of trusting the 200. A sequence that starts and finishes before the first read (a fast park) is NOT a failure: N.I.N.A. leaves FINISHED nodes behind, and leaving `CREATED` is the signal. If nothing leaves `CREATED` within the budget the call raises with a status summary — check get_logs() and get_sequence_state() before retrying.
+    """
     await client.api_get(config.SEQUENCE_START_PATH)
     await client.wait_until_sequence_started()
     return "Sequence started."
@@ -436,7 +440,8 @@ async def get_sequence_state(detail: str = "summary") -> Any:
 
     detail:
       "summary" (default) - compact per-step view: `target_name`, `plan_id` / `pointing_index` (attribution), `frame_type`, `status`, running `phase`, `exposure` (seconds, gain, offset, binning, filter, `completed`/`total` frames — always the FIRST of the step's groups), `exposure_groups` (same shape, one entry per exposure group, since a batched step owes its frames across several), `horizon` (`current_altitude`, `min_altitude`, `expected_time`; null if unavailable), and `fired_events` (SendEvent messages whose node is FINISHED). `issues` lists errors on FAILED nodes only (per step and overall); the top-level `preflight_issues` lists validation notes such as "Focuser not connected" that do not mean failure. The top-level `parse_error` is true only when a non-empty payload carried no `Target Sequence_Container` — an area name this projection does not recognise — which is reported in `issues` rather than raised, and is distinct from an empty sequencer (`step_count: 0` with `parse_error: false`).
-      "raw" - full unfiltered /sequence/state payload (per-node `Issues`, expanded Smart Exposure children, no `$type`). Its node-level `Iterations` is the completed count; the loop total is in `Conditions[].Iterations`."""
+      "raw" - full unfiltered /sequence/state payload (per-node `Issues`, expanded Smart Exposure children, no `$type`). Its node-level `Iterations` is the completed count; the loop total is in `Conditions[].Iterations`.
+    """
     if detail not in ("summary", "raw"):
         raise ValueError('detail must be "summary" or "raw"')
     state = await client.api_get(config.SEQUENCE_STATE_PATH)

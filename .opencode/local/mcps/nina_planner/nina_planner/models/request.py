@@ -1,3 +1,5 @@
+"""The ``load_sequence`` request model: one action to run from a plan."""
+
 from typing import Literal
 
 from pydantic import Field, model_validator
@@ -34,8 +36,11 @@ VARIANTS: dict[str, frozenset[str]] = {
 
 
 class SequenceRequest(StrictModel):
-    """One entry of the `request` list `load_sequence` takes: what to load and
-    how."""
+    """One entry of the `request` list `load_sequence` takes: what to load.
+
+    The `action` says which of the plan's frames to shoot; the `variant`
+    says how (when for flats, how the light is cut for darks/bias).
+    """
 
     # extra="forbid" (StrictModel) refuses unknown keys outright: quality
     # thresholds live in the plan file's `quality` section, so a stray

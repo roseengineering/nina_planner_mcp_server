@@ -1,3 +1,9 @@
+"""Sequence node builders: containers, triggers and coordinate encodings.
+
+Nodes are plain JSON dicts shaped for N.I.N.A.'s JSON.NET deserializer —
+``$type``/``$id``/``Parent`` bookkeeping included (see :func:`_add_refs`).
+"""
+
 import os
 from typing import Any
 
@@ -128,8 +134,9 @@ def _azalt_coordinates(az: float, alt: float) -> dict[str, Any]:
 def _round_robin(
     exposures: list[LightExposurePlan], batch_size: int = 0
 ) -> list[tuple[int, float, str]]:
-    """Split light frames into interleaved batches: L5/R5 at ``batch_size=2``
-    → L2 R2 L2 R2 L1 R1.
+    """Split light frames into interleaved batches: L5/R5 at ``batch_size=2``.
+
+    Yields → L2 R2 L2 R2 L1 R1.
 
     Lights only — the one caller (``batch_size`` decides how many exposures
     of one filter are shot before moving to the next). Darks, bias and flats
@@ -191,6 +198,11 @@ def _container_base(
 
 
 def container_root(instructions: list[Any] | None = None) -> dict[str, Any]:
+    """The root sequence node: numbered, parent-linked and provider-deduped.
+
+    The only container that runs the JSON.NET fixups (``_add_refs``,
+    ``_fix_provider``), because it is the document N.I.N.A. deserializes.
+    """
     return _fix_provider(
         _add_refs(
             _container_base(
@@ -203,6 +215,7 @@ def container_root(instructions: list[Any] | None = None) -> dict[str, Any]:
 
 
 def container_start(instructions: list[Any] | None = None) -> dict[str, Any]:
+    """Start area: setup instructions that run once, before the targets."""
     return _container_base(
         ctype="NINA.Sequencer.Container.StartAreaContainer, NINA.Sequencer",
         name="Start Sequence",
@@ -211,6 +224,7 @@ def container_start(instructions: list[Any] | None = None) -> dict[str, Any]:
 
 
 def container_target(instructions: list[Any] | None = None) -> dict[str, Any]:
+    """Target area: the step list N.I.N.A. works through (and reports status on)."""
     return _container_base(
         ctype="NINA.Sequencer.Container.TargetAreaContainer, NINA.Sequencer",
         name="Target Sequence",
@@ -219,6 +233,7 @@ def container_target(instructions: list[Any] | None = None) -> dict[str, Any]:
 
 
 def container_end(instructions: list[Any] | None = None) -> dict[str, Any]:
+    """End area: teardown (park, warm) that runs whenever the targets exhaust."""
     return _container_base(
         ctype="NINA.Sequencer.Container.EndAreaContainer, NINA.Sequencer",
         name="End Sequence",
@@ -232,6 +247,7 @@ def container_sequential(
     triggers: list[Any] | None = None,
     instructions: list[Any] | None = None,
 ) -> dict[str, Any]:
+    """Plain sequential container holding conditions, triggers and items."""
     return _container_base(
         ctype="NINA.Sequencer.Container.SequentialContainer, NINA.Sequencer",
         name=name,
@@ -251,6 +267,11 @@ def container_deepsky(
     conditions: list[Any] | None = None,
     instructions: list[Any] | None = None,
 ) -> dict[str, Any]:
+    """Target container carrying J2000 coordinates (RA hours, dec degrees).
+
+    ``posang`` is the rotator position angle in degrees (``None`` = leave the
+    rotator alone); ``ra``/``dec`` are the target's coordinates.
+    """
     return _container_base(
         ctype="NINA.Sequencer.Container.DeepSkyObjectContainer, NINA.Sequencer",
         name=name,
@@ -274,30 +295,35 @@ def container_deepsky(
 
 
 def trigger_meridian_flip() -> dict[str, Any]:
+    """Trigger that hands the mount over to N.I.N.A.'s meridian-flip handling."""
     return _child(
         "NINA.Sequencer.Trigger.MeridianFlip.MeridianFlipTrigger, NINA.Sequencer"
     )
 
 
 def trigger_autofocus_after_filter_change() -> dict[str, Any]:
+    """Trigger that refocuses whenever the filter changes."""
     return _child(
         "NINA.Sequencer.Trigger.Autofocus.AutofocusAfterFilterChange, NINA.Sequencer"
     )
 
 
 def trigger_autofocus_after_temperature_change(degrees: float) -> dict[str, Any]:
+    """Trigger that refocuses after the focuser temperature drifts ``degrees``."""
     return _child(
         "NINA.Sequencer.Trigger.Autofocus.AutofocusAfterTemperatureChangeTrigger, NINA.Sequencer"
     ) | {"Amount": degrees}
 
 
 def trigger_autofocus_after_exposures(exposures: int) -> dict[str, Any]:
+    """Trigger that refocuses every ``exposures`` frames."""
     return _child(
         "NINA.Sequencer.Trigger.Autofocus.AutofocusAfterExposures, NINA.Sequencer"
     ) | {"AfterExposures": exposures}
 
 
 def trigger_autofocus_after_hfr_increase(samples: int, amount: float) -> dict[str, Any]:
+    """Trigger that refocuses when HFR rises ``amount``% over ``samples`` frames."""
     return _child(
         "NINA.Sequencer.Trigger.Autofocus.AutofocusAfterHFRIncreaseTrigger, NINA.Sequencer"
     ) | {"SampleSize": samples, "Amount": amount}
@@ -306,6 +332,7 @@ def trigger_autofocus_after_hfr_increase(samples: int, amount: float) -> dict[st
 def trigger_center_after_drift(
     after_exposures: int, distance_arcmin: float
 ) -> dict[str, Any]:
+    """Trigger that re-centers after drift: ``after_exposures`` frames, arcminutes."""
     return _child(
         "NINA.Sequencer.Trigger.Platesolving.CenterAfterDriftTrigger, NINA.Sequencer"
     ) | {
@@ -315,4 +342,5 @@ def trigger_center_after_drift(
 
 
 def trigger_restore_guiding() -> dict[str, Any]:
+    """Trigger that resumes guiding after a meridian flip disturbed it."""
     return _child("NINA.Sequencer.Trigger.Guider.RestoreGuiding, NINA.Sequencer")

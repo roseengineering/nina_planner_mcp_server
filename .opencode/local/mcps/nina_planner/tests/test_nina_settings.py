@@ -25,13 +25,17 @@ def _call(env: dict[str, str]) -> dict:
 
 
 class NinaSettingsTest(unittest.TestCase):
+    """Readiness and missing-key reporting for get_nina_settings."""
+
     def test_all_unset_reports_everything_missing(self):
+        """With nothing set, every key is missing and nothing is ready."""
         result = _call({})
         self.assertEqual(result["settings"], {})
         self.assertEqual(result["missing"], list(_NAMES))
         self.assertFalse(result["ready"])
 
     def test_archive_trio_set_is_ready_even_without_endpoint_and_mount(self):
+        """The archive trio alone is ready; endpoint and mount only inform."""
         # NINA_ENDPOINT/NINA_DRIVE_MOUNT have defaults, so their absence is
         # diagnostic context only — it must never block the archive flow.
         result = _call(
@@ -52,6 +56,7 @@ class NinaSettingsTest(unittest.TestCase):
         )
 
     def test_all_five_set_reports_nothing_missing(self):
+        """All five settings set reports nothing missing and ready."""
         result = _call(
             {
                 "NINA_ARCHIVE_DEST": "/tmp/archive",
@@ -67,6 +72,7 @@ class NinaSettingsTest(unittest.TestCase):
         self.assertEqual(result["settings"]["NINA_DRIVE_MOUNT"], "/Volumes/nina")
 
     def test_blank_verify_command_counts_as_missing(self):
+        """A blank verify command counts as missing and blocks ready."""
         result = _call(
             {
                 "NINA_ARCHIVE_DEST": "/tmp/x",
@@ -81,6 +87,7 @@ class NinaSettingsTest(unittest.TestCase):
         self.assertFalse(result["ready"])
 
     def test_blank_drive_mount_counts_as_missing_but_stays_ready(self):
+        """A blank drive mount is missing but does not block ready."""
         result = _call(
             {
                 "NINA_ARCHIVE_DEST": "/tmp/x",

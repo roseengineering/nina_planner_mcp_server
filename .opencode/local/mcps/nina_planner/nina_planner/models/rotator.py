@@ -1,3 +1,5 @@
+"""Rotator device model: mechanical and reported position in degrees."""
+
 from __future__ import annotations
 
 from pydantic import BaseModel, model_validator
@@ -6,6 +8,12 @@ from ..nina_utils import ascom_float
 
 
 class RotatorDevice(BaseModel):
+    """A connected rotator as ``/equipment/info`` reports it.
+
+    ``position_deg`` and ``mechanical_position_deg`` are degrees; a driver
+    reporting only a ``sync_state`` string is mapped onto ``is_synced``.
+    """
+
     connected: bool
     name: str
     description: str | None = None

@@ -1,3 +1,5 @@
+"""Aggregate model of every device N.I.N.A. reports for the rig."""
+
 from __future__ import annotations
 
 from pydantic import BaseModel
@@ -16,6 +18,13 @@ from .weather import Weather
 
 
 class ObservatoryEquipment(BaseModel):
+    """The rig's devices as returned by ``GET /equipment/info``.
+
+    Every device is ``None`` when the profile does not include it (or it is
+    not connected), so capability guards read ``equipment.mount is None``
+    rather than checking connection state twice.
+    """
+
     mount: MountDevice | None = None
     camera: CameraDevice | None = None
     focuser: FocuserDevice | None = None

@@ -1,3 +1,9 @@
+"""Endpoint, API paths and filesystem roots, all resolved from the environment.
+
+Read once at import time: ``NINA_ENDPOINT`` selects the N.I.N.A. host, and
+``PROJECT_DIR`` (the process cwd) anchors plan JSONs and PROGRESS.md.
+"""
+
 import os
 from pathlib import Path
 

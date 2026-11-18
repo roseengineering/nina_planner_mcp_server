@@ -1,3 +1,5 @@
+"""Plan MCP tools: write, read, audit and report observation-plan progress."""
+
 import json
 import os
 import re
@@ -39,7 +41,8 @@ async def get_frame_stats(image_type: str | None = None) -> dict[str, Any]:
 
     `image_type` (optional, e.g. "light", "dark") is passed through as the API's imageType filter to assert the current frame's type; when the current frame is not of that type the tool reports `count: 0` rather than erroring. This tool is read-only and takes no action.
 
-    Returns a dict: `count` (1 when a frame is present, else 0), `image_type` (the frame's type, or the requested filter when empty), `frame` (the full statistics record as snake_case fields, or null), and `note` (present only when count is 0)."""
+    Returns a dict: `count` (1 when a frame is present, else 0), `image_type` (the frame's type, or the requested filter when empty), `frame` (the full statistics record as snake_case fields, or null), and `note` (present only when count is 0).
+    """
     path = "/image-history"
     if image_type:
         path += f"?imageType={image_type.upper()}"
@@ -162,7 +165,8 @@ def _expand_mosaic(
 async def write_plan_file(plan: ObservationPlan) -> str:
     """Validates and writes an observation plan to a JSON file for later use by load_sequence. The plan defines one or more target pointings (RA/Dec/PA, optional label), acquisition intent, light and calibration frames, batching, cooling, autofocus, guiding, observing constraints, and the optional light-frame `quality` thresholds that load_sequence and get_plan_progress apply when counting its frames. This tool only creates the plan file; it does not load or start a sequence.
 
-    Mosaics: pass a `mosaic` block INSTEAD of `pointings` — give `center_ra_hours`/`center_dec_deg`, the sky footprint to cover as `coverage_width_arcmins`/`coverage_height_arcmins` (measured in the grid frame before `pa_deg` rotation; round up to the target's full extent), plus optional `overlap_pct` (default 20) and `pa_deg` (default 0). write_plan_file then reads the pane FOV from the active profile's optics (loud error if focal length, pixel size or camera dimensions are missing — no guessed FOV), derives cols x rows per axis with ceil so the grid ALWAYS covers at least the requested footprint (it may over-cover by up to one pane, never under-cover), expands it into pointings labeled `r{row}_c{col}`, and stamps the derived `cols`/`rows`/`pane_fov_arcmins` back onto the mosaic block as provenance. The written file holds both the block and the expanded pointings; `pointings` is the authority and nothing re-derives on read. A coverage that fits in one pane yields a 1x1 plan that behaves like an ordinary single-pointing plan. The response reports the derived grid, pane FOV, step and achieved coverage. With no rotator every pane's PA must be 0 (refused loudly otherwise)."""
+    Mosaics: pass a `mosaic` block INSTEAD of `pointings` — give `center_ra_hours`/`center_dec_deg`, the sky footprint to cover as `coverage_width_arcmins`/`coverage_height_arcmins` (measured in the grid frame before `pa_deg` rotation; round up to the target's full extent), plus optional `overlap_pct` (default 20) and `pa_deg` (default 0). write_plan_file then reads the pane FOV from the active profile's optics (loud error if focal length, pixel size or camera dimensions are missing — no guessed FOV), derives cols x rows per axis with ceil so the grid ALWAYS covers at least the requested footprint (it may over-cover by up to one pane, never under-cover), expands it into pointings labeled `r{row}_c{col}`, and stamps the derived `cols`/`rows`/`pane_fov_arcmins` back onto the mosaic block as provenance. The written file holds both the block and the expanded pointings; `pointings` is the authority and nothing re-derives on read. A coverage that fits in one pane yields a 1x1 plan that behaves like an ordinary single-pointing plan. The response reports the derived grid, pane FOV, step and achieved coverage. With no rotator every pane's PA must be 0 (refused loudly otherwise).
+    """
     profile = await equipment_tools.get_site_profile()
     grid_note = ""
     if plan.mosaic is not None and not plan.pointings:
@@ -202,7 +206,8 @@ async def get_plan_progress(file_path: str) -> dict[str, Any]:
 
     Light-frame quality thresholds come from the plan file's `quality` section (`max_hfr`, `max_hfr_st_dev`, `min_detected_stars`, `max_guiding_rms_arcsec`), never from this call — the response's `quality` field echoes what was applied, so you can see the active rules without opening the file. A light frame failing an enabled threshold, or missing the metric it needs (NINA writes 0 for unmeasured values), is not counted; with no thresholds set every attributed frame counts, as before. The same section drives load_sequence's remaining-mode count, so the two can never disagree. `audit_plans` deliberately ignores it — it reports what is on disk, not what qualifies.
 
-    Returns `plan_id`, `target`, `quality`, `pointing_count`, `complete`, `expired_with_deficit`, `overshot`, `warning`, and `pointings[]` — per pane `pointing_index`, `label`, `plan_id`, `complete`, `status` (`complete` / `incomplete` / `expired_with_deficit`) and `frame_types` — so panes can be acquired sequentially. `complete` is decided from acquired counts and window state, NEVER from `remaining_count == 0` alone: a closed window zeroes remaining under a real deficit, and that case is `expired_with_deficit`, whose fix is a raised window or a new plan, never more shooting. `overshot` (with the light rows' `surplus_count`) marks frames beyond `total_count` — acquired counts are cumulative across runs while the plan total is fixed, so a truncated `mode="full"` re-shoot still reads `complete: true`; treat that as "these frames exist", not "the last run succeeded", and verify the latest run with audit_plans. Read-only."""
+    Returns `plan_id`, `target`, `quality`, `pointing_count`, `complete`, `expired_with_deficit`, `overshot`, `warning`, and `pointings[]` — per pane `pointing_index`, `label`, `plan_id`, `complete`, `status` (`complete` / `incomplete` / `expired_with_deficit`) and `frame_types` — so panes can be acquired sequentially. `complete` is decided from acquired counts and window state, NEVER from `remaining_count == 0` alone: a closed window zeroes remaining under a real deficit, and that case is `expired_with_deficit`, whose fix is a raised window or a new plan, never more shooting. `overshot` (with the light rows' `surplus_count`) marks frames beyond `total_count` — acquired counts are cumulative across runs while the plan total is fixed, so a truncated `mode="full"` re-shoot still reads `complete: true`; treat that as "these frames exist", not "the last run succeeded", and verify the latest run with audit_plans. Read-only.
+    """
     plan = await plan_utils.load_plan(file_path)
     rows = await metadata.read_metadata()
     now = datetime.now(UTC).replace(microsecond=0)
@@ -371,9 +376,11 @@ def _probe_plan_id(path: Path) -> str | None:
 
 
 def _plan_ids_in_path(path: str) -> list[str]:
-    """Conservative plan-id candidates in a recorded path, in path order
-    (see regex) — the directory's token comes first, filename junk never
-    survives the letter/dash/length filter."""
+    """Conservative plan-id candidates in a recorded path, in path order.
+
+    See the regex: the directory's token comes first, filename junk never
+    survives the letter/dash/length filter.
+    """
     out: list[str] = []
     for match in _PLAN_ID_CANDIDATE_RE.finditer(path):
         token = match.group(1)
@@ -1169,7 +1176,8 @@ async def list_plans(project_dir: str | None = None) -> dict[str, Any]:
     ``plan_id``, ``target``, ``intent``, ``pointing_count``, and ``written``
     (file mtime, ISO-8601 local with offset). Unparseable JSON files are
     reported per file under ``errors`` instead of failing the call.
-    Read-only."""
+    Read-only.
+    """
     plan_dir = plan_utils.resolve_plan_dir(project_dir)
     plans, errors = await _load_project_plans(plan_dir)
     entries = []

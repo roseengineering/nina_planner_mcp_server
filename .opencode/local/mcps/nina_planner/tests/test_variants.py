@@ -1,3 +1,5 @@
+"""Tests for dark-variant gating: reasons and validate_dark_variant."""
+
 import unittest
 
 from nina_planner.models.camera import CameraDevice
@@ -68,11 +70,15 @@ def _rig(*, camera=True, shutter=True, cover=True):
 
 
 class DarkVariantReasonsTest(unittest.TestCase):
+    """Per-capability reasons a dark variant is unavailable on a rig."""
+
     def test_a_capable_rig_reports_no_reasons(self):
+        """A rig with wheel, cover and shutter reports no blockers."""
         reasons = dark_variant_reasons(_rig(), _profile(has_flat_device=True))
         self.assertEqual(reasons, {})
 
     def test_wheel_needs_a_dark_slot_and_names_the_filters(self):
+        """Wheel darks need a 'Dark' slot, and the reason names the filters."""
         reasons = dark_variant_reasons(
             _rig(), _profile(filters=("L", "LP"), has_flat_device=True)
         )
@@ -83,6 +89,7 @@ class DarkVariantReasonsTest(unittest.TestCase):
         self.assertNotIn("shutter", reasons)
 
     def test_wheel_needs_a_configured_filter_wheel(self):
+        """Without a configured filter wheel the wheel variant is blocked."""
         reasons = dark_variant_reasons(
             _rig(), _profile(has_filter_wheel=False, has_flat_device=True)
         )
@@ -90,13 +97,17 @@ class DarkVariantReasonsTest(unittest.TestCase):
         self.assertIn("no filter wheel", reasons["wheel"])
 
     def test_cover_needs_a_configured_flat_device(self):
+        """Without a configured flat device the cover variant is blocked."""
         reasons = dark_variant_reasons(_rig(), _profile())
         self.assertIn("cover", reasons)
         self.assertIn("no flat device configured", reasons["cover"])
 
     def test_cover_rejects_a_profile_without_a_payload(self):
-        """Profile says a flat device exists but NINA reports none: unread
-        capability, so fail closed rather than emit CloseCover anyway."""
+        """Profile says a flat device exists but NINA reports none.
+
+        Unread capability, so fail closed rather than emit CloseCover
+        anyway.
+        """
         reasons = dark_variant_reasons(
             _rig(cover=False), _profile(has_flat_device=True)
         )
@@ -104,6 +115,7 @@ class DarkVariantReasonsTest(unittest.TestCase):
         self.assertIn("reports none", reasons["cover"])
 
     def test_cover_rejects_an_unsupported_or_unusable_panel(self):
+        """Unsupported, NotPresent, Error or disconnected panels are blocked."""
         cases = [
             (_cover(supports_open_close=False), "SupportsOpenClose=false"),
             (_cover(cover_state="NotPresent"), "NotPresent"),
@@ -120,8 +132,10 @@ class DarkVariantReasonsTest(unittest.TestCase):
                 self.assertIn(expected, reasons["cover"])
 
     def test_cover_tolerates_a_panel_that_is_open_or_unknown(self):
-        """Open/Unknown/Closed are all states a working cover passes through;
-        only NotPresent and Error mean no usable cover."""
+        """A working cover passes through Open/Unknown/Closed states.
+
+        Only NotPresent and Error mean no usable cover.
+        """
         for state in ("Open", "Unknown", "Closed", "NeitherOpenNorClosed"):
             with self.subTest(state=state):
                 reasons = dark_variant_reasons(
@@ -133,6 +147,7 @@ class DarkVariantReasonsTest(unittest.TestCase):
                 self.assertNotIn("cover", reasons)
 
     def test_shutter_needs_the_camera_to_report_one(self):
+        """Shutter darks need HasShutter=true from a reporting camera."""
         cases = [
             (_camera(has_shutter=False), "HasShutter=false"),
             (_camera(has_shutter=None), "does not report HasShutter"),
@@ -146,13 +161,17 @@ class DarkVariantReasonsTest(unittest.TestCase):
                 self.assertIn(expected, reasons["shutter"])
 
     def test_shutter_rejects_a_missing_camera(self):
+        """No camera at all blocks the shutter variant."""
         reasons = dark_variant_reasons(ObservatoryEquipment(), _profile())
         self.assertIn("shutter", reasons)
         self.assertIn("no camera", reasons["shutter"])
 
 
 class ValidateDarkVariantTest(unittest.TestCase):
+    """validate_dark_variant acceptance and refusal messages."""
+
     def test_every_variant_loads_on_a_capable_rig(self):
+        """Every declared variant validates on a fully capable rig."""
         equipment = _rig()
         profile = _profile(has_flat_device=True)
         for variant in DARK_VARIANTS:
@@ -160,13 +179,17 @@ class ValidateDarkVariantTest(unittest.TestCase):
                 validate_dark_variant(variant, equipment, profile)
 
     def test_the_default_is_the_wheel_variant(self):
-        """`wheel` leads the vocabulary, which is what load_sequence falls
-        back to when a request omits `variant`."""
+        """`wheel` leads the variant vocabulary.
+
+        load_sequence falls back to it when a request omits `variant`.
+        """
         self.assertEqual(DARK_VARIANTS[0], "wheel")
 
     def test_a_failed_check_names_the_reason_and_supported_variants(self):
-        """Configured in the profile but absent from N.I.N.A.'s payload is
-        the unread case: reject it and say what would have worked instead."""
+        """A variant configured but unread in N.I.N.A.'s payload is rejected.
+
+        The error names the reason and lists what would have worked.
+        """
         with self.assertRaises(ValueError) as ctx:
             validate_dark_variant(
                 "cover", _rig(cover=False), _profile(has_flat_device=True)
@@ -177,6 +200,7 @@ class ValidateDarkVariantTest(unittest.TestCase):
         self.assertIn("Supported here: wheel, shutter", message)
 
     def test_a_rig_with_nothing_usable_says_so(self):
+        """A rig with nothing usable says "Supported here: none"."""
         with self.assertRaises(ValueError) as ctx:
             validate_dark_variant(
                 "wheel", _rig(camera=False, cover=False), _profile(filters=())
@@ -185,6 +209,7 @@ class ValidateDarkVariantTest(unittest.TestCase):
         self.assertIn("Supported here: none", message)
 
     def test_an_unknown_variant_is_still_rejected(self):
+        """An unknown variant is rejected; the message lists the known ones."""
         with self.assertRaises(ValueError) as ctx:
             validate_dark_variant("lens", _rig(), _profile())
         message = str(ctx.exception)

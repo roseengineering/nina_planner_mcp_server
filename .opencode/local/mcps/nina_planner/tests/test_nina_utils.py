@@ -1,3 +1,5 @@
+"""Tests for the ASCOM converters and local-time display in nina_utils."""
+
 import unittest
 from datetime import UTC, datetime
 
@@ -59,44 +61,61 @@ def _assert_table(
 
 
 class AscomFloatTest(unittest.TestCase):
+    """ascom_float against the shared sentinel/coercion table."""
+
     def test_table(self):
+        """Every shared case converts to its expected ascom_float value."""
         _assert_table(self, ascom_float, expected_as_float=True)
 
 
 class AscomIntTest(unittest.TestCase):
+    """ascom_int against the shared table plus truncation-only cases."""
+
     def test_table(self):
+        """Every case converts, with fractions truncated toward zero."""
         _assert_table(self, ascom_int, expected_as_float=False, extra=_INT_ONLY_CASES)
 
 
 class AscomDatetimeTest(unittest.TestCase):
+    """ascom_datetime sentinel handling and ISO string parsing."""
+
     def test_none(self):
+        """None input stays None."""
         self.assertIsNone(ascom_datetime(None))
 
     def test_string_nan_is_sentinel(self):
+        """A "nan" string is a sentinel, not a date."""
         self.assertIsNone(ascom_datetime("nan"))
 
     def test_string_empty_is_sentinel(self):
+        """An empty string is a sentinel, not a date."""
         self.assertIsNone(ascom_datetime(""))
 
     def test_string_datetime_min_is_sentinel(self):
+        """ASCOM DateTime.MinValue's bare form is a sentinel."""
         self.assertIsNone(ascom_datetime("0001-01-01T00:00:00"))
 
     def test_string_datetime_min_with_ticks_is_sentinel(self):
+        """DateTime.MinValue with trailing ticks is a sentinel."""
         self.assertIsNone(ascom_datetime("0001-01-01T00:00:00.0000000"))
 
     def test_string_datetime_min_with_z_is_sentinel(self):
+        """DateTime.MinValue with a Z suffix is a sentinel."""
         self.assertIsNone(ascom_datetime("0001-01-01T00:00:00Z"))
 
     def test_string_datetime_min_with_offset_is_sentinel(self):
+        """DateTime.MinValue with a UTC offset is a sentinel."""
         self.assertIsNone(ascom_datetime("0001-01-01T00:00:00+00:00"))
 
     def test_string_real_iso_parses(self):
+        """A real ISO timestamp parses to the matching datetime."""
         self.assertEqual(
             ascom_datetime("2026-09-26T12:00:00"),
             datetime(2026, 9, 26, 12, 0, 0),
         )
 
     def test_string_min_with_nonzero_microseconds_not_sentinel(self):
+        """Min value with nonzero microseconds is a real datetime."""
         self.assertEqual(
             ascom_datetime("0001-01-01T00:00:00.123"),
             datetime(1, 1, 1, 0, 0, 0, 123000),
@@ -104,18 +123,21 @@ class AscomDatetimeTest(unittest.TestCase):
 
 
 class AscomFloatFallbackTest(unittest.TestCase):
-    """Defensive fallback paths in ascom_float/ascom_int for non-standard
-    types (Decimal, custom classes, etc.) that aren't str/float/int/bool.
-    Coercion goes through str() then float() / int(float()).
+    """Defensive fallbacks in ascom_float/ascom_int for exotic input types.
+
+    Non-standard types (Decimal, custom classes, etc.) that aren't
+    str/float/int/bool coerce through str() then float() / int(float()).
     """
 
     def test_ascom_float_fallback_for_decimal(self):
+        """Decimal values coerce through the str() fallback path."""
         from decimal import Decimal
 
         self.assertEqual(ascom_float(Decimal("3.14")), 3.14)
         self.assertEqual(ascom_float(Decimal("-1.5")), -1.5)
 
     def test_ascom_int_fallback_for_decimal(self):
+        """Decimal values coerce to int, truncating the fraction."""
         from decimal import Decimal
 
         self.assertEqual(ascom_int(Decimal("42")), 42)
@@ -123,15 +145,19 @@ class AscomFloatFallbackTest(unittest.TestCase):
 
 
 class AscomDatetimeFallbackTest(unittest.TestCase):
-    """Defensive fallback paths in ascom_datetime for unparseable strings
-    and non-string/non-None inputs."""
+    """Defensive fallback paths in ascom_datetime for bad inputs.
+
+    Unparseable strings and non-string/non-None inputs return None.
+    """
 
     def test_invalid_string_returns_none(self):
+        """Unparseable date strings return None instead of raising."""
         self.assertIsNone(ascom_datetime("not a date"))
         self.assertIsNone(ascom_datetime("2026-13-45"))  # impossible month/day
         self.assertIsNone(ascom_datetime("garbage"))
 
     def test_non_string_non_none_returns_none(self):
+        """Non-string, non-None inputs return None instead of raising."""
         self.assertIsNone(ascom_datetime(12345))  # int
         self.assertIsNone(ascom_datetime(1.5))  # float
         self.assertIsNone(ascom_datetime(["2026-09-22"]))  # list
@@ -139,7 +165,10 @@ class AscomDatetimeFallbackTest(unittest.TestCase):
 
 
 class ToLocalDisplayTest(unittest.TestCase):
+    """to_local_display rendering of naive and aware datetimes."""
+
     def test_naive_datetime_is_taken_as_already_local(self):
+        """A naive wall clock renders verbatim as already-local time."""
         from nina_planner.nina_utils import to_local_display
 
         # No conversion: a naive wall clock is rendered verbatim (with its
@@ -149,6 +178,7 @@ class ToLocalDisplayTest(unittest.TestCase):
         )
 
     def test_aware_datetime_is_rendered_in_the_host_zone(self):
+        """An aware datetime renders in the host's local zone."""
         from nina_planner.nina_utils import to_local_display
 
         rendered = to_local_display(datetime(2026, 9, 22, 21, 0, 0, tzinfo=UTC))

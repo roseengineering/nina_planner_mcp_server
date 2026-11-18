@@ -90,6 +90,11 @@ def insert_file_contents_and_links(
 
 
 def main() -> int:
+    """Rewrite README.md's named code blocks from the files on disk; always 0.
+
+    Raises:
+        OSError: README.md cannot be read or written.
+    """
     raw_markdown = README_PATH.read_text(encoding="utf-8")
     updated_markdown = insert_file_contents_and_links(raw_markdown)
     README_PATH.write_text(updated_markdown, encoding="utf-8")

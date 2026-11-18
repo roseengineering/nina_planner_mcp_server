@@ -1,3 +1,5 @@
+"""Weather device model with explicit physical units on every reading."""
+
 from __future__ import annotations
 
 from pydantic import BaseModel, model_validator
@@ -6,6 +8,13 @@ from ..nina_utils import ascom_float
 
 
 class Weather(BaseModel):
+    """The site's weather station as ``/equipment/info`` reports it.
+
+    Field suffixes carry the units: Celsius, percent, hectopascals, metres
+    per second, degrees (wind direction), and mag/arcsec² for SQM. Missing
+    readings are ``None``, never ``0``.
+    """
+
     connected: bool
     name: str
     description: str | None = None

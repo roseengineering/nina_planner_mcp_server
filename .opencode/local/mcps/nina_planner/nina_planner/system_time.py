@@ -1,3 +1,11 @@
+"""Windows-side helpers for starting, stopping and locating N.I.N.A.
+
+The MCP server may run on macOS, WSL or Windows while N.I.N.A. itself runs
+on a Windows host, so these functions build Windows argv (``taskkill``,
+``schtasks``) and paths without importing Windows-only modules. Commands
+returned here are executed by the caller, never run at import time.
+"""
+
 from __future__ import annotations
 
 import os

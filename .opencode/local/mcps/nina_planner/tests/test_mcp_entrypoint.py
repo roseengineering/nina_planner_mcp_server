@@ -46,7 +46,11 @@ HANDSHAKE_TIMEOUT_S = 60
 
 
 class EntryPointHandshakeTest(unittest.IsolatedAsyncioTestCase):
+    """The stdio handshake: spawn `python -m nina_planner` and speak MCP."""
+
     async def test_python_m_nina_planner_speaks_mcp(self):
+        """The spawned server speaks MCP and lists every expected tool."""
+
         async def handshake():
             params = StdioServerParameters(
                 command=sys.executable, args=["-m", "nina_planner"]
@@ -85,11 +89,13 @@ class EntryPointWiringTest(unittest.TestCase):
         return run
 
     def test_nina_planner_main_runs_the_server(self):
+        """`python -m nina_planner` reaches mcp.run() from its __main__ guard."""
         self._run_module("nina_planner.__main__")
 
     def test_server_module_runs_the_server_when_executed_directly(self):
         # `python -m nina_planner.server` — the same guard server.py keeps
         # for running the file as a script.
+        """`python -m nina_planner.server` reaches the same server loop."""
         self._run_module("nina_planner.server")
 
 

@@ -1,3 +1,5 @@
+"""Windows launch helpers from system_time plus the N.I.N.A. start/stop lifecycle."""
+
 import asyncio
 import os
 import tempfile
@@ -19,13 +21,17 @@ from nina_planner.system_time import (
 
 
 class CommandBuildersTest(unittest.TestCase):
+    """Builders for taskkill/schtasks argv lists and the .cmd launcher script."""
+
     def test_kill_nina_command(self):
+        """The kill command is taskkill /F /IM NINA.exe as an argv list."""
         self.assertEqual(
             kill_nina_command(),
             ["taskkill.exe", "/F", "/IM", "NINA.exe"],
         )
 
     def test_schtasks_create_command(self):
+        """Create registers NINAPlanner-Launch ONCE at 00:00, interactive, forced."""
         cmd = schtasks_create_command(r"C:\temp\launch_nina.cmd")
         self.assertEqual(
             cmd,
@@ -46,18 +52,21 @@ class CommandBuildersTest(unittest.TestCase):
         )
 
     def test_schtasks_run_command(self):
+        """The run argv asks schtasks to start the NINAPlanner-Launch task."""
         self.assertEqual(
             schtasks_run_command(),
             ["schtasks.exe", "/Run", "/TN", "NINAPlanner-Launch"],
         )
 
     def test_schtasks_delete_command(self):
+        """The delete argv removes NINAPlanner-Launch without prompting (/F)."""
         self.assertEqual(
             schtasks_delete_command(),
             ["schtasks.exe", "/Delete", "/TN", "NINAPlanner-Launch", "/F"],
         )
 
     def test_write_nina_launcher(self):
+        """Under WSL the launcher is written inside the NINA_DRIVE_MOUNT temp dir."""
         with tempfile.TemporaryDirectory() as tmp:
             with (
                 patch("nina_planner.system_time.sys.platform", "linux"),
@@ -92,6 +101,7 @@ class CommandBuildersTest(unittest.TestCase):
                 self.assertIn(r'start "" "C:\Test\NINA.exe"', content)
 
     def test_write_nina_launcher_escapes_percent_signs(self):
+        """A literal percent in the path is doubled so batch cannot expand it."""
         # %VAR% expands even inside quotes in a .cmd file, so a literal
         # percent must be doubled (batch's escape) or NINA_EXE_PATH could
         # launch whatever the variable names.
@@ -109,6 +119,7 @@ class CommandBuildersTest(unittest.TestCase):
             self.assertNotIn('"C:\\apps\\100%pure', content)
 
     def test_write_nina_launcher_rejects_quote_injection(self):
+        """A quote in the exe path is rejected so appended commands cannot run."""
         # A quote closes the start "" "…" quoting; whatever follows
         # (& calc.exe, a newline) would run as Task Scheduler commands.
         # Windows paths cannot contain quotes, so this must fail closed.
@@ -124,6 +135,7 @@ class CommandBuildersTest(unittest.TestCase):
             self.assertFalse((Path(tmp) / "launch_nina.cmd").exists())
 
     def test_write_nina_launcher_rejects_newline_injection(self):
+        """A CR/LF in the exe path is rejected; it would start a second command."""
         # A CR/LF would terminate the start line and run the rest as its
         # own command line.
         with tempfile.TemporaryDirectory() as tmp:
@@ -137,6 +149,7 @@ class CommandBuildersTest(unittest.TestCase):
             self.assertFalse((Path(tmp) / "launch_nina.cmd").exists())
 
     def test_launcher_uses_windows_temp_directory_under_wsl(self):
+        """Under WSL the launcher path combines the drive mount with Windows temp."""
         with (
             patch("nina_planner.system_time.sys.platform", "linux"),
             patch("nina_planner.system_time.Path", PurePosixPath),
@@ -161,6 +174,7 @@ class CommandBuildersTest(unittest.TestCase):
         )
 
     def test_launcher_uses_native_windows_temp_directory(self):
+        """On native win32 the path is %TEMP% and subprocess is never invoked."""
         with (
             patch("nina_planner.system_time.sys.platform", "win32"),
             patch("nina_planner.system_time.Path", PureWindowsPath),
@@ -179,6 +193,7 @@ class CommandBuildersTest(unittest.TestCase):
         run.assert_not_called()
 
     def test_write_nina_launcher_on_windows(self):
+        """On win32 the launcher lands in %TEMP%, written with the host Path."""
         with tempfile.TemporaryDirectory() as tmp:
             with (
                 patch("nina_planner.system_time.sys.platform", "win32"),
@@ -201,12 +216,16 @@ class CommandBuildersTest(unittest.TestCase):
 
 
 class NinaExePathTest(unittest.TestCase):
+    """The NINA_EXE_PATH override and the default used when it is unset."""
+
     def test_default(self):
+        """Without NINA_EXE_PATH the built-in default path is used."""
         with patch.dict(os.environ, {}, clear=False):
             os.environ.pop("NINA_EXE_PATH", None)
             self.assertEqual(nina_exe_path(), NINA_EXE_DEFAULT)
 
     def test_env_override(self):
+        """NINA_EXE_PATH overrides the built-in default."""
         with patch.dict(
             os.environ, {"NINA_EXE_PATH": r"D:\apps\NINA.exe"}, clear=False
         ):
@@ -214,11 +233,15 @@ class NinaExePathTest(unittest.TestCase):
 
 
 class WindowsInteropAvailableTest(unittest.TestCase):
+    """Interop detection on win32, macOS, and WSL with or without Windows tools."""
+
     def test_true_on_win32(self):
+        """Native Windows always has the interop binaries."""
         with patch("nina_planner.system_time.sys.platform", "win32"):
             self.assertTrue(windows_interop_available())
 
     def test_false_on_non_wsl(self):
+        """A non-WSL Unix host has no Windows tools regardless of environment."""
         with (
             patch("nina_planner.system_time.sys.platform", "darwin"),
             patch("nina_planner.system_time._is_wsl", return_value=False),
@@ -226,6 +249,7 @@ class WindowsInteropAvailableTest(unittest.TestCase):
             self.assertFalse(windows_interop_available())
 
     def test_wsl_true_when_binaries_present(self):
+        """WSL counts as interop when every Windows tool resolves on PATH."""
         with (
             patch("nina_planner.system_time.sys.platform", "linux"),
             patch("nina_planner.system_time._is_wsl", return_value=True),
@@ -237,6 +261,7 @@ class WindowsInteropAvailableTest(unittest.TestCase):
             self.assertTrue(windows_interop_available())
 
     def test_wsl_false_when_a_binary_is_missing(self):
+        """Missing even one tool (schtasks.exe) disqualifies the WSL host."""
         with (
             patch("nina_planner.system_time.sys.platform", "linux"),
             patch("nina_planner.system_time._is_wsl", return_value=True),
@@ -251,7 +276,10 @@ class WindowsInteropAvailableTest(unittest.TestCase):
 
 
 class StopNinaTest(unittest.TestCase):
+    """The stop_nina flow: API probe, taskkill, verification, and errors."""
+
     def test_stop_when_not_running_is_noop(self):
+        """A refused API probe stops nothing and reports why, without taskkill."""
         from nina_planner.server import stop_nina
 
         with (
@@ -271,6 +299,7 @@ class StopNinaTest(unittest.TestCase):
         mock_run.assert_not_called()
 
     def test_stop_when_running_kills_process(self):
+        """A live NINA is killed with taskkill and confirmed by a second probe."""
         from nina_planner.server import stop_nina
 
         with (
@@ -305,6 +334,7 @@ class StopNinaTest(unittest.TestCase):
         self.assertEqual(kill_argv, ["taskkill.exe", "/F", "/IM", "NINA.exe"])
 
     def test_stop_when_remote_raises_runtime_error(self):
+        """A remote-host stop fails loudly instead of pretending to kill NINA."""
         from nina_planner.server import stop_nina
 
         with (
@@ -325,6 +355,7 @@ class StopNinaTest(unittest.TestCase):
         mock_run.assert_not_called()
 
     def test_stop_when_taskkill_fails_raises_runtime_error(self):
+        """A taskkill failure propagates as a RuntimeError naming the taskkill error."""
         from nina_planner.server import stop_nina
 
         with (
@@ -348,6 +379,7 @@ class StopNinaTest(unittest.TestCase):
             self.assertIn("taskkill error", str(ctx.exception))
 
     def test_stop_raises_when_the_api_still_answers_after_taskkill(self):
+        """A clean taskkill that leaves NINA answering raises, not reports stopped."""
         from nina_planner.server import stop_nina
 
         # taskkill returned cleanly but NINA keeps answering: the kill did
@@ -378,6 +410,7 @@ class StopNinaTest(unittest.TestCase):
         self.assertIn("taskkill exited 0", message)
 
     def test_stop_notes_a_taskkill_failure_that_still_ended_nina(self):
+        """An exit-1 taskkill with NINA already gone still stops, with a note."""
         from nina_planner.server import stop_nina
 
         # taskkill's own exit code is not the end state: NINA may have
@@ -413,6 +446,7 @@ class StopNinaTest(unittest.TestCase):
         )
 
     def test_poll_until_async_gives_up_at_the_deadline(self):
+        """Polling returns False at the deadline instead of waiting forever."""
         from nina_planner.tools.lifecycle import _poll_until_async
 
         async def _never():
@@ -423,6 +457,7 @@ class StopNinaTest(unittest.TestCase):
         self.assertFalse(asyncio.run(_poll_until_async(_never, 0.01, 0.05)))
 
     def test_poll_until_async_returns_true_on_the_first_hit(self):
+        """A predicate that is already true returns True on the first poll."""
         from nina_planner.tools.lifecycle import _poll_until_async
 
         async def _always():
@@ -432,7 +467,10 @@ class StopNinaTest(unittest.TestCase):
 
 
 class StartNinaTest(unittest.TestCase):
+    """The start_nina flow: launch guards, schtasks create/run/delete, errors."""
+
     def test_start_errors_when_already_running(self):
+        """Starting while NINA answers errors, pointing the caller at stop_nina()."""
         from nina_planner.server import start_nina
 
         with (
@@ -453,6 +491,7 @@ class StartNinaTest(unittest.TestCase):
             )
 
     def test_start_when_running_on_a_remote_host_without_interop(self):
+        """A live NINA this host cannot touch errors rather than promising a restart."""
         from nina_planner.server import start_nina
 
         # NINA answers, but this host cannot touch it: the message must say
@@ -474,6 +513,7 @@ class StartNinaTest(unittest.TestCase):
         self.assertIn("its own host", str(ctx.exception))
 
     def test_start_logs_a_failed_task_delete_without_failing(self):
+        """A failed task cleanup is logged as a warning; the launch still succeeds."""
         from nina_planner.server import start_nina
 
         def fake_run(argv, timeout=30.0):
@@ -509,6 +549,7 @@ class StartNinaTest(unittest.TestCase):
         self.assertIn("_launch_nina_interactive: delete task warning", warnings)
 
     def test_start_aborts_when_lifecycle_control_unavailable(self):
+        """Without lifecycle control the launch aborts before any command runs."""
         from nina_planner.server import start_nina
 
         with (
@@ -537,6 +578,7 @@ class StartNinaTest(unittest.TestCase):
     )
 
     def test_start_real_time_launches_interactive(self):
+        """A real start runs schtasks /Create /Run /Delete with an interactive task."""
         from nina_planner.server import start_nina
 
         absent_proc = MagicMock()
@@ -576,6 +618,7 @@ class StartNinaTest(unittest.TestCase):
         self.assertIn(self._STUB_LAUNCHER_PATHS[1], create_args)
 
     def test_start_real_time_raises_when_task_creation_fails(self):
+        """A /Create failure raises naming the command, exit code, and stderr."""
         from nina_planner.server import start_nina
 
         executed_cmds = []
@@ -608,6 +651,7 @@ class StartNinaTest(unittest.TestCase):
         self.assertEqual([cmd[0] for cmd in executed_cmds], ["schtasks.exe"])
 
     def test_start_real_time_raises_when_task_execution_fails(self):
+        """A /Run failure raises after cleaning up the temporary task."""
         from nina_planner.server import start_nina
 
         executed_cmds = []
@@ -700,6 +744,7 @@ class IsWslTest(unittest.TestCase):
     """``_is_wsl`` itself — the existing interop tests patch it out."""
 
     def test_non_linux_is_never_wsl(self):
+        """WSL env vars on a Mac do not make it WSL; platform is checked first."""
         from nina_planner.system_time import _is_wsl
 
         with (
@@ -710,6 +755,7 @@ class IsWslTest(unittest.TestCase):
             self.assertFalse(_is_wsl())
 
     def test_wsl_interop_env_marks_wsl(self):
+        """WSL_INTEROP on Linux marks the environment as WSL."""
         from nina_planner.system_time import _is_wsl
 
         with (
@@ -719,6 +765,7 @@ class IsWslTest(unittest.TestCase):
             self.assertTrue(_is_wsl())
 
     def test_wsl_distro_env_marks_wsl(self):
+        """WSL_DISTRO_NAME on Linux also marks the environment as WSL."""
         from nina_planner.system_time import _is_wsl
 
         with (
@@ -728,6 +775,7 @@ class IsWslTest(unittest.TestCase):
             self.assertTrue(_is_wsl())
 
     def test_osrelease_identifies_wsl(self):
+        """A /proc/version naming microsoft-standard-WSL2 confirms WSL."""
         from nina_planner.system_time import _is_wsl
 
         with (
@@ -741,6 +789,7 @@ class IsWslTest(unittest.TestCase):
             self.assertTrue(_is_wsl())
 
     def test_unreadable_osrelease_is_not_wsl(self):
+        """An unreadable /proc/version degrades to False instead of raising."""
         from nina_planner.system_time import _is_wsl
 
         with (
@@ -753,6 +802,7 @@ class IsWslTest(unittest.TestCase):
             self.assertFalse(_is_wsl())
 
     def test_plain_linux_osrelease_is_not_wsl(self):
+        """A generic Linux kernel string is not WSL."""
         from nina_planner.system_time import _is_wsl
 
         with (
@@ -764,8 +814,10 @@ class IsWslTest(unittest.TestCase):
 
 
 class LauncherPathsErrorTest(unittest.TestCase):
-    """``get_launcher_paths`` failure paths — the happy paths are covered by
-    the launcher tests above."""
+    """``get_launcher_paths`` failure paths.
+
+    The happy paths are covered by the launcher tests above.
+    """
 
     def _run(self, stdout, stderr, returncode=0):
         with (
@@ -782,6 +834,7 @@ class LauncherPathsErrorTest(unittest.TestCase):
             return get_launcher_paths()
 
     def test_cmd_failure_raises_with_detail(self):
+        """A failed cmd run reports the resolution step and the tool's stderr."""
         with self.assertRaises(RuntimeError) as ctx:
             self._run(stdout="", stderr="Access is denied", returncode=1)
         self.assertIn(
@@ -790,12 +843,14 @@ class LauncherPathsErrorTest(unittest.TestCase):
         self.assertIn("Access is denied", str(ctx.exception))
 
     def test_cmd_failure_without_output_raises(self):
+        """A silent cmd failure still ends the error message with a period."""
         with self.assertRaises(RuntimeError) as ctx:
             self._run(stdout="", stderr="", returncode=1)
         # No detail to report — the message still ends in a period, not a colon.
         self.assertIn("NINA launch.", str(ctx.exception))
 
     def test_non_drive_temp_raises(self):
+        """A non-drive temp path (no C:) is refused with the offending value."""
         with self.assertRaises(RuntimeError) as ctx:
             self._run(stdout="just-a-name\r\n", stderr="")
         self.assertIn("is not an absolute drive path", str(ctx.exception))
@@ -806,4 +861,5 @@ class AsyncMockSleep:
     """Async sleep stand-in that returns immediately."""
 
     async def __call__(self, *_args, **_kwargs):
+        """Return immediately so patched sleeps never stall the test."""
         return None

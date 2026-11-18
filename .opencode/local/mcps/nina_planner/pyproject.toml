@@ -88,8 +88,7 @@ extend-exclude = ["build"]
 
 [tool.ruff.lint]
 # E/F = Basic errors, I = Auto-sorting imports, B = Common code bugs
-select = ["E", "F", "I", "B"]
-# select = ["E", "F", "I", "B", "D"]
+select = ["E", "F", "I", "B", "D"]
 
 [tool.ruff.lint.pydocstyle]
 convention = "google"

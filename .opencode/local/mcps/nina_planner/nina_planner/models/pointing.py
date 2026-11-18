@@ -1,3 +1,5 @@
+"""Pointing models: one profile/plan target's J2000 coordinates and rotation."""
+
 from __future__ import annotations
 
 from pydantic import BaseModel, Field
@@ -6,6 +8,8 @@ from .strict import StrictModel
 
 
 class PointingInfo(BaseModel):
+    """A reported pointing: J2000 RA/dec plus horizon angles, all nullable."""
+
     ra_hours: float | None = Field(
         default=None,
         ge=0.0,
@@ -24,6 +28,13 @@ class PointingInfo(BaseModel):
 
 
 class Pointing(StrictModel):
+    """One mosaic pane/pointing of a plan: target coordinates plus layout.
+
+    ``ra_hours``/``dec_deg`` are J2000 (validated ranges in the field
+    descriptions); ``row``/``column`` label the mosaic grid and are never
+    sent to N.I.N.A.
+    """
+
     label: str | None = None
     ra_hours: float = Field(
         ge=0.0,

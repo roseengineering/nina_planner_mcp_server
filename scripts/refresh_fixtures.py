@@ -24,6 +24,15 @@ ENDPOINTS = {"state": "/sequence/state", "json": "/sequence/json"}
 
 
 def fetch(host: str, path: str) -> dict:
+    """GET ``http://<host>/v2/api<path>`` and return the full API envelope.
+
+    A bare ``host`` gets the default port 1888. Exits the process with a
+    message when the API reports failure.
+
+    Raises:
+        SystemExit: The API returned ``Success: false`` or no error detail.
+        URLError: The host could not be reached.
+    """
     if ":" not in host:
         host += ":1888"
     url = f"http://{host}/v2/api{path}"
@@ -35,6 +44,7 @@ def fetch(host: str, path: str) -> dict:
 
 
 def main() -> None:
+    """Capture the sequence state and JSON fixtures to the output directory."""
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     ap.add_argument(
         "host", help="NINA API host, optionally HOST:PORT (default port 1888)"

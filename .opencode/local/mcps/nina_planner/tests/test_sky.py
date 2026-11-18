@@ -1,3 +1,5 @@
+"""Tests for the sky tools: altitudes, sun and moon events, target ranking."""
+
 import asyncio
 import math
 import unittest
@@ -15,7 +17,10 @@ from nina_planner.tools import sky
 
 
 class AltitudesTest(unittest.TestCase):
+    """Altitude rows from _altitudes: values, ordering, and resolution."""
+
     def test_polaris_altitude_equals_latitude_and_sorted(self):
+        """Polaris sits at the site latitude; rows sort highest altitude first."""
         when = Time("2026-10-18T02:00:00")
         rows = sky._altitudes(
             [
@@ -32,6 +37,7 @@ class AltitudesTest(unittest.TestCase):
         self.assertLess(rows[1]["alt_deg"], 0)
 
     def test_name_only_uses_resolver(self):
+        """A row with only a name is resolved through _resolve_name."""
         coord = SkyCoord(2.53, 89.26, unit=("hourangle", "deg"))
         with patch.object(sky, "_resolve_name", return_value=coord) as r:
             rows = sky._altitudes([{"name": "X"}], 45.0, -75.0, 0.0, Time("2026-10-18"))
@@ -39,6 +45,7 @@ class AltitudesTest(unittest.TestCase):
         self.assertAlmostEqual(rows[0]["alt_deg"], 45.0, delta=1.5)
 
     def test_unresolvable_name_raises(self):
+        """A resolver failure surfaces as ValueError from _altitudes."""
         with patch.object(sky, "_resolve_name", side_effect=RuntimeError("offline")):
             with self.assertRaises(ValueError):
                 sky._altitudes([{"name": "X"}], 45.0, -75.0, 0.0, Time("2026-10-18"))
@@ -66,10 +73,14 @@ SIMBAD_UNKNOWN = (
 
 
 class NameResolutionTest(unittest.TestCase):
-    """`_resolve_name` must work while CDS Strasbourg is offline (the
-    2026-10-28 cybersecurity incident): SIMBAD mirrors first, SESAME second."""
+    """`_resolve_name` must keep working while CDS Strasbourg is offline.
+
+    The 2026-10-28 cybersecurity incident took the primary down: SIMBAD
+    mirrors first, SESAME second.
+    """
 
     def test_parses_simbad_ascii_coordinates(self):
+        """The SIMBAD ASCII reply parses into RA hours and Dec degrees."""
         with patch.object(sky, "_fetch_simbad", return_value=SIMBAD_ASCII) as fetch:
             coord = sky._resolve_via_simbad_web("NGC 225")
         fetch.assert_called_once_with(sky._SIMBAD_MIRRORS[0], "NGC 225")
@@ -77,6 +88,8 @@ class NameResolutionTest(unittest.TestCase):
         self.assertAlmostEqual(coord.dec.deg, 61.773889, places=5)
 
     def test_falls_through_to_the_next_mirror(self):
+        """A failing mirror is skipped and the next mirror is tried."""
+
         def fetch(base, name):
             if base == sky._SIMBAD_MIRRORS[0]:
                 raise RuntimeError("connection timed out")
@@ -88,6 +101,7 @@ class NameResolutionTest(unittest.TestCase):
         self.assertAlmostEqual(coord.dec.deg, 61.773889, places=5)
 
     def test_identifier_simbad_does_not_know_is_a_failure(self):
+        """HTTP 200 without coordinates fails, naming the missing ICRS."""
         with patch.object(sky, "_fetch_simbad", return_value=SIMBAD_UNKNOWN):
             with self.assertRaises(ValueError) as ctx:
                 sky._resolve_via_simbad_web("NotARealObject12345")
@@ -95,6 +109,7 @@ class NameResolutionTest(unittest.TestCase):
         self.assertIn("no ICRS coordinates", str(ctx.exception))
 
     def test_mirror_outage_falls_back_to_sesame(self):
+        """Total mirror failure falls back to the SESAME resolver."""
         coord = SkyCoord(2.53, 89.26, unit=("hourangle", "deg"))
         with (
             patch.object(
@@ -107,6 +122,7 @@ class NameResolutionTest(unittest.TestCase):
         self.assertEqual(resolved.dec.deg, 89.26)
 
     def test_mirror_success_never_touches_sesame(self):
+        """A mirror success never calls the SESAME backstop."""
         with (
             patch.object(sky, "_fetch_simbad", return_value=SIMBAD_ASCII),
             patch.object(sky, "_resolve_via_sesame") as sesame,
@@ -115,6 +131,7 @@ class NameResolutionTest(unittest.TestCase):
         sesame.assert_not_called()
 
     def test_all_sources_down_raises_with_both_reasons(self):
+        """Total failure raises one ValueError carrying both layer reasons."""
         with (
             patch.object(
                 sky, "_resolve_via_simbad_web", side_effect=ValueError("mirrors down")
@@ -130,6 +147,7 @@ class NameResolutionTest(unittest.TestCase):
         self.assertIn("sesame timed out", message)
 
     def test_sesame_backstop_is_used_when_the_web_mirrors_fail(self):
+        """The SESAME backstop (SkyCoord.from_name) is actually invoked."""
         # Layer 2 must actually be *called* (not just its result mocked):
         # this is the path that keeps resolve_target working while CDS is out.
         coord = SkyCoord(2.53, 89.26, unit=("hourangle", "deg"))
@@ -144,6 +162,7 @@ class NameResolutionTest(unittest.TestCase):
         self.assertEqual(resolved.dec.deg, 89.26)
 
     def test_resolve_target_wraps_a_total_failure_as_value_error(self):
+        """The tool wraps a total failure as ValueError, keeping the reason."""
         # The tool's contract: skip the target rather than guess coordinates.
         # The reason from the layer below must survive into the message.
         with patch.object(
@@ -156,6 +175,7 @@ class NameResolutionTest(unittest.TestCase):
         self.assertIn("all mirrors down", message)
 
     def test_resolve_target_reports_ra_hours_and_dec_deg(self):
+        """The tool result carries name, ra_hours, and dec_deg."""
         coord = SkyCoord(5.0, 10.5, unit=("hourangle", "deg"))
         with patch.object(sky, "_resolve_name", return_value=coord) as resolve:
             out = asyncio.run(sky.resolve_target("My Named Nebula"))
@@ -165,8 +185,11 @@ class NameResolutionTest(unittest.TestCase):
         )
 
     def test_fetch_builds_the_simbad_sim_id_request(self):
-        """The endpoint shape is load-bearing: `sim-id` + ASCII output is what
-        the coordinate regex matches against."""
+        """The request uses the `sim-id` endpoint with ASCII output.
+
+        That exact shape is load-bearing: it is what the coordinate regex
+        matches against.
+        """
 
         class FakeResponse:
             text = SIMBAD_ASCII
@@ -188,7 +211,10 @@ class NameResolutionTest(unittest.TestCase):
 
 
 class SurfaceBrightnessTest(unittest.TestCase):
+    """Surface-brightness ranking of extended vs compact objects."""
+
     def test_m57_ranks_easier_than_m33_despite_fainter_mag(self):
+        """The faint compact M57 outranks the bright extended M33."""
         # M33: mag 5.7 spread over 62x44 arcmin. M57: mag 8.8 in 1.4x1.0.
         m33 = sky._surface_brightness(5.7, 62.0, 44.0)
         m57 = sky._surface_brightness(8.8, 1.4, 1.0)
@@ -197,39 +223,49 @@ class SurfaceBrightnessTest(unittest.TestCase):
         self.assertLess(m57, m33)
 
     def test_round_object_treats_missing_minor_as_major(self):
+        """A missing minor axis falls back to the major axis."""
         expected = 8.0 + 2.5 * math.log10(math.pi / 4.0 * 10.0 * 10.0)
         self.assertAlmostEqual(
             sky._surface_brightness(8.0, 10.0, 0.0), expected, places=6
         )
 
     def test_zero_area_returns_the_magnitude_unchanged(self):
+        """Zero area returns the magnitude unchanged instead of -inf."""
         # A catalog row with no angular size has no surface to spread its
         # light over: log10(0) would be -inf, so the magnitude stands in.
         self.assertEqual(sky._surface_brightness(12.0, 0.0, 0.0), 12.0)
 
 
 class DifficultyTest(unittest.TestCase):
+    """Difficulty and easiness bucketing in the target ranking."""
+
     def test_extended_buckets(self):
+        """Extended objects bucket at 14/15/16 mag thresholds."""
         self.assertEqual(sky._difficulty(14.0, False), "beginner")
         self.assertEqual(sky._difficulty(15.0, False), "intermediate")
         self.assertEqual(sky._difficulty(16.0, False), "advanced")
 
     def test_compact_objects_use_magnitude_thresholds(self):
+        """Compact objects bucket at 10.5/11.5/12.5 mag thresholds."""
         self.assertEqual(sky._difficulty(10.5, True), "beginner")
         self.assertEqual(sky._difficulty(11.5, True), "intermediate")
         self.assertEqual(sky._difficulty(12.5, True), "advanced")
 
     def test_easiness_clamped_to_unit_interval(self):
+        """Easiness clamps to [0, 1] at the magnitude extremes."""
         self.assertEqual(sky._easiness(5.0, False), 1.0)
         self.assertEqual(sky._easiness(20.0, False), 0.0)
 
 
 class SunEventsTest(unittest.TestCase):
+    """Sun events and darkness-window ordering at a mid-latitude site."""
+
     # Mid-latitude site; October gives comfortable twilight spacing.
     LOCATION = None  # set in setUpClass
 
     @classmethod
     def setUpClass(cls):
+        """Fix a mid-latitude site with comfortable October twilight spacing."""
         from astropy import units as u
         from astropy.coordinates import EarthLocation
 
@@ -238,6 +274,7 @@ class SunEventsTest(unittest.TestCase):
         )
 
     def test_twilight_ordering_and_window(self):
+        """Twilight events order correctly and the darkness window brackets now."""
         # 2026-10-18 02:00 UTC = 22:00 local Oct 17: deep in the night.
         when = Time("2026-10-18T02:00:00")
         out = sky._sun_events(when, self.LOCATION)
@@ -261,6 +298,7 @@ class SunEventsTest(unittest.TestCase):
         self.assertLess(out["darkness"]["end_utc"], ev["sunrise"])
 
     def test_night_phase_classification(self):
+        """Times classify into dark, morning, and evening phases."""
         # Night: phase dark, window in progress.
         night = sky._sun_events(Time("2026-10-18T02:00:00"), self.LOCATION)
         self.assertTrue(night["is_dark_now"])
@@ -275,6 +313,7 @@ class SunEventsTest(unittest.TestCase):
         self.assertEqual(evening["night_phase"], "evening")
 
     def test_sunset_after_noon_and_before_midnight_utc(self):
+        """Sunset falls after local solar noon (~17:00 UTC at lon -75)."""
         out = sky._sun_events(Time("2026-10-18T14:00:00"), self.LOCATION)
         # Local solar noon ~17:00 UTC at lon -75; sunset must follow it.
         self.assertGreater(out["events"]["sunset"], "2026-10-18T17:00")
@@ -292,9 +331,11 @@ class SunEventsPolarPhaseTest(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
+        """Fix a 75°N site whose sun stays above -18° for months."""
         cls.LOCATION = EarthLocation(lat=75.0 * u.deg, lon=0.0 * u.deg, height=0 * u.m)
 
     def test_no_crossing_in_the_window_is_evening(self):
+        """Midsummer with no -18° crossing reads as evening, not night's end."""
         # Midsummer: no dusk or dawn within -24h..+48h at all. The night is
         # still ahead, so this must never read as "the night just ended".
         out = sky._sun_events(Time("2026-06-15T12:00:00"), self.LOCATION)
@@ -304,6 +345,7 @@ class SunEventsPolarPhaseTest(unittest.TestCase):
         self.assertIsNone(out["darkness"]["end_utc"])
 
     def test_dawn_without_a_dusk_ahead_is_morning(self):
+        """A lone spring dawn with no dusk due yet classifies as morning."""
         # Hours after the spring dawn, with no dusk due until September:
         # the night that just ended is the one to document.
         out = sky._sun_events(Time("2026-03-13T12:00:00"), self.LOCATION)
@@ -313,6 +355,7 @@ class SunEventsPolarPhaseTest(unittest.TestCase):
         self.assertTrue(out["darkness"]["end_utc"].startswith("2026-03-13"))
 
     def test_dusk_ahead_without_a_dawn_behind_is_evening(self):
+        """The first autumn dusk with no dawn behind classifies as evening."""
         # Late afternoon on the first day of the new season: the sun has
         # been above -18° for months (no dawn behind us) but dusk is hours
         # away — the night is ahead, so evening.
@@ -326,7 +369,10 @@ class SunEventsPolarPhaseTest(unittest.TestCase):
 
 
 class CrossingTimeTest(unittest.TestCase):
+    """_crossing_time interpolation and out-of-window behavior."""
+
     def test_want_outside_the_sampled_window_is_none(self):
+        """A want level outside the sampled window returns None."""
         times = Time("2026-10-18T00:00:00") + np.arange(4) * u.hour
         values = np.array([1.0, 2.0, 3.0, 4.0])
         # Below every sample: searchsorted lands on index 0.
@@ -335,6 +381,7 @@ class CrossingTimeTest(unittest.TestCase):
         self.assertIsNone(sky._crossing_time(times, values, 9.0))
 
     def test_crossing_inside_the_window_is_interpolated(self):
+        """A crossing inside the window is linearly interpolated."""
         times = Time("2026-10-18T00:00:00") + np.arange(4) * u.hour
         values = np.array([0.0, 1.0, 2.0, 3.0])
         crossing = sky._crossing_time(times, values, 1.5)
@@ -353,6 +400,7 @@ class MoonEventsTest(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
+        """Fix the Ottawa site used by the published moonrise table."""
         from astropy import units as u
         from astropy.coordinates import EarthLocation
 
@@ -367,6 +415,7 @@ class MoonEventsTest(unittest.TestCase):
         return abs((Time(iso_a) - Time(iso_b)).to_value(u.min))
 
     def test_phase_instants_match_published_november_2026(self):
+        """Phase instants land within 2 min of USNO-published times."""
         out = sky._moon_events(Time("2026-11-07T04:00:00"), self.LOCATION)
         ev = out["events"]
         published = {
@@ -385,6 +434,7 @@ class MoonEventsTest(unittest.TestCase):
             )
 
     def test_phase_instants_are_ordered_and_in_the_future(self):
+        """Phase instants are all future, ordered, and 6.5-8.5 days apart."""
         when = Time("2026-11-07T04:00:00")
         ev = sky._moon_events(when, self.LOCATION)["events"]
         # Every instant is strictly after now, and they advance in phase order.
@@ -412,6 +462,7 @@ class MoonEventsTest(unittest.TestCase):
             self.assertLess(gap, 8.5, msg=f"gap {gap} d too long")
 
     def test_moonrise_and_moonset_match_published_ottawa_table(self):
+        """Moonrise and moonset land within 3 min of Ottawa's EST table."""
         # fullmoonphase.com's Ottawa table, Nov 2026, local EST (UTC-5) after
         # the Nov 1 DST end. Asking at local midnight returns that day's rise
         # AND set in one call (both fall after local midnight), so each day
@@ -448,6 +499,7 @@ class MoonEventsTest(unittest.TestCase):
             )
 
     def test_moon_up_now_agrees_with_event_order(self):
+        """The moon_up_now flag agrees with the order of rise and set."""
         # Moon below the horizon: the next crossing must be the rise.
         down = sky._moon_events(Time("2026-11-07T04:00:00"), self.LOCATION)
         self.assertFalse(down["moon_up_now"])
@@ -459,6 +511,7 @@ class MoonEventsTest(unittest.TestCase):
         self.assertLess(up["events"]["moonset"], up["events"]["moonrise"])
 
     def test_every_event_is_in_the_future(self):
+        """Every reported moon event lies strictly after the query time."""
         when = Time("2026-11-07T04:00:00")
         ev = sky._moon_events(when, self.LOCATION)["events"]
         for name, value in ev.items():
@@ -466,6 +519,7 @@ class MoonEventsTest(unittest.TestCase):
             self.assertGreater(value, when.utc.isot, msg=name)
 
     def test_illumination_and_phase_name_at_principal_instants(self):
+        """Elongation maps to the right phase name, illumination, and waxing."""
         # Straight off the elongation, no ephemeris needed.
         cases = {
             0.0: ("new", 0.0, False),
@@ -487,6 +541,7 @@ class MoonEventsTest(unittest.TestCase):
             self.assertLess(phase["elongation_deg"], 360.0)
 
     def test_illumination_bands_split_on_fraction_not_angle(self):
+        """Phase bands split on illuminated fraction, matching almanac names."""
         # The band is on ILLUMINATION, not elongation: half-lit (k=0.5) is
         # exactly 90 deg, so "quarter" means "looks like a half disc". That
         # matches published daily calendars, which a45 deg-sector split does
@@ -508,6 +563,7 @@ class MoonEventsTest(unittest.TestCase):
         self.assertEqual(sky._phase_from_elongation(330.0)["name"], "waning_crescent")
 
     def test_elongation_wraps_into_half_open_range(self):
+        """360° elongation wraps to new moon, never reported as 360.0."""
         # 360 is congruent to 0 (new) and must never be reported as 360.0.
         phase = sky._phase_from_elongation(360.0)
         self.assertEqual(phase["elongation_deg"], 0.0)
@@ -518,6 +574,7 @@ class MoonEventsTest(unittest.TestCase):
         self.assertLess(sky._phase_from_elongation(359.9999)["elongation_deg"], 360.0)
 
     def test_age_days_is_zero_at_new_moon_and_half_at_full(self):
+        """Age counts back to the previous new moon: ~29.5 d at new, 14-16 at full."""
         # Age counts back to the PREVIOUS new moon, so at a new moon it is a
         # whole synodic month (~29.5 d), not zero, and small just after one.
         at_new = sky._moon_events(Time("2026-11-09T07:02:11"), self.LOCATION)
@@ -535,6 +592,7 @@ class MoonEventsTest(unittest.TestCase):
         self.assertLess(at_full["phase"]["age_days"], at_new["phase"]["age_days"])
 
     def test_phase_reports_name_illumination_and_age(self):
+        """The phase block carries name, illumination, waxing, elongation, age."""
         phase = sky._moon_events(Time("2026-11-07T04:00:00"), self.LOCATION)["phase"]
         for key in ("name", "illumination_fraction", "waxing", "elongation_deg"):
             self.assertIn(key, phase)
@@ -545,6 +603,7 @@ class MoonEventsTest(unittest.TestCase):
         self.assertGreater(phase["age_days"], 27.0)
 
     def test_distance_is_topocentric_and_position_is_reported(self):
+        """Distance, alt/az, timestamp, and site are reported as expected."""
         out = sky._moon_events(Time("2026-11-07T04:00:00"), self.LOCATION)
         # Topocentric: within Earth's radius of the geocentric figure, and
         # never below the Moon's perigee-ish distance.
@@ -556,6 +615,7 @@ class MoonEventsTest(unittest.TestCase):
         self.assertEqual(out["site"]["latitude_deg"], 45.42)
 
     def test_polar_site_can_report_no_crossing(self):
+        """A polar site with no crossing reports null rise/set, never invented."""
         # North Pole in the sample window: if the Moon never crosses the
         # horizon the entry is null, never an invented time.
         from astropy import units as u
@@ -571,6 +631,8 @@ class MoonEventsTest(unittest.TestCase):
 
 
 class RankCatalogTest(unittest.TestCase):
+    """Catalog ranking for best_targets: partitioning, filters, framing."""
+
     def _catalog(self, when, lat, lon):
         lst = float(when.sidereal_time("apparent", longitude=lon).hour)
 
@@ -584,6 +646,7 @@ class RankCatalogTest(unittest.TestCase):
         ]
 
     def test_visible_later_and_too_low_partition(self):
+        """Objects partition into visible now, later tonight, or too low."""
         when = Time("2026-10-18T02:00:00")
         rows = sky._rank_catalog(
             self._catalog(when, 45.0, -75.0),
@@ -611,6 +674,7 @@ class RankCatalogTest(unittest.TestCase):
         self.assertIn("T", rising["peak_utc"])
 
     def test_rows_carry_preverified_coordinates(self):
+        """Rows carry ra_hours/dec_deg so plans need no network lookup."""
         # best_targets rows must ship ra_hours/dec_deg so plans can point
         # from the SIMBAD-verified catalog without any network lookup.
         when = Time("2026-10-18T02:00:00")
@@ -627,6 +691,7 @@ class RankCatalogTest(unittest.TestCase):
                 self.assertEqual(by_name[obj.name]["dec_deg"], obj.dec_deg)
 
     def test_daytime_yields_no_visible_now(self):
+        """Daytime yields no visible_now, and peaks fall after dusk only."""
         # 2026-10-18 14:00 UTC = 10:00 local: sun well up, nothing visible.
         when = Time("2026-10-18T14:00:00")
         rows = sky._rank_catalog(
@@ -653,6 +718,7 @@ class RankCatalogTest(unittest.TestCase):
             )
 
     def test_level_and_kind_filters(self):
+        """Level and kind filters narrow the visible set as requested."""
         when = Time("2026-10-18T02:00:00")
         catalog = self._catalog(when, 45.0, -75.0)
         base = dict(
@@ -675,6 +741,7 @@ class RankCatalogTest(unittest.TestCase):
         self.assertLessEqual(len(rows["visible_now"]), 1)
 
     def test_no_darkness_in_the_window_still_reports_is_dark_now(self):
+        """Even with no darkness the full result shape ships, is_dark_now False."""
         # 75°N in June: the sun never reaches -18° in the sampled 12 hours,
         # so there is no peak "within darkness" to report at all — and the
         # day's peaks must not leak in as if they were observable.
@@ -709,6 +776,7 @@ class RankCatalogTest(unittest.TestCase):
         self.assertFalse(rows["is_dark_now"])
 
     def test_large_for_field_uses_the_reported_fov(self):
+        """A reported FOV flags oversized objects; no FOV means no flagging."""
         when = Time("2026-10-18T02:00:00")
         catalog = self._catalog(when, 45.0, -75.0)
         # Every fixture object is 10 arcmin across; a 0.1° (6 arcmin) field
@@ -728,6 +796,7 @@ class RankCatalogTest(unittest.TestCase):
         self.assertFalse(any(r["large_for_field"] for r in rows["visible_now"]))
 
     def test_compact_objects_are_never_flagged_large(self):
+        """Compact objects are never flagged large, whatever the FOV."""
         # Compact (< 5 arcmin) objects bucket on integrated magnitude and
         # are treated as point-like for framing, whatever the fov.
         when = Time("2026-10-18T02:00:00")
@@ -741,7 +810,10 @@ class RankCatalogTest(unittest.TestCase):
 
 
 class BuiltinCatalogTest(unittest.TestCase):
+    """The built-in DSO catalog loaded from CSV."""
+
     def test_catalog_is_loaded_from_csv(self):
+        """The built-in catalog loads 497 pre-verified rows from CSV."""
         self.assertEqual(len(dso_catalog.CATALOG), 497)
         self.assertEqual(
             dso_catalog.CATALOG[0],
@@ -755,6 +827,7 @@ class HorizonGatingTest(unittest.TestCase):
     """Planning tools apply N.I.N.A.'s horizon-aware floor, not bare altitude."""
 
     def test_altitudes_rows_carry_skyline_and_clearance(self):
+        """Rows report skyline height, clearance, and above_floor."""
         # Flat 40 deg skyline everywhere: every row reports horizon 40 and
         # clearance = alt - 40, and above_floor follows max(min_alt, 42).
         horizon = Horizon(points=[(0.0, 40.0), (180.0, 40.0)])
@@ -782,6 +855,7 @@ class HorizonGatingTest(unittest.TestCase):
         self.assertFalse(by_name["low"]["above_floor"])
 
     def test_min_altitude_raises_the_floor(self):
+        """The min_altitude floor outranks horizon plus clearance when higher."""
         horizon = Horizon(points=[(0.0, 40.0), (180.0, 40.0)])
         # alt ~45 clears horizon+2 (42) but not min_altitude 50.
         targets = [{"name": "polaris", "ra_hours": 2.53, "dec_deg": 89.26}]
@@ -792,6 +866,7 @@ class HorizonGatingTest(unittest.TestCase):
         self.assertTrue(rows[0]["above_floor"])
 
     def test_flat_horizon_reports_zero_and_geometric_clearance(self):
+        """Without a skyline, horizon reads 0 and clearance equals altitude."""
         rows = sky._altitudes(
             [{"name": "polaris", "ra_hours": 2.53, "dec_deg": 89.26}],
             45.0,
@@ -815,6 +890,7 @@ class HorizonGatingTest(unittest.TestCase):
         ]
 
     def test_peak_never_clearing_the_skyline_is_excluded(self):
+        """An object whose peak never clears the skyline is excluded entirely."""
         # Flat 76 deg skyline: floor is 78, "up" peaks at 75 and can never
         # clear it, while "rising" still transits the zenith above it.
         when = Time("2026-10-18T02:00:00")
@@ -840,6 +916,7 @@ class HorizonGatingTest(unittest.TestCase):
         self.assertGreaterEqual(rising["peak_alt_deg"], 78.0)
 
     def test_currently_blocked_target_lands_in_later_tonight(self):
+        """A target blocked now but clearing later lands in later_tonight."""
         # An object at alt ~59.6, az ~44 (east) under an 88 deg eastern
         # wall: not visible now (floor ~68), but its meridian passage in
         # the north (skyline 44) clears, so it is still schedulable.
@@ -872,6 +949,7 @@ class HorizonGatingTest(unittest.TestCase):
         self.assertGreaterEqual(row["peak_alt_deg"], 60.0)
 
     def test_flat_horizon_matches_the_old_geometric_behavior(self):
+        """With a flat horizon, results equal the plain geometric run."""
         # With no custom horizon the floor collapses to min_altitude, so
         # results must equal a plain geometric run.
         when = Time("2026-10-18T02:00:00")
@@ -882,6 +960,7 @@ class HorizonGatingTest(unittest.TestCase):
         self.assertEqual(geometric, with_flat)
 
     def test_best_targets_forwards_the_profile_horizon(self):
+        """The best_targets wrapper forwards the profile's horizon and offset."""
         import asyncio
 
         from nina_planner.models.profile import (
@@ -976,6 +1055,7 @@ class ToolWrapperTest(unittest.TestCase):
         )
 
     def test_target_altitudes_reads_the_site_and_sorts_highest_first(self):
+        """The target_altitudes wrapper reads the site and sorts highest first."""
         targets = [
             {"name": "M31", "ra_hours": 0.71, "dec_deg": 41.27},
             {"name": "south", "ra_hours": 0.0, "dec_deg": -60.0},
@@ -1001,6 +1081,7 @@ class ToolWrapperTest(unittest.TestCase):
         self.assertLess(out["targets"][1]["alt_deg"], 0)
 
     def test_best_targets_reads_the_site_and_forwards_the_fov(self):
+        """The best_targets wrapper pulls site and FOV from the profile."""
         # CATALOG is patched so the full 497-row sweep is not paid for here;
         # what this asserts is that the wrapper pulls site+optics out of the
         # profile and into the ranking (the ranking itself is RankCatalogTest).
@@ -1021,6 +1102,7 @@ class ToolWrapperTest(unittest.TestCase):
         self.assertIn("later_tonight", out)
 
     def test_best_targets_rejects_an_unknown_level_before_fetching(self):
+        """An unknown level raises before the site profile is fetched."""
         with patch(
             "nina_planner.tools.equipment.get_site_profile", AsyncMock()
         ) as profile:
@@ -1029,6 +1111,7 @@ class ToolWrapperTest(unittest.TestCase):
         profile.assert_not_awaited()
 
     def test_sun_times_reads_the_site(self):
+        """The sun_times wrapper reports the profile's site and night phase."""
         with patch(
             "nina_planner.tools.equipment.get_site_profile",
             AsyncMock(return_value=self._profile()),
@@ -1040,6 +1123,7 @@ class ToolWrapperTest(unittest.TestCase):
         self.assertIn("T", out["time_utc"])
 
     def test_moon_times_reads_the_site(self):
+        """The moon_times wrapper reports the site and a phase in [0, 1]."""
         with patch(
             "nina_planner.tools.equipment.get_site_profile",
             AsyncMock(return_value=self._profile()),

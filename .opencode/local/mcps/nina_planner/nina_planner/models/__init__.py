@@ -1,3 +1,5 @@
+"""Pydantic models for N.I.N.A. plans, profile, and connected equipment."""
+
 from .camera import (
     BinningInfo,
     CameraDevice,

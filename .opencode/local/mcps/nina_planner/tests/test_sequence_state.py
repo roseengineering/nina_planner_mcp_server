@@ -1,3 +1,5 @@
+"""Tests for projecting N.I.N.A.'s ``/sequence/state`` output into summaries."""
+
 import json
 import unittest
 from pathlib import Path
@@ -71,15 +73,20 @@ def _grouped_step_state(groups):
 
 
 class ProjectSequenceStateTests(unittest.TestCase):
+    """Projection of the frozen unrun state/json fixture pair."""
+
     def setUp(self):
+        """Project the unrun fixture pair once for every test here."""
         self.out = project_sequence_state(STATE["Response"], JSON["Response"])
 
     def test_plan_ids(self):
+        """Three steps project, all attributed to the fixture's plan id."""
         self.assertEqual(self.out["step_count"], 3)
         self.assertEqual({s["plan_id"] for s in self.out["steps"]}, PLAN_IDS)
         self.assertFalse(self.out["parse_error"])
 
     def test_totals_never_zero(self):
+        """A broken light reports exposure None; loaded calibrations count."""
         light, dark, bias = self.out["steps"]
         # This legacy fixture froze the pre-fix era: the light step reports no
         # exposure because N.I.N.A. dropped the Sequencer+ `Parent`
@@ -105,11 +112,13 @@ class ProjectSequenceStateTests(unittest.TestCase):
         self.assertEqual(bias["exposure"]["seconds"], 0.0)
 
     def test_unrun_has_no_events_or_completed_steps(self):
+        """An unrun capture reports nothing completed, running, or fired."""
         self.assertEqual(self.out["completed_steps"], 0)
         self.assertFalse(self.out["running"])
         self.assertTrue(all(s["fired_events"] == [] for s in self.out["steps"]))
 
     def test_preflight_issues_are_not_errors(self):
+        """Preflight notes stay in their own list, never in the issues."""
         # Equipment state at capture time decides what lands here (the rig's
         # focuser was connected, but the Sequencer+ variable declaration is
         # not), so assert the shape, not the content.
@@ -118,6 +127,7 @@ class ProjectSequenceStateTests(unittest.TestCase):
         self.assertNotIn("preflight_issues", self.out["steps"][0])
 
     def test_failed_node_surfaces_at_step_and_root(self):
+        """A FAILED node's issues are reported at the step and at the root."""
         state = json.loads(json.dumps(STATE))
         step = next(
             n for n in state["Response"] if n.get("Name") == "Target Sequence_Container"
@@ -135,6 +145,7 @@ class ProjectSequenceStateTests(unittest.TestCase):
         self.assertEqual(out["issues"], ["Run Autofocus: Focuser not connected"])
 
     def test_horizon_from_json_and_graceful_without(self):
+        """Horizon merges from the json pair and vanishes cleanly without it."""
         horizon = self.out["steps"][0]["horizon"]
         # min_altitude comes from the plan's constraints, so it is stable;
         # the altitude and the wait estimate are capture-time values.
@@ -150,6 +161,7 @@ class ProjectSequenceStateTests(unittest.TestCase):
         )
 
     def test_empty_payload(self):
+        """An empty state payload projects to an empty step list."""
         out = project_sequence_state([])
         self.assertEqual(out["steps"], [])
 
@@ -214,6 +226,7 @@ class ProjectSequenceStateTests(unittest.TestCase):
         self.assertEqual(step["exposure"]["completed"], 2)
 
     def test_step_without_an_exposure_node_has_none_exposure(self):
+        """A step with no exposure node reports None, not invented zeros."""
         # A step that never takes an exposure (a pure wait/park step, or a
         # target area whose items have not been expanded yet) must report
         # exposure=None rather than inventing zeros for the summary.
@@ -259,6 +272,7 @@ class ProjectSequenceStateTests(unittest.TestCase):
         self.assertEqual(step["exposure"]["completed"], 1)
 
     def test_group_without_a_switch_filter_reports_null_filter(self):
+        """A group with no Switch Filter reports null, not a stale filter."""
         # A cover/shutter dark (or any group that never selects a filter)
         # has a Take Exposure but no Switch Filter: report null, not a
         # stale filter carried over from another group.
@@ -357,12 +371,14 @@ class FinishedRunTests(unittest.TestCase):
     """
 
     def setUp(self):
+        """Project the finished darks run fixture pair for each test."""
         state = json.loads((_F / "sequence_state_finished.json").read_text())
         done = json.loads((_F / "sequence_json_finished.json").read_text())
         self.out = project_sequence_state(state["Response"], done["Response"])
         (self.step,) = self.out["steps"]
 
     def test_single_step_finished_with_full_counts(self):
+        """A finished dark reports every frame spent and no issues anywhere."""
         self.assertEqual(self.out["step_count"], 1)
         self.assertEqual(self.out["completed_steps"], 1)
         self.assertEqual(self.out["status"], "FINISHED")
@@ -391,6 +407,7 @@ class FinishedRunTests(unittest.TestCase):
         self.assertEqual(self.out["preflight_issues"], [])
 
     def test_events_fire_once_finished(self):
+        """A finished run fires exactly one start and one finish event."""
         first = self.step["fired_events"]
         self.assertEqual(len(first), 2)
         self.assertTrue(first[0].startswith("ACQUISITION-STARTING"))
@@ -421,6 +438,7 @@ class LightsSequenceTests(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
+        """Project all three lights captures (unrun, running, finished)."""
         cls.out = {}
         for label in cls.LABELS:
             state = json.loads((_F / f"sequence_state_{label}.json").read_text())
@@ -428,10 +446,12 @@ class LightsSequenceTests(unittest.TestCase):
             cls.out[label] = project_sequence_state(state["Response"], done["Response"])
 
     def step(self, label):
+        """The single projected step of the named lights capture."""
         (step,) = self.out[label]["steps"]
         return step
 
     def test_single_light_step_with_its_groups_in_every_state(self):
+        """Every capture projects one clean light step holding its group."""
         for label in self.LABELS:
             out = self.out[label]
             self.assertEqual(out["step_count"], 1, label)
@@ -455,6 +475,7 @@ class LightsSequenceTests(unittest.TestCase):
             self.assertEqual(step["exposure_groups"], [exposure], label)
 
     def test_countdown_walks_zero_to_full_across_the_captures(self):
+        """Completed counts walk 0, 1, 4 against the same fixed total of 4."""
         unrun, running, finished = (self.step(x) for x in self.LABELS)
 
         self.assertEqual(
@@ -479,11 +500,13 @@ class LightsSequenceTests(unittest.TestCase):
         )
 
     def test_running_step_reports_its_phase_and_partial_counts(self):
+        """The running capture reports its phase and a partial count."""
         step = self.step("lightsrunning")
         self.assertEqual(step["phase"], "Take Exposure")
         self.assertLess(step["exposure"]["completed"], step["exposure"]["total"])
 
     def test_fired_events_accumulate_with_the_run(self):
+        """Events accumulate from none, to start, to start plus finish."""
         self.assertEqual(self.step("lights")["fired_events"], [])
 
         (only_start,) = self.step("lightsrunning")["fired_events"]
@@ -497,6 +520,7 @@ class LightsSequenceTests(unittest.TestCase):
         self.assertIn(self.PLAN_ID, both[0])
 
     def test_horizon_is_merged_into_every_state(self):
+        """The near-meridian target's horizon merges into all three captures."""
         # The target was near the meridian (73-76 deg) with the floor at 30,
         # so `expected_time` reads "Now" in all three captures.
         for label in self.LABELS:
@@ -588,6 +612,7 @@ class ChildrenShapeTests(unittest.TestCase):
     """
 
     def test_both_payload_spellings_yield_the_direct_children(self):
+        """``_children`` reads both the plain-list and ``$values`` spellings."""
         from nina_planner.sequence_state import _children
 
         child = {"Name": "Take Exposure"}
@@ -595,6 +620,7 @@ class ChildrenShapeTests(unittest.TestCase):
         self.assertEqual(list(_children({"Items": {"$values": [child]}})), [child])
 
     def test_unrecognised_items_shapes_yield_nothing(self):
+        """Unrecognised ``Items`` shapes yield nothing rather than raising."""
         from nina_planner.sequence_state import _children
 
         shapes = {
@@ -610,6 +636,7 @@ class ChildrenShapeTests(unittest.TestCase):
                 self.assertEqual(list(_children(node)), [])
 
     def test_counts_exposures_is_false_when_items_are_unreadable(self):
+        """Unreadable ``Items`` make ``_counts_exposures`` fail closed."""
         from nina_planner.sequence_state import _counts_exposures
 
         # The loop condition matches, but the children cannot be read: the

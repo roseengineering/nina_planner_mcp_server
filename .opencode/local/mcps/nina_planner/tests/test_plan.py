@@ -1,3 +1,5 @@
+"""ObservationPlan and load_plan validation: ids, prefixes, frames, grids."""
+
 import json
 import tempfile
 import unittest
@@ -31,10 +33,13 @@ def _plan(**overrides):
 
 
 class PlanIdCharsetTest(unittest.TestCase):
-    """plan_id must survive N.I.N.A.'s path sanitisation verbatim and must not
-    contain the '_' that delimits the attribution token."""
+    """``plan_id`` must survive N.I.N.A.'s path sanitisation verbatim.
+
+    It must not contain the '_' that delimits the attribution token.
+    """
 
     def test_accepted_charset(self):
+        """Hyphen- and dot-bearing ids pass validation and keep their exact value."""
         for value in (
             "plan-abc123",
             "plan-a745ffa2357a",  # the shape a real derived id has
@@ -46,6 +51,7 @@ class PlanIdCharsetTest(unittest.TestCase):
                 self.assertEqual(_plan(plan_id=value).plan_id, value)
 
     def test_empty_id_allowed_and_the_derived_id_passes_too(self):
+        """An empty id means "derive on write", and the derived id itself validates."""
         # Empty means "derive one on write"; the id that derivation produces
         # has to be acceptable, or write_plan_file would hand back a file that
         # its own load path then refuses.
@@ -55,6 +61,7 @@ class PlanIdCharsetTest(unittest.TestCase):
         self.assertEqual(_plan(plan_id=derived).plan_id, derived)
 
     def test_underscore_rejected(self):
+        """An underscore is refused because it delimits the attribution token."""
         with self.assertRaises(ValidationError) as ctx:
             _plan(plan_id="m31_lrgb")
         msg = str(ctx.exception)
@@ -62,6 +69,7 @@ class PlanIdCharsetTest(unittest.TestCase):
         self.assertIn("m31_lrgb", msg)
 
     def test_characters_nina_may_rewrite_are_rejected(self):
+        """Characters N.I.N.A. may rewrite on disk (brackets, spaces) are refused."""
         # Brackets are the motivating case (N.I.N.A. turned them into "_" on
         # disk even though NTFS allows them); the rest are refused on the same
         # unproven-charset grounds, "_" excepted for the delimiter reason.
@@ -71,6 +79,7 @@ class PlanIdCharsetTest(unittest.TestCase):
                     _plan(plan_id=value)
 
     def test_error_explains_both_reasons(self):
+        """The refusal message names both the '_' delimiter and the N.I.N.A. rule."""
         with self.assertRaises(ValidationError) as ctx:
             _plan(plan_id="m31_lrgb")
         msg = str(ctx.exception)
@@ -78,21 +87,26 @@ class PlanIdCharsetTest(unittest.TestCase):
         self.assertIn("N.I.N.A.", msg)  # why the rest of the charset is
 
     def test_token_still_built_from_a_valid_id(self):
+        """A valid id round-trips into the attribution token with underscores."""
         plan = _plan(plan_id="m31.lrgb")
         self.assertEqual(plan.attribution_token(1), "_m31.lrgb_")
 
 
 class TargetPrefixTest(unittest.TestCase):
-    """``$$TARGETNAME$$`` writes this into the path, so the prefix is the
-    folder's readable head: ``<target> <intent> [- <label>]``."""
+    """The folder-name head that ``$$TARGETNAME$$`` writes into the path.
+
+    The head is ``<target> <intent> [- <label>]``.
+    """
 
     def test_intent_follows_the_target(self):
+        """The prefix is target plus intent when one is set, target alone if not."""
         self.assertEqual(_plan().target_prefix(), "M31")
         self.assertEqual(
             _plan(intent="Galaxy portrait").target_prefix(), "M31 Galaxy portrait"
         )
 
     def test_label_keeps_its_separator_after_the_intent(self):
+        """A label appends " - <label>" after target and intent."""
         self.assertEqual(_plan().target_prefix("core"), "M31 - core")
         self.assertEqual(
             _plan(intent="Galaxy portrait").target_prefix("core"),
@@ -100,6 +114,7 @@ class TargetPrefixTest(unittest.TestCase):
         )
 
     def test_empty_parts_leave_no_stray_separator(self):
+        """Empty target/intent/label parts leave no leading or doubled separator."""
         # Plans that leave intent unset (the old shape) or a plan with no
         # label must reproduce the pre-intent name verbatim — a leading or
         # doubled separator would be a new folder for the same plan.
@@ -109,12 +124,14 @@ class TargetPrefixTest(unittest.TestCase):
 
     # Flats carry no exposure time: N.I.N.A.'s SkyFlat chooses it.
     def test_flat_spec_is_filter_and_count_only(self):
+        """A flat spec is filter and count only — N.I.N.A.'s SkyFlat picks time."""
         flat = _plan().flat_frames[0]
         self.assertFalse(hasattr(flat, "exposure_time_seconds"))
         self.assertEqual(flat.filter_name, "L")
         self.assertEqual(flat.total_count, 1)
 
     def test_stale_exposure_time_in_a_flat_entry_is_refused(self):
+        """A flat entry with an exposure time is refused, not silently dropped."""
         # A flat entry is filter + count only, so an exposure time on one is
         # a nonconforming plan: it is refused at load rather than dropped,
         # which would let a plan mean something other than what it says.
@@ -131,25 +148,32 @@ class TargetPrefixTest(unittest.TestCase):
 
 
 class UnknownFieldTest(unittest.TestCase):
-    """Every part of a plan file is strict: a key outside the schema is a
-    nonconforming plan (typo or removed field), not something to drop."""
+    """Every part of a plan file is strict about keys outside the schema.
+
+    A stray key (typo or removed field) makes the plan nonconforming and is
+    refused, not dropped.
+    """
 
     def test_unknown_top_level_field_refused(self):
+        """A misspelled top-level key fails validation and is named in the error."""
         with self.assertRaises(ValidationError) as ctx:
             _plan(expossure_window_days=7)
         self.assertIn("expossure_window_days", str(ctx.exception))
 
     def test_unknown_field_in_a_nested_config_refused(self):
+        """An unknown key inside the guiding config is refused and named."""
         with self.assertRaises(ValidationError) as ctx:
             _plan(guiding={"dither_every_n_exposures": 2, "nax_drift_arcmin": 3.0})
         self.assertIn("nax_drift_arcmin", str(ctx.exception))
 
     def test_unknown_field_in_a_frame_spec_refused(self):
+        """A misspelled frame key such as count (vs total_count) is refused."""
         with self.assertRaises(ValidationError) as ctx:
             _plan(dark_frames=[{"exposure_time_seconds": 60.0, "count": 5}])
         self.assertIn("count", str(ctx.exception))
 
     def test_unknown_field_in_a_pointing_refused(self):
+        """A stray ra_deg in a pointing is refused rather than ignored."""
         with self.assertRaises(ValidationError) as ctx:
             _plan(pointings=[{"ra_hours": 0.71, "dec_deg": 41.27, "ra_deg": 10.65}])
         self.assertIn("ra_deg", str(ctx.exception))
@@ -159,6 +183,7 @@ class LoadPlanPlanIdTest(unittest.IsolatedAsyncioTestCase):
     """Both entry points enforce the rule: write (model construction) and load."""
 
     async def test_load_plan_refuses_bad_id(self):
+        """Loading a file with a bad plan_id fails the same way as writing it."""
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "plan.json"
             path.write_text(json.dumps(_payload(plan_id="m31_lrgb")), encoding="utf-8")
@@ -167,6 +192,7 @@ class LoadPlanPlanIdTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn("plan_id", str(ctx.exception))
 
     async def test_load_plan_accepts_recorded_id(self):
+        """A recorded id in the file is loaded back unchanged."""
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "plan.json"
             path.write_text(json.dumps(_payload()), encoding="utf-8")
@@ -197,6 +223,7 @@ class LoadPlanPointingsTest(unittest.IsolatedAsyncioTestCase):
             return await load_plan(str(path))
 
     async def test_never_expanded_mosaic_file_refused_at_load(self):
+        """A hand-edited file with a mosaic block but no pointings is refused."""
         with self.assertRaises(ValueError) as ctx:
             await self._load(_payload(pointings=[], mosaic=self.MOSAIC))
         msg = str(ctx.exception)
@@ -204,6 +231,7 @@ class LoadPlanPointingsTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn("write_plan_file", msg)
 
     async def test_expanded_mosaic_file_loads(self):
+        """The real write_plan_file output (pointings plus mosaic) loads cleanly."""
         # What write_plan_file actually writes: pointings AND the provenance
         # block together — must pass the guard unchanged.
         plan = await self._load(
@@ -216,6 +244,7 @@ class LoadPlanPointingsTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(plan.mosaic.cols, 2)
 
     async def test_pointing_less_file_without_mosaic_still_refused_by_model(self):
+        """A pointing-less file with no mosaic is caught by the model, not the guard."""
         # The other pointing-less shape never reaches the guard: the model
         # validator refuses it first, with its own guidance message.
         with self.assertRaises(ValidationError) as ctx:
@@ -227,6 +256,7 @@ class QualityConfigTest(unittest.TestCase):
     """The plan's `quality` section: the one home of light-frame thresholds."""
 
     def test_defaults_to_no_filtering(self):
+        """Defaults disable every quality threshold (all fields None)."""
         quality = _plan().quality
         self.assertIsNone(quality.max_hfr)
         self.assertIsNone(quality.max_hfr_st_dev)
@@ -234,6 +264,7 @@ class QualityConfigTest(unittest.TestCase):
         self.assertIsNone(quality.max_guiding_rms_arcsec)
 
     def test_plan_written_before_quality_field_still_loads(self):
+        """A plan file with no quality section loads with all thresholds off."""
         # No `quality` key at all — every plan file written before this
         # feature must load and behave exactly as it did.
         payload = _payload()
@@ -250,6 +281,7 @@ class QualityConfigTest(unittest.TestCase):
         )
 
     def test_quality_section_round_trips(self):
+        """Quality thresholds survive a JSON round-trip through write/load."""
         plan = _plan(quality={"max_hfr": 2.5, "max_hfr_st_dev": 0.6})
         self.assertEqual(plan.quality.max_hfr, 2.5)
         self.assertEqual(plan.quality.max_hfr_st_dev, 0.6)
@@ -260,6 +292,7 @@ class QualityConfigTest(unittest.TestCase):
         self.assertEqual(again.quality.max_hfr_st_dev, 0.6)
 
     def test_unknown_quality_key_refused(self):
+        """A typo'd threshold key is refused rather than silently ignored."""
         # extra="forbid": a typo'd threshold must not silently mean "off",
         # or a plan would count frames under rules nobody wrote down.
         with self.assertRaises(ValidationError) as ctx:
@@ -267,12 +300,14 @@ class QualityConfigTest(unittest.TestCase):
         self.assertIn("max_adu", str(ctx.exception))
 
     def test_quality_value_type_enforced(self):
+        """Non-numeric HFR and fractional star counts are refused by typing."""
         with self.assertRaises(ValidationError):
             _plan(quality={"max_hfr": "sharp"})
         with self.assertRaises(ValidationError):
             _plan(quality={"min_detected_stars": 1.5})
 
     def test_explicit_plan_id_unaffected_by_quality(self):
+        """Adding quality thresholds never re-derives an explicit plan_id."""
         # The guarantee real plan files lean on: an explicit id is returned
         # as-is, so adding thresholds to a written plan can never re-derive
         # its id and orphan the frames already attributed to it.
@@ -293,35 +328,42 @@ class GuidingConfigTest(unittest.TestCase):
     """
 
     def test_zero_dither_means_never_dither(self):
+        """A dither interval of 0 is accepted and means never dither."""
         guiding = _plan(guiding={"dither_every_n_exposures": 0}).guiding
         self.assertEqual(guiding.dither_every_n_exposures, 0)
 
     def test_negative_dither_refused(self):
+        """A negative dither interval fails validation and is named."""
         with self.assertRaises(ValidationError) as ctx:
             _plan(guiding={"dither_every_n_exposures": -1})
         self.assertIn("dither_every_n_exposures", str(ctx.exception))
 
     def test_drift_thresholds_still_must_be_positive(self):
+        """The drift thresholds reject 0: zero would mean check constantly."""
         with self.assertRaises(ValidationError):
             _plan(guiding={"check_drift_every_n_exposures": 0})
         with self.assertRaises(ValidationError):
             _plan(guiding={"max_drift_arcmin": 0})
 
     def test_defaults_unchanged(self):
+        """Defaults: dither every 2 frames, check drift every 6, 1.5 arcmin."""
         guiding = _plan().guiding
         self.assertEqual(guiding.dither_every_n_exposures, 2)
         self.assertEqual(guiding.check_drift_every_n_exposures, 6)
         self.assertEqual(guiding.max_drift_arcmin, 1.5)
 
     def test_guiding_round_trips_through_json(self):
+        """A zero dither interval survives a JSON round-trip."""
         plan = _plan(guiding={"dither_every_n_exposures": 0})
         again = ObservationPlan.model_validate(json.loads(plan.model_dump_json()))
         self.assertEqual(again.guiding.dither_every_n_exposures, 0)
 
 
 class MosaicBlockTest(unittest.TestCase):
-    """The `mosaic` block: a plan may carry a grid to derive instead of
-    pointings — and once expanded, the pointings are the authority."""
+    """The ``mosaic`` block: a grid a plan may carry instead of pointings.
+
+    Once expanded, the pointings are the authority.
+    """
 
     MOSAIC = {
         "center_ra_hours": 20.981667,
@@ -331,6 +373,7 @@ class MosaicBlockTest(unittest.TestCase):
     }
 
     def test_mosaic_without_pointings_is_valid(self):
+        """A mosaic block is valid; derived grid fields stay None until stamped."""
         plan = _plan(pointings=[], mosaic=self.MOSAIC)
         self.assertEqual(plan.pointings, [])
         self.assertEqual(plan.mosaic.coverage_width_arcmins, 130.0)
@@ -345,6 +388,7 @@ class MosaicBlockTest(unittest.TestCase):
         self.assertIsNone(plan.mosaic.pane_fov_arcmins)
 
     def test_empty_pointings_without_mosaic_refused(self):
+        """A plan pointing nowhere is refused at construction, naming mosaic."""
         # A plan that points nowhere is refused at construction, not later
         # as a sequence with nothing to slew to.
         with self.assertRaises(ValidationError) as ctx:
@@ -352,6 +396,7 @@ class MosaicBlockTest(unittest.TestCase):
         self.assertIn("mosaic", str(ctx.exception))
 
     def test_omitted_pointings_with_mosaic_is_valid(self):
+        """Omitting pointings with a mosaic hashes the same as writing [] by hand."""
         # The natural form: give the mosaic, say nothing about pointings.
         # pydantic fills [] before serialization, so the content hash — and
         # therefore the plan_id — is identical to writing "pointings": []
@@ -367,6 +412,7 @@ class MosaicBlockTest(unittest.TestCase):
         )
 
     def test_omitted_pointings_without_mosaic_names_the_fix(self):
+        """An omitted pointings key gets the same mosaic-naming guidance as []."""
         # Omitting the key with no mosaic gets the same guidance as an
         # explicit [] — the message names the two ways to point the plan,
         # not just that the field is missing.
@@ -377,6 +423,7 @@ class MosaicBlockTest(unittest.TestCase):
         self.assertIn("mosaic", str(ctx.exception))
 
     def test_mosaic_and_pointings_together_load_and_pointings_win(self):
+        """With both present the written file loads and expanded pointings win."""
         # What every written mosaic file looks like: it must load, and the
         # expanded pointings are the authority — nothing re-derives.
         plan = _plan(
@@ -395,6 +442,7 @@ class MosaicBlockTest(unittest.TestCase):
         self.assertEqual(again.mosaic.cols, 3)
 
     def test_mosaic_field_bounds(self):
+        """Every mosaic numeric field enforces its declared range at load."""
         bad = [
             {"center_ra_hours": 24.0},  # hours are [0, 24)
             {"center_dec_deg": 91.0},
@@ -411,6 +459,7 @@ class MosaicBlockTest(unittest.TestCase):
                     _plan(pointings=[], mosaic={**self.MOSAIC, **override})
 
     def test_unknown_mosaic_key_refused(self):
+        """A typo'd mosaic key is refused rather than silently ignored."""
         # extra="forbid": a typo'd field must not silently be ignored, or
         # the mosaic would cover something other than what was written.
         with self.assertRaises(ValidationError) as ctx:
@@ -418,6 +467,7 @@ class MosaicBlockTest(unittest.TestCase):
         self.assertIn("ovrlap_pct", str(ctx.exception))
 
     def test_mosaic_requires_center_and_coverage(self):
+        """Each of the center and coverage fields is required individually."""
         for missing in ("center_ra_hours", "center_dec_deg", "coverage_width_arcmins"):
             with self.subTest(missing=missing):
                 mosaic = dict(self.MOSAIC)

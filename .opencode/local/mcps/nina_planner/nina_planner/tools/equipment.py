@@ -1,3 +1,5 @@
+"""Equipment and profile MCP tools: status, site, filters, safety and weather."""
+
 import json
 from collections.abc import Set as AbstractSet
 from datetime import datetime

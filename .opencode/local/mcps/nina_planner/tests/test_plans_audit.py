@@ -63,6 +63,7 @@ class AuditBase(unittest.IsolatedAsyncioTestCase):
     """Tmp project dir + landing root with metadata patched over."""
 
     def setUp(self):
+        """Create the tmp project dir and landing root for one test."""
         self._tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self._tmp.cleanup)
         base = Path(self._tmp.name)
@@ -73,6 +74,7 @@ class AuditBase(unittest.IsolatedAsyncioTestCase):
         self.rows: list[dict] = []
 
     def write_plan(self, plan: ObservationPlan, name: str = "m31.json") -> Path:
+        """Write a plan JSON into the project dir and return its path."""
         path = self.proj / name
         path.write_text(plan.model_dump_json(indent=2), encoding="utf-8")
         return path
@@ -80,6 +82,7 @@ class AuditBase(unittest.IsolatedAsyncioTestCase):
     def frame(
         self, token_dir: str, image_type: str, name: str = "f_0000.fits.fz"
     ) -> Path:
+        """Write an empty frame file under a token dir on the landing root."""
         directory = self.root / token_dir / "2026-09-20" / image_type
         directory.mkdir(parents=True, exist_ok=True)
         path = directory / name
@@ -143,6 +146,7 @@ class AuditBase(unittest.IsolatedAsyncioTestCase):
         return plan
 
     def patch_metadata(self):
+        """Patch root resolution and metadata reads onto the seeded rows."""
         root = self.root
         rows = self.rows
 
@@ -161,16 +165,19 @@ class AuditBase(unittest.IsolatedAsyncioTestCase):
         )
 
     async def audit(self, **kwargs):
+        """Run audit_plans with metadata patched, returning its result dict."""
         p1, p2 = self.patch_metadata()
         with p1, p2:
             return await _call(plans_mod.audit_plans, **kwargs)
 
     async def progress(self, plan_path):
+        """Run get_plan_progress with metadata patched, returning its result."""
         p1, p2 = self.patch_metadata()
         with p1, p2:
             return await _call(plans_mod.get_plan_progress, plan_path)
 
     def row_by(self, result, image_type: str, pointing_index=None):
+        """Fetch the single result row for a type and optional pointing."""
         matches = [
             r
             for r in result["rows"]
@@ -181,7 +188,10 @@ class AuditBase(unittest.IsolatedAsyncioTestCase):
 
 
 class AuditTest(AuditBase):
+    """Verdicts from audit_plans: status rows, left_to_do, and totals."""
+
     async def test_all_synced_is_all_saved(self):
+        """A fully synced capture set audits as all_saved with OK rows."""
         self.seed_full()
 
         res = await self.audit(project_dir=str(self.proj))
@@ -204,6 +214,7 @@ class AuditTest(AuditBase):
 
     async def test_missing_files_reported_as_left_to_do(self):
         # CSV and disk agree on 15 of 20 — frames are genuinely absent.
+        """Genuinely absent frames surface as MISSING_FILES in left_to_do."""
         self.seed_full(light_rows=15, light_files=15)
 
         res = await self.audit(project_dir=str(self.proj))
@@ -227,6 +238,7 @@ class AuditTest(AuditBase):
         # verdict that could advise against re-shooting.
         # BAD_-rejected frames do not land here: their CSV row is dropped by
         # the file-exists gate once renamed, and they surface via `bad`.
+        """An unrecorded deficit falls to the safe MISSING_FILES verdict."""
         self.seed_full(light_rows=15, light_files=20)
 
         res = await self.audit(project_dir=str(self.proj))
@@ -246,6 +258,7 @@ class AuditTest(AuditBase):
         # frame never reaches `attributed`. The light row's `bad` count is
         # the only place that names why: 19 good + 1 rejected file, 19 CSV
         # rows, one genuine gap.
+        """A BAD_ rename counts as bad and never attributed: a genuine gap."""
         self.seed_full(light_rows=19, light_files=19)
         self.frame(_TOKEN, "LIGHT", "BAD_l_0019.fits.fz")
 
@@ -262,6 +275,7 @@ class AuditTest(AuditBase):
         # Bias shot under a DIFFERENT plan's token dir, credited plan-wide:
         # attributed reaches expected from the pool while this plan's own
         # recorded bias frames (own_rows) stay at zero.
+        """Another dir's bias rows credit plan-wide while own_rows stays 0."""
         self.seed_full(skip={"bias"})
         self.rows += [
             _row(
@@ -290,6 +304,7 @@ class AuditTest(AuditBase):
         # alone and so cannot fail on exposure. The plan asks for 60.0s
         # darks; another plan's 60.0s darks satisfy it, and OUR token then
         # holds no dark rows at all, which is what POOL_CREDITED says.
+        """Another plan's same-exposure darks credit the pool, token-free."""
         self.seed_full(skip={"dark"})
         self.rows += [
             _row(image_type="DARK", target="Other _plan-999999_", duration="60.0")
@@ -314,6 +329,7 @@ class AuditTest(AuditBase):
         # calibration, so nothing is credited and the deficit is real.
         # own_rows stays 0 either way — it is the absence of OUR rows, not
         # the presence of someone else's, that POOL_CREDITED keys on.
+        """Pooled darks at the wrong exposure credit nothing; the deficit is real."""
         self.seed_full(skip={"dark"})
         self.rows += [
             _row(image_type="DARK", target="Other _plan-999999_", duration="300.0")
@@ -340,6 +356,7 @@ class AuditTest(AuditBase):
         # row's own image_type, with no pooled matcher involved — and since
         # 4 < expected the row stays POOL_CREDITED: the pool is still what
         # carries the plan to 10/10.
+        """The own_rows count takes only our token's darks, never pooled."""
         self.seed_full(skip={"dark"})
         for i in range(6):
             self.rows.append(
@@ -365,6 +382,7 @@ class AuditTest(AuditBase):
         # deficit can never be credited again. Anchored by offset, not by
         # `replace(day=1)`: on the 1st–7th of a month day#1 is inside the
         # window and the fixture stops meaning "expired".
+        """An expired window with remaining 0 is still flagged EXPIRED."""
         old = (datetime.now(UTC) - timedelta(days=10)).strftime("%Y-%m-%dT%H:%M:%SZ")
         now = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
         self.seed_full(exposure_start=old, skip={"dark"})
@@ -392,6 +410,7 @@ class AuditTest(AuditBase):
         # our token dirs → SUSPECT_JUNK.
         # Darks: junk is excluded the same way, but no good surplus exists,
         # leaving a genuine 2-frame deficit → re-shoot with junk as cause.
+        """Junk lights still complete attribution; junk darks force a re-shoot."""
         self.seed_full(light_junk=2, light_rows=22, light_files=22, skip={"dark"})
         self.rows += [
             _row(image_type="DARK", duration=("0.00003" if i < 2 else "60.0"))
@@ -419,6 +438,7 @@ class AuditTest(AuditBase):
         self.assertFalse(res["all_saved"])
 
     async def test_full_mode_overshoot_is_harmless(self):
+        """Extra frames read OVERSHOT and never break all_saved."""
         self.seed_full(light_rows=25, light_files=25)
 
         res = await self.audit(project_dir=str(self.proj))
@@ -430,6 +450,7 @@ class AuditTest(AuditBase):
         self.assertEqual(res["left_to_do"], [])
 
     async def test_orphan_token_dir_reported(self):
+        """Frames under a deleted plan's token are reported as orphans only."""
         self.seed_full()
         # Frames from a plan file that no longer exists (the Oct-19 incident).
         for i in range(3):
@@ -448,6 +469,7 @@ class AuditTest(AuditBase):
         # under any other folder name vanished from the count and the audit
         # read as "no fits images" for a directory that plainly held them.
         # The parent name is now only a bucket label, never a gate.
+        """Frames in a non-type folder still count; the folder name is no gate."""
         self.seed_full()
         # Orphan frames in a folder named after a frame type nobody asks for:
         odd = self.root / "Ghost _plan-deadbeef_" / "2026-09-20" / "LIGHTS"
@@ -473,6 +495,7 @@ class AuditTest(AuditBase):
         self.assertTrue(res["all_saved"])
 
     async def test_dead_mount_raises_never_empty_counts(self):
+        """A dead mount raises the FileNotFoundError instead of empty counts."""
         self.seed_full()
 
         async def _resolve():
@@ -494,6 +517,7 @@ class AuditTest(AuditBase):
         self.assertIn("NINA_DRIVE_MOUNT", str(ctx.exception))
 
     async def test_types_filter_and_mosaic_panes(self):
+        """Mosaic panes attribute per -N token and the types filter narrows rows."""
         plan = _plan(
             plan_id="plan-abc123",
             pointings=[
@@ -526,6 +550,7 @@ class AuditTest(AuditBase):
         self.assertEqual({r["type"] for r in filtered["rows"]}, {"bias"})
 
     async def test_no_plan_files_warns(self):
+        """An empty project warns, with nothing owed and no root resolved."""
         res = await self.audit(project_dir=str(self.proj))
         self.assertIn("warning", res)
         self.assertEqual(res["rows"], [])
@@ -537,6 +562,7 @@ class AuditTest(AuditBase):
         # Left join: a file the CSV never references is nobody's problem —
         # junk/unparseable JSON (config files, "{ not json") must not break
         # the verdict or surface as a plan error. The good plan still audits.
+        """Unreferenced junk JSON is dropped; the good plan still audits."""
         self.seed_full()
         (self.proj / "broken.json").write_text("{ not json", encoding="utf-8")
 
@@ -551,6 +577,7 @@ class AuditTest(AuditBase):
         # Frames in the CSV reference plan-broken1, and its file fails to
         # load with no loadable twin → those frames cannot be audited.
         # (Reported ONCE as the load failure, not double-counted as a gap.)
+        """A referenced plan file that fails to load is reported once as an error."""
         self.seed_full()
         (self.proj / "broken.json").write_text(
             '{"plan_id": "plan-broken1", "target": "M42"}', encoding="utf-8"
@@ -571,6 +598,7 @@ class AuditTest(AuditBase):
     async def test_corrupt_duplicate_with_valid_twin_is_not_error(self):
         # A corrupt file whose id a valid plan file still serves: the
         # frames are fully auditable → not an error, verdict unaffected.
+        """A corrupt duplicate with a valid twin is not an error."""
         self.seed_full()
         (self.proj / "broken.json").write_text(
             '{"plan_id": "plan-abc123", "target": "M31"}', encoding="utf-8"
@@ -586,6 +614,7 @@ class AuditTest(AuditBase):
         # Left side of the join: the CSV references plan-deadbeef but no
         # plan file claims it (deleted plan). Frames exist → error, and no
         # phantom row can be fabricated for it (expected is unknowable).
+        """Frames referencing a deleted plan id are a gap error, not a row."""
         self.seed_full()
         self.rows += [_row(target="Ghost _plan-deadbeef_") for _ in range(3)]
 
@@ -602,6 +631,7 @@ class AuditTest(AuditBase):
         # path carries no plan token at all (a FilePattern without
         # $$TARGETNAME$$). Nothing can ever claim them, so they are owed
         # work — reported as a gap with a null plan id, not silently dropped.
+        """Untokened light frames are a gap error with a null plan id."""
         self.seed_full()
         self.rows += [_row(target="Untokened target") for _ in range(2)]
 
@@ -618,6 +648,7 @@ class AuditTest(AuditBase):
         # the frames that DO exist name an id no file serves: there is no
         # row to build, so the report must say the load found nothing to
         # audit rather than implying an empty-but-clean sweep.
+        """Frames naming an id no file serves leave nothing to audit: warn."""
         self.write_plan(_plan())
         self.rows += [_row(target="Ghost _plan-deadbeef_") for _ in range(5)]
 
@@ -629,6 +660,7 @@ class AuditTest(AuditBase):
         self.assertFalse(res["all_saved"])
 
     async def test_unknown_type_filter_is_rejected(self):
+        """An unknown type in the filter is rejected, naming the accepted set."""
         with self.assertRaises(ValueError) as ctx:
             await self.audit(project_dir=str(self.proj), types=["light", "flats"])
         message = str(ctx.exception)
@@ -639,6 +671,7 @@ class AuditTest(AuditBase):
     async def test_relative_project_dir_is_rooted_at_the_project_root(self):
         # A caller may name the plan dir the way the CLI does ("plans"),
         # which must resolve under PROJECT_DIR — not under the process cwd.
+        """A relative project_dir resolves under PROJECT_DIR, not the cwd."""
         self.seed_full()
         sub = self.proj / "plans"
         sub.mkdir()
@@ -653,12 +686,14 @@ class AuditTest(AuditBase):
     def test_written_iso_of_a_missing_file_is_none(self):
         # A plan that vanishes between load and stat must yield a null
         # `written`, not an exception that fails the whole listing.
+        """A plan file vanishing before stat yields a null written, no raise."""
         self.assertIsNone(plans_mod._written_iso(self.proj / "gone.json"))
 
     async def test_overshoot_and_expired_window_warnings_are_joined(self):
         # Both warnings can be true of one plan — a mode=full re-shoot that
         # overshot the light total while an older calibration window closed
         # short. Neither may silently replace the other.
+        """Overshoot and expiry warnings are both surfaced, never replaced."""
         old = (datetime.now(UTC) - timedelta(days=10)).strftime("%Y-%m-%dT%H:%M:%SZ")
         self.seed_full(light_rows=25, exposure_start=old, skip={"bias"})
 
@@ -679,6 +714,7 @@ class AuditTest(AuditBase):
         # is the Oct-24 blind spot: the audit showed two 1-frame deficits
         # while six whole unshot plans (240 frames) waited, found only by
         # diffing list_plans by hand.
+        """An unshot plan is surfaced as never_shot, not silently hidden."""
         self.seed_full()
         self.write_plan(
             _plan(
@@ -715,6 +751,7 @@ class AuditTest(AuditBase):
         # A mosaic is acquired pane by pane, so its NEVER_SHOT work list is
         # per-pane (missing = that pane's ask) while never_shot stays one
         # plan-level entry carrying the total.
+        """A never-shot mosaic lists per-pane work under one plan entry."""
         self.seed_full()
         self.write_plan(
             _plan(
@@ -742,6 +779,7 @@ class AuditTest(AuditBase):
     async def test_never_shot_deduped_by_plan_id(self):
         # Two files carry the same plan id (live plan + archived copy),
         # neither shot: one report, from the shallowest file — not two.
+        """Duplicate plan ids report once, from the shallowest file."""
         self.seed_full()
         self.write_plan(_plan(plan_id="plan-fresh1", target="M99"), name="fresh.json")
         (self.proj / "archive").mkdir()
@@ -762,6 +800,7 @@ class AuditTest(AuditBase):
         # Nothing referenced at all: no rows, but the early-return branch
         # reports the same never_shot/left_to_do — an all-unshot project is
         # 100% outstanding work, not an empty audit.
+        """An all-unshot project is full outstanding work, not an empty audit."""
         self.write_plan(_plan(target="M31"), name="m31.json")
 
         res = await self.audit(project_dir=str(self.proj))
@@ -782,6 +821,7 @@ class AuditTest(AuditBase):
         # attribution count itself, not from remaining, which is simply
         # expected - attributed and cannot tell untried work from a
         # partial deficit.
+        """Naming an unshot plan audits it as NEVER_SHOT, not a duplicate entry."""
         self.seed_full()
         self.write_plan(_plan(plan_id="plan-fresh1", target="M99"), name="fresh.json")
 
@@ -802,6 +842,7 @@ class AuditTest(AuditBase):
         # flat/dark/bias rows has never had a light acquired — it must
         # report as never-shot, not get joined into `audited` by its own
         # darks and vanish into per-type deficits.
+        """A plan referenced only by calibration rows is still never-shot."""
         self.seed_full(skip={"light"})
         # seed_full(skip=light) left 10 darks + 10 flats + 10 bias rows,
         # all carrying _plan-abc123_: enough to reference the plan under
@@ -824,6 +865,7 @@ class AuditTest(AuditBase):
         # named as untried work — while pane 1 reads OK. Judged from the
         # per-pointing attribution counts, not from remaining (which both
         # panes could satisfy with different histories).
+        """An unshot pane among shot panes reads NEVER_SHOT, the other OK."""
         plan = _plan(
             plan_id="plan-mosaic2",
             target="M33",
@@ -855,6 +897,7 @@ class AuditTest(AuditBase):
     async def test_nested_plan_file_is_discovered(self):
         # Discovery is recursive: a plan in a subfolder joins the audit the
         # same way a flat one does (CSV references it → audited).
+        """A plan nested in a subfolder joins the audit like a flat one."""
         (self.proj / "archive").mkdir()
         self.write_plan(
             _plan(plan_id="plan-nest1", target="M51"), name="archive/m51.json"
@@ -871,6 +914,7 @@ class AuditTest(AuditBase):
         # A nested archived copy shares the live plan's id: the top-level
         # file must define the audit (20 lights), not the archive (99), and
         # the pair must not be double-audited.
+        """The shallowest duplicate id defines the audit; no double-count."""
         self.seed_full()
         dup = _plan(
             plan_id="plan-abc123",
@@ -895,6 +939,7 @@ class AuditTest(AuditBase):
         # must not surface as an unshot 20-frame plan (one target's work,
         # counted twice). Live case: NGC 1931's Oct-24 drift-threshold
         # rewrite beside its Oct-23 original.
+        """A rewritten twin sharing an id is not reported as never-shot."""
         self.seed_full()
         self.write_plan(
             _plan(
@@ -926,6 +971,7 @@ class AuditTest(AuditBase):
         # prefixed so `bad` is what proves the token-dir prune — with the
         # disk-vs-CSV cross-check gone, `bad` is the only field fed by the
         # walk of this plan's own files.
+        """Hidden dirs like .snapshot and .Trashes never count nor orphan."""
         self.seed_full()  # 20 lights on disk
         # BAD_-prefixed copy inside the token dir -> must NOT reach `bad`
         snap = self.root / _TOKEN / ".snapshot" / "2026-09-20" / "LIGHT"
@@ -946,7 +992,10 @@ class AuditTest(AuditBase):
 
 
 class ListPlansTest(AuditBase):
+    """Plan listing via list_plans: entries, errors, and pruning."""
+
     async def test_lists_and_reports_broken_files(self):
+        """The listing returns loadable plans and reports broken files once."""
         self.write_plan(_plan(target="M31", intent="Galaxy"), name="m31.json")
         self.write_plan(
             _plan(plan_id="plan-555555", target="M42", intent="Nebula"),
@@ -973,6 +1022,7 @@ class ListPlansTest(AuditBase):
         # node_modules / hidden dirs are never searched (the project dir
         # holds the agent's own installation: hundreds of package JSONs),
         # nested plans are found, and top-level files come first.
+        """Pruned junk dirs never load; nested plans come after top-level."""
         self.write_plan(_plan(target="M31", intent="Galaxy"), name="m31.json")
         (self.proj / "archive").mkdir()
         self.write_plan(
@@ -994,6 +1044,7 @@ class ListPlansTest(AuditBase):
         self.assertEqual(res["errors"], [])  # pruned files never load, so never error
 
     async def test_relative_project_dir_is_rooted_at_the_project_root(self):
+        """A relative project_dir resolves under PROJECT_DIR, not the cwd."""
         (self.proj / "nested").mkdir()
         self.write_plan(_plan(target="M31"), name="nested/m31.json")
 
@@ -1006,6 +1057,7 @@ class ListPlansTest(AuditBase):
     async def test_written_is_none_when_the_file_vanishes_before_stat(self):
         # A plan deleted between the load pass and the mtime read is a
         # listing entry with `written: null`, not a failed call.
+        """A plan deleted before the mtime read lists with a null written."""
         ghost = self.proj / "ghost.json"
         plan = _plan()
 

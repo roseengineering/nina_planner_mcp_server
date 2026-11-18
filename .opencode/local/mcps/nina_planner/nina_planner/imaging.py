@@ -1,3 +1,12 @@
+"""Read and attribute the imaging tree's ``ImageMetaData.csv`` records.
+
+Frames are discovered by walking the profile's image save path for visible
+directories only (hidden/tool/snapshot trees are pruned), and a row whose
+recorded file is no longer on disk is dropped so no frame is credited that
+nobody can open. Windows drive paths are mapped onto this host through
+``NINA_DRIVE_MOUNT``.
+"""
+
 from __future__ import annotations
 
 import csv
@@ -54,6 +63,13 @@ def visible_rglob(root: Path, name: str) -> list[Path]:
 
 
 def windows_to_local(windows_path: str, drive_mount: str | None = None) -> Path:
+    r"""Map a Windows path onto this host's filesystem.
+
+    On Windows the path is returned unchanged; elsewhere a drive-rooted path
+    (``Z:\\landing\\...``) is rebased under ``drive_mount`` (defaulting to
+    ``NINA_DRIVE_MOUNT``, else ``/mnt/<drive>``). Drive-less paths pass
+    through verbatim. No I/O is performed — the mount need not exist yet.
+    """
     if sys.platform == "win32":
         return Path(windows_path)
     win = PureWindowsPath(windows_path)

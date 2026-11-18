@@ -1,3 +1,5 @@
+"""Tests for the sequence generator: builders, batching, and payloads."""
+
 import unittest
 from dataclasses import dataclass
 from typing import Any
@@ -59,8 +61,10 @@ def _profile() -> ObservatoryProfile:
 
 
 def _park_equipment() -> ObservatoryEquipment:
-    """The best case for the teardown builders: a mount that can park and a
-    camera that can cool."""
+    """The best case for the teardown builders: a mount that can park.
+
+    A camera that can cool completes the pair teardown acts on.
+    """
     return ObservatoryEquipment(
         mount=MountDevice(connected=True, name="m", can_park=True),
         camera=CameraDevice(connected=True, name="cam", can_set_temperature=True),
@@ -75,8 +79,10 @@ class _Exp:
 
 
 class RoundRobinBatchingTest(unittest.TestCase):
-    """Covers the ``_round_robin`` batching algorithm in ``sequence/nodes.py``
-    — the one grouping left in the generator, used by lights only."""
+    """Covers the ``_round_robin`` batching algorithm in ``sequence/nodes.py``.
+
+    The one grouping left in the generator, used by lights only.
+    """
 
     def test_unbatched_emits_full_sequence(self):
         """batch_size=0 → unbatched: emits the full count for each filter."""
@@ -87,8 +93,10 @@ class RoundRobinBatchingTest(unittest.TestCase):
         self.assertEqual(result, [(5, 60.0, "L"), (3, 60.0, "R")])
 
     def test_single_filter_special_cases_to_full_count(self):
-        """len(exposures) == 1 → emits the full count regardless of batch_size
-        (single-filter batched is meaningless)."""
+        """A single filter emits its full count regardless of batch_size.
+
+        Single-filter batched is meaningless.
+        """
         from nina_planner.sequence import _round_robin
 
         exps = [_Exp("L", 60.0, 5)]
@@ -117,16 +125,21 @@ class RoundRobinBatchingTest(unittest.TestCase):
 
 
 class ContainerDefaultsTest(unittest.TestCase):
-    """Container helpers normalize omitted lists to empty ``$values`` lists
-    (the normalization lives in ``_container_base``)."""
+    """Container helpers normalize omitted lists to empty ``$values`` lists.
+
+    The normalization lives in ``_container_base``.
+    """
 
     def _assert_empty_values_list(self, container_func, field_name):
-        """When the field is None, the resulting dict contains a _values
-        wrapper with $values=[]."""
+        """When the field is None, the result still holds ``$values=[]``.
+
+        None arrives as the ``_values`` wrapper around the empty list.
+        """
         result = container_func()
         self.assertEqual(result[field_name]["$values"], [])
 
     def test_container_base_default_empty_conditions(self):
+        """``_container_base`` defaults Conditions to an empty ``$values`` list."""
         from nina_planner.sequence import _container_base
 
         self._assert_empty_values_list(
@@ -134,8 +147,10 @@ class ContainerDefaultsTest(unittest.TestCase):
         )
 
     def test_container_base_default_empty_items(self):
-        """_container_base uses key 'Items' (not 'Instructions') for the
-        instructions list."""
+        """``_container_base`` uses the key ``Items``, not ``Instructions``.
+
+        That key holds the container's instructions list in the JSON.
+        """
         from nina_planner.sequence import _container_base
 
         self._assert_empty_values_list(
@@ -143,6 +158,7 @@ class ContainerDefaultsTest(unittest.TestCase):
         )
 
     def test_container_base_default_empty_triggers(self):
+        """``_container_base`` defaults Triggers to an empty ``$values`` list."""
         from nina_planner.sequence import _container_base
 
         self._assert_empty_values_list(
@@ -150,6 +166,7 @@ class ContainerDefaultsTest(unittest.TestCase):
         )
 
     def test_container_base_explicit_values_preserved(self):
+        """Explicit conditions, triggers, and instructions survive normalization."""
         from nina_planner.sequence import _container_base
 
         sentinel = {"$ref": "42"}
@@ -171,24 +188,28 @@ class ContainerDefaultsTest(unittest.TestCase):
         self.assertEqual(result["Items"]["$values"], [])
 
     def test_container_start_default_items(self):
+        """``container_start`` defaults Items to an empty ``$values`` list."""
         from nina_planner.sequence import container_start
 
         result = container_start()
         self.assertEqual(result["Items"]["$values"], [])
 
     def test_container_target_default_items(self):
+        """``container_target`` defaults Items to an empty ``$values`` list."""
         from nina_planner.sequence import container_target
 
         result = container_target()
         self.assertEqual(result["Items"]["$values"], [])
 
     def test_container_end_default_items(self):
+        """``container_end`` defaults Items to an empty ``$values`` list."""
         from nina_planner.sequence import container_end
 
         result = container_end()
         self.assertEqual(result["Items"]["$values"], [])
 
     def test_container_sequential_default_items(self):
+        """``container_sequential`` defaults its three lists to empty."""
         from nina_planner.sequence import container_sequential
 
         result = container_sequential()
@@ -197,12 +218,14 @@ class ContainerDefaultsTest(unittest.TestCase):
         self.assertEqual(result["Items"]["$values"], [])
 
     def test_container_deepsky_default_items(self):
+        """``container_deepsky`` defaults Items to an empty ``$values`` list."""
         from nina_planner.sequence import container_deepsky
 
         result = container_deepsky(name="DSO", target="M31", ra=5.0, dec=10.0, posang=0)
         self.assertEqual(result["Items"]["$values"], [])
 
     def test_safetynet_defaults_none_instructions_and_conditions(self):
+        """Omitted ``None`` args arrive at container_sequential as lists."""
         from nina_planner.sequence import sequence_safetynet
 
         # Callers pass one or the other (lights: conditions+triggers, flats:
@@ -225,6 +248,7 @@ class ContainerDefaultsTest(unittest.TestCase):
         self.assertEqual(ends[0]["InstructionSetName"], "Image Object")
 
     def test_container_deepsky_explicit_lists_are_preserved(self):
+        """Explicit lists on ``container_deepsky`` are preserved as given."""
         from nina_planner.sequence import container_deepsky
 
         result = container_deepsky(
@@ -243,7 +267,10 @@ class ContainerDefaultsTest(unittest.TestCase):
 
 
 class ReferenceNormalizationTest(unittest.TestCase):
+    """``_add_refs`` assigns ``$id``s and wires the ``Parent`` references."""
+
     def test_container_with_instructions_keeps_its_parent_reference(self):
+        """A container with Instructions keeps Parent on itself and its child."""
         from nina_planner.sequence import _add_refs
 
         result = _add_refs(
@@ -332,11 +359,14 @@ class ReferenceNormalizationTest(unittest.TestCase):
 
 
 class PointingIndexValidationTest(unittest.TestCase):
-    """pointing_index out-of-range on the lights path: both the payload and
-    the container builder it delegates to raise ValueError naming the index,
-    the pointing count, and the valid range — never a bare IndexError."""
+    """Out-of-range ``pointing_index`` on the lights path raises ValueError.
+
+    Both the payload and the container builder it delegates to name the
+    index, the pointing count, and the valid range — never a bare IndexError.
+    """
 
     def test_pointing_index_zero_raises(self):
+        """A pointing_index of 0 is below the 1-based range, so ValueError."""
         from sequence_helpers import build_sequence_lights
 
         plan = _plan()
@@ -349,6 +379,7 @@ class PointingIndexValidationTest(unittest.TestCase):
             )
 
     def test_pointing_index_too_high_raises(self):
+        """A pointing_index past the plan's pointings raises ValueError."""
         from sequence_helpers import build_sequence_lights
 
         plan = _plan()
@@ -361,9 +392,11 @@ class PointingIndexValidationTest(unittest.TestCase):
             )
 
     def test_sequence_deepsky_rejects_out_of_range_index(self):
-        """sequence_deepsky is the one place that indexes plan.pointings by a
-        caller-supplied index, so it validates even when called directly
-        (not only via target_payload_lights)."""
+        """``sequence_deepsky`` validates a caller-supplied index directly.
+
+        It is the one place that indexes ``plan.pointings`` by caller input,
+        so it must raise even when called outside ``target_payload_lights``.
+        """
         from nina_planner.sequence import sequence_deepsky
 
         plan = _plan()
@@ -376,6 +409,7 @@ class PointingIndexValidationTest(unittest.TestCase):
             )
 
     def test_sequence_deepsky_accepts_valid_index(self):
+        """The in-range index 1 yields the plan's single pointing target."""
         from nina_planner.sequence import sequence_deepsky
 
         plan = _plan()
@@ -387,7 +421,8 @@ class PointingIndexValidationTest(unittest.TestCase):
 
         ObservationPlan forbids the empty list (no mosaic block to derive
         pointings from); clearing it directly is what reaches this defensive
-        branch."""
+        branch.
+        """
         from sequence_helpers import build_sequence_lights
 
         from nina_planner.sequence import sequence_deepsky
@@ -413,8 +448,10 @@ class PointingIndexValidationTest(unittest.TestCase):
 
 
 class JsonTemplateBuildersTest(unittest.TestCase):
-    """Pin the CLR ``$type`` names and key fields of the one-line template
-    wrappers — a N.I.N.A. type rename must be caught here."""
+    """Pin the CLR ``$type`` names and key fields of the template wrappers.
+
+    A N.I.N.A. type rename must be caught here.
+    """
 
     def _assert_clr_type(self, result, expected_substring):
         self.assertIn("$type", result)
@@ -423,16 +460,19 @@ class JsonTemplateBuildersTest(unittest.TestCase):
     # ---- mount ----
 
     def test_connect_all_equipment(self):
+        """The connect wrapper emits the ConnectAllEquipment CLR type."""
         from nina_planner.sequence import connect_all_equipment
 
         self._assert_clr_type(connect_all_equipment(), "ConnectAllEquipment")
 
     def test_unpark_scope(self):
+        """The unpark wrapper emits the UnparkScope CLR type."""
         from nina_planner.sequence import unpark_scope
 
         self._assert_clr_type(unpark_scope(), "UnparkScope")
 
     def test_park_scope(self):
+        """The park wrapper emits the ParkScope CLR type."""
         from nina_planner.sequence import park_scope
 
         self._assert_clr_type(park_scope(), "ParkScope")
@@ -440,6 +480,7 @@ class JsonTemplateBuildersTest(unittest.TestCase):
     # ---- camera ----
 
     def test_warm_camera(self):
+        """The warm wrapper emits WarmCamera with a zero duration."""
         from nina_planner.sequence import warm_camera
 
         result = warm_camera()
@@ -447,6 +488,7 @@ class JsonTemplateBuildersTest(unittest.TestCase):
         self.assertEqual(result["Duration"], 0)
 
     def test_cool_camera(self):
+        """The cool wrapper carries the setpoint temperature and zero duration."""
         from nina_planner.sequence import cool_camera
 
         result = cool_camera(-10.0)
@@ -457,6 +499,7 @@ class JsonTemplateBuildersTest(unittest.TestCase):
     # ---- slew/track ----
 
     def test_slew_to_azalt(self):
+        """The az/alt slew converts coordinates to degrees, minutes, seconds."""
         from nina_planner.sequence import slew_to_azalt
 
         result = slew_to_azalt(180.0, 45.0)
@@ -466,12 +509,14 @@ class JsonTemplateBuildersTest(unittest.TestCase):
         self.assertEqual(result["Coordinates"]["AltDegrees"], 45)
 
     def test_annotation(self):
+        """The annotation wrapper emits the Annotation CLR type."""
         from nina_planner.sequence import annotation
 
         result = annotation()
         self._assert_clr_type(result, "Annotation")
 
     def test_switch_filter(self):
+        """Switch filter carries both the filter name and its position."""
         from nina_planner.sequence import switch_filter
 
         result = switch_filter("L", 3)
@@ -480,6 +525,7 @@ class JsonTemplateBuildersTest(unittest.TestCase):
         self.assertEqual(result["Filter"]["_position"], 3)
 
     def test_sky_flats(self):
+        """Sky flats emits a SkyFlat named Twilight Sky Flats."""
         from nina_planner.sequence import sky_flats
 
         result = sky_flats(10, "L", 3)
@@ -492,6 +538,7 @@ class JsonTemplateBuildersTest(unittest.TestCase):
     # level $type.
 
     def test_wait_until_dawn(self):
+        """The dawn wait nests DawnProvider under SelectedProvider, not top level."""
         from nina_planner.sequence import wait_until_dawn
 
         result = wait_until_dawn()
@@ -500,6 +547,7 @@ class JsonTemplateBuildersTest(unittest.TestCase):
         self.assertIn("DawnProvider", result["SelectedProvider"]["$type"])
 
     def test_wait_until_sunset(self):
+        """The sunset wait nests SunsetProvider under SelectedProvider."""
         from nina_planner.sequence import wait_until_sunset
 
         result = wait_until_sunset()
@@ -508,6 +556,7 @@ class JsonTemplateBuildersTest(unittest.TestCase):
         self.assertIn("SunsetProvider", result["SelectedProvider"]["$type"])
 
     def test_sequence_wait_until_sunset(self):
+        """Wait For Sunset: park, wait for time, then wait for sun altitude."""
         from nina_planner.sequence import sequence_wait_until_sunset
 
         mount = MountDevice(connected=True, name="m", can_park=True)
@@ -520,6 +569,7 @@ class JsonTemplateBuildersTest(unittest.TestCase):
         self.assertEqual(len(_find_items(result, "WaitForSunAltitude")), 1)
 
     def test_sequence_wait_until_dawn(self):
+        """Wait For Dawn: park, wait for time, then wait for sun altitude."""
         from nina_planner.sequence import sequence_wait_until_dawn
 
         mount = MountDevice(connected=True, name="m", can_park=True)
@@ -532,6 +582,7 @@ class JsonTemplateBuildersTest(unittest.TestCase):
         self.assertEqual(len(_find_items(result, "WaitForSunAltitude")), 1)
 
     def test_sequence_wait_until_dusk(self):
+        """Wait For Dusk: park and wait for time, with no sun-altitude wait."""
         from nina_planner.sequence import sequence_wait_until_dusk
 
         mount = MountDevice(connected=True, name="m", can_park=True)
@@ -578,16 +629,19 @@ class JsonTemplateBuildersTest(unittest.TestCase):
                 )
 
     def test_wait_if_sun_altitude_above(self):
+        """The above-threshold wait emits a WaitForSunAltitude instruction."""
         from nina_planner.sequence import wait_if_sun_altitude_above
 
         self._assert_clr_type(wait_if_sun_altitude_above(15.0), "WaitForSunAltitude")
 
     def test_wait_if_sun_altitude_below(self):
+        """The below-threshold wait emits a WaitForSunAltitude instruction."""
         from nina_planner.sequence import wait_if_sun_altitude_below
 
         self._assert_clr_type(wait_if_sun_altitude_below(-8.0), "WaitForSunAltitude")
 
     def test_loop_until_sun_altitude_above(self):
+        """Looping above the threshold emits a SunAltitudeCondition."""
         from nina_planner.sequence import loop_until_sun_altitude_above
 
         self._assert_clr_type(
@@ -595,6 +649,7 @@ class JsonTemplateBuildersTest(unittest.TestCase):
         )
 
     def test_loop_until_sun_altitude_below(self):
+        """Looping below the threshold emits a SunAltitudeCondition."""
         from nina_planner.sequence import loop_until_sun_altitude_below
 
         self._assert_clr_type(
@@ -604,6 +659,7 @@ class JsonTemplateBuildersTest(unittest.TestCase):
     # ---- imaging ----
 
     def test_take_exposure(self):
+        """Take exposure carries the exposure time and image type."""
         from nina_planner.sequence import take_exposure
 
         result = take_exposure(60.0, "LIGHT")
@@ -613,9 +669,10 @@ class JsonTemplateBuildersTest(unittest.TestCase):
 
 
 class SequenceBuildersTest(unittest.TestCase):
-    """Coverage of build_sequence_* entry points: teardown, darks,
-    flats. Calibration builders are plan-level: they carry no
-    pointing_index (calibration is not per-pane).
+    """Coverage of the ``build_sequence_*`` entry points: teardown, darks, flats.
+
+    Calibration builders are plan-level: they carry no ``pointing_index``
+    (calibration is not per-pane).
     """
 
     def _plan(self, **overrides):
@@ -637,8 +694,10 @@ class SequenceBuildersTest(unittest.TestCase):
         return _profile()
 
     def test_build_sequence_teardown(self):
-        """The park (an empty request list): the three sequence areas, with
-        parking and warming carried by the End area."""
+        """The park — an empty request list — builds the three areas.
+
+        Parking and warming are carried by the End area.
+        """
         from nina_planner.sequence import build_sequence_many
 
         result = build_sequence_many(ObservatoryEquipment(), [])
@@ -647,6 +706,7 @@ class SequenceBuildersTest(unittest.TestCase):
         self.assertEqual(areas, ["Start Sequence", "Target Sequence", "End Sequence"])
 
     def test_build_sequence_park_parks_then_warms(self):
+        """The park sequence's park and warm instructions both live in End."""
         from sequence_helpers import build_sequence_park
 
         result = build_sequence_park(_park_equipment())
@@ -662,6 +722,7 @@ class SequenceBuildersTest(unittest.TestCase):
         self.assertTrue(_find_items(result, "WarmCamera"), "park then warms")
 
     def test_flats_container_is_plan_level_with_kind_name(self):
+        """Flats carry the plan-level token; the kind names the container."""
         from sequence_helpers import build_sequence_flats
 
         plan = self._plan()
@@ -681,6 +742,7 @@ class SequenceBuildersTest(unittest.TestCase):
             self.assertEqual(dsos[0]["Name"], kind)
 
     def test_calibration_events_carry_kind_tag_but_target_does_not(self):
+        """Calibration events carry the kind tag; the target name does not."""
         from sequence_helpers import build_sequence_flats
 
         from nina_planner.sequence import target_payload_darks
@@ -729,13 +791,15 @@ class SequenceBuildersTest(unittest.TestCase):
             self.assertEqual(dsos[0]["Target"]["TargetName"], "M31 _plan-test123_")
 
     def test_calibration_builds_with_empty_pointings(self):
-        """Calibration never indexes by pointing_index, so an empty pointings
-        list builds cleanly — no bare IndexError — and falls back to the
+        """Calibration builds with an empty pointings list — no IndexError.
+
+        It never indexes by ``pointing_index``, so it falls back to
         decorative 0/0 coordinates with the plan-level token.
 
         ObservationPlan forbids the empty list (no mosaic block to derive
         pointings from); clearing it directly is what reaches this defensive
-        branch in sequence_calibration."""
+        branch in sequence_calibration.
+        """
         from sequence_helpers import build_sequence_darks, build_sequence_flats
 
         plan = self._plan()
@@ -870,6 +934,7 @@ class DitherTriggerTest(unittest.TestCase):
     """
 
     def test_countdown_group_omits_the_trigger_at_zero(self):
+        """With dither=0 the countdown group omits DitherAfterExposures."""
         from nina_planner.sequence import sequence_count_exposure
 
         steps = sequence_count_exposure(
@@ -880,6 +945,7 @@ class DitherTriggerTest(unittest.TestCase):
         )
 
     def test_countdown_group_emits_the_trigger_when_asked(self):
+        """With dither=4 the group's trigger counts to AfterExposures=4."""
         from nina_planner.sequence import sequence_count_exposure
 
         steps = sequence_count_exposure(
@@ -909,6 +975,7 @@ class DitherTriggerTest(unittest.TestCase):
         self.assertEqual(dither["AfterExposures"], 0)
 
     def test_smart_exposure_emits_the_trigger_when_asked(self):
+        """With dither=4 SmartExposure's trigger carries AfterExposures=4."""
         from nina_planner.sequence import smart_exposure
 
         (dither,) = _find_items(
@@ -993,6 +1060,7 @@ class SequenceBehaviorTest(unittest.TestCase):
         return ObservationPlan(**data)
 
     def test_lights_target_name_includes_label_and_plan_id(self):
+        """A labeled single-pointing target name carries label and plan token."""
         plan = self._plan()
         result = build_sequence_lights(
             plan, equipment=ObservatoryEquipment(), profile=_profile()
@@ -1005,6 +1073,7 @@ class SequenceBehaviorTest(unittest.TestCase):
         self.assertIn("_plan-test123_", target)
 
     def test_lights_mosaic_target_name_appends_pane_index(self):
+        """A mosaic pane's target name carries its per-pane -N token."""
         plan = self._plan(
             pointings=[
                 {"label": "core", "ra_hours": 0.71, "dec_deg": 41.27},
@@ -1023,6 +1092,7 @@ class SequenceBehaviorTest(unittest.TestCase):
         self.assertTrue(target.startswith("M31 _plan-test123-2_"), target)
 
     def test_lights_without_pointing_label_omits_label_segment(self):
+        """An unlabeled pointing omits the label segment from the name."""
         plan = self._plan(pointings=[{"ra_hours": 0.71, "dec_deg": 41.27}])
         result = build_sequence_lights(
             plan, equipment=ObservatoryEquipment(), profile=_profile()
@@ -1033,10 +1103,12 @@ class SequenceBehaviorTest(unittest.TestCase):
         self.assertTrue(target.startswith("M31 _plan-test123_"))
 
     def test_calibration_shares_the_labeled_single_pointing_folder(self):
-        """One pointing plus one label must not split $$TARGETNAME$$ into a
-        lights folder and a calibration folder: both target names carry the
-        same "<target> - <label> _<token>_" prefix, so darks/bias/flats land
-        beside the lights instead of in a second directory."""
+        """A labeled single pointing must not split the target folder.
+
+        Lights and calibration carry the same "<target> - <label> _<token>_"
+        prefix, so darks/bias/flats land beside the lights instead of in a
+        second directory.
+        """
         from sequence_helpers import build_sequence_darks
 
         plan = self._plan()
@@ -1051,10 +1123,12 @@ class SequenceBehaviorTest(unittest.TestCase):
         self.assertEqual(darks, lights)
 
     def test_target_name_carries_intent(self):
-        """The intent rides in the target name — and therefore in the
-        $$TARGETNAME$$ folder — because a bare catalog designation says what
-        was shot, not why. Same shape the plan file already names itself
-        with (<target> <intent>_<timestamp>.json)."""
+        """The intent rides in the target name, hence in the folder name.
+
+        A bare catalog designation says what was shot, not why — the same
+        shape the plan file already names itself with
+        (<target> <intent>_<timestamp>.json).
+        """
         plan = self._plan(intent="Galaxy portrait")
         target = _deepsky_targets(
             build_sequence_lights(
@@ -1064,8 +1138,10 @@ class SequenceBehaviorTest(unittest.TestCase):
         self.assertEqual(target, "M31 Galaxy portrait - core _plan-test123_")
 
     def test_intent_stays_out_of_the_folder_when_unset(self):
-        """An empty intent must reproduce the pre-intent name verbatim — no
-        stray separator before the label or the token."""
+        """An empty intent reproduces the pre-intent name verbatim.
+
+        No stray separator lands before the label or the token.
+        """
         plan = self._plan(intent="")
         target = _deepsky_targets(
             build_sequence_lights(
@@ -1075,9 +1151,11 @@ class SequenceBehaviorTest(unittest.TestCase):
         self.assertEqual(target, "M31 - core _plan-test123_")
 
     def test_intent_does_not_split_lights_from_calibration(self):
-        """The intent is spelled by BOTH prefixes: lights and plan-level
-        calibration must still agree, or $$TARGETNAME$$ puts one plan's
-        frames in two directories (the label bug, reintroduced via intent)."""
+        """Lights and calibration must spell the intent identically.
+
+        Or $$TARGETNAME$$ puts one plan's frames in two directories (the
+        label bug, reintroduced via intent).
+        """
         from sequence_helpers import build_sequence_darks
 
         plan = self._plan(intent="Galaxy portrait")
@@ -1107,9 +1185,11 @@ class SequenceBehaviorTest(unittest.TestCase):
         self.assertEqual(mosaic_darks, "M31 Galaxy portrait _plan-test123_")
 
     def test_mosaic_calibration_keeps_the_bare_plan_target(self):
-        """A mosaic's panes carry -N tokens its plan-level calibration cannot
-        share, so the first pane's label stays out of the calibration target
-        name — it would only misname the folder."""
+        """Plan-level calibration keeps the bare plan target name.
+
+        A mosaic's panes carry -N tokens calibration cannot share, so the
+        first pane's label stays out — it would only misname the folder.
+        """
         from sequence_helpers import build_sequence_darks
 
         plan = self._plan(
@@ -1126,6 +1206,7 @@ class SequenceBehaviorTest(unittest.TestCase):
         self.assertEqual(darks, "M31 _plan-test123_")
 
     def test_lights_slew_and_center_when_position_angle_none(self):
+        """No position angle means slew plus center, with no rotation."""
         plan = self._plan(pointings=[{"ra_hours": 0.71, "dec_deg": 41.27}])
         result = build_sequence_lights(
             plan, equipment=ObservatoryEquipment(), profile=_profile()
@@ -1136,6 +1217,7 @@ class SequenceBehaviorTest(unittest.TestCase):
         self.assertEqual(rotates, [])
 
     def test_lights_slew_center_and_rotate_when_position_angle_set(self):
+        """A set position angle swaps Center for CenterAndRotate."""
         plan = self._plan(
             pointings=[{"ra_hours": 0.71, "dec_deg": 41.27, "position_angle_deg": 90.0}]
         )
@@ -1189,6 +1271,7 @@ class SequenceBehaviorTest(unittest.TestCase):
         self.assertEqual(len(centers), 1)
 
     def test_lights_contains_acquisition_starting_and_finished_events(self):
+        """Lights bracket acquisition with [light]-tagged events; tag not in name."""
         plan = self._plan()
         result = build_sequence_lights(
             plan, equipment=ObservatoryEquipment(), profile=_profile()
@@ -1211,6 +1294,7 @@ class SequenceBehaviorTest(unittest.TestCase):
         )
 
     def test_lights_mosaic_pane_event_carries_pointing_token(self):
+        """A mosaic pane's events carry its per-pane pointing token."""
         plan = self._plan(
             pointings=[
                 {"label": "core", "ra_hours": 0.71, "dec_deg": 41.27},
@@ -1227,9 +1311,11 @@ class SequenceBehaviorTest(unittest.TestCase):
         self.assertIn("ACQUISITION-FINISHED: [light] M31 _plan-test123-2_", messages)
 
     def test_single_step_sequence_brackets_its_one_step(self):
-        """The Start/End run bracket wraps a one-entry load too, and stays
-        out of the Target area, which holds exactly the step. The Start area
-        leads with the equipment connect, then the bracketing event."""
+        """A one-entry load is bracketed by RUN-STARTING and RUN-FINISHED.
+
+        The bracket stays out of the Target area, which holds exactly the
+        step; the Start area leads with the equipment connect, then the event.
+        """
         from sequence_helpers import build_sequence_lights
 
         result = build_sequence_lights(
@@ -1243,6 +1329,7 @@ class SequenceBehaviorTest(unittest.TestCase):
         self.assertIn("RUN-FINISHED: 1 step complete", _event_messages(result))
 
     def test_lights_connects_all_equipment(self):
+        """The lights target container carries ConnectAllEquipment."""
         plan = self._plan()
         result = build_sequence_lights(
             plan, equipment=ObservatoryEquipment(), profile=_profile()
@@ -1253,6 +1340,7 @@ class SequenceBehaviorTest(unittest.TestCase):
         self.assertIn("ConnectAllEquipment", items[1]["$type"])
 
     def test_lights_image_object_uses_meridian_flip_trigger(self):
+        """Image Object carries at least one MeridianFlipTrigger."""
         plan = self._plan()
         result = build_sequence_lights(
             plan, equipment=ObservatoryEquipment(), profile=_profile()
@@ -1261,6 +1349,7 @@ class SequenceBehaviorTest(unittest.TestCase):
         self.assertGreaterEqual(len(flips), 1)
 
     def test_lights_image_object_includes_all_autofocus_triggers(self):
+        """Image Object carries all four autofocus triggers exactly once."""
         plan = self._plan()
         result = build_sequence_lights(
             plan, equipment=ObservatoryEquipment(), profile=_profile()
@@ -1277,6 +1366,7 @@ class SequenceBehaviorTest(unittest.TestCase):
         self.assertEqual(len(af_hfr), 1)
 
     def test_lights_image_object_includes_center_after_drift_trigger(self):
+        """The drift trigger's cadence and limit come from the plan's guiding."""
         plan = self._plan()
         result = build_sequence_lights(
             plan, equipment=ObservatoryEquipment(), profile=_profile()
@@ -1289,6 +1379,7 @@ class SequenceBehaviorTest(unittest.TestCase):
         self.assertEqual(drift[0]["DistanceArcMinutes"], plan.guiding.max_drift_arcmin)
 
     def test_lights_respects_plan_constraints(self):
+        """Plan constraints flow into the horizon and altitude wait offsets."""
         plan = self._plan(
             constraints={
                 "min_altitude": 45.0,
@@ -1429,9 +1520,11 @@ class SequenceBehaviorTest(unittest.TestCase):
         self.assertTrue(all(t.get("Parent") for t in takes))
 
     def test_lights_countdown_cells_match_the_round_robin_groups(self):
-        """``batch_size > 1`` splits one frame's exposures across several
-        groups, so the cells come from the same round-robin pass the groups
-        do: cell ``i`` is what group ``i`` reads."""
+        """Cells come from the same round-robin pass as the groups.
+
+        ``batch_size > 1`` splits one frame's exposures across several
+        groups, so cell ``i`` is what group ``i`` reads.
+        """
         plan = self._plan(
             light_frames=[
                 {"filter_name": "L", "exposure_time_seconds": 60.0, "total_count": 5},
@@ -1477,6 +1570,7 @@ class SequenceBehaviorTest(unittest.TestCase):
         )
 
     def test_lights_safetynet_wraps_with_park_scope_when_mount_can_park(self):
+        """A parkable mount gets one FindHome ahead of SetTracking, plus park."""
         plan = self._plan()
         mount = MountDevice(connected=True, name="m", can_park=True, can_find_home=True)
         eq = ObservatoryEquipment(mount=mount)
@@ -1497,6 +1591,7 @@ class SequenceBehaviorTest(unittest.TestCase):
         self.assertLess(telescope.index("FindHome"), telescope.index("SetTracking"))
 
     def test_lights_home_omitted_when_mount_cannot_find_home(self):
+        """A mount that cannot find home gets no FindHome but still parks."""
         plan = self._plan()
         mount = MountDevice(
             connected=True, name="m", can_park=True, can_find_home=False
@@ -1509,9 +1604,11 @@ class SequenceBehaviorTest(unittest.TestCase):
         self.assertGreaterEqual(len(parks), 1)
 
     def test_lights_safetynet_emits_no_park_when_mount_cannot_park(self):
-        """No park for a mount that cannot park — load_sequence rejects it
-        before anything is sent. `Find home` is independent of that guard: it
-        is gated on `can_find_home` alone, so it still appears here."""
+        """No park for a mount that cannot park — load_sequence rejects it.
+
+        ``Find home`` is independent of that guard: it is gated on
+        ``can_find_home`` alone, so it still appears here.
+        """
         plan = self._plan()
         mount = MountDevice(
             connected=True,
@@ -1527,6 +1624,7 @@ class SequenceBehaviorTest(unittest.TestCase):
         self.assertEqual(len(homes), 1)
 
     def test_lights_safetynet_with_no_mount_emits_no_park(self):
+        """No mount means no ParkScope and no FindHome at all."""
         plan = self._plan()
         eq = ObservatoryEquipment(mount=None)
         result = build_sequence_lights(plan, equipment=eq, profile=_profile())
@@ -1536,6 +1634,7 @@ class SequenceBehaviorTest(unittest.TestCase):
         self.assertEqual(homes, [])
 
     def test_lights_with_cooler_emits_cool_camera_instruction(self):
+        """A plan with the cooler on cools the camera to its setpoint."""
         plan = self._plan(cooler={"on": True, "setpoint_celsius": -15.0})
         camera = CameraDevice(
             connected=True,
@@ -1550,6 +1649,7 @@ class SequenceBehaviorTest(unittest.TestCase):
         self.assertEqual(cools[0]["Temperature"], -15.0)
 
     def test_lights_cooler_off_with_has_cooler_emits_warm_camera(self):
+        """A disabled cooler warms the camera instead of cooling it."""
         plan = self._plan(cooler={"on": False, "setpoint_celsius": -15.0})
         camera = CameraDevice(connected=True, name="cam", can_set_temperature=True)
         eq = ObservatoryEquipment(camera=camera)
@@ -1560,6 +1660,7 @@ class SequenceBehaviorTest(unittest.TestCase):
         self.assertEqual(cools, [])
 
     def test_lights_without_cooler_omits_camera_temperature_instructions(self):
+        """A camera with no cooler gets neither warm nor cool instructions."""
         plan = self._plan()
         camera = CameraDevice(connected=True, name="cam", can_set_temperature=False)
         eq = ObservatoryEquipment(camera=camera)
@@ -1570,10 +1671,11 @@ class SequenceBehaviorTest(unittest.TestCase):
         self.assertEqual(cools, [])
 
     def test_lights_parks_when_object_is_not_in_view(self):
-        """The "Wait For Object" container folds in the visibility check: if
-        the target is already in view, it skips the wait and park via an End set
-        naming that container; if not in view, it parks the mount and
-        waits for the target to rise."""
+        """Wait For Object folds the visibility check into one container.
+
+        In view: an End set naming that container skips the wait and park.
+        Out of view: it parks the mount and waits for the target to rise.
+        """
         plan = self._plan(
             constraints={"min_altitude": 45.0, "horizon_offset_degrees": 5.0}
         )
@@ -1620,6 +1722,7 @@ class SequenceBehaviorTest(unittest.TestCase):
         )
 
     def test_lights_wait_for_object_omits_park_when_mount_cannot_park(self):
+        """Wait For Object omits park and home for an unparkable mount."""
         plan = self._plan()
         mount = MountDevice(
             connected=True, name="m", can_park=False, can_find_home=True
@@ -1632,9 +1735,10 @@ class SequenceBehaviorTest(unittest.TestCase):
         self.assertEqual(_find_items(obj_wait, "FindHome, NINA.Sequencer"), [])
 
     def test_lights_waits_for_dusk_and_object_do_not_block_on_safety_monitor(self):
-        """Wait For Dusk and Wait For Object do not gate on the safety monitor
-        or hold on Wait until safe while the scope is parked. Only Image Object
-        gates on safe acquisition.
+        """Only Image Object gates on safe acquisition; the waits do not.
+
+        Wait For Dusk and Wait For Object never gate on the safety monitor
+        nor hold on Wait-until-safe while the scope is parked.
         """
         plan = self._plan()
         eq = ObservatoryEquipment(
@@ -1676,12 +1780,12 @@ class SequenceBehaviorTest(unittest.TestCase):
         self.assertGreaterEqual(len(_find_items(img[0], "WaitUntilSafe")), 1)
 
     def test_end_area_waits_three_minutes_then_parks_and_warms(self):
-        """The End area waits out one bounded "On Safe" pass — a single
-        3-minute iteration gated on the safety monitor — then announces and
-        performs the park, then the warm. Bounded matters: a teardown
-        sequence completes within that one pass (immediately when the
-        enclosure is already closed) instead of idling until sunrise, so
-        "nothing running" stays an unambiguous state."""
+        """The End area waits one 3-minute On Safe pass, then parks and warms.
+
+        Bounded matters: a teardown sequence completes within that one pass
+        (immediately when the enclosure is already closed) instead of idling
+        until sunrise, so "nothing running" stays an unambiguous state.
+        """
         from nina_planner.sequence import sequence_end
 
         mount = MountDevice(connected=True, name="m", can_park=True)
@@ -1744,9 +1848,12 @@ class SequenceBehaviorTest(unittest.TestCase):
         )
 
     def test_end_area_parks_only_when_mount_can_park(self):
-        """Park is the only closing maneuver: `can_park=True` gets exactly one
-        ParkScope, anything else gets nothing — there is no `Find home`
-        fallback, so an unparkable mount is caught at load time instead."""
+        """Park is the only closing maneuver: exactly one ParkScope or none.
+
+        ``can_park=True`` gets exactly one ParkScope; anything else gets
+        nothing — there is no ``Find home`` fallback, so an unparkable mount
+        is caught at load time instead.
+        """
         from nina_planner.sequence import sequence_end
 
         can_park = MountDevice(connected=True, name="m", can_park=True)
@@ -1767,6 +1874,7 @@ class SequenceBehaviorTest(unittest.TestCase):
         self.assertEqual(_find_items(bare, "FindHome, NINA.Sequencer"), [])
 
     def test_end_area_warms_only_when_camera_has_cooler(self):
+        """The End area warms only a camera that can set its temperature."""
         from nina_planner.sequence import sequence_end
 
         cooler = CameraDevice(connected=True, name="cam", can_set_temperature=True)
@@ -1783,6 +1891,7 @@ class SequenceBehaviorTest(unittest.TestCase):
         )
 
     def test_darks_uses_dark_image_type(self):
+        """Dark exposures take ImageType DARK inside SmartExposure."""
         from sequence_helpers import build_sequence_darks
 
         plan = self._plan()
@@ -1796,10 +1905,12 @@ class SequenceBehaviorTest(unittest.TestCase):
         self.assertTrue(all(t["ImageType"] == "DARK" for t in takes))
 
     def test_darks_announce_no_exposing_events(self):
-        """The group names itself for the N.I.N.A. UI instead of bracketing
-        itself with EXPOSING-* events — lights stopped emitting those with
-        the countdown, and a bracket one step family emits while the other
-        does not is worse than none. The step itself stays bracketed."""
+        """Darks emit no EXPOSING-* bracket — only the step stays bracketed.
+
+        The group names itself for the N.I.N.A. UI instead; lights stopped
+        emitting those with the countdown, and a bracket one step family
+        emits while the other does not is worse than none.
+        """
         from sequence_helpers import build_sequence_darks
 
         for bias in (False, True):
@@ -1817,9 +1928,9 @@ class SequenceBehaviorTest(unittest.TestCase):
             )
 
     def test_darks_emit_one_group_per_plan_entry_in_list_order(self):
-        """No round-robin for darks/bias: every plan entry becomes its own
-        group with its own count, in list order.
+        """No round-robin for darks/bias: one group per plan entry, in order.
 
+        Every plan entry becomes its own group with its own count;
         ``batch_size`` is deliberately ignored here — there is nothing to
         batch or interleave — so the default of 5 must not leak in and split
         these entries the way it does lights. Every count below EXCEEDS that
@@ -1862,8 +1973,10 @@ class SequenceBehaviorTest(unittest.TestCase):
             self.assertEqual(got, expected, "bias" if bias else "darks")
 
     def test_darks_groups_carry_the_lights_group_name(self):
-        """Each dark/bias entry is wrapped in the same-named container lights
-        use, so the N.I.N.A. UI reads both step families alike."""
+        """Each dark/bias entry wears the same container name lights use.
+
+        So the N.I.N.A. UI reads both step families alike.
+        """
         from sequence_helpers import build_sequence_darks
 
         plan = self._plan(
@@ -1896,6 +2009,7 @@ class SequenceBehaviorTest(unittest.TestCase):
                 self.assertEqual(smart["Name"], "Smart Exposure")
 
     def test_darks_with_bias_flag_uses_bias_image_type(self):
+        """The bias flag switches SmartExposure's ImageType to BIAS."""
         from sequence_helpers import build_sequence_darks
 
         plan = self._plan()
@@ -1926,8 +2040,10 @@ class SequenceBehaviorTest(unittest.TestCase):
             )
 
     def test_darks_cover_variant_wraps_exposures_in_the_cover(self):
-        """The cover method closes the motorized cover, exposes with the
-        wheel untouched, then reopens — and needs no `Dark` filter slot."""
+        """The cover method closes, exposes with the wheel untouched, reopens.
+
+        It needs no ``Dark`` filter slot.
+        """
         from sequence_helpers import build_sequence_darks
 
         plan = self._plan()
@@ -1965,8 +2081,10 @@ class SequenceBehaviorTest(unittest.TestCase):
             self.assertTrue(all(t["ImageType"] == expected for t in takes))
 
     def test_darks_shutter_variant_exposes_without_filter_wheel_or_cover(self):
-        """The shutter method exposes with the wheel untouched and no cover,
-        relying on the camera's shutter — and needs no `Dark` filter slot."""
+        """The shutter method exposes with no cover and no wheel movement.
+
+        It relies on the camera's shutter and needs no ``Dark`` filter slot.
+        """
         from sequence_helpers import build_sequence_darks
 
         plan = self._plan()
@@ -1999,6 +2117,7 @@ class SequenceBehaviorTest(unittest.TestCase):
             self.assertTrue(all(t["ImageType"] == expected for t in takes))
 
     def test_darks_reject_an_unknown_variant(self):
+        """An unknown darks variant raises ValueError naming that variant."""
         from sequence_helpers import build_sequence_darks
 
         with self.assertRaises(ValueError) as ctx:
@@ -2011,6 +2130,7 @@ class SequenceBehaviorTest(unittest.TestCase):
         self.assertIn("lens", str(ctx.exception))
 
     def test_darks_start_area_parks_scope_when_mount_can_park(self):
+        """A darks sequence with a parkable mount emits at least one park."""
         from sequence_helpers import build_sequence_darks
 
         plan = self._plan()
@@ -2021,6 +2141,7 @@ class SequenceBehaviorTest(unittest.TestCase):
         self.assertGreaterEqual(len(parks), 1)
 
     def test_flats_dawn_uses_sunrise_wait_and_dawn_azimuth(self):
+        """Dawn flats skip daytime with a sunset wait, then wait for dawn."""
         from sequence_helpers import build_sequence_flats
 
         plan = self._plan()
@@ -2038,6 +2159,7 @@ class SequenceBehaviorTest(unittest.TestCase):
         self.assertGreaterEqual(len(sunset), 1)
 
     def test_flats_dusk_uses_sunset_wait_and_dusk_azimuth(self):
+        """Dusk flats wait for sunset and never reference dawn."""
         from sequence_helpers import build_sequence_flats
 
         plan = self._plan()
@@ -2053,9 +2175,11 @@ class SequenceBehaviorTest(unittest.TestCase):
         self.assertEqual(dawn, [])
 
     def test_flats_waits_do_not_block_on_safety_monitor(self):
-        """Wait For Sunset and Wait For Dawn in flats do not gate on the
-        safety monitor or hold on Wait until safe while the scope is parked.
-        Only Image Flats gates on safe acquisition."""
+        """Only Image Flats gates on safe acquisition, not the flat waits.
+
+        Wait For Sunset and Wait For Dawn never gate on the safety monitor
+        nor hold on Wait-until-safe while the scope is parked.
+        """
         from sequence_helpers import build_sequence_flats
 
         plan = self._plan()
@@ -2097,9 +2221,11 @@ class SequenceBehaviorTest(unittest.TestCase):
         self.assertGreaterEqual(len(_find_items(dawn_img[0], "WaitUntilSafe")), 1)
 
     def test_flats_shoot_order_reverses_at_dusk(self):
-        """Dawn flats shoot flat_frames in plan list order; dusk flats reverse
-        the list so narrowband/darker filters shoot first while twilight is
-        brightest and broadband filters shoot last as it darkens."""
+        """Dawn flats shoot in plan list order; dusk flats reverse it.
+
+        Narrowband/darker filters shoot first while twilight is brightest,
+        broadband last as it darkens.
+        """
         from sequence_helpers import build_sequence_flats
 
         from nina_planner.models.profile import FilterInfo
@@ -2133,9 +2259,11 @@ class SequenceBehaviorTest(unittest.TestCase):
         self.assertEqual(dusk_order, ["Ha", "B", "G", "R", "L"])
 
     def test_flats_emit_one_group_per_plan_entry_in_shoot_order(self):
-        """Flats are not round-robined either: one SkyFlat per plan entry, in
-        shoot order — list order at dawn, reversed at dusk — and
-        ``plan.batch_size`` is ignored, since batching is a lights concern."""
+        """One SkyFlat per plan entry, in shoot order — no round-robin.
+
+        List order at dawn, reversed at dusk; ``plan.batch_size`` is
+        ignored, since batching is a lights concern.
+        """
         from sequence_helpers import build_sequence_flats
 
         plan = self._plan(
@@ -2171,10 +2299,14 @@ class SequenceBehaviorTest(unittest.TestCase):
 
 
 class CoordinateHelpersTest(unittest.TestCase):
-    """The radec/coord helpers aren't directly imported elsewhere; cover them
-    through the public sequence_deepsky entry point that uses them."""
+    """The radec/coord helpers, covered through ``sequence_deepsky``.
+
+    They aren't directly imported elsewhere, so the tests go through the
+    public entry point that uses them.
+    """
 
     def test_negative_declination_sets_negative_flag(self):
+        """A negative declination sets NegativeDec and keeps its magnitude."""
         plan = ObservationPlan(
             plan_id="plan-test123",
             target="Test",
@@ -2196,6 +2328,7 @@ class CoordinateHelpersTest(unittest.TestCase):
         self.assertEqual(coords["RAHours"], 5)
 
     def test_fractional_minutes_and_seconds_extracted(self):
+        """Fractional hours and degrees split into exact minutes and seconds."""
         plan = ObservationPlan(
             plan_id="plan-test123",
             target="Test",
@@ -2220,13 +2353,17 @@ class CoordinateHelpersTest(unittest.TestCase):
 
 
 class RoundRobinEdgeCasesTest(unittest.TestCase):
+    """Edge cases for ``_round_robin``: empty, oversized, uneven counts."""
+
     def test_empty_exposures_returns_empty(self):
+        """No exposures means no entries, whatever the batch size."""
         from nina_planner.sequence import _round_robin
 
         self.assertEqual(_round_robin([], batch_size=0), [])
         self.assertEqual(_round_robin([], batch_size=2), [])
 
     def test_batch_size_larger_than_count_emits_single_entry(self):
+        """A batch larger than the count yields one full-count entry each."""
         from nina_planner.sequence import _round_robin
 
         exps = [_Exp("L", 60.0, 2), _Exp("R", 60.0, 2)]
@@ -2236,6 +2373,7 @@ class RoundRobinEdgeCasesTest(unittest.TestCase):
         )
 
     def test_uneven_counts_across_filters(self):
+        """An exhausted filter drops out while the other keeps batching."""
         from nina_planner.sequence import _round_robin
 
         exps = [_Exp("L", 60.0, 5), _Exp("R", 60.0, 2)]
@@ -2252,20 +2390,26 @@ class RoundRobinEdgeCasesTest(unittest.TestCase):
 
 
 class BuildSequenceManyTest(unittest.TestCase):
-    """A list of requests becomes one sequence: every payload's containers
-    land in a single Target area, in order, under an End area that always
-    parks — and an empty payload list is exactly the park."""
+    """A list of payloads becomes one sequence under a single Target area.
+
+    Payloads land in order, under an End area that always parks — and an
+    empty payload list is exactly the park.
+    """
 
     @staticmethod
     def _end_types(result: dict) -> list[str]:
-        """``$type`` of every teardown step: the End area holds a single
-        ``Park Telescope`` container, whose children do the parking."""
+        """``$type`` of every teardown step inside the End park container.
+
+        The End area holds a single ``Park Telescope`` container, whose
+        children do the parking.
+        """
         end = _items(result)[2]["Items"]["$values"]
         if [i.get("Name") for i in end] != ["Park Telescope"]:
             raise AssertionError(f"End area must be the park, got {end}")
         return [i["$type"] for i in end[0]["Items"]["$values"]]
 
     def test_flattens_payloads_into_one_target_area_in_order(self):
+        """Payloads land in one Target area in order; Start and End wrap them."""
         from nina_planner.sequence import (
             build_sequence_many,
             target_payload_darks,
@@ -2301,6 +2445,7 @@ class BuildSequenceManyTest(unittest.TestCase):
         self.assertTrue(any("WarmCamera" in t for t in end_types), "End warms")
 
     def test_still_parks_when_a_payload_is_empty(self):
+        """An empty payload contributes no steps, but End still parks."""
         from nina_planner.sequence import build_sequence_many
 
         equipment = _park_equipment()
@@ -2310,10 +2455,11 @@ class BuildSequenceManyTest(unittest.TestCase):
         self.assertTrue(any("ParkScope" in t for t in end_types))
 
     def test_run_is_bracketed_by_starting_and_finished_events(self):
-        """`RUN-STARTING` follows the equipment connect in the Start area and
-        `RUN-FINISHED` heads the End area — the only place N.I.N.A. reaches
-        when nothing in the run is left, so it is the trustworthy end-of-run
-        signal."""
+        """RUN-STARTING follows the connect; RUN-FINISHED heads the End area.
+
+        The End area is the only place N.I.N.A. reaches when nothing in the
+        run is left, so it is the trustworthy end-of-run signal.
+        """
         from nina_planner.sequence import (
             build_sequence_many,
             target_payload_darks,
@@ -2350,6 +2496,7 @@ class BuildSequenceManyTest(unittest.TestCase):
         self.assertIn("SendEventInstruction", park[0]["Items"]["$values"][0]["$type"])
 
     def test_step_count_counts_only_entries_that_produced_steps(self):
+        """The step count ignores payload entries that produced no steps."""
         from nina_planner.sequence import (
             build_sequence_many,
             target_payload_lights,
@@ -2367,8 +2514,10 @@ class BuildSequenceManyTest(unittest.TestCase):
         self.assertIn("RUN-FINISHED: 1 step complete", messages)
 
     def test_park_and_empty_entries_emit_no_run_events(self):
-        """A park must never read as a finished run — the agent would
-        re-plan immediately after being told to close down."""
+        """A park must never read as a finished run.
+
+        The agent would re-plan immediately after being told to close down.
+        """
         from nina_planner.sequence import build_sequence_many
 
         equipment = _park_equipment()
@@ -2383,8 +2532,10 @@ class BuildSequenceManyTest(unittest.TestCase):
             )
 
     def test_darks_target_area_holds_the_container_directly(self):
-        """darks used to nest a second Target area inside the real one; the
-        payload form is a plain list, so the wrapper is gone."""
+        """Darks hold their container directly — no second Target area.
+
+        The payload form is a plain list, so the wrapper is gone.
+        """
         from sequence_helpers import build_sequence_darks
 
         result = build_sequence_darks(_plan(), _park_equipment(), _profile())

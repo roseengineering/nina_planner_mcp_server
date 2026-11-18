@@ -29,7 +29,10 @@ def _envelope(response: Any = None, *, error: str = "", status: int = 200):
 
 
 class FakeNina:
+    """Stateful fake of NINA's sequence API over httpx.MockTransport."""
+
     def __init__(self) -> None:
+        """Start with nothing loaded, not running, and an empty request log."""
         self.requests: list[tuple[str, str]] = []
         self.loaded: dict[str, Any] | None = None
         self.running = False
@@ -38,6 +41,7 @@ class FakeNina:
         return {"Status": "RUNNING" if self.running else "CREATED"}
 
     def handle(self, request: httpx.Request) -> httpx.Response:
+        """Route a request to the sequence endpoints, recording it first."""
         path = request.url.path.removeprefix("/v2/api")
         self.requests.append((request.method, path))
 
@@ -65,6 +69,7 @@ class FakeNina:
 
     @property
     def posts(self) -> list[str]:
+        """The paths of every POSTed request, in order."""
         return [path for method, path in self.requests if method == "POST"]
 
     @contextmanager

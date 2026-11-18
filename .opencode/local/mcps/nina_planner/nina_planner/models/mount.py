@@ -1,3 +1,5 @@
+"""Mount device model: park/home capabilities, status and pointing."""
+
 from __future__ import annotations
 
 from pydantic import BaseModel, Field, model_validator
@@ -8,6 +10,14 @@ from .pointing import PointingInfo
 
 
 class MountDevice(BaseModel):
+    """A connected mount as ``/equipment/info`` reports it.
+
+    ``can_park``/``can_find_home`` gate the sequence's park and home steps;
+    the pointing fields carry J2000 coordinates (RA hours, dec degrees) plus
+    horizon coordinates in degrees. A ``hours_to_flip`` of exactly 24.0 is
+    N.I.N.A.'s "no flip pending" sentinel and is normalized to ``None``.
+    """
+
     connected: bool
     name: str
     description: str | None = None

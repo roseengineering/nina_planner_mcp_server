@@ -35,6 +35,7 @@ class PinBase(ArchiveBase):
     """ArchiveBase + derived-id seeding + a pin CLI runner."""
 
     def setUp(self):
+        """Point the fixture at a blank-id plan file and its token dir."""
         super().setUp()
         self.plan_file = self.proj / "m31.json"
         self.derive_from(_plan(plan_id=""))
@@ -62,6 +63,7 @@ class PinBase(ArchiveBase):
     # -------------------------------------------------------------- run
 
     def run_pin(self, *argv: str) -> tuple[int, str, str]:
+        """Run the pin CLI and capture exit code, stdout and stderr."""
         out, err = io.StringIO(), io.StringIO()
         with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
             code = pin_mod.main(list(argv))
@@ -86,13 +88,17 @@ class PinBase(ArchiveBase):
         return asyncio.run(_go())
 
     def light_group(self, progress: dict) -> dict:
+        """Extract the fixture's single light group from a progress payload."""
         groups = progress["pointings"][0]["frame_types"]["light"]
         self.assertEqual(len(groups), 1, "one light group expected")
         return groups[0]
 
 
 class PinCliTest(PinBase):
+    """nina-pin-id CLI behaviour: pinning, no-ops, errors and failure paths."""
+
     def test_blank_plan_pinned_with_pre_pin_derived_id(self):
+        """Pinning writes the pre-pin derived id and changes nothing else."""
         plan = _plan(plan_id="")
         derived = self.derive_from(plan)
         self.write_plan(plan)
@@ -110,6 +116,7 @@ class PinCliTest(PinBase):
         self.assertEqual(after, expected)
 
     def test_frames_attributed_before_pin_still_attributed_after(self):
+        """Frames attributed before the pin stay attributed after it."""
         self.seed_blank()
         derived = self.derived
 
@@ -128,6 +135,7 @@ class PinCliTest(PinBase):
         self.assertTrue(after["complete"])
 
     def test_pin_then_raise_total_count_keeps_id(self):
+        """A raised total_count keeps the id and the shot frames still count."""
         self.seed_blank()
 
         code, _out, err = self.run_pin(str(self.plan_file))
@@ -158,6 +166,7 @@ class PinCliTest(PinBase):
         self.assertNotEqual(unpinned._base_plan_id(), self.derived)
 
     def test_already_pinned_plan_is_noop(self):
+        """An already-pinned plan is left byte-for-byte untouched."""
         plan = _plan()  # hand-written / previously-pinned id
         self.write_plan(plan)
         before = self.plan_file.read_bytes()
@@ -169,6 +178,7 @@ class PinCliTest(PinBase):
         self.assertEqual(self.plan_file.read_bytes(), before)
 
     def test_dry_run_writes_nothing(self):
+        """--dry-run reports the would-pin id without touching the file."""
         plan = _plan(plan_id="")
         derived = self.derive_from(plan)
         self.write_plan(plan)
@@ -182,11 +192,13 @@ class PinCliTest(PinBase):
         self.assertEqual(json.loads(self.plan_file.read_text())["plan_id"], "")
 
     def test_missing_file_exits_1(self):
+        """A missing plan file exits 1 with a not-found message."""
         code, _out, err = self.run_pin(str(self.proj / "ghost.json"))
         self.assertEqual(code, 1)
         self.assertIn("not found", err)
 
     def test_broken_json_exits_1(self):
+        """Unparseable JSON exits 1 and names the file."""
         bad = self.proj / "bad.json"
         bad.write_text("{not json", encoding="utf-8")
 
@@ -196,6 +208,7 @@ class PinCliTest(PinBase):
         self.assertIn("bad.json", err)
 
     def test_non_plan_json_exits_1(self):
+        """JSON that is not a plan exits 1 and names the file."""
         config_like = self.proj / "smb_opencode.json"
         config_like.write_text(json.dumps({"model": "x"}), encoding="utf-8")
 
@@ -205,6 +218,7 @@ class PinCliTest(PinBase):
         self.assertIn("smb_opencode.json", err)
 
     def test_no_plan_arguments_exits_2(self):
+        """No arguments exits 2 with the CLI usage on stderr."""
         err = io.StringIO()
         with contextlib.redirect_stderr(err), self.assertRaises(SystemExit) as ctx:
             pin_mod.main([])
@@ -214,6 +228,7 @@ class PinCliTest(PinBase):
     # ------------------------------------------------------- failure paths
 
     def test_relative_plan_path_resolves_under_the_project_dir(self):
+        """Relative paths root at PROJECT_DIR; ~ expands, abs paths stay."""
         with mock.patch.object(pin_mod.config, "PROJECT_DIR", self.proj):
             self.assertEqual(pin_mod._resolve("m31.json"), self.proj / "m31.json")
         # An absolute path is never re-rooted; ~ is expanded first.
@@ -224,6 +239,7 @@ class PinCliTest(PinBase):
         )
 
     def test_write_atomic_leaves_no_temp_file_when_the_replace_fails(self):
+        """A failed replace keeps the original bytes and leaves no .tmp file."""
         target = self.proj / "plan.json"
         target.write_text("original", encoding="utf-8")
 
@@ -239,6 +255,7 @@ class PinCliTest(PinBase):
         self.assertEqual(list(self.proj.glob(".*.tmp")), [])
 
     def test_write_failure_is_reported_as_a_pin_error(self):
+        """A write failure surfaces as PinError naming file and cause."""
         blank = self.proj / "blank.json"
         blank.write_text(_plan(plan_id="").model_dump_json(indent=2), encoding="utf-8")
 
@@ -254,6 +271,7 @@ class PinCliTest(PinBase):
         self.assertIn("disk full", message)
 
     def test_module_entry_point_exits_with_main_status(self):
+        """`python -m nina_planner.pin_id` exits with main()'s status."""
         import runpy
         import sys
         import warnings
@@ -281,6 +299,7 @@ class PinCliTest(PinBase):
         self.assertIn("would pin", out.getvalue())
 
     def test_multiple_files_pin_in_one_run(self):
+        """Several files pin in one run, skipping the already-pinned one."""
         first = _plan(plan_id="")
         self.derive_from(first)
         path_a = self.write_plan(first, name="a.json")
@@ -293,6 +312,7 @@ class PinCliTest(PinBase):
         self.assertIn("already pinned: plan-abc123", out)
 
     def test_one_bad_file_fails_the_run_but_pins_the_rest(self):
+        """A bad file fails the run but the good file still pins."""
         good = _plan(plan_id="")
         self.derive_from(good)
         path_a = self.write_plan(good, name="a.json")
@@ -305,6 +325,8 @@ class PinCliTest(PinBase):
 
 
 class PinAcceptanceTest(PinBase):
+    """End-to-end chain: pin, edit, progress and archive --force."""
+
     def test_pin_edit_progress_and_archive_force_rebuilds_same_folder(self):
         """The full acceptance chain: pin → edit → progress → archive --force.
 

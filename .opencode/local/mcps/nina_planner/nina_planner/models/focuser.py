@@ -1,3 +1,5 @@
+"""Focuser device model: position in steps, temperature in Celsius."""
+
 from __future__ import annotations
 
 from pydantic import BaseModel, model_validator
@@ -6,6 +8,13 @@ from ..nina_utils import ascom_float, ascom_int
 
 
 class FocuserDevice(BaseModel):
+    """A connected focuser as ``/equipment/info`` reports it.
+
+    ``position`` and ``step_size_microns`` are driver steps (the unit-bearing
+    suffix is nominal — N.I.N.A. reports a bare step count); ``temperature_c``
+    is Celsius.
+    """
+
     connected: bool
     name: str
     description: str | None = None

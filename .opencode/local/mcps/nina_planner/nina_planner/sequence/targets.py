@@ -1,3 +1,5 @@
+"""Target-area payload builders: the steps for lights, darks/bias and flats."""
+
 from typing import Any
 
 from ..models.observatory import ObservatoryEquipment
@@ -197,10 +199,11 @@ def target_payload_flats(
     profile: ObservatoryProfile,
     dusk: bool = False,
 ) -> list[dict[str, Any]]:
-    """The Target-area content of a dawn/dusk flats step: slew to the flat
-    panel azimuth and take the flats while the sun is on the right side of
-    the horizon, or nothing when the window has passed."""
+    """The Target-area content of a dawn/dusk flats step.
 
+    Slew to the flat panel azimuth and take the flats while the sun is on
+    the right side of the horizon, or nothing when the window has passed.
+    """
     wait_instructions = (
         [sequence_wait_until_sunset(equipment)]
         if dusk

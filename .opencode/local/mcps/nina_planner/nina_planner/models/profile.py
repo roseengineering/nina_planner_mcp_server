@@ -1,3 +1,5 @@
+"""Profile models: site, optics, filters and the equipment the profile declares."""
+
 from __future__ import annotations
 
 import math
@@ -10,18 +12,24 @@ from ..imaging import windows_to_local
 
 
 class FilterInfo(BaseModel):
+    """One profile filter: its name, 1-based wheel slot, and focus offset in steps."""
+
     name: str
     position: int
     focus_offset: int | None = None
 
 
 class SiteLocationInfo(BaseModel):
+    """Observatory site: latitude/longitude in degrees, elevation in metres."""
+
     latitude_deg: float | None = None
     longitude_deg: float | None = None
     elevation_m: float | None = None
 
 
 class EquipmentConfig(BaseModel):
+    """Which device classes the profile declares — the capability guards read these."""
+
     has_mount: bool
     has_camera: bool
     has_focuser: bool
@@ -36,6 +44,8 @@ class EquipmentConfig(BaseModel):
 
 
 class OpticalTrainInfo(BaseModel):
+    """Scope/camera optics: focal length in mm, pixels in microns, FOV in degrees."""
+
     telescope_name: str | None = None
     focal_length_mm: float | None = None
     focal_ratio: float | None = None
@@ -82,6 +92,13 @@ class OpticalTrainInfo(BaseModel):
 
 
 class ObservatoryProfile(BaseModel):
+    """The active N.I.N.A. profile: site, optics, filters, equipment, horizon.
+
+    Everything a plan validates against — filter slots, rotator presence,
+    the custom horizon — so it must be read fresh from N.I.N.A. before a
+    load rather than cached across sessions.
+    """
+
     profile_name: str
     profile_id: str
     description: str | None = None
@@ -111,6 +128,12 @@ class ObservatoryProfile(BaseModel):
         return str(windows_to_local(self.image_save_path))
 
     def filter_position(self, name: str) -> int:
+        """The 1-based wheel slot of the named profile filter.
+
+        Raises:
+            ValueError: The profile defines no filter by that name; the
+                message lists the filters it does define.
+        """
         filt = next((f for f in self.filters if f.name == name), None)
         if filt is None:
             raise ValueError(

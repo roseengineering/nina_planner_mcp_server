@@ -18,6 +18,7 @@ from nina_planner.sequence import (
 
 
 def build_sequence_park(equipment: ObservatoryEquipment) -> dict[str, Any]:
+    """A sequence with no payloads: just the teardown (park) steps."""
     return build_sequence_many(equipment, [])
 
 
@@ -28,6 +29,7 @@ def build_sequence_lights(
     *,
     pointing_index: int = 1,
 ) -> dict[str, Any]:
+    """The full sequence for one lights target payload (one pointing)."""
     payload = target_payload_lights(
         plan, equipment, profile, pointing_index=pointing_index
     )
@@ -41,6 +43,7 @@ def build_sequence_darks(
     bias: bool = False,
     variant: str = "wheel",
 ) -> dict[str, Any]:
+    """The full sequence for a darks payload, optionally the bias variant."""
     payload = target_payload_darks(plan, equipment, profile, bias, variant)
     return build_sequence_many(equipment, [payload])
 
@@ -51,5 +54,6 @@ def build_sequence_flats(
     profile: ObservatoryProfile,
     dusk: bool = False,
 ) -> dict[str, Any]:
+    """The full sequence for a flats payload, dusk flats when ``dusk``."""
     payload = target_payload_flats(plan, equipment, profile, dusk=dusk)
     return build_sequence_many(equipment, [payload])

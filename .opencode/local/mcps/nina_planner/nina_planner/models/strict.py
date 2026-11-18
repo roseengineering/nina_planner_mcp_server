@@ -1,3 +1,5 @@
+"""Strict base model for plan files: unknown keys are refused, not ignored."""
+
 from pydantic import BaseModel, ConfigDict
 
 

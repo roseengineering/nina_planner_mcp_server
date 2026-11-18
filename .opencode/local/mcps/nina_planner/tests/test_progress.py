@@ -1,3 +1,5 @@
+"""Tests for plan progress: attribution, filtering, windows, and verdicts."""
+
 import unittest
 from datetime import UTC, datetime, timedelta
 
@@ -31,7 +33,10 @@ def _plan(**overrides):
 
 
 class PlanProgressTest(unittest.TestCase):
+    """Frame attribution in plan_progress: counts per plan group."""
+
     def test_embedded_plan_id_matching(self):
+        """Only rows embedding this plan's id count toward its lights."""
         plan = _plan(plan_id="plan-abc123")
         rows = [
             _row(target="M31 _plan-abc123_"),
@@ -44,6 +49,7 @@ class PlanProgressTest(unittest.TestCase):
         self.assertEqual(lights["remaining_count"], 18)
 
     def test_legacy_bracket_and_paren_tokens_still_attributed(self):
+        """Legacy [id] and (id) target tokens still count; other pointings' do not."""
         # Frames shot before the token switched to underscores carry the
         # bracketed form (square brackets, then parentheses) and still count
         # — N.I.N.A. only rewrites them once they reach the path — while the
@@ -60,6 +66,7 @@ class PlanProgressTest(unittest.TestCase):
         self.assertEqual(lights["remaining_count"], 17)
 
     def test_light_surplus_counts_frames_beyond_the_plan_total(self):
+        """The surplus_count field exposes frames shot beyond the plan total."""
         # A mode=full re-shoot asks N.I.N.A. for total_count *more* frames,
         # but acquired is cumulative across every run, so a re-shoot that
         # delivered 17 of 120 still reads remaining=0 and complete=true — the
@@ -73,6 +80,7 @@ class PlanProgressTest(unittest.TestCase):
         self.assertEqual(lights["surplus_count"], 5)
 
     def test_light_surplus_zero_at_or_below_the_plan_total(self):
+        """Surplus is 0 while acquired is at or below the plan total."""
         plan = _plan(plan_id="plan-abc123")  # 20 lights
         partial = plan_progress(plan, [_row(target="M31 _plan-abc123_")] * 5)["light"][
             0
@@ -85,6 +93,7 @@ class PlanProgressTest(unittest.TestCase):
         self.assertEqual(exact["surplus_count"], 0)
 
     def test_calibration_groups_carry_no_surplus(self):
+        """Calibration groups carry no surplus_count field — lights only."""
         # Calibration is pool-credited by type+filter across plans, so a flat
         # group routinely reads 103/20 and a surplus field there would be
         # permanent noise on every plan. Lights only.
@@ -102,6 +111,7 @@ class PlanProgressTest(unittest.TestCase):
                 self.assertNotIn("surplus_count", item)
 
     def test_surplus_does_not_rearm_plan_with_remaining(self):
+        """A light surplus must not re-arm remaining mode and double-acquire."""
         # Hard constraint: remaining_count is what plan_with_remaining reads,
         # and it drops finished groups. If a surplus were allowed to affect
         # it, an overshot plan would re-enter remaining mode and double-acquire.
@@ -123,6 +133,7 @@ class PlanProgressTest(unittest.TestCase):
         self.assertEqual(rebuilt.flat_frames, [])
 
     def test_attribution_token_is_underscore_delimited(self):
+        """Tokens are underscore-delimited: bare for one pointing, -N for panes."""
         # Underscore-delimited: N.I.N.A. rewrites "[" and "]" to "_" when it
         # substitutes $$TARGETNAME$$ into the file path, so the token is
         # written the way it will be recorded.
@@ -138,10 +149,12 @@ class PlanProgressTest(unittest.TestCase):
         self.assertEqual(multi.attribution_token(2), "_plan-abc123-2_")
 
     def test_plan_token_is_underscore_delimited(self):
+        """The plan_token is the underscore-delimited plan-level token."""
         plan = _plan(plan_id="plan-abc123")
         self.assertEqual(plan.plan_token(), "_plan-abc123_")
 
     def test_calibration_prefix_carries_only_a_single_pointing_label(self):
+        """Calibration prefix labels only a lone pointing, never a mosaic's panes."""
         # The calibration target name must match the light target name for a
         # single-pointing plan, or $$TARGETNAME$$ splits one plan's frames
         # across two landing folders.
@@ -169,6 +182,7 @@ class PlanProgressTest(unittest.TestCase):
         self.assertEqual(bare.calibration_prefix(), "M31")
 
     def test_calibration_prefix_carries_the_intent(self):
+        """Plan-level intent appears in both light and calibration prefixes."""
         # The intent is plan-level, so it belongs in BOTH prefixes — lights
         # (sequence_deepsky via target_prefix) and calibration — or the two
         # spellings split one plan's frames across two landing folders.
@@ -192,6 +206,7 @@ class PlanProgressTest(unittest.TestCase):
         self.assertEqual(multi.calibration_prefix(), "M31 Galaxy portrait")
 
     def test_token_matches_in_any_path_segment(self):
+        """The token counts wherever it appears: directory, filename, or ancestor."""
         plan = _plan(plan_id="plan-abc123")
         rows = [
             {
@@ -232,6 +247,7 @@ class PlanProgressTest(unittest.TestCase):
         self.assertEqual(lights["remaining_count"], 17)
 
     def test_derived_plan_id_matching(self):
+        """An empty plan_id falls back to the derived base id for matching."""
         plan = _plan(plan_id="")
         self.assertEqual(plan.plan_id, "")
         pid = plan._base_plan_id()
@@ -244,6 +260,7 @@ class PlanProgressTest(unittest.TestCase):
         self.assertEqual(lights["remaining_count"], 18)
 
     def test_other_target_not_counted(self):
+        """Rows attributed to another plan's token count nothing."""
         plan = _plan()
         rows = [_row(target="NGC 7331 _plan-other-1_")]
         lights = plan_progress(plan, rows)["light"][0]
@@ -251,6 +268,7 @@ class PlanProgressTest(unittest.TestCase):
         self.assertEqual(lights["remaining_count"], 20)
 
     def test_filter_and_exposure_match(self):
+        """Lights count only when filter and exposure match the group."""
         plan = _plan()
         rows = [
             _row(filter_name="SII", target="M31 _plan-abc123_"),  # wrong filter
@@ -261,6 +279,7 @@ class PlanProgressTest(unittest.TestCase):
         self.assertEqual(lights["acquired_count"], 1)
 
     def test_calibration_counts(self):
+        """Flat, dark, and bias rows count toward their own groups."""
         plan = _plan()
         rows = [
             _row(image_type="FLAT", filter_name="LP", duration="5.0", target=None),
@@ -274,6 +293,7 @@ class PlanProgressTest(unittest.TestCase):
         self.assertEqual(prog["bias"][0]["acquired_count"], 1)
 
     def test_flat_progress_ignores_exposure_mismatch(self):
+        """Flats match by filter alone at any exposure, and report no exposure."""
         # Flat specs carry no exposure at all now (N.I.N.A. picks it), and
         # attribution is by filter alone — a flat shot at any duration still
         # satisfies the group.
@@ -289,6 +309,7 @@ class PlanProgressTest(unittest.TestCase):
         self.assertNotIn("exposure_time_seconds", prog["flat"][0])
 
     def test_non_light_rows_excluded_from_lights(self):
+        """Dark and flat rows never count as light frames."""
         plan = _plan()
         rows = [
             _row(image_type="DARK", target="M31 _plan-x-1_"),
@@ -299,6 +320,8 @@ class PlanProgressTest(unittest.TestCase):
 
 
 class QualityFilterTest(unittest.TestCase):
+    """Quality thresholds gate which light frames count toward the plan."""
+
     def _hfr_row(self, hfr, stars=10):
         row = _row()
         row["hfr"] = str(hfr)
@@ -313,18 +336,21 @@ class QualityFilterTest(unittest.TestCase):
         return row
 
     def test_max_hfr_excludes_blur(self):
+        """Frames with HFR above max_hfr do not count."""
         plan = _plan()
         rows = [self._hfr_row(2.0), self._hfr_row(4.0), self._hfr_row(1.5)]
         lights = plan_progress(plan, rows, max_hfr=2.5)["light"][0]
         self.assertEqual(lights["acquired_count"], 2)
 
     def test_min_detected_stars_excludes_blank(self):
+        """Frames below the star floor do not count."""
         plan = _plan()
         rows = [self._hfr_row(2.0, stars=3), self._hfr_row(2.0, stars=50)]
         lights = plan_progress(plan, rows, min_detected_stars=10)["light"][0]
         self.assertEqual(lights["acquired_count"], 1)
 
     def test_missing_quality_field_excluded_when_filtered(self):
+        """A frame missing a filtered metric is excluded, not passed."""
         plan = _plan()
         rows = [
             self._hfr_row(1.5),
@@ -334,12 +360,14 @@ class QualityFilterTest(unittest.TestCase):
         self.assertEqual(lights["acquired_count"], 1)
 
     def test_no_filter_counts_all(self):
+        """With no threshold active, every frame counts regardless of quality."""
         plan = _plan()
         rows = [self._hfr_row(9.0), _row()]
         lights = plan_progress(plan, rows)["light"][0]
         self.assertEqual(lights["acquired_count"], 2)
 
     def test_calibration_unaffected_by_quality(self):
+        """Quality thresholds never apply to calibration frames."""
         plan = _plan()
         rows = [
             _row(image_type="FLAT", filter_name="LP", duration="5.0", target=None),
@@ -352,6 +380,7 @@ class QualityFilterTest(unittest.TestCase):
         self.assertEqual(prog["bias"][0]["acquired_count"], 1)
 
     def test_max_guiding_rms_excludes_poor(self):
+        """Guiding RMS above the limit excludes the frame."""
         plan = _plan()
         rows = [
             self._guiding_rms_row(1.0),
@@ -362,12 +391,14 @@ class QualityFilterTest(unittest.TestCase):
         self.assertEqual(lights["acquired_count"], 2)
 
     def test_missing_guiding_rms_excluded_when_filtered(self):
+        """A frame with no guiding RMS is excluded once RMS is filtered."""
         plan = _plan()
         rows = [self._guiding_rms_row(1.5), _row()]
         lights = plan_progress(plan, rows, max_guiding_rms_arcsec=2.5)["light"][0]
         self.assertEqual(lights["acquired_count"], 1)
 
     def test_guiding_rms_combined_with_hfr(self):
+        """HFR and guiding RMS thresholds are ANDed: only rows passing both count."""
         plan = _plan()
         rows = [
             self._guiding_rms_row(1.0, hfr=1.5),
@@ -380,6 +411,7 @@ class QualityFilterTest(unittest.TestCase):
         self.assertEqual(lights["acquired_count"], 1)
 
     def test_non_finite_and_out_of_range_rejected_per_metric(self):
+        """NaN, ±inf, and over-limit readings never pass an active threshold."""
         # Every float metric: NaN/±inf never pass an active threshold, and
         # neither does a reading above the limit.
         plan = _plan()
@@ -398,6 +430,7 @@ class QualityFilterTest(unittest.TestCase):
                     self.assertEqual(lights["acquired_count"], 0)
 
     def test_nan_accepted_when_no_threshold(self):
+        """NaN readings count when no threshold on that metric is active."""
         # With no threshold active the sentinel question does not arise.
         plan = _plan()
         for make_row in (self._hfr_row, self._guiding_rms_row, self._sigma_row):
@@ -408,9 +441,11 @@ class QualityFilterTest(unittest.TestCase):
     # --- HFR sigma (max_hfr_st_dev) ---
 
     def _sigma_row(self, sigma, hfr=2.0, stars=10):
-        """A light row whose mean HFR passes max_hfr=2.5 but whose per-star
-        spread is whatever the test asks for — the whole point of the sigma
-        threshold is catching a frame the mean HFR lets through."""
+        """A light row with a test-chosen HFR spread.
+
+        Its mean HFR passes max_hfr=2.5, so only the sigma threshold can
+        reject it — catching a frame the mean HFR lets through.
+        """
         row = _row()
         row["hfr"] = str(hfr)
         row["hfr_st_dev"] = str(sigma)
@@ -418,18 +453,21 @@ class QualityFilterTest(unittest.TestCase):
         return row
 
     def test_max_hfr_st_dev_excludes_uneven(self):
+        """A frame whose HFR spread exceeds the sigma limit does not count."""
         plan = _plan()
         rows = [self._sigma_row(0.2), self._sigma_row(0.9), self._sigma_row(0.4)]
         lights = plan_progress(plan, rows, max_hfr_st_dev=0.6)["light"][0]
         self.assertEqual(lights["acquired_count"], 2)
 
     def test_missing_hfr_st_dev_excluded_when_filtered(self):
+        """A frame with no HFR sigma is excluded once sigma is filtered."""
         plan = _plan()
         rows = [self._sigma_row(0.3), self._hfr_row(2.0)]  # second has no sigma
         lights = plan_progress(plan, rows, max_hfr_st_dev=0.6)["light"][0]
         self.assertEqual(lights["acquired_count"], 1)
 
     def test_zero_hfr_st_dev_excluded_when_filtered(self):
+        """A zero sigma (the unmeasured sentinel) fails an active threshold."""
         # NINA writes 0 for an unmeasured ASCOM value: under an active
         # threshold that is "not measured", never a passing reading.
         plan = _plan()
@@ -438,12 +476,14 @@ class QualityFilterTest(unittest.TestCase):
         self.assertEqual(lights["acquired_count"], 1)
 
     def test_no_sigma_threshold_counts_all(self):
+        """Without a sigma threshold, every frame counts regardless of spread."""
         plan = _plan()
         rows = [self._sigma_row(9.0), self._sigma_row(0.2)]
         lights = plan_progress(plan, rows)["light"][0]
         self.assertEqual(lights["acquired_count"], 2)
 
     def test_hfr_st_dev_and_hfr_are_anded(self):
+        """HFR and sigma thresholds are ANDed: only rows passing both count."""
         # Row 1: mean HFR fails. Row 2: mean HFR passes, sigma fails.
         # Row 3: both pass. Only row 3 counts.
         plan = _plan()
@@ -456,6 +496,7 @@ class QualityFilterTest(unittest.TestCase):
         self.assertEqual(lights["acquired_count"], 1)
 
     def test_calibration_unaffected_by_hfr_st_dev(self):
+        """Calibration frames are never gated by the HFR sigma threshold."""
         plan = _plan()
         rows = [
             _row(image_type="FLAT", filter_name="LP", duration="5.0", target=None),
@@ -469,7 +510,10 @@ class QualityFilterTest(unittest.TestCase):
 
 
 class PlanWithRemainingTest(unittest.TestCase):
+    """The remaining-mode rebuild of a partially acquired plan."""
+
     def test_reduces_and_drops_completed(self):
+        """Partial light groups shrink; groups with no rows stay untouched."""
         plan = _plan()
         rows = [_row() for _ in range(4)]  # 4 of 20 lights for pointing 1
         progress = plan_progress(plan, rows)
@@ -482,6 +526,7 @@ class PlanWithRemainingTest(unittest.TestCase):
         self.assertEqual(reduced.bias_frames[0].total_count, 10)
 
     def test_drops_fully_acquired_group(self):
+        """A fully acquired light group is dropped from the rebuilt plan."""
         plan = _plan()
         rows = [_row() for _ in range(20)]
         progress = plan_progress(plan, rows)
@@ -490,6 +535,7 @@ class PlanWithRemainingTest(unittest.TestCase):
         self.assertEqual(reduced.light_frames, [])
 
     def test_partial_group_survives(self):
+        """Unacquired and partial light groups survive with reduced counts."""
         plan = _plan(
             light_frames=[
                 {"filter_name": "L", "exposure_time_seconds": 60.0, "total_count": 5},
@@ -507,7 +553,10 @@ class PlanWithRemainingTest(unittest.TestCase):
 
 
 class CalibrationAgeTest(unittest.TestCase):
+    """The calibration window: which frames are fresh enough to count."""
+
     def test_calibration_window_days_default_and_override(self):
+        """The calibration window defaults to 7 days and cannot be 0."""
         self.assertEqual(_plan().calibration_window_days, 7)
         self.assertEqual(_plan(calibration_window_days=1).calibration_window_days, 1)
         # 0 is reserved (ge=1), so it is rejected.
@@ -515,6 +564,7 @@ class CalibrationAgeTest(unittest.TestCase):
             _plan(calibration_window_days=0)
 
     def test_stale_calibration_excluded_from_progress(self):
+        """Calibration older than the window does not count."""
         plan = _plan()
         now = datetime.now(UTC)
         fresh = now.strftime("%Y-%m-%d %H:%M:%S")
@@ -528,6 +578,7 @@ class CalibrationAgeTest(unittest.TestCase):
         self.assertEqual(prog["dark"][0]["remaining_count"], 9)
 
     def test_calibration_missing_time_excluded(self):
+        """A calibration row with no timestamp does not count."""
         plan = _plan()
         row = _row(image_type="BIAS", target=None)
         del row["exposure_start_utc"]
@@ -535,6 +586,7 @@ class CalibrationAgeTest(unittest.TestCase):
         self.assertEqual(prog["bias"][0]["acquired_count"], 0)
 
     def test_one_day_window_counts_recent_only(self):
+        """A one-day window counts only frames from the last day."""
         plan = _plan(calibration_window_days=1)
         now = datetime.now(UTC)
         recent = now.strftime("%Y-%m-%d %H:%M:%S")
@@ -559,6 +611,7 @@ class CalibrationAgeTest(unittest.TestCase):
         self.assertEqual(prog["flat"][0]["acquired_count"], 1)
 
     def test_calibration_after_lights_counts_without_reacquisition(self):
+        """Darks shot within the window after the lights still count."""
         # Session-anchored: darks shot *within the window* after the lights
         # stay counted, so the plan does not keep re-acquiring them on later
         # runs (no infinite loop).
@@ -578,6 +631,7 @@ class CalibrationAgeTest(unittest.TestCase):
         self.assertEqual(prog["dark"][0]["remaining_count"], 9)
 
     def test_calibration_outside_window_not_attributed(self):
+        """Calibration beyond the window's end is not attributed at all."""
         # Upper bound: a dark shot well after (earliest light + window) is not
         # attributed to the plan at all.
         plan = _plan()
@@ -594,6 +648,7 @@ class CalibrationAgeTest(unittest.TestCase):
         self.assertEqual(prog["dark"][0]["acquired_count"], 0)
 
     def test_closed_window_reports_zero_remaining(self):
+        """A closed window reports zero remaining, not an unsatisfiable deficit."""
         # Once `now` is outside the window no frame shot now could ever be
         # credited, so remaining is reported as 0 instead of an unsatisfiable
         # deficit — otherwise every later run would re-acquire the darks.
@@ -610,6 +665,7 @@ class CalibrationAgeTest(unittest.TestCase):
         self.assertEqual(prog["light"][0]["remaining_count"], 19)
 
     def test_closed_window_keeps_truthful_acquired_count(self):
+        """A closed window zeroes demand, not the record or the deficit."""
         # A closed window zeroes the *demand*, not the record: frames shot
         # inside the window are still reported as acquired.
         plan = _plan()
@@ -631,6 +687,7 @@ class CalibrationAgeTest(unittest.TestCase):
         self.assertEqual(prog["dark"][0]["deficit_count"], 9)
 
     def test_deficit_count_matches_remaining_while_window_open(self):
+        """With the window open, deficit and remaining report the same number."""
         # Inside the window there is no adjustment to hide: the raw
         # shortfall and the demand are the same number, and both readings
         # agree on lights too (which have no window at all).
@@ -645,6 +702,7 @@ class CalibrationAgeTest(unittest.TestCase):
         self.assertEqual(prog["light"][0]["remaining_count"], 19)
 
     def test_window_end_is_anchor_plus_window(self):
+        """The window_end is the anchor plus the window, with a tz offset."""
         plan = _plan(calibration_window_days=3)
         session = datetime(2026, 9, 1, 22, 0, 0)
         light = _row(exposure_start=session.strftime("%Y-%m-%d %H:%M:%S"))
@@ -660,6 +718,7 @@ class CalibrationAgeTest(unittest.TestCase):
         )
 
     def test_window_open_when_plan_has_no_lights(self):
+        """With no lights the anchor is now, so the calibration window is open."""
         # With no lights the anchor is `now`, so the window is open and
         # calibration is still demanded.
         plan = _plan()
@@ -669,6 +728,7 @@ class CalibrationAgeTest(unittest.TestCase):
         self.assertEqual(prog["dark"][0]["remaining_count"], 10)
 
     def test_pre_session_calibration_older_than_window_excluded(self):
+        """Only pre-session calibration inside the window counts."""
         plan = _plan(calibration_window_days=7)
         session = datetime(2026, 9, 1, 22, 0, 0)
         light = _row(exposure_start=session.strftime("%Y-%m-%d %H:%M:%S"))
@@ -689,6 +749,7 @@ class CalibrationAgeTest(unittest.TestCase):
         self.assertEqual(prog["dark"][0]["acquired_count"], 1)
 
     def test_no_lights_falls_back_to_now(self):
+        """With no lights the age anchor falls back to now."""
         plan = _plan()
         now = datetime.now(UTC)
         rows = [
@@ -704,10 +765,13 @@ class CalibrationAgeTest(unittest.TestCase):
 
 
 class FilterMetadataRowsTest(unittest.TestCase):
+    """Which metadata rows filter_metadata_rows attributes to a plan."""
+
     def _ref(self):
         return datetime.now(UTC)
 
     def test_lights_match_plan_id(self):
+        """Only light rows embedding this plan's id pass the filter."""
         plan = _plan()
         rows = [
             _row(target="M31 _plan-abc123_"),
@@ -719,6 +783,7 @@ class FilterMetadataRowsTest(unittest.TestCase):
         self.assertIn("plan-abc123", out[0]["file_path"])
 
     def test_dark_matches_exposure_and_age(self):
+        """Dark rows pass only on a matching exposure and a fresh timestamp."""
         plan = _plan()
         ref = self._ref()
         fresh = ref.strftime("%Y-%m-%d %H:%M:%S")
@@ -735,6 +800,7 @@ class FilterMetadataRowsTest(unittest.TestCase):
         self.assertEqual(out[0]["duration"], "60.0")
 
     def test_flat_matches_filter_only(self):
+        """Flat rows match by filter inside the window, at any exposure."""
         # Exposure is not part of flat attribution: any flat through the
         # right filter inside the window counts, whatever duration it was
         # shot at. The wrong filter still does not.
@@ -749,6 +815,7 @@ class FilterMetadataRowsTest(unittest.TestCase):
         self.assertTrue(all(r["filter_name"] == "LP" for r in out))
 
     def test_bias_returns_within_window(self):
+        """Bias rows inside the window pass; stale ones do not."""
         plan = _plan()
         ref = self._ref()
         fresh = ref.strftime("%Y-%m-%d %H:%M:%S")
@@ -761,6 +828,7 @@ class FilterMetadataRowsTest(unittest.TestCase):
         self.assertEqual(len(out), 1)
 
     def test_missing_time_excluded_when_window_set(self):
+        """A row with no timestamp fails an active age window."""
         plan = _plan()
         row = _row(image_type="BIAS", target=None)
         del row["exposure_start_utc"]
@@ -768,6 +836,7 @@ class FilterMetadataRowsTest(unittest.TestCase):
         self.assertEqual(out, [])
 
     def test_empty_result(self):
+        """An empty row list filters to an empty result for any type."""
         plan = _plan()
         self.assertEqual(filter_metadata_rows(plan, [], "light"), [])
         self.assertEqual(filter_metadata_rows(plan, [], "dark"), [])
@@ -788,6 +857,7 @@ class FrameGroupConstraintsTest(unittest.TestCase):
         return datetime.now(UTC)
 
     def test_constraints_stated_per_type(self):
+        """Each image type yields its own (filter, exposure) constraint pair."""
         from nina_planner.progress import frame_group_constraints
 
         plan = _plan()
@@ -809,6 +879,7 @@ class FrameGroupConstraintsTest(unittest.TestCase):
         )
 
     def test_dict_groups_are_narrowed_by_type_not_by_stray_keys(self):
+        """Type narrows dict groups even when the dict carries stray keys."""
         # Frame groups can surface as plain dicts (see `_junk_count`). The
         # type must still narrow the match even when the dict carries a key
         # the type is supposed to ignore — otherwise a stray key silently
@@ -835,6 +906,7 @@ class FrameGroupConstraintsTest(unittest.TestCase):
         )
 
     def test_both_callers_agree_on_calibration(self):
+        """Both call paths agree on calibration counts for the same rows."""
         # The drift detector itself: for every calibration type, the number
         # of rows `filter_metadata_rows` returns must equal the
         # `acquired_count` that `plan_progress` derives from the same rows.
@@ -884,6 +956,7 @@ class FrameGroupConstraintsTest(unittest.TestCase):
                 )
 
     def test_lights_differ_between_the_two_by_design(self):
+        """The two callers intentionally disagree about light attribution."""
         # The one place the callers intentionally do NOT share the rule.
         # `filter_metadata_rows` answers "every frame attributable to this
         # pointing" (the archive's view of it) so it applies no
@@ -911,7 +984,10 @@ class FrameGroupConstraintsTest(unittest.TestCase):
 
 
 class PointingIndexTest(unittest.TestCase):
+    """Effective plan ids and per-pointing progress isolation."""
+
     def test_effective_plan_id_shape_depends_on_pointing_count(self):
+        """A lone pointing keeps the plan-level id; a mosaic gets -N suffixes."""
         # A lone pointing is not a pane: the id stays plan-level.
         single = _plan(plan_id="plan-abc123")
         self.assertEqual(single.effective_plan_id(1), "plan-abc123")
@@ -924,6 +1000,7 @@ class PointingIndexTest(unittest.TestCase):
         self.assertEqual(multi.effective_plan_id(2), "plan-abc123-2")
 
     def test_pointing_index_isolates_progress(self):
+        """Each pointing's progress counts only its own pane token."""
         plan = _plan(
             plan_id="plan-abc123",
             pointings=[
@@ -944,6 +1021,7 @@ class PointingIndexTest(unittest.TestCase):
         self.assertEqual(lights_p2["remaining_count"], 19)
 
     def test_out_of_range_pointing_index_excluded_via_filter(self):
+        """Pointing indexes outside 1..N raise ValueError; 1 is valid."""
         plan = _plan(pointings=[{"ra_hours": 0.71, "dec_deg": 41.27}])
         with self.assertRaises(ValueError):
             from nina_planner.plan_utils import (
@@ -957,6 +1035,7 @@ class PointingIndexTest(unittest.TestCase):
         _check_pointing_index(plan, 1)
 
     def test_labeled_pointing_targets(self):
+        """A lone labeled pointing still keeps plan-level ids and tokens."""
         plan = _plan(
             plan_id="plan-abc123",
             pointings=[{"label": "Pane 1", "ra_hours": 0.71, "dec_deg": 41.27}],
@@ -987,6 +1066,7 @@ class PrivateHelperDefensivePathsTest(unittest.TestCase):
     # ---- _exposure_matches ----
 
     def test_exposure_matches_returns_false_when_duration_empty(self):
+        """An empty or missing duration never matches an exposure gate."""
         from nina_planner.progress import _exposure_matches
 
         self.assertFalse(_exposure_matches({"duration": ""}, 60.0))
@@ -994,6 +1074,7 @@ class PrivateHelperDefensivePathsTest(unittest.TestCase):
         self.assertFalse(_exposure_matches({}, 60.0))
 
     def test_exposure_matches_returns_false_when_duration_invalid(self):
+        """An unparseable duration string never matches an exposure gate."""
         from nina_planner.progress import _exposure_matches
 
         self.assertFalse(_exposure_matches({"duration": "abc"}, 60.0))
@@ -1002,6 +1083,7 @@ class PrivateHelperDefensivePathsTest(unittest.TestCase):
     # ---- _light_target_matches ----
 
     def test_light_target_matches_returns_false_when_file_path_empty(self):
+        """An empty or blank file_path never matches a light target."""
         from nina_planner.progress import _light_target_matches
 
         plan = self._plan()
@@ -1010,6 +1092,7 @@ class PrivateHelperDefensivePathsTest(unittest.TestCase):
         self.assertFalse(_light_target_matches(plan, {"file_path": "   "}))
 
     def test_light_target_matches_delimiter_blocks_cross_pointing_match(self):
+        """The closing underscore stops pane 1's token matching pane 10's."""
         from nina_planner.progress import _light_target_matches
 
         # 10-pane mosaic: the closing underscore keeps "_plan-test123-1_"
@@ -1034,6 +1117,7 @@ class PrivateHelperDefensivePathsTest(unittest.TestCase):
         self.assertFalse(_light_target_matches(plan, row_p10_bracket, pointing_index=1))
 
     def test_light_target_matches_single_pointing_token_and_legacy(self):
+        """Bare and legacy tokens match for a single pointing, without leaks."""
         from nina_planner.progress import _light_target_matches
 
         # Single-pointing plan: the bare underscore token is primary, the
@@ -1077,6 +1161,7 @@ class PrivateHelperDefensivePathsTest(unittest.TestCase):
     # ---- _quality_accepted ----
 
     def test_quality_unparseable_metric_strings_return_false(self):
+        """A parse quirk never invents a passing or failing reading."""
         from nina_planner.progress import _quality_accepted
 
         # A parse quirk must never invent a passing OR a failing reading.
@@ -1093,6 +1178,7 @@ class PrivateHelperDefensivePathsTest(unittest.TestCase):
         self.assertTrue(_quality_accepted({"hfr_st_dev": "0.3"}, None, None, None, 1.0))
 
     def test_quality_hfr_zero_sentinel_rejected(self):
+        """Zero HFR fails an active filter; a real measurement still passes."""
         from nina_planner.progress import _quality_accepted
 
         # NINA writes 0 for unmeasured ASCOM values in ImageMetaData.csv;
@@ -1105,6 +1191,7 @@ class PrivateHelperDefensivePathsTest(unittest.TestCase):
         self.assertTrue(_quality_accepted({"hfr": 0.42}, 5.0, None))
 
     def test_quality_rms_zero_sentinel_rejected(self):
+        """Zero guiding RMS fails an active limit; a real value passes."""
         from nina_planner.progress import _quality_accepted
 
         self.assertFalse(_quality_accepted({"guiding_rms_arc_sec": 0}, None, None, 2.0))
@@ -1116,6 +1203,7 @@ class PrivateHelperDefensivePathsTest(unittest.TestCase):
         )
 
     def test_quality_stars_zero_sentinel_rejected(self):
+        """Zero detected stars fails even a star floor of zero."""
         from nina_planner.progress import _quality_accepted
 
         # detected_stars is in imaging._QUALITY_METRICS too: 0 stars is the
@@ -1124,6 +1212,7 @@ class PrivateHelperDefensivePathsTest(unittest.TestCase):
         self.assertTrue(_quality_accepted({"detected_stars": 1}, None, 0))
 
     def test_quality_zero_without_active_filter_still_accepted(self):
+        """With no filter active, zero sentinels still count the frame."""
         from nina_planner.progress import _quality_accepted
 
         # No filter active: the sentinel question does not arise; the frame
@@ -1131,6 +1220,7 @@ class PrivateHelperDefensivePathsTest(unittest.TestCase):
         self.assertTrue(_quality_accepted({"hfr": 0, "detected_stars": 0}, None, None))
 
     def test_quality_hfr_st_dev_invalid_string_returns_false(self):
+        """An unparseable sigma fails the limit; a valid one passes it."""
         from nina_planner.progress import _quality_accepted
 
         # HFR sigma="abc" → float() raises ValueError → returns False, the
@@ -1142,6 +1232,7 @@ class PrivateHelperDefensivePathsTest(unittest.TestCase):
         self.assertTrue(_quality_accepted({"hfr_st_dev": "0.3"}, None, None, None, 1.0))
 
     def test_junk_row_reads_plain_dict_frame_groups(self):
+        """The junk check reads a group's exposure from plain dicts too."""
         from nina_planner.progress import is_junk_row
 
         # frame_group_constraints hands plain dicts on the audit path, so
@@ -1160,6 +1251,7 @@ class PrivateHelperDefensivePathsTest(unittest.TestCase):
     # ---- _within_age ----
 
     def test_within_age_returns_true_when_max_age_days_none(self):
+        """No max age means every timestamp is within the window."""
         from nina_planner.progress import _within_age
 
         self.assertTrue(
@@ -1171,6 +1263,7 @@ class PrivateHelperDefensivePathsTest(unittest.TestCase):
         )
 
     def test_within_age_returns_true_when_session_start_none(self):
+        """No session anchor means the age window is not enforced."""
         from nina_planner.progress import _within_age
 
         self.assertTrue(
@@ -1178,6 +1271,7 @@ class PrivateHelperDefensivePathsTest(unittest.TestCase):
         )
 
     def test_within_age_returns_false_when_time_string_invalid(self):
+        """An invalid or missing timestamp never counts as within age."""
         from nina_planner.progress import _within_age
 
         ref = datetime(2026, 9, 22, 12, 0)
@@ -1186,6 +1280,7 @@ class PrivateHelperDefensivePathsTest(unittest.TestCase):
         self.assertFalse(_within_age({"exposure_start_utc": None}, 7, ref))
 
     def test_within_age_counts_from_session_minus_window(self):
+        """The age window is [session - window, session], bounds inclusive."""
         from nina_planner.progress import _within_age
 
         session = datetime(2026, 9, 22, 12, 0)
@@ -1210,9 +1305,11 @@ class PrivateHelperDefensivePathsTest(unittest.TestCase):
         )
 
     def test_within_age_ignores_local_column(self):
-        """The naive local ExposureStart column is not a fallback: a row
-        carrying only it cannot be placed in the window, because mixing it
-        with UTC stamps would shift the frame by the offset."""
+        """The naive local ExposureStart column is not a time fallback.
+
+        A row carrying only it cannot be placed in the window: mixing it
+        with UTC stamps would shift the frame by the offset.
+        """
         from nina_planner.progress import _within_age
 
         session = datetime(2026, 9, 22, 12, 0)
@@ -1221,10 +1318,11 @@ class PrivateHelperDefensivePathsTest(unittest.TestCase):
         )
 
     def test_within_age_converts_offset_to_utc(self):
-        """An offset-bearing value is converted to UTC, not stripped. The
-        discriminator is a stamp whose wall clock sits inside the window but
-        whose true UTC instant does not: keeping the wall clock would count
-        it, converting does not."""
+        """An offset-bearing stamp is converted to UTC rather than stripped.
+
+        The discriminating row's wall clock sits inside the window while
+        its true UTC instant does not; stripping the offset would count it.
+        """
         from nina_planner.progress import _within_age
 
         # Session 2026-09-22T12:00:00Z, 2-day window ->
@@ -1241,8 +1339,11 @@ class PrivateHelperDefensivePathsTest(unittest.TestCase):
         )
 
     def test_within_age_converts_session_offset(self):
-        """The session anchor's offset is converted too, so both sides of the
-        comparison are the same UTC instant."""
+        """The session anchor's offset is converted to UTC as well.
+
+        Both sides must be the same UTC instant: a 12:00:00-05:00 anchor is
+        17:00:00Z, so a 12:00:00Z shot falls short of the lower bound.
+        """
         from nina_planner.progress import _within_age
 
         # 12:00:00-05:00 is 17:00:00Z, so the lower bound is
@@ -1259,6 +1360,7 @@ class PrivateHelperDefensivePathsTest(unittest.TestCase):
     # ---- filter_metadata_rows ----
 
     def test_filter_metadata_returns_empty_for_unknown_image_type(self):
+        """An unknown image type filters to nothing, in any letter case."""
         from nina_planner.progress import filter_metadata_rows
 
         plan = self._plan()
@@ -1277,6 +1379,7 @@ class GroupVerdictTest(unittest.TestCase):
     """
 
     def test_satisfied_group_is_complete_even_with_a_closed_window(self):
+        """A fully acquired group stays complete even with a closed window."""
         # Acquired >= total means the frames exist; a closed window changes
         # nothing about that.
         item = {
@@ -1288,6 +1391,7 @@ class GroupVerdictTest(unittest.TestCase):
         self.assertEqual(group_verdict(item), "complete")
 
     def test_remaining_zero_deficit_and_closed_window_is_expired(self):
+        """Zero remaining plus a closed window with a deficit reads expired."""
         # THE trap: plan_progress zeroes remaining_count once the window
         # closes, so the acquisition answer reads 0 while the plan is 2
         # short — remaining alone would call this done.
@@ -1301,6 +1405,7 @@ class GroupVerdictTest(unittest.TestCase):
         self.assertEqual(group_verdict(item), "expired_with_deficit")
 
     def test_open_window_deficit_is_incomplete(self):
+        """A deficit under an open window is merely incomplete."""
         item = {
             "acquired_count": 8,
             "total_count": 10,
@@ -1310,12 +1415,14 @@ class GroupVerdictTest(unittest.TestCase):
         self.assertEqual(group_verdict(item), "incomplete")
 
     def test_light_item_without_window_never_expires(self):
+        """A light deficit without a window is always incomplete, never expired."""
         # Light items carry no window_open at all: a light deficit is
         # always ordinary "shoot more".
         item = {"acquired_count": 3, "total_count": 20, "remaining_count": 17}
         self.assertEqual(group_verdict(item), "incomplete")
 
     def test_progress_verdict_precedence_and_vacuous_truth(self):
+        """Expired outranks incomplete; no groups at all is vacuously complete."""
         ok = {"acquired_count": 20, "total_count": 20, "remaining_count": 0}
         short = {
             "acquired_count": 1,
@@ -1350,6 +1457,7 @@ class GroupVerdictTest(unittest.TestCase):
         )
 
     def test_expired_window_rolls_up_from_real_plan_progress(self):
+        """A closed-window deficit from real plan_progress rolls up to expired."""
         # Integrated: the verdict must come out of the REAL plan_progress
         # output for a session whose window has closed with darks missing.
         plan = _plan()  # asks 10 darks at 60s; window default is well < 30d
@@ -1374,6 +1482,7 @@ class FirstFitCreditTest(unittest.TestCase):
     """
 
     def test_duplicate_light_groups_do_not_double_count(self):
+        """Duplicate light groups claim each frame once, never twice."""
         plan = _plan(
             light_frames=[
                 {"filter_name": "LP", "exposure_time_seconds": 60.0, "total_count": 20},
@@ -1396,6 +1505,7 @@ class FirstFitCreditTest(unittest.TestCase):
         self.assertEqual(rebuilt.light_frames[0].total_count, 20)
 
     def test_same_filter_flat_groups_share_one_pool(self):
+        """Overlapping flat groups share one pool instead of double-counting."""
         # Flat matching deliberately ignores exposure, so two flat groups
         # on one filter overlap completely: 15 LP flats must not read 30.
         plan = _plan(
@@ -1421,6 +1531,7 @@ class FirstFitCreditTest(unittest.TestCase):
         self.assertEqual(sum(g["remaining_count"] for g in progress["flat"]), 5)
 
     def test_bias_groups_split_a_short_pool(self):
+        """A short bias pool is split first-fit across the two groups."""
         # Two bias groups ask 10 + 10; 15 frames exist. The old counting
         # credited all 15 to BOTH groups (complete at 15/20).
         plan = _plan(bias_frames=[{"total_count": 10}, {"total_count": 10}])
@@ -1434,6 +1545,7 @@ class FirstFitCreditTest(unittest.TestCase):
         self.assertEqual(sum(g["remaining_count"] for g in progress["bias"]), 5)
 
     def test_distinct_constraint_groups_are_untouched(self):
+        """First-fit changes nothing for groups with disjoint constraints."""
         # The normal case: groups with disjoint constraints each see all
         # their own rows — first-fit changes nothing.
         plan = _plan(

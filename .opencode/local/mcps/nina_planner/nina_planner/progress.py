@@ -1,3 +1,12 @@
+"""Count a plan's acquired frames from imaging metadata and judge completion.
+
+The counting rules live here so ``load_sequence`` (remaining mode),
+``get_plan_progress`` and ``audit_plans`` all agree on what "acquired"
+means: rows are attributed to a plan by the ``_<plan_id>_`` token in their
+path, and a group's verdict distinguishes genuinely complete from a
+calibration window that expired with frames still missing.
+"""
+
 from __future__ import annotations
 
 import math

@@ -1,3 +1,9 @@
+"""The observation-plan file schema: exposures, cadence, mosaic, identity.
+
+Strict (``extra="forbid"``): a typo in a plan file fails validation instead
+of silently loading as if it were honoured.
+"""
+
 import hashlib
 import json
 import re
@@ -25,12 +31,16 @@ ATTRIBUTION_RE = re.compile(r"_([A-Za-z0-9.-]+?)(?:-(\d+))?_")
 
 
 class LightExposurePlan(StrictModel):
+    """One filter's light budget: exposure duration in seconds and frame count."""
+
     filter_name: str
     exposure_time_seconds: float = Field(gt=0)
     total_count: int = Field(ge=1)
 
 
 class FlatExposurePlan(StrictModel):
+    """One filter's flat budget; list order is shoot order (see flat_frames)."""
+
     # No exposure_time_seconds: N.I.N.A.'s SkyFlat picks the exposure itself
     # to hit a target signal level, so a plan-specified duration is never
     # sent. List order is shoot order — see the flat_frames description.
@@ -39,15 +49,21 @@ class FlatExposurePlan(StrictModel):
 
 
 class DarkExposurePlan(StrictModel):
+    """Dark frames of one exposure duration (seconds) and count."""
+
     exposure_time_seconds: float = Field(gt=0)
     total_count: int = Field(ge=1)
 
 
 class BiasExposurePlan(StrictModel):
+    """Bias frames: a count only — bias exposures have no duration."""
+
     total_count: int = Field(ge=1)
 
 
 class AutofocusConfig(StrictModel):
+    """Autofocus cadence and thresholds (HFR in pixels, temperature in Celsius)."""
+
     reference_filter_name: str = Field(default="L")
     hfr_increase_sample_size: int = Field(default=3, ge=1)
     hfr_increase_threshold_percent: float = Field(default=15.0, gt=0)
@@ -56,6 +72,8 @@ class AutofocusConfig(StrictModel):
 
 
 class GuidingConfig(StrictModel):
+    """Dither and drift-check cadence; drift limit in arcminutes."""
+
     dither_every_n_exposures: int = Field(
         default=2,
         ge=0,
@@ -69,6 +87,8 @@ class GuidingConfig(StrictModel):
 
 
 class CoolerConfig(StrictModel):
+    """Camera cooler target; setpoint in Celsius within ASCOM's −40…+30 range."""
+
     on: bool = True
     setpoint_celsius: float = Field(
         default=-10.0,
@@ -79,6 +99,8 @@ class CoolerConfig(StrictModel):
 
 
 class ConstraintsConfig(StrictModel):
+    """Altitude floor for the whole plan: degrees above horizon or skyline."""
+
     min_altitude: float = Field(
         default=30.0,
         ge=0.0,
@@ -214,6 +236,13 @@ class MosaicConfig(StrictModel):
 
 
 class ObservationPlan(StrictModel):
+    """A complete observation plan: identity, pointings, exposures, cadence.
+
+    The on-disk unit of work — always written with its ``pointings``
+    expanded (see ``plan_utils.load_plan``), and identified for frame
+    attribution by ``plan_id``.
+    """
+
     target: str = Field(default="", description="catalog designation")
     intent: str = Field(
         default="", description="2 to 3 words describing the primary observation goal"
@@ -313,9 +342,11 @@ class ObservationPlan(StrictModel):
 
     @model_validator(mode="after")
     def _pointings_or_mosaic(self) -> "ObservationPlan":
-        """A plan carries pointings, or a mosaic to derive them from — not
-        neither (empty pointings with no mosaic points nowhere). Both present
-        is legal: the pointings are already expanded and are the authority.
+        """A plan carries pointings, or a mosaic to derive them from — not.
+
+        Neither (empty pointings with no mosaic points nowhere). Both
+        present is legal: the pointings are already expanded and are the
+        authority.
         """
         if not self.pointings and self.mosaic is None:
             raise ValueError(
@@ -328,8 +359,9 @@ class ObservationPlan(StrictModel):
     @field_validator("plan_id")
     @classmethod
     def _plan_id_charset(cls, v: str) -> str:
-        """Refuse ids that could not be matched back to their own frames
-        (see ``_PLAN_ID_ALLOWED``). Empty stays legal: it means "derive one
+        """Refuse ids that could not be matched back to their own frames.
+
+        See ``_PLAN_ID_ALLOWED``. Empty stays legal: it means "derive one
         on write" (the derived id is always ``plan-<hex>``, which passes).
         """
         if v and not _PLAN_ID_ALLOWED.fullmatch(v):
@@ -350,8 +382,12 @@ class ObservationPlan(StrictModel):
         return "plan-" + hashlib.sha1(canonical.encode()).hexdigest()[:12]
 
     def per_pointing_plan_id(self, pointing_index: int) -> str:
-        """The per-pointing id form ``{base}-{index}``, historically used for
-        every pointing, including single-pointing plans."""
+        """The per-pointing id form ``{base}-{index}``.
+
+        Historically used for every pointing, including single-pointing
+        plans; prefer :meth:`effective_plan_id`, which omits the suffix for
+        a lone pointing.
+        """
         return f"{self._base_plan_id()}-{pointing_index}"
 
     def effective_plan_id(self, pointing_index: int) -> str:
@@ -381,8 +417,11 @@ class ObservationPlan(StrictModel):
         return f"_{self.effective_plan_id(pointing_index)}_"
 
     def plan_token(self) -> str:
-        """Plan-level target-name token, used for calibration (darks/bias/
-        flats): calibration belongs to the whole plan, not to any pane."""
+        """Plan-level target-name token, used for calibration.
+
+        Calibration (darks/bias/flats) belongs to the whole plan, not to any
+        pane, so it carries the bare base id with no pointing suffix.
+        """
         return f"_{self._base_plan_id()}_"
 
     def target_prefix(self, label: str | None = "") -> str:

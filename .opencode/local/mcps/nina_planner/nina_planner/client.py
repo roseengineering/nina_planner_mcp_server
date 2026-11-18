@@ -1,3 +1,11 @@
+"""Thin async HTTP client for N.I.N.A.'s REST API plus sequence start/stop waits.
+
+Every call unwraps the ``Success``/``Error``/``Response`` envelope through
+``unwrap_response``, so failures surface as ``RuntimeError`` carrying N.I.N.A.'s
+own refusal text. Requests carry a 10 s timeout; payloads are best-effort logged
+to ``NINA_PLANNER_LOG``.
+"""
+
 import json
 import os
 import re
@@ -32,6 +40,11 @@ def _log_file() -> Path | None:
 
 
 def log_payload(label: str, payload: str) -> None:
+    """Append one timestamped line to the debug log; never raises.
+
+    Best-effort by contract: a missing or unwritable log path drops the line
+    rather than failing the tool call it was recording.
+    """
     path = _log_file()
     if path is None:
         return
@@ -103,6 +116,17 @@ def unwrap_response(method: str, path: str, resp: httpx.Response) -> dict[str, A
 
 
 async def api_get(path: str) -> Any:
+    """GET ``path`` and return its ``Response`` payload.
+
+    Args:
+        path: API path relative to the ``/v2/api`` base.
+
+    Returns:
+        The ``Response`` value, or an empty dict when the API sent none.
+
+    Raises:
+        RuntimeError: N.I.N.A. refused, or the body was not a JSON object.
+    """
     async with httpx.AsyncClient(base_url=config.NINA_API_URL, timeout=10.0) as client:
         resp = await client.get(path)
         data = unwrap_response("GET", path, resp)
@@ -111,6 +135,18 @@ async def api_get(path: str) -> Any:
 
 
 async def api_post(path: str, body: Any) -> dict[str, Any]:
+    """POST ``body`` to ``path`` and return its ``Response`` object.
+
+    Args:
+        path: API path relative to the ``/v2/api`` base.
+        body: JSON-serializable request payload.
+
+    Returns:
+        The ``Response`` value, always a dict for a successful POST.
+
+    Raises:
+        RuntimeError: N.I.N.A. refused, or the body was not a JSON object.
+    """
     async with httpx.AsyncClient(base_url=config.NINA_API_URL, timeout=10.0) as client:
         resp = await client.post(path, json=body)
         data = unwrap_response("POST", path, resp)

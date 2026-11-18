@@ -1,9 +1,13 @@
+"""Weather model camelCase mapping and value normalization."""
+
 import unittest
 
 from nina_planner.models.weather import Weather
 
 
 class WeatherDeriveFieldsTest(unittest.TestCase):
+    """Mapping all eleven Weather fields from a driver payload."""
+
     def _base(self, **overrides) -> dict:
         data = {
             "connected": True,
@@ -69,9 +73,7 @@ class WeatherDeriveFieldsTest(unittest.TestCase):
         self.assertEqual(w.pressure_hpa, 1013.25)
 
     def test_weather_with_real_minus_one_preserved(self):
-        """A real -1°C temperature (or other negative values) is preserved
-        as a real value, not nulled.
-        """
+        """A real negative temperature is preserved, not nulled."""
         w = Weather(**self._base(temperature=-1.0, dew_point=-1.0))
         self.assertEqual(w.temperature_c, -1.0)
         self.assertEqual(w.dew_point_c, -1.0)
@@ -84,8 +86,7 @@ class WeatherDeriveFieldsTest(unittest.TestCase):
         self.assertIsNone(w.pressure_hpa)
 
     def test_weather_partial_input(self):
-        """Some weather fields present, others absent — present ones parsed,
-        absent ones stay None."""
+        """Present fields parse while absent ones stay None."""
         w = Weather(**self._base(temperature=20.0, humidity=50.0))
         self.assertEqual(w.temperature_c, 20.0)
         self.assertEqual(w.humidity_pct, 50.0)

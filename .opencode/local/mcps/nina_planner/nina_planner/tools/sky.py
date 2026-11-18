@@ -1,3 +1,5 @@
+"""Sky MCP tools: target coordinates, altitudes, rise/set times and the moon."""
+
 import math
 import re
 from datetime import datetime, timezone
@@ -310,9 +312,11 @@ def _interp_time(times: Time, alts: list[float], i: int, threshold: float) -> Ti
 
 
 def _sun_events(when: Time, location: EarthLocation) -> dict[str, Any]:
-    """Next sunrise/sunset and twilight times for the site, the darkness
-    window associated with `night_phase`, and a coarse `night_phase`
-    ("dark" / "morning" / "evening") for the night-loop's end-of-night test.
+    """Next sunrise/sunset and twilight times for the site.
+
+    Also returns the darkness window associated with `night_phase`, and a
+    coarse `night_phase` ("dark" / "morning" / "evening") for the
+    night-loop's end-of-night test.
 
     Samples sun altitude every 5 minutes from 24h before `when` to 48h after
     and interpolates each threshold crossing. Events are the first occurrence
@@ -499,8 +503,10 @@ def _elongation_series(times: Time) -> np.ndarray:
 
 
 def _next_angle(base: float, target: float) -> float:
-    """Smallest angle strictly greater than `base` congruent to `target`
-    modulo 360."""
+    """Smallest angle strictly greater than `base` congruent to `target`.
+
+    Congruent modulo 360.
+    """
     angle = target + math.ceil((base - target) / 360.0) * 360.0
     return angle + 360.0 if angle <= base else angle
 
@@ -560,8 +566,9 @@ def _phase_from_elongation(elongation_deg: float) -> dict[str, Any]:
 
 
 def _moon_events(when: Time, location: EarthLocation) -> dict[str, Any]:
-    """Phase, position, next moonrise/moonset, and the next four principal
-    phase instants for `location` at `when`.
+    """Phase, position, next moonrise/moonset, and the next four phase instants.
+
+    Computed for `location` at `when`.
 
     Pure helper -- unit-testable without N.I.N.A. Events are the first
     occurrence strictly after `when`; each is null only when no crossing
@@ -781,7 +788,8 @@ async def best_targets(
 
     Args: `min_altitude` (default 30, the usual PLAN.md floor) and `horizon_offset_degrees` (default 2, the plan-constraint default) define the floor together with the profile's custom horizon: an object counts only where `alt >= max(min_altitude, horizon(az) + offset)` — exactly what N.I.N.A.'s loop conditions enforce, so `visible_now` never contains a target the sequence would park on; `top` caps each list (default 10); `level` filters to one difficulty; `kinds` filters by type — "galaxy", "globular", "open", "pn", "bn", "snr", "cloud".
 
-    Returns `visible_now` (dark now and above the floor at this moment, sorted by a 0-100 score blending current altitude and easiness), `later_tonight` (peak altitude reached WITHIN astronomical darkness — sun below −18° — over the next 12 hours while also clearing that sample's floor, carrying `peak_utc`/`peak_alt_deg` for scheduling; daytime and twilight peaks are never reported), and `is_dark_now` (when false, `visible_now` is empty and every row lands in `later_tonight`). Rows carry `surface_brightness` (mag/arcmin²), `large_for_field` (wider than the profile's field of view — mosaic/framing care), `horizon_deg`/`clearance_deg` (the custom skyline at the row's azimuth and how far the object clears it), and `ra_hours`/`dec_deg` verified against SIMBAD: safe to point from directly, no `resolve_target` call and no network — use `resolve_target` only for a name outside this catalog. Read-only; no N.I.N.A. calls beyond reading the site profile (which includes the custom horizon). Site twilight boundaries come from `sun_times`."""
+    Returns `visible_now` (dark now and above the floor at this moment, sorted by a 0-100 score blending current altitude and easiness), `later_tonight` (peak altitude reached WITHIN astronomical darkness — sun below −18° — over the next 12 hours while also clearing that sample's floor, carrying `peak_utc`/`peak_alt_deg` for scheduling; daytime and twilight peaks are never reported), and `is_dark_now` (when false, `visible_now` is empty and every row lands in `later_tonight`). Rows carry `surface_brightness` (mag/arcmin²), `large_for_field` (wider than the profile's field of view — mosaic/framing care), `horizon_deg`/`clearance_deg` (the custom skyline at the row's azimuth and how far the object clears it), and `ra_hours`/`dec_deg` verified against SIMBAD: safe to point from directly, no `resolve_target` call and no network — use `resolve_target` only for a name outside this catalog. Read-only; no N.I.N.A. calls beyond reading the site profile (which includes the custom horizon). Site twilight boundaries come from `sun_times`.
+    """
     if level is not None and level not in ("beginner", "intermediate", "advanced"):
         raise ValueError(
             f"level must be beginner, intermediate, or advanced, got {level!r}"
@@ -832,7 +840,8 @@ async def sun_times() -> dict[str, Any]:
 
     Events use standard definitions against apparent sun altitude: sunrise/sunset at -0.833 deg (refraction + solar semidiameter), civil twilight -6 deg, nautical -12 deg, astronomical -18 deg. Each time is the FIRST occurrence after now (UTC ISO). `darkness` pairs with `night_phase`: while "dark" it is the window containing now (`start_utc` in the past); while "morning" the night that just ended (what a night report documents); while "evening" the window about to open. Either side is `null` only in polar-day/polar-night conditions where the crossing does not occur within the window. `is_dark_now` is sun below -18 deg at this instant -- the same gate `best_targets` uses, so the two tools never disagree.
 
-    `night_phase` classifies the moment for end-of-night decisions: "dark" (inside astronomical darkness), "morning" (darkness just ended / nearest boundary is astronomical dawn -- the night is over), "evening" (darkness begins before the last dawn recedes -- the night is still ahead). Use `night_phase == "morning"` rather than "no targets above the floor" as the signal to end a night: a mid-night gap between targets is not the end of the night. Read-only; takes no action, makes no N.I.N.A. calls beyond reading the site profile."""
+    `night_phase` classifies the moment for end-of-night decisions: "dark" (inside astronomical darkness), "morning" (darkness just ended / nearest boundary is astronomical dawn -- the night is over), "evening" (darkness begins before the last dawn recedes -- the night is still ahead). Use `night_phase == "morning"` rather than "no targets above the floor" as the signal to end a night: a mid-night gap between targets is not the end of the night. Read-only; takes no action, makes no N.I.N.A. calls beyond reading the site profile.
+    """
     location, when = await _site_location_and_now()
     return await anyio.to_thread.run_sync(_sun_events, when, location)
 
@@ -847,6 +856,7 @@ async def moon_times() -> dict[str, Any]:
 
     `moon_up_now`, `altitude_deg`, `azimuth_deg` and `distance_km` describe the Moon at this instant (topocentric, so `distance_km` can differ from an almanac's geocentric figure by up to Earth's radius). `moon_up_now` is defined against the same -0.833 deg line `moonrise`/`moonset` cross, so it is consistent with those two events.
 
-    Combine with `sun_times`: `events.moonrise`/`moonset` against `darkness.start_utc`/`end_utc` says whether the Moon will be up during astronomical darkness, and `phase.illumination_fraction` says how bright it will be when it is. Read-only; no N.I.N.A. calls beyond reading the site profile, and no network."""
+    Combine with `sun_times`: `events.moonrise`/`moonset` against `darkness.start_utc`/`end_utc` says whether the Moon will be up during astronomical darkness, and `phase.illumination_fraction` says how bright it will be when it is. Read-only; no N.I.N.A. calls beyond reading the site profile, and no network.
+    """
     location, when = await _site_location_and_now()
     return await anyio.to_thread.run_sync(_moon_events, when, location)

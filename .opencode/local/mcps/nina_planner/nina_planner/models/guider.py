@@ -1,3 +1,5 @@
+"""Guider device model: guiding errors in arcseconds and pixels."""
+
 from __future__ import annotations
 
 from pydantic import BaseModel, Field, model_validator
@@ -6,11 +8,20 @@ from ..nina_utils import ascom_float
 
 
 class GuiderMetric(BaseModel):
+    """One guiding error figure in both arcseconds and pixels."""
+
     arcseconds: float | None = None
     pixel: float | None = None
 
 
 class GuiderDevice(BaseModel):
+    """A connected guider (PHD2-style) as ``/equipment/info`` reports it.
+
+    N.I.N.A. nests its RMS/peak errors under ``RMSError``; the validator
+    lifts them into the five :class:`GuiderMetric` fields. ``arcseconds``
+    values are RMS error in arcseconds, ``pixel`` in guider pixels.
+    """
+
     connected: bool
     name: str
     description: str | None = None

@@ -38,10 +38,13 @@ def _target_steps(sequence):
 
 
 class GeneratedSequenceContract(unittest.TestCase):
+    """Structure the sequence/state projection relies on, per generated step."""
+
     def _build(self, fn):
         return fn(_plan(), ObservatoryEquipment(), _profile())
 
     def test_every_target_child_is_a_step_with_attribution_token(self):
+        """Every step's TargetName embeds the plan id the projection parses."""
         for fn in (build_sequence_lights, build_sequence_darks):
             steps = _target_steps(self._build(fn))
             self.assertTrue(steps)
@@ -50,6 +53,7 @@ class GeneratedSequenceContract(unittest.TestCase):
                 self.assertRegex(name, r"_(plan-[A-Za-z0-9]+)(?:-(\d+))?_")
 
     def test_light_step_has_what_the_summary_reads(self):
+        """A light step carries the nodes the exposure summary is built from."""
         (step,) = _target_steps(self._build(build_sequence_lights))
         # Lights count down through a Sequencer+ array (no SmartExposure), so
         # the summary reads the group's own loop condition instead.
@@ -65,6 +69,7 @@ class GeneratedSequenceContract(unittest.TestCase):
         )
 
     def test_dark_step_has_smart_exposure(self):
+        """Darks use SmartExposure plus the event marker the summary reads."""
         (step,) = _target_steps(self._build(build_sequence_darks))
         self.assertIn("SmartExposure", _types(step))
         self.assertIn("SendEventInstruction", _types(step))

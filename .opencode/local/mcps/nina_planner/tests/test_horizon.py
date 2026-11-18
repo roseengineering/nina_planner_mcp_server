@@ -7,13 +7,17 @@ from nina_planner.horizon import Horizon, fetch_horizon, parse_horizon
 
 
 class HorizonModelTest(unittest.TestCase):
+    """Parsing raw horizon payloads and querying altitude_at."""
+
     def test_empty_arrays_are_a_flat_horizon(self):
+        """Empty arrays parse to a flat, non-custom horizon."""
         h = parse_horizon({"Altitudes": [], "Azimuths": []})
         self.assertFalse(h.is_custom)
         for az in (0.0, 90.0, 180.0, 359.0):
             self.assertEqual(h.altitude_at(az), 0.0)
 
     def test_single_point_is_not_custom(self):
+        """A single point degrades to flat 0 instead of interpolating."""
         # N.I.N.A. requires at least two pairs for a horizon file to take
         # effect; one point must degrade to flat 0, not interpolate.
         h = Horizon(points=[(90.0, 30.0)])
@@ -21,6 +25,7 @@ class HorizonModelTest(unittest.TestCase):
         self.assertEqual(h.altitude_at(90.0), 0.0)
 
     def test_payload_without_horizon_shape_is_flat(self):
+        """Wrong-shaped payloads parse to flat rather than raising."""
         # A mocked api_get can return the profile payload for this path;
         # it must parse to flat, never raise.
         self.assertFalse(parse_horizon({"Name": "Test"}).is_custom)
@@ -29,17 +34,20 @@ class HorizonModelTest(unittest.TestCase):
         self.assertFalse(parse_horizon({"Azimuths": "x", "Altitudes": []}).is_custom)
 
     def test_exact_knot_returns_its_value(self):
+        """An exact knot returns its own altitude."""
         h = Horizon(points=[(0.0, 10.0), (90.0, 40.0), (180.0, 20.0)])
         self.assertEqual(h.altitude_at(0.0), 10.0)
         self.assertEqual(h.altitude_at(90.0), 40.0)
         self.assertEqual(h.altitude_at(180.0), 20.0)
 
     def test_interpolates_between_knots(self):
+        """Altitudes interpolate linearly between neighbouring knots."""
         h = Horizon(points=[(0.0, 10.0), (90.0, 40.0)])
         self.assertAlmostEqual(h.altitude_at(45.0), 25.0)
         self.assertAlmostEqual(h.altitude_at(30.0), 20.0)
 
     def test_wraps_across_the_north_seam(self):
+        """Altitude interpolates across the 359-to-0 north seam."""
         # Points at 350 and 10: az 0 sits 10/20 of the way across the seam,
         # az 355 a quarter, az 5 three-quarters.
         h = Horizon(points=[(10.0, 30.0), (350.0, 10.0)])
@@ -48,11 +56,13 @@ class HorizonModelTest(unittest.TestCase):
         self.assertAlmostEqual(h.altitude_at(5.0), 25.0)
 
     def test_azimuth_is_normalized(self):
+        """Out-of-range azimuths wrap to the equivalent bearing."""
         h = Horizon(points=[(0.0, 10.0), (90.0, 40.0)])
         self.assertAlmostEqual(h.altitude_at(450.0), h.altitude_at(90.0))
         self.assertAlmostEqual(h.altitude_at(-90.0), h.altitude_at(270.0))
 
     def test_unsorted_and_duplicate_points_are_normalized(self):
+        """Unsorted points sort and a 360 duplicate of 0 is dropped."""
         # N.I.N.A. files conventionally close the circle with 360 mirroring
         # 0; wrapping must dedupe rather than create a zero-width segment.
         h = Horizon(points=[(180.0, 20.0), (360.0, 10.0), (0.0, 99.0)])
@@ -60,23 +70,29 @@ class HorizonModelTest(unittest.TestCase):
         self.assertAlmostEqual(h.altitude_at(90.0), 59.5)
 
     def test_garbage_pairs_are_dropped_not_fatal(self):
+        """Non-numeric pairs are dropped instead of being fatal."""
         h = Horizon(points=[(0.0, 10.0), ("x", 20.0), (90.0, None), (90.0, 40.0)])
         self.assertEqual(h.points, [(0.0, 10.0), (90.0, 40.0)])
         self.assertTrue(h.is_custom)
 
     def test_result_is_clamped(self):
+        """Interpolated altitudes clamp to the [-90, 90] range."""
         h = Horizon(points=[(0.0, 95.0), (180.0, -95.0)])
         self.assertEqual(h.altitude_at(0.0), 90.0)
         self.assertEqual(h.altitude_at(180.0), -90.0)
 
     def test_is_custom_reflects_parsed_points(self):
+        """Parsed points make is_custom true and stay on the model."""
         h = parse_horizon({"Azimuths": [0, 180], "Altitudes": [10, 20]})
         self.assertTrue(h.is_custom)
         self.assertEqual(len(h.points), 2)
 
 
 class FetchHorizonTest(unittest.IsolatedAsyncioTestCase):
+    """fetch_horizon calling /profile/horizon and degrading safely."""
+
     async def test_fetches_and_parses_the_endpoint(self):
+        """fetch_horizon awaits /profile/horizon and parses the payload."""
         payload = {"Azimuths": [0, 90, 180], "Altitudes": [10, 40, 20]}
         with patch(
             "nina_planner.client.api_get", AsyncMock(return_value=payload)
@@ -88,6 +104,7 @@ class FetchHorizonTest(unittest.IsolatedAsyncioTestCase):
         self.assertAlmostEqual(h.altitude_at(45.0), 25.0)
 
     async def test_endpoint_failure_degrades_to_flat(self):
+        """A failing horizon endpoint degrades to a flat horizon."""
         with patch(
             "nina_planner.client.api_get",
             AsyncMock(side_effect=RuntimeError("Unknown endpoint")),
@@ -98,6 +115,7 @@ class FetchHorizonTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(h.altitude_at(123.0), 0.0)
 
     async def test_empty_response_is_flat(self):
+        """An empty endpoint payload parses to a flat horizon."""
         with patch(
             "nina_planner.client.api_get",
             AsyncMock(return_value={"Azimuths": [], "Altitudes": []}),
@@ -137,6 +155,7 @@ class ProfileHorizonIntegrationTest(unittest.IsolatedAsyncioTestCase):
         }
 
     async def test_profile_carries_the_horizon(self):
+        """get_site_profile attaches the fetched custom horizon."""
         from nina_planner.tools.equipment import get_site_profile
 
         horizon = {"Azimuths": [0, 180, 350], "Altitudes": [14, 30, 20]}
@@ -153,6 +172,7 @@ class ProfileHorizonIntegrationTest(unittest.IsolatedAsyncioTestCase):
         self.assertAlmostEqual(profile.horizon.altitude_at(180.0), 30.0)
 
     async def test_horizon_endpoint_failure_keeps_the_profile(self):
+        """A horizon failure leaves the profile intact with a flat horizon."""
         from nina_planner.tools.equipment import get_site_profile
 
         async def fake(path, **kwargs):
