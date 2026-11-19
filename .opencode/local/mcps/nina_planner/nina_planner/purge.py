@@ -220,21 +220,7 @@ def _plan_file_gate(
 
 
 async def _resolve_root(args: argparse.Namespace) -> Path:
-    if args.imaging_root:
-        root = Path(args.imaging_root).expanduser()
-        if not root.is_dir():
-            raise PurgeError(
-                f"--imaging-root does not exist or is not a directory: {root}"
-            )
-        return root
-    try:
-        return Path(await metadata.resolve_imaging_root())
-    except Exception as exc:  # noqa: BLE001 - surface any NINA/profile failure
-        raise PurgeError(
-            "cannot resolve the imaging root from the N.I.N.A. site profile "
-            f"({exc}). Is NINA running? Pass --imaging-root to purge "
-            "without NINA."
-        ) from exc
+    return await metadata.resolve_cli_root(args.imaging_root, PurgeError, "purge")
 
 
 async def _idle_state() -> tuple[bool, str]:

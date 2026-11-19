@@ -764,10 +764,23 @@ def _archive_one(
             encoding="utf-8",
         )
 
-        # Commit: replace any previous folder only after staging is whole.
-        if final.exists():
-            shutil.rmtree(final)
-        staging.rename(final)
+        # Commit: move any previous folder aside, rename staging into place,
+        # and delete the old copy only once the new one is live. If the rename
+        # fails, the previous archive is restored.
+        previous = final.with_name(f".{final.name}.replaced")
+        if previous.exists():
+            shutil.rmtree(previous)
+        had_previous = final.exists()
+        if had_previous:
+            final.rename(previous)
+        try:
+            staging.rename(final)
+        except BaseException:
+            if had_previous:
+                previous.rename(final)
+            raise
+        if had_previous:
+            shutil.rmtree(previous, ignore_errors=True)
     except ArchiveError:
         # Staging must never survive as a half-built archive; the caller
         # records the message and moves on to the next plan.
@@ -878,21 +891,7 @@ def _build_parser() -> argparse.ArgumentParser:
 
 
 async def _resolve_root(args: argparse.Namespace) -> Path:
-    if args.imaging_root:
-        root = Path(args.imaging_root).expanduser()
-        if not root.is_dir():
-            raise ArchiveError(
-                f"--imaging-root does not exist or is not a directory: {root}"
-            )
-        return root
-    try:
-        return Path(await metadata.resolve_imaging_root())
-    except Exception as exc:  # noqa: BLE001 - surface any NINA/profile failure
-        raise ArchiveError(
-            "cannot resolve the imaging root from the N.I.N.A. site profile "
-            f"({exc}). Is NINA running? Pass --imaging-root to archive "
-            "without NINA."
-        ) from exc
+    return await metadata.resolve_cli_root(args.imaging_root, ArchiveError, "archive")
 
 
 async def run(args: argparse.Namespace) -> int:
