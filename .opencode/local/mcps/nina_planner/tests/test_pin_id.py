@@ -26,6 +26,7 @@ from unittest import mock
 from test_archive import ArchiveBase, _plan
 
 from nina_planner import pin_id as pin_mod
+from nina_planner import plan_utils
 from nina_planner.imaging import read_imaging_csv
 from nina_planner.models.plan import ObservationPlan
 from nina_planner.tools import plans as plans_mod
@@ -244,10 +245,10 @@ class PinCliTest(PinBase):
         target.write_text("original", encoding="utf-8")
 
         with mock.patch(
-            "nina_planner.pin_id.os.replace", side_effect=OSError("disk full")
+            "nina_planner.plan_utils.os.replace", side_effect=OSError("disk full")
         ):
             with self.assertRaises(OSError):
-                pin_mod._write_atomic(target, "replacement")
+                plan_utils.write_text_atomic(target, "replacement")
 
         # The plan keeps its bytes and the half-written sibling is gone —
         # a stray .tmp would be discovered as junk by the next plan scan.
@@ -260,7 +261,7 @@ class PinCliTest(PinBase):
         blank.write_text(_plan(plan_id="").model_dump_json(indent=2), encoding="utf-8")
 
         with mock.patch(
-            "nina_planner.pin_id.os.replace", side_effect=OSError("disk full")
+            "nina_planner.plan_utils.os.replace", side_effect=OSError("disk full")
         ):
             with self.assertRaises(pin_mod.PinError) as ctx:
                 asyncio.run(pin_mod.pin_plan_file(str(blank)))

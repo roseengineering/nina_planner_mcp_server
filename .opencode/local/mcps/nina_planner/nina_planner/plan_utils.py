@@ -8,7 +8,9 @@ never shadows the live one.
 """
 
 import json
+import os
 import re
+import tempfile
 from pathlib import Path
 from typing import Any
 
@@ -20,7 +22,35 @@ from .models.observatory import ObservatoryEquipment
 from .models.plan import ObservationPlan
 from .models.profile import ObservatoryProfile
 
+_NEW_PLAN_MODE = 0o644
+
 _INVALID_FILENAME_CHARS = re.compile(r'[\\/:*?"<>|\x00-\x1f\x7f]')
+
+
+def write_text_atomic(path: Path, text: str) -> None:
+    """Replace ``path`` with ``text`` via a temp sibling + ``os.replace``.
+
+    The temp file lives in ``path``'s own folder so the rename is atomic
+    (same filesystem), and a failed write leaves the original untouched and
+    no stray ``.tmp`` file behind. An existing file keeps its permission
+    bits; a new file gets ``0o644``, matching a plain ``open(..., "w")``.
+    """
+    try:
+        mode = path.stat().st_mode & 0o7777
+    except FileNotFoundError:
+        mode = _NEW_PLAN_MODE
+    fd, tmp_name = tempfile.mkstemp(
+        prefix=f".{path.name}.", suffix=".tmp", dir=path.parent
+    )
+    tmp = Path(tmp_name)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(text)
+        os.chmod(tmp, mode)
+        os.replace(tmp, path)
+    except BaseException:
+        tmp.unlink(missing_ok=True)
+        raise
 
 
 def sanitize_filename(s: str) -> str:

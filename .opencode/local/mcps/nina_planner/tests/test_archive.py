@@ -695,6 +695,83 @@ class ArchiveIdempotencyTest(ArchiveBase):
         self.assertEqual(code3, 0)
         self.assertEqual(len(self.index_lines()), 2)
 
+    def test_failed_forced_rebuild_keeps_previous_archive(self):
+        """A forced rebuild whose commit rename fails leaves the old archive intact."""
+        self.seed_full()
+        self.assertEqual(self.run_cli()[0], 0)
+        [folder] = [p for p in self.dest.iterdir() if (p / "plan.json").exists()]
+        before = sorted(p.name for p in folder.rglob("*"))
+
+        real_rename = Path.rename
+
+        def failing_rename(path, target):
+            if path.name.endswith(".partial"):
+                raise OSError("disk full")
+            return real_rename(path, target)
+
+        with mock.patch.object(Path, "rename", failing_rename):
+            code, _out, _err = self.run_cli("--force")
+
+        self.assertEqual(code, 1)
+        self.assertEqual(sorted(p.name for p in folder.rglob("*")), before)
+        self.assertEqual(list(self.dest.glob(".*.replaced")), [])
+
+    def test_stranded_replaced_restored_before_skip_decision(self):
+        """A .replaced left by an interrupted swap is restored, then skipped."""
+        self.seed_full()
+        self.assertEqual(self.run_cli()[0], 0)
+        [folder] = [p for p in self.dest.iterdir() if (p / "plan.json").exists()]
+        before = sorted(p.name for p in folder.rglob("*"))
+        # Simulate a run killed between `final.rename(previous)` and the
+        # staging rename: only .replaced survives, final is gone.
+        folder.rename(self.dest / f".{folder.name}.replaced")
+
+        code, out, _err = self.run_cli()
+
+        self.assertEqual(code, 0)
+        self.assertIn("already archived", out)
+        self.assertTrue(folder.exists())
+        self.assertEqual(sorted(p.name for p in folder.rglob("*")), before)
+        self.assertEqual(list(self.dest.glob(".*.replaced")), [])
+
+    def test_stranded_replaced_survives_failed_forced_rebuild(self):
+        """A stranded .replaced is restored first, so a failed rebuild keeps it."""
+        self.seed_full()
+        self.assertEqual(self.run_cli()[0], 0)
+        [folder] = [p for p in self.dest.iterdir() if (p / "plan.json").exists()]
+        before = sorted(p.name for p in folder.rglob("*"))
+        folder.rename(self.dest / f".{folder.name}.replaced")
+
+        real_rename = Path.rename
+
+        def failing_rename(path, target):
+            if path.name.endswith(".partial"):
+                raise OSError("disk full")
+            return real_rename(path, target)
+
+        with mock.patch.object(Path, "rename", failing_rename):
+            code, _out, _err = self.run_cli("--force")
+
+        self.assertEqual(code, 1)
+        self.assertTrue(folder.exists())
+        self.assertEqual(sorted(p.name for p in folder.rglob("*")), before)
+        self.assertEqual(list(self.dest.glob(".*.replaced")), [])
+
+    def test_stale_replaced_cleaned_when_final_is_live(self):
+        """With final present a leftover .replaced is stale data and goes."""
+        self.seed_full()
+        self.assertEqual(self.run_cli()[0], 0)
+        [folder] = [p for p in self.dest.iterdir() if (p / "plan.json").exists()]
+        stale = self.dest / f".{folder.name}.replaced"
+        stale.mkdir()
+        (stale / "leftover.txt").write_text("stale", encoding="utf-8")
+
+        code, _out, _err = self.run_cli()
+
+        self.assertEqual(code, 0)
+        self.assertTrue(folder.exists())
+        self.assertFalse(stale.exists())
+
     def test_dest_inside_project_not_rediscovered(self):
         # --dest inside the project dir: archived plan.json copies must not
         # be discovered as fresh plans on the next run.

@@ -52,8 +52,13 @@ directory.
 
 Copy semantics: each folder is assembled in a hidden ``.<name>.partial``
 sibling and atomically renamed into place, so an interrupted run can never
-leave a folder that looks complete. Every file's size is verified after
-copying (``--checksum`` adds sha256); ``<dest>/archive-index.jsonl`` is an
+leave a folder that looks complete. The swap with any previous folder leaves a
+``.<name>.replaced`` sibling while it is in flight; a leftover of that name is
+reconciled before the next commit or skip decision — restored when the folder
+itself is missing (the interrupted swap's only surviving copy), dropped when
+the folder is present (an interrupted cleanup's stale duplicate). Every file's
+size is verified after copying (``--checksum`` adds sha256);
+``<dest>/archive-index.jsonl`` is an
 append-only log of archived plans. A selected file that vanishes between the
 metadata read and the copy is skipped and listed under ``missing`` (a run in
 which NO selected frame could be copied is refused rather than committed
@@ -208,6 +213,29 @@ def _dest_child(dest: Path, folder: str) -> Path:
             "delete anything there"
         )
     return child
+
+
+def _recover_replaced(final: Path) -> None:
+    """Reconcile a leftover ``.<name>.replaced`` sibling with ``final``.
+
+    The commit step (under ``--force``) renames ``final`` aside to
+    ``.<name>.replaced`` before renaming staging into place. A run killed
+    between those two renames — or a rollback that itself failed — leaves
+    ``.replaced`` as the ONLY surviving copy of the previous archive, with
+    ``final`` absent; restore it, or the next run would treat it as
+    disposable stale data (``had_previous`` would read False there, so a
+    later failed commit would destroy the last copy, and a non-``--force``
+    run would rebuild the plan it already has). When BOTH copies are
+    present the swap already completed and only its cleanup was
+    interrupted: ``final`` is the live archive, so the stale copy goes.
+    """
+    previous = final.with_name(f".{final.name}.replaced")
+    if not previous.exists():
+        return
+    if final.exists():
+        shutil.rmtree(previous, ignore_errors=True)
+    else:
+        previous.rename(final)
 
 
 def _merge_weather(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -764,10 +792,22 @@ def _archive_one(
             encoding="utf-8",
         )
 
-        # Commit: replace any previous folder only after staging is whole.
-        if final.exists():
-            shutil.rmtree(final)
-        staging.rename(final)
+        # Commit: move any previous folder aside, rename staging into place,
+        # and delete the old copy only once the new one is live. If the rename
+        # fails, the previous archive is restored.
+        _recover_replaced(final)
+        previous = final.with_name(f".{final.name}.replaced")
+        had_previous = final.exists()
+        if had_previous:
+            final.rename(previous)
+        try:
+            staging.rename(final)
+        except BaseException:
+            if had_previous:
+                previous.rename(final)
+            raise
+        if had_previous:
+            shutil.rmtree(previous, ignore_errors=True)
     except ArchiveError:
         # Staging must never survive as a half-built archive; the caller
         # records the message and moves on to the next plan.
@@ -878,21 +918,7 @@ def _build_parser() -> argparse.ArgumentParser:
 
 
 async def _resolve_root(args: argparse.Namespace) -> Path:
-    if args.imaging_root:
-        root = Path(args.imaging_root).expanduser()
-        if not root.is_dir():
-            raise ArchiveError(
-                f"--imaging-root does not exist or is not a directory: {root}"
-            )
-        return root
-    try:
-        return Path(await metadata.resolve_imaging_root())
-    except Exception as exc:  # noqa: BLE001 - surface any NINA/profile failure
-        raise ArchiveError(
-            "cannot resolve the imaging root from the N.I.N.A. site profile "
-            f"({exc}). Is NINA running? Pass --imaging-root to archive "
-            "without NINA."
-        ) from exc
+    return await metadata.resolve_cli_root(args.imaging_root, ArchiveError, "archive")
 
 
 async def run(args: argparse.Namespace) -> int:
@@ -1075,6 +1101,16 @@ async def run(args: argparse.Namespace) -> int:
                     "total_bytes": total,
                 }
             )
+            continue
+
+        # An interrupted --force swap can leave the previous archive at
+        # .<folder>.replaced with the folder itself absent; put it back
+        # before the skip/commit decision below, or a non-forced run would
+        # silently rebuild the plan it already has.
+        try:
+            _recover_replaced(dest / folder)
+        except OSError as exc:
+            errors.append((plan_file, f"could not restore interrupted swap: {exc}"))
             continue
 
         if (dest / folder).exists() and not args.force:

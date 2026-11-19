@@ -193,8 +193,9 @@ async def write_plan_file(plan: ObservationPlan) -> str:
     filename = f"{plan_utils.sanitize_filename(plan.target.lower())}_{plan_utils.sanitize_filename(plan.intent.lower())}_{timestamp}.json"
     filename = filename.replace(" ", "-")
     path = config.PROJECT_DIR / filename
-    async with await anyio.open_file(path, "w", encoding="utf-8") as f:
-        await f.write(plan.model_dump_json(indent=2))
+    await anyio.to_thread.run_sync(
+        plan_utils.write_text_atomic, path, plan.model_dump_json(indent=2)
+    )
     return f"Plan successfully written to {path}{grid_note}"
 
 

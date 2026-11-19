@@ -28,10 +28,10 @@ from __future__ import annotations
 
 import argparse
 import asyncio
-import os
 import sys
-import tempfile
 from pathlib import Path
+
+import anyio
 
 from . import config, plan_utils
 
@@ -49,31 +49,6 @@ def _resolve(entry: str) -> Path:
     if not path.is_absolute():
         path = config.PROJECT_DIR / path
     return path
-
-
-def _write_atomic(path: Path, text: str) -> None:
-    """Replace ``path`` with ``text`` via a temp sibling + ``os.replace``.
-
-    The temp file lives in the plan's OWN folder so the rename is atomic
-    (same filesystem) and no stray file appears anywhere a plan discovery
-    walk could see it for longer than this call. Its permission bits are
-    reset to the original file's, so a pin never tightens permissions on
-    a plan others read; on failure the temp file is removed and the
-    original is left untouched.
-    """
-    original_mode = path.stat().st_mode & 0o7777
-    fd, tmp_name = tempfile.mkstemp(
-        prefix=f".{path.name}.", suffix=".tmp", dir=path.parent
-    )
-    tmp = Path(tmp_name)
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as handle:
-            handle.write(text)
-        os.chmod(tmp, original_mode)
-        os.replace(tmp, path)
-    except Exception:
-        tmp.unlink(missing_ok=True)
-        raise
 
 
 # ------------------------------------------------------------- pinning
@@ -101,7 +76,11 @@ async def pin_plan_file(plan_file: str | Path, *, dry_run: bool = False) -> str:
         return f"would pin {path}: {plan_id}"
     pinned = plan.model_copy(update={"plan_id": plan_id})
     try:
-        _write_atomic(path, pinned.model_dump_json(indent=2))
+        # Worker thread, as in tools/plans.write_plan_file: the temp+rename
+        # write is blocking filesystem I/O and must not stall the loop.
+        await anyio.to_thread.run_sync(
+            plan_utils.write_text_atomic, path, pinned.model_dump_json(indent=2)
+        )
     except OSError as exc:
         raise PinError(f"{path.name}: could not write ({exc})") from exc
     return f"pinned {path}: {plan_id}"
