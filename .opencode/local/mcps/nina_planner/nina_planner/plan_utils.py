@@ -35,7 +35,10 @@ def write_text_atomic(path: Path, text: str) -> None:
     no stray ``.tmp`` file behind. An existing file keeps its permission
     bits; a new file gets ``0o644``, matching a plain ``open(..., "w")``.
     """
-    mode = path.stat().st_mode & 0o7777 if path.exists() else _NEW_PLAN_MODE
+    try:
+        mode = path.stat().st_mode & 0o7777
+    except FileNotFoundError:
+        mode = _NEW_PLAN_MODE
     fd, tmp_name = tempfile.mkstemp(
         prefix=f".{path.name}.", suffix=".tmp", dir=path.parent
     )

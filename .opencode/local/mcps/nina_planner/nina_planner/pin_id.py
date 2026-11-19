@@ -31,6 +31,8 @@ import asyncio
 import sys
 from pathlib import Path
 
+import anyio
+
 from . import config, plan_utils
 
 
@@ -74,7 +76,11 @@ async def pin_plan_file(plan_file: str | Path, *, dry_run: bool = False) -> str:
         return f"would pin {path}: {plan_id}"
     pinned = plan.model_copy(update={"plan_id": plan_id})
     try:
-        plan_utils.write_text_atomic(path, pinned.model_dump_json(indent=2))
+        # Worker thread, as in tools/plans.write_plan_file: the temp+rename
+        # write is blocking filesystem I/O and must not stall the loop.
+        await anyio.to_thread.run_sync(
+            plan_utils.write_text_atomic, path, pinned.model_dump_json(indent=2)
+        )
     except OSError as exc:
         raise PinError(f"{path.name}: could not write ({exc})") from exc
     return f"pinned {path}: {plan_id}"
