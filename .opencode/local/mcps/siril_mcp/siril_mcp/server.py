@@ -281,7 +281,10 @@ _HEADER_META = re.compile(
     r"\s*\d{0,2},?\s*\d{4}\b|"  # "December 2024", "Apr. 17, 2025"
     r".*\bv\d+\.\d+(?:\.\d+)?|"  # "Preprocessing v1.4"
     r"version\s*\d+\.\d+|"  # "Version 1.2.0"
+    r"version history\b|"  # section label, not a description
     r"\d+\.\d+(?:\.\d+)?\b)"  # changelog line "1.0.1 bugfix: ..."
+    # Unanchored: a credit line can appear anywhere in a header.
+    r"|\bauthor\b|\breached at\b|\bcontact:"
 )
 
 _DESCRIPTION_LIMIT = 300
@@ -312,6 +315,9 @@ def _useful_comment(text: str) -> bool:
         return False  # Siril version, author, licence, date, script version
     if text.upper() == text and any(c.isalpha() for c in text):
         return False  # section banner, e.g. "PREPROCESSING SCRIPT"
+    # ASCII-art rules carry almost no letters; prose never looks like this.
+    if len(text) >= 12 and sum(c.isalpha() for c in text) / len(text) < 0.35:
+        return False
     return True
 
 
@@ -325,6 +331,11 @@ def _python_docstring(path: Path) -> str | None:
     return _one_paragraph(docstring)
 
 
+# A run of separator characters marks a banner line: "####…",
+# "============", "────────", "#### PREPROCESSING SCRIPT ####".
+_BANNER_RUN = re.compile(r"[#=─━═\-–—_*~+]{4,}")
+
+
 def _comment_header(path: Path) -> str | None:
     """Leading ``#`` block of ``path``, minus boilerplate.
 
@@ -332,8 +343,14 @@ def _comment_header(path: Path) -> str | None:
     file is never mistaken for a description. Used for every ``.ssf`` -- which
     have no docstring equivalent at all -- and as the fallback for a ``.py``
     whose module docstring is missing.
+
+    A banner line separates a header's meta (date, version, author) from its
+    description, and authors put the description after the last *rule*, so that
+    is where reading starts. Files with no rule keep the whole block and rely
+    on the boilerplate filter alone.
     """
-    lines: list[str] = []
+    raw: list[str] = []
+    banner: list[bool] = []
     try:
         handle = path.open(encoding="utf-8", errors="replace")
     except OSError:
@@ -347,13 +364,38 @@ def _comment_header(path: Path) -> str | None:
                 text = stripped.lstrip("#").strip()
                 if text.startswith("!") or text.startswith("coding"):
                     continue  # shebang or encoding declaration
-                if _useful_comment(text):
-                    lines.append(text)
+                raw.append(text)
+                # Judge the banner on the line as written: an all-# rule
+                # reduces to an empty string once the hashes are stripped.
+                banner.append(bool(_BANNER_RUN.search(stripped)))
                 continue
             if not stripped:
                 continue  # a blank line does not end the header block
             break  # first code line ends it
-    return _one_paragraph(" ".join(lines)) if lines else None
+
+    if not raw:
+        return None
+
+    # Cut only at banners carrying no letters -- rules and ASCII-art blocks.
+    # A titled banner such as "#### PREPROCESSING SCRIPT ####" is a section
+    # heading rather than a separator: several authors write the summary
+    # directly above it, and cutting there would skip past the one line that
+    # says what the script does. Starting after the last pure rule keeps those
+    # summaries while still dropping the date/version/author block above them.
+    pure = [
+        is_banner and not any(char.isalnum() for char in text)
+        for is_banner, text in zip(banner, raw, strict=False)
+    ]
+    last_rule = max((index for index, p in enumerate(pure) if p), default=-1)
+    after_rule = [text for text in raw[last_rule + 1 :] if _useful_comment(text)]
+    if after_rule:
+        return _one_paragraph(" ".join(after_rule))
+
+    # A rule can open a sub-section rather than close the meta -- "# ===="
+    # introducing "Version History:" -- which leaves nothing useful after it.
+    # Fall back to filtering the whole block so the description is not lost.
+    whole = [text for text in raw if _useful_comment(text)]
+    return _one_paragraph(" ".join(whole)) if whole else None
 
 
 def _script_description(path: Path) -> str | None:
