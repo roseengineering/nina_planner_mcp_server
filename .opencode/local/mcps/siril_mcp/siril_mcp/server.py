@@ -2,10 +2,12 @@
 
 import csv
 import glob
+import json
 import os
 import shutil
 import statistics
 import subprocess
+import tempfile
 from pathlib import Path
 
 from mcp.server.fastmcp import FastMCP
@@ -19,6 +21,9 @@ EXPECTED_OUTPUTS = (
     "r_pp_light_stacked.fit",
     "r_pp_light_stacked.fits",
 )
+
+# savepng writes <name>.png for a target of <name>, into the working directory.
+PREVIEW_NAME = "preview"
 
 # siril-cli locations to try, in order, when SIRIL_CLI is not set.
 SIRIL_CLI_CANDIDATES = (
@@ -182,59 +187,87 @@ def check_directory_status(directory: str | None = None) -> dict:
     return result
 
 
-@mcp.tool()
+@mcp.tool(structured_output=False)
 def run_osc_preprocessing(
     directory: str,
     script: str = "OSC_Preprocessing.ssf",
     force: bool = False,
     timeout: int = 3600,
     min_stars: int = 0,
-) -> dict:
-    """Run a Siril script headlessly via siril-cli.
+) -> list[str]:
+    """Run a Siril script headlessly via siril-cli and preview the result.
 
     Defaults to OSC_Preprocessing.ssf on ``directory``. Skips execution if
     already processed unless ``force=True``. Set ``min_stars`` to pre-flight
     skip targets whose ImageMetaData.csv shows too few stars to register.
+
+    Returns the structured result as JSON text, followed by the preview PNG's
+    path whenever there is an output to review. The image itself stays on disk
+    for the agent to read.
     """
     work_dir = Path(directory).expanduser().resolve()
     if not work_dir.is_dir():
-        return {"status": "error", "message": f"Directory does not exist: {work_dir}"}
+        return _finish(
+            {"status": "error", "message": f"Directory does not exist: {work_dir}"},
+            work_dir,
+            [],
+            None,
+            timeout,
+        )
 
     quality = _read_light_quality(work_dir)
     warnings = _quality_warnings(quality)
+    outputs = _find_outputs(work_dir)
+    siril_cli = _find_siril_cli()
 
     # Guard against redundant runs
-    existing_outputs = _find_outputs(work_dir)
-    if existing_outputs and not force:
-        return {
-            "status": "skipped",
-            "message": "Directory already processed. Pass force=True to re-run.",
-            "visible_outputs": existing_outputs,
-            "light_quality": quality,
-            "warnings": warnings,
-        }
+    if outputs and not force:
+        return _finish(
+            {
+                "status": "skipped",
+                "message": "Directory already processed. Pass force=True to re-run.",
+                "visible_outputs": outputs,
+                "light_quality": quality,
+                "warnings": warnings,
+            },
+            work_dir,
+            outputs,
+            siril_cli,
+            timeout,
+        )
 
     # Pre-flight: skip work that is very likely to die at registration.
     if min_stars and not force and quality:
         stars = quality.get("median_detected_stars")
         if stars is not None and stars < min_stars:
-            return {
-                "status": "skipped_low_quality",
-                "message": (
-                    f"Median {stars:.0f} detected stars is below min_stars="
-                    f"{min_stars}; registration would likely fail. "
-                    "Pass force=True to run anyway."
-                ),
-                "light_quality": quality,
-                "warnings": warnings,
-            }
+            return _finish(
+                {
+                    "status": "skipped_low_quality",
+                    "message": (
+                        f"Median {stars:.0f} detected stars is below min_stars="
+                        f"{min_stars}; registration would likely fail. "
+                        "Pass force=True to run anyway."
+                    ),
+                    "light_quality": quality,
+                    "warnings": warnings,
+                },
+                work_dir,
+                outputs,
+                siril_cli,
+                timeout,
+            )
 
-    siril_cli = _find_siril_cli()
     if not siril_cli:
-        return {
-            "status": "error",
-            "message": "siril-cli not found. Set SIRIL_CLI to its full path.",
-        }
+        return _finish(
+            {
+                "status": "error",
+                "message": "siril-cli not found. Set SIRIL_CLI to its full path.",
+            },
+            work_dir,
+            [],
+            None,
+            timeout,
+        )
 
     # -d sets Siril's working directory. The script must be passed as an
     # absolute path: headless siril-cli does not honour script_path, so a bare
@@ -249,13 +282,27 @@ def run_osc_preprocessing(
             cwd=str(work_dir),
         )
     except subprocess.TimeoutExpired:
-        return {
-            "status": "failed",
-            "message": f"siril-cli timed out after {timeout}s",
-            "visible_outputs": _find_outputs(work_dir),
-        }
+        return _finish(
+            {
+                "status": "failed",
+                "message": f"siril-cli timed out after {timeout}s",
+                "visible_outputs": outputs,
+                "light_quality": quality,
+                "warnings": warnings,
+            },
+            work_dir,
+            outputs,
+            siril_cli,
+            timeout,
+        )
     except OSError as exc:
-        return {"status": "error", "message": f"Failed to launch siril-cli: {exc}"}
+        return _finish(
+            {"status": "error", "message": f"Failed to launch siril-cli: {exc}"},
+            work_dir,
+            [],
+            None,
+            timeout,
+        )
 
     output = (proc.stdout or "") + (proc.stderr or "")
     failures = [m for m in FAILURE_MARKERS if m in output]
@@ -281,24 +328,103 @@ def run_osc_preprocessing(
         diagnosis = _diagnose(output, quality)
         if diagnosis:
             result["diagnosis"] = diagnosis
-        return result
+        return _finish(result, work_dir, outputs, siril_cli, timeout)
 
-    return {
-        "status": "succeeded" if outputs else "completed_without_expected_output",
-        "directory": str(work_dir),
-        "script": script,
-        "returncode": proc.returncode,
-        "log_tail": _tail(output),
-        "visible_outputs": outputs,
-        "light_quality": quality,
-        "warnings": warnings,
-    }
+    return _finish(
+        {
+            "status": "succeeded" if outputs else "completed_without_expected_output",
+            "directory": str(work_dir),
+            "script": script,
+            "returncode": proc.returncode,
+            "log_tail": _tail(output),
+            "visible_outputs": outputs,
+            "light_quality": quality,
+            "warnings": warnings,
+        },
+        work_dir,
+        outputs,
+        siril_cli,
+        timeout,
+    )
 
 
 def _tail(text: str, lines: int = 30) -> str:
     """Return the last ``lines`` non-empty lines of Siril output for diagnostics."""
     kept = [ln for ln in text.splitlines() if ln.strip()]
     return "\n".join(kept[-lines:])
+
+
+def _generate_preview(
+    work_dir: Path,
+    outputs: list[str],
+    siril_cli: str,
+    timeout: int,
+) -> tuple[str | None, str | None]:
+    """Autostretch the first output to a PNG for the agent to review.
+
+    Returns ``(path, error)``. Only the path travels back in the tool
+    response; the PNG itself stays on disk for the agent to read or manipulate.
+    """
+    if not outputs:
+        return None, "no output image available to preview"
+    source = work_dir / outputs[0]
+    if not source.is_file():
+        return None, f"output not found: {outputs[0]}"
+
+    preview_base = work_dir / PREVIEW_NAME
+    preview_path = work_dir / f"{PREVIEW_NAME}.png"
+    script = f'requires 1.3.4\nload "{source}"\nautostretch\nsavepng "{preview_base}"\n'
+
+    script_path: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            "w", suffix=".ssf", prefix="siril_preview_", delete=False
+        ) as handle:
+            handle.write(script)
+            script_path = Path(handle.name)
+        proc = subprocess.run(
+            [siril_cli, "-d", str(work_dir), "-s", str(script_path)],
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            cwd=str(work_dir),
+        )
+    except subprocess.TimeoutExpired:
+        return None, f"preview timed out after {timeout}s"
+    except OSError as exc:
+        return None, f"preview failed to launch siril-cli: {exc}"
+    finally:
+        if script_path is not None:
+            script_path.unlink(missing_ok=True)
+
+    if not preview_path.is_file():
+        detail = _tail((proc.stdout or "") + (proc.stderr or ""), 5)
+        return None, f"siril-cli produced no PNG (exit {proc.returncode}): {detail}"
+    return str(preview_path), None
+
+
+def _finish(
+    result: dict,
+    work_dir: Path,
+    outputs: list[str],
+    siril_cli: str | None,
+    timeout: int,
+) -> list[str]:
+    """Render the preview when there is an image, then shape the tool reply.
+
+    The reply is the structured result as JSON text followed by the preview
+    PNG's path. The image itself is never shipped back — the agent reads the
+    file when it wants to look.
+    """
+    extras: list[str] = []
+    if siril_cli and outputs:
+        path, error = _generate_preview(work_dir, outputs, siril_cli, timeout)
+        if path:
+            result["preview"] = path
+            extras.append(path)
+        if error:
+            result["preview_error"] = error
+    return [json.dumps(result, indent=1), *extras]
 
 
 # NINA records per-frame telemetry in lights/ImageMetaData.csv. Across the
