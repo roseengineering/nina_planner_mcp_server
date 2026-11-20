@@ -149,11 +149,22 @@ def check_directory_status(directory: str | None = None) -> dict:
     """Check whether a directory has already been processed by Siril.
 
     Reports whether it succeeded and whether the resulting stacked image is
-    present and visible on disk. With no argument, inspects ``SIRIL_IMAGE_ROOT``;
-    pass a target directory to inspect that target, or the imaging root to get
+    present and visible on disk. With no argument, inspects ``ARCHIVE_ROOT``;
+    pass a target directory to inspect that target, or the archive root to get
     a cross-target quality summary.
     """
-    root = directory or os.environ.get("SIRIL_IMAGE_ROOT", "~/Astrophotography")
+    root = directory or os.environ.get("ARCHIVE_ROOT")
+    if root is None:
+        # Report a missing setting as a setting, not as a missing directory:
+        # a fabricated default would surface as "Directory not found" and send
+        # whoever reads it looking for the wrong thing.
+        return {
+            "exists": False,
+            "processed": False,
+            "succeeded": False,
+            "visible_outputs": [],
+            "error": "ARCHIVE_ROOT is not set; pass directory= explicitly.",
+        }
     work_dir = Path(root).expanduser().resolve()
     if not work_dir.is_dir():
         return {
