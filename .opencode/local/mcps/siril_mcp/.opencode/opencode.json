@@ -5,7 +5,7 @@
       "siril-mcp": {
         "type": "local",
         "environment": {
-          "ARCHIVE_ROOT": "~/landing/soyuz"
+          "ARCHIVE_ROOT": "~/landing"
         },
         "command": [
           "uv", "run", "--project", "siril_mcp", "siril-mcp"
