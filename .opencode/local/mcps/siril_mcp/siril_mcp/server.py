@@ -10,6 +10,8 @@ import shutil
 import statistics
 import subprocess
 import tempfile
+from collections import Counter
+from collections.abc import Iterator
 from pathlib import Path
 
 from mcp.server.fastmcp import FastMCP
@@ -226,95 +228,292 @@ def _find_outputs(work_dir: Path) -> list[str]:
     return found
 
 
-def _scan_targets(root: Path) -> dict:
-    """Summarise light quality across every target under an imaging root.
+# The frame sets NINA archives for a single target. Any one of them present
+# makes the folder a working directory.
+WORKING_SUBDIRS = ("lights", "biases", "darks", "flats")
 
-    Lets an operator see at a glance which targets are worth sending to Siril
-    before spending time on runs that die at registration.
+
+def _is_working_directory(path: Path) -> bool:
+    """True when ``path`` holds the frame sets archived for one target."""
+    return any((path / name).is_dir() for name in WORKING_SUBDIRS)
+
+
+def _iter_working_directories(root: Path) -> Iterator[tuple[Path, str | None]]:
+    """Yield ``(path, observatory)`` for every working directory under root.
+
+    Walks top-down and prunes each working directory the moment it is found, so
+    the frame folders inside it -- biases/, lights/, process/ ... -- are never
+    descended: those hold tens of thousands of FITS files, and visiting them
+    would turn a listing into a full-disk scan. Hidden folders (.ruff_cache,
+    .quarantine, ...) are pruned at every level.
+
+    ``observatory`` is the first path component below root -- ``soyuz`` for
+    ``~/landing/soyuz/<target>`` -- and ``None`` when targets sit directly in
+    the archive root.
     """
-    below: list[str] = []
-    star_counts: list[float] = []
-    with_lights = 0
-    for child in sorted(root.iterdir()):
-        if not child.is_dir():
+    for current, dirs, _files in os.walk(root, topdown=True):
+        here = Path(current)
+        dirs[:] = sorted(name for name in dirs if not name.startswith("."))
+        if not _is_working_directory(here):
             continue
-        quality = _read_light_quality(child)
-        if not quality:
-            continue
-        with_lights += 1
-        stars = quality.get("median_detected_stars")
-        if stars is None:
-            continue
-        star_counts.append(stars)
-        if stars < STAR_WARNING_THRESHOLD:
-            below.append(child.name)
+        relative = here.relative_to(root)
+        observatory = relative.parts[0] if len(relative.parts) > 1 else None
+        yield here, observatory
+        dirs[:] = []  # never descend into the frame folders
 
-    summary: dict = {
-        "targets_with_lights": with_lights,
-        "below_star_threshold": len(below),
-        "star_threshold": STAR_WARNING_THRESHOLD,
+
+def _processing_state(path: Path) -> str:
+    """How far a working directory got: succeeded, failed_partial or unprocessed.
+
+    ``failed_partial`` means Siril ran and left work behind without producing a
+    stack -- the signature of a run that died at registration.
+    """
+    if _find_outputs(path):
+        return "succeeded"
+    if (path / "process").is_dir() or (path / "masters").is_dir():
+        return "failed_partial"
+    return "unprocessed"
+
+
+def _pipeline_stages(work_dir: Path) -> dict:
+    """Count the files each preprocessing stage produced.
+
+    Tells a caller *where* a run died even after Siril's log is gone: full
+    calibration alongside zero registered frames is a target that could not be
+    aligned.
+    """
+    process = work_dir / "process"
+
+    def count(pattern: str) -> int:
+        return len(glob.glob(str(process / pattern))) if process.is_dir() else 0
+
+    masters = work_dir / "masters"
+    return {
+        "converted_lights": count("light_*.fit"),
+        "calibrated_pp_lights": count("pp_light_*.fit"),
+        "registered_r_pp_lights": count("r_pp_light_*.fit"),
+        "masters_present": masters.is_dir() and any(masters.glob("*.fit")),
     }
-    if star_counts:
-        summary["median_detected_stars"] = round(statistics.median(star_counts), 1)
-        summary["min_detected_stars"] = int(min(star_counts))
-        summary["max_detected_stars"] = int(max(star_counts))
-    if below:
-        summary["targets_below_threshold"] = below
-    return summary
+
+
+def _inspect_archive(archive_root: Path) -> list[dict]:
+    """Walk the archive once and describe every working directory it holds.
+
+    Shared by ``list_working_directories`` and ``check_directory_status`` so
+    the two can never disagree about what exists or what state it is in.
+    """
+    rows: list[dict] = []
+    for path, observatory in _iter_working_directories(archive_root):
+        preview = path / f"{PREVIEW_NAME}.png"
+        rows.append(
+            {
+                "name": path.name,
+                "path": str(path),
+                "observatory": observatory,
+                "state": _processing_state(path),
+                "quality": _read_light_quality(path) or {},
+                "preview": str(preview) if preview.is_file() else None,
+            }
+        )
+    return rows
+
+
+def _sky_baseline(rows: list[dict]) -> float | None:
+    """Median sky background across targets with enough stars to be trusted.
+
+    This is the reference the obstruction test is measured against: a frame
+    several times brighter than it is an obstruction, not a faint target.
+    """
+    healthy: list[float] = []
+    for row in rows:
+        quality = row["quality"]
+        adu = quality.get("median_adu_mean")
+        stars = quality.get("median_detected_stars")
+        if adu is not None and stars is not None and stars >= STAR_WARNING_THRESHOLD:
+            healthy.append(adu)
+    return statistics.median(healthy) if healthy else None
+
+
+def _quality_verdict(quality: dict, cutoff: float | None) -> str:
+    """Classify one target's light quality against the archive baseline."""
+    if not quality:
+        return "unknown"
+    adu = quality.get("median_adu_mean")
+    if cutoff is not None and adu is not None and adu >= cutoff:
+        # Brighter than any plausible sky for this site: something is in the
+        # way (a lit roof), and no amount of re-processing will recover it.
+        return "obstructed_high_background"
+    stars = quality.get("median_detected_stars")
+    if stars is None or stars < STAR_WARNING_THRESHOLD:
+        return "faint_or_low_altitude"
+    return "ready"
+
+
+def _archive_root(value: str | None) -> tuple[Path | None, str | None]:
+    """Resolve ``value`` or ``ARCHIVE_ROOT`` to a directory, or explain why not."""
+    raw = value or os.environ.get("ARCHIVE_ROOT")
+    if raw is None:
+        return None, "ARCHIVE_ROOT is not set; pass directory= explicitly."
+    root = Path(raw).expanduser().resolve()
+    if not root.is_dir():
+        return None, f"Directory not found: {root}"
+    return root, None
+
+
+def _resolve_working_directory(directory: str, root: Path | None) -> Path | None:
+    """Resolve a working directory from a path or a bare target folder name.
+
+    Accepts ``~/landing/soyuz/m103_...``, ``soyuz/m103_...`` (relative to the
+    archive root) and ``m103_...`` on its own, so a name read out of
+    ``list_working_directories`` can be passed straight back.
+    """
+    candidate = Path(directory).expanduser()
+    if candidate.is_absolute():
+        return candidate if candidate.is_dir() else None
+    if root is None:
+        return None
+    direct = root / candidate
+    if direct.is_dir():
+        return direct
+    wanted = candidate.name
+    for path, _observatory in _iter_working_directories(root):
+        if path.name == wanted:
+            return path
+    return None
 
 
 @mcp.tool()
-def check_directory_status(directory: str | None = None) -> dict:
-    """Check whether a directory has already been processed by Siril.
+def list_working_directories(root: str | None = None) -> dict:
+    """List every working directory under ARCHIVE_ROOT with its state and quality.
 
-    Reports whether it succeeded and whether the resulting stacked image is
-    present and visible on disk. With no argument, inspects ``ARCHIVE_ROOT``;
-    pass a target directory to inspect that target, or the archive root to get
-    a cross-target quality summary.
+    A working directory is a folder holding one target's archived frame sets.
+    The archive root may contain observatory sub-folders (``~/landing/soyuz``),
+    which are reported per directory so a second rig needs no code change.
+
+    Each row carries ``state`` (``succeeded`` / ``failed_partial`` /
+    ``unprocessed``) and ``quality_verdict`` (``ready`` /
+    ``obstructed_high_background`` / ``faint_or_low_altitude`` / ``unknown``),
+    plus the raw ImageMetaData telemetry behind them.
+
+    ``summary.by_*`` roll those up, ``summary.baselines`` reports the archive
+    measurements the verdicts were derived from, and ``summary.runnable`` names
+    the ready-but-unprocessed targets -- the ones worth sending to Siril next.
     """
-    root = directory or os.environ.get("ARCHIVE_ROOT")
-    if root is None:
-        # Report a missing setting as a setting, not as a missing directory:
-        # a fabricated default would surface as "Directory not found" and send
-        # whoever reads it looking for the wrong thing.
+    archive_root, error = _archive_root(root)
+    if archive_root is None:
+        return {"error": error}
+
+    rows = _inspect_archive(archive_root)
+    baseline = _sky_baseline(rows)
+    cutoff = round(baseline * HIGH_BACKGROUND_FACTOR, 1) if baseline else None
+
+    directories: list[dict] = []
+    for row in rows:
+        entry = dict(row)
+        quality = entry.pop("quality")
+        entry.update(quality)
+        entry["quality_verdict"] = _quality_verdict(quality, cutoff)
+        directories.append(entry)
+
+    star_counts = [
+        entry["median_detected_stars"]
+        for entry in directories
+        if entry.get("median_detected_stars") is not None
+    ]
+    return {
+        "summary": {
+            "archive_root": str(archive_root),
+            "total_directories": len(directories),
+            "by_observatory": dict(
+                Counter(entry["observatory"] or "root" for entry in directories)
+            ),
+            "by_processing_state": dict(
+                Counter(entry["state"] for entry in directories)
+            ),
+            "by_quality_verdict": dict(
+                Counter(entry["quality_verdict"] for entry in directories)
+            ),
+            "runnable": [
+                entry["name"]
+                for entry in directories
+                if entry["quality_verdict"] == "ready" and entry["state"] != "succeeded"
+            ],
+            "baselines": {
+                "star_warning_threshold": STAR_WARNING_THRESHOLD,
+                "healthy_sky_adu": round(baseline, 1) if baseline else None,
+                "high_background_factor": HIGH_BACKGROUND_FACTOR,
+                "high_background_adu_cutoff": cutoff,
+                "median_detected_stars": (
+                    round(statistics.median(star_counts), 1) if star_counts else None
+                ),
+            },
+        },
+        "directories": directories,
+    }
+
+
+@mcp.tool()
+def check_directory_status(directory: str) -> dict:
+    """Inspect one working directory: state, pipeline stage and light quality.
+
+    ``directory`` may be a full path (``~/landing/soyuz/m103_...``), a path
+    relative to ARCHIVE_ROOT (``soyuz/m103_...``) or just the target folder
+    name (``m103_...``), so a name read out of ``list_working_directories`` can
+    be passed straight back.
+
+    ``state`` says how far it got; ``pipeline_stages`` says which stage produced
+    files, which is what distinguishes a target that died at registration from
+    one that was never run. ``quality_verdict`` is measured against the
+    archive-wide sky baseline rather than a fixed number.
+    """
+    # Resolve the archive root even for absolute paths: the observatory label
+    # and the sky baseline both come from it, so a full path must not lose them.
+    root, root_error = _archive_root(None)
+    if root is None and not Path(directory).expanduser().is_absolute():
+        return {"error": root_error}
+    work_dir = _resolve_working_directory(directory, root)
+    if work_dir is None:
+        searched = f" under {root}" if root is not None else ""
+        return {"error": f"Working directory not found{searched}: {directory}"}
+    if not _is_working_directory(work_dir):
         return {
-            "exists": False,
-            "processed": False,
-            "succeeded": False,
-            "visible_outputs": [],
-            "error": "ARCHIVE_ROOT is not set; pass directory= explicitly.",
-        }
-    work_dir = Path(root).expanduser().resolve()
-    if not work_dir.is_dir():
-        return {
-            "exists": False,
-            "processed": False,
-            "succeeded": False,
-            "visible_outputs": [],
-            "error": f"Directory not found: {work_dir}",
+            "error": (
+                f"{work_dir} is not a working directory; use "
+                "list_working_directories() for an archive-wide view."
+            )
         }
 
-    # Check standard Siril preprocessing folders (biases, darks, flats, lights)
-    expected_subdirs = ["biases", "darks", "flats", "lights"]
-    present_subdirs = [d for d in expected_subdirs if (work_dir / d).is_dir()]
-    has_process_dir = (work_dir / "process").is_dir()
-    outputs = _find_outputs(work_dir)
     quality = _read_light_quality(work_dir)
+    outputs = _find_outputs(work_dir)
+    baseline = _sky_baseline(_inspect_archive(root)) if root is not None else None
+    cutoff = round(baseline * HIGH_BACKGROUND_FACTOR, 1) if baseline else None
+    preview = work_dir / f"{PREVIEW_NAME}.png"
+    relative = work_dir.relative_to(root) if root else None
+    observatory = (
+        relative.parts[0] if relative is not None and len(relative.parts) > 1 else None
+    )
 
-    result = {
+    return {
         "directory": str(work_dir),
-        "processed": has_process_dir or len(outputs) > 0,
-        "succeeded": len(outputs) > 0,
+        "observatory": observatory,
+        "state": _processing_state(work_dir),
+        "quality_verdict": _quality_verdict(quality or {}, cutoff),
+        "processed": (work_dir / "process").is_dir() or bool(outputs),
+        "succeeded": bool(outputs),
         "visible_outputs": outputs,
-        "input_folders_found": present_subdirs,
+        "preview": str(preview) if preview.is_file() else None,
+        "input_folders_found": [
+            name for name in WORKING_SUBDIRS if (work_dir / name).is_dir()
+        ],
+        "pipeline_stages": _pipeline_stages(work_dir),
         "light_quality": quality,
         "warnings": _quality_warnings(quality),
+        "baselines": {
+            "star_warning_threshold": STAR_WARNING_THRESHOLD,
+            "healthy_sky_adu": round(baseline, 1) if baseline else None,
+            "high_background_adu_cutoff": cutoff,
+        },
     }
-    # An imaging root holds target subfolders rather than lights/ directly, so
-    # report a cross-target summary instead of a single (absent) quality block.
-    if quality is None and not present_subdirs:
-        result["targets"] = _scan_targets(work_dir)
-    return result
 
 
 # Leading noise in a script header comment that says nothing about what the
@@ -747,6 +946,12 @@ def _finish(
 # targets processed so far, registration succeeded at 288 median stars and
 # failed at 3, 9 and 28, so this is a conservative floor for a warning.
 STAR_WARNING_THRESHOLD = 50
+
+# A frame several times brighter than the normal sky background is an
+# obstruction (a lit roof) rather than a faint target: 14 targets sat at
+# 3464-11069 ADU against a healthy median of 1087, all from one bad evening.
+# Measured against the baseline instead of hard-coded so it tracks the site.
+HIGH_BACKGROUND_FACTOR = 3.0
 
 # Fields worth summarising from ImageMetaData.csv, with the aggregation used.
 _METADATA_FIELDS = (
