@@ -42,6 +42,16 @@ FAILURE_MARKERS = (
     "Error in line",
     "Unknown command",
     "not compatible with this version",
+    'The "requires" command is missing',
+)
+
+# Lines Siril prints when a script fails. siril-cli exits 0 and still logs
+# "Script execution finished successfully" for a Python exception, a syntax
+# error and a rejected pyscript alike, so the output -- never the exit status --
+# is the only signal that anything went wrong.
+_FAILURE_LINE = re.compile(
+    r"(?m)^\s*(?:log:\s*)?(?:Error:|Traceback \(most recent call last\):"
+    r"|[A-Z][A-Za-z0-9_]*(?:Error|Exception):)"
 )
 
 
@@ -159,6 +169,41 @@ def _resolve_script(script: str) -> str:
             if path.name == wanted:
                 return str(path)
     return script
+
+
+def _write_pyscript_wrapper(pyscript: str) -> Path:
+    """Wrap a ``.py`` in the two-line .ssf that makes Siril actually run it.
+
+    siril-cli's ``-s`` executes Siril *command* scripts: a .py handed to it
+    directly is parsed as commands, never runs, and still exits 0 having done
+    nothing. Issuing ``pyscript`` from a wrapper is the only way to get Python
+    to run inside Siril. The path is quoted because Siril's script directories
+    live under "Application Support".
+    """
+    handle = tempfile.NamedTemporaryFile(
+        "w", suffix=".ssf", prefix="siril_pyscript_", delete=False
+    )
+    with handle:
+        handle.write(f'requires 1.3.4\npyscript "{pyscript}"\n')
+    return Path(handle.name)
+
+
+def _first_failure_line(output: str) -> str | None:
+    """The most informative line Siril printed about a failure, if any.
+
+    A traceback opens with "Traceback (most recent call last):" and closes with
+    the exception itself, so the exception line is preferred when present --
+    it names what actually went wrong.
+    """
+    matches = [
+        line.strip()[:200] for line in output.splitlines() if _FAILURE_LINE.search(line)
+    ]
+    if not matches:
+        return None
+    for line in matches:
+        if re.search(r"[A-Z][A-Za-z0-9_]*(?:Error|Exception):", line):
+            return line
+    return matches[0]
 
 
 def _find_outputs(work_dir: Path) -> list[str]:
@@ -531,7 +576,14 @@ def run_osc_preprocessing(
     # -d sets Siril's working directory. The script must be passed as an
     # absolute path: headless siril-cli does not honour script_path, so a bare
     # name fails with "File [...] does not exist".
-    cmd = [siril_cli, "-d", str(work_dir), "-s", _resolve_script(script)]
+    resolved = _resolve_script(script)
+    # A .py must be wrapped: -s would parse it as Siril commands and run
+    # nothing at all, then report success.
+    wrapper = (
+        _write_pyscript_wrapper(resolved) if Path(resolved).suffix == ".py" else None
+    )
+    target = str(wrapper) if wrapper else resolved
+    cmd = [siril_cli, "-d", str(work_dir), "-s", target]
     try:
         proc = subprocess.run(
             cmd,
@@ -562,19 +614,24 @@ def run_osc_preprocessing(
             None,
             timeout,
         )
+    finally:
+        if wrapper is not None:
+            wrapper.unlink(missing_ok=True)
 
     output = (proc.stdout or "") + (proc.stderr or "")
     failures = [m for m in FAILURE_MARKERS if m in output]
+    python_failed = bool(_FAILURE_LINE.search(output))
     outputs = _find_outputs(work_dir)
 
-    # siril-cli exits non-zero when a script aborts. The markers are kept as a
-    # secondary signal in case a run reports failure but still exits 0.
-    if proc.returncode != 0 or (failures and not outputs):
-        message = (
-            failures[0]
-            if failures
-            else f"siril-cli exited with status {proc.returncode}"
-        )
+    # siril-cli exits non-zero when a script aborts, but a failing pyscript
+    # still exits 0 -- so the reported failure lines carry that case.
+    if proc.returncode != 0 or ((failures or python_failed) and not outputs):
+        if failures:
+            message = failures[0]
+        elif python_failed:
+            message = _first_failure_line(output) or "the script reported an error"
+        else:
+            message = f"siril-cli exited with status {proc.returncode}"
         result = {
             "status": "failed",
             "message": message,
@@ -780,6 +837,13 @@ _DIAGNOSES = (
         "not compatible with this version",
         "The script requires a different Siril version than the installed one.",
         "Update Siril, or use a script matching the installed version.",
+    ),
+    (
+        "traceback (most recent call last)",
+        "The script itself raised an exception and stopped; Siril ran it "
+        "successfully, so the fault is in the script rather than the pipeline.",
+        "Read the exception at the end of log_tail -- the traceback names the "
+        "line that failed.",
     ),
     (
         "not ready yet",
