@@ -1,9 +1,11 @@
 """MCP entry point: importing the tool modules registers their tools on ``mcp``."""
 
+import ast
 import csv
 import glob
 import json
 import os
+import re
 import shutil
 import statistics
 import subprocess
@@ -270,6 +272,99 @@ def check_directory_status(directory: str | None = None) -> dict:
     return result
 
 
+# Leading noise in a script header comment that says nothing about what the
+# script does: Siril version, author, licence, date, script-version lines and
+# bare changelog entries.
+_HEADER_META = re.compile(
+    r"(?i)^(script for siril\b|spdx-|\(c\)|copyright|licen[cs]e\b|"
+    r"(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\.?"
+    r"\s*\d{0,2},?\s*\d{4}\b|"  # "December 2024", "Apr. 17, 2025"
+    r".*\bv\d+\.\d+(?:\.\d+)?|"  # "Preprocessing v1.4"
+    r"version\s*\d+\.\d+|"  # "Version 1.2.0"
+    r"\d+\.\d+(?:\.\d+)?\b)"  # changelog line "1.0.1 bugfix: ..."
+)
+
+_DESCRIPTION_LIMIT = 300
+
+
+def _one_paragraph(text: str | None) -> str | None:
+    """Collapse ``text`` to a single bounded line, or ``None`` when empty."""
+    if not text:
+        return None
+    first = re.split(r"\n\s*\n", text.strip(), maxsplit=1)[0]
+    flat = re.sub(r"\s+", " ", first).strip()
+    if not flat:
+        return None
+    if len(flat) > _DESCRIPTION_LIMIT:
+        flat = flat[:_DESCRIPTION_LIMIT].rstrip() + "…"
+    return flat
+
+
+def _useful_comment(text: str) -> bool:
+    """False for banner separators, section titles and author/date/version noise.
+
+    Shared by every header reader so a ``.ssf`` and a ``.py`` trim the same
+    boilerplate and read as if written the same way.
+    """
+    if not text or set(text) <= set("#=-* "):
+        return False  # banner separator
+    if _HEADER_META.match(text):
+        return False  # Siril version, author, licence, date, script version
+    if text.upper() == text and any(c.isalpha() for c in text):
+        return False  # section banner, e.g. "PREPROCESSING SCRIPT"
+    return True
+
+
+def _python_docstring(path: Path) -> str | None:
+    """Module docstring of a ``.py`` script -- parsed, never executed."""
+    try:
+        source = path.read_text(encoding="utf-8", errors="replace")
+        docstring = ast.get_docstring(ast.parse(source))
+    except (SyntaxError, ValueError, OSError):
+        return None
+    return _one_paragraph(docstring)
+
+
+def _comment_header(path: Path) -> str | None:
+    """Leading ``#`` block of ``path``, minus boilerplate.
+
+    Stops at the first real code line, so a comment sitting in the middle of a
+    file is never mistaken for a description. Used for every ``.ssf`` -- which
+    have no docstring equivalent at all -- and as the fallback for a ``.py``
+    whose module docstring is missing.
+    """
+    lines: list[str] = []
+    try:
+        handle = path.open(encoding="utf-8", errors="replace")
+    except OSError:
+        return None
+    with handle:
+        for number, line in enumerate(handle):
+            if number > 40:
+                break
+            stripped = line.strip()
+            if stripped.startswith("#"):
+                text = stripped.lstrip("#").strip()
+                if text.startswith("!") or text.startswith("coding"):
+                    continue  # shebang or encoding declaration
+                if _useful_comment(text):
+                    lines.append(text)
+                continue
+            if not stripped:
+                continue  # a blank line does not end the header block
+            break  # first code line ends it
+    return _one_paragraph(" ".join(lines)) if lines else None
+
+
+def _script_description(path: Path) -> str | None:
+    """Best-effort description: a Python docstring, else the header comment."""
+    if path.suffix == ".py":
+        docstring = _python_docstring(path)
+        if docstring:
+            return docstring
+    return _comment_header(path)
+
+
 @mcp.tool()
 def list_scripts() -> dict:
     """List the Siril scripts available to run.
@@ -303,6 +398,7 @@ def list_scripts() -> dict:
                     "path": str(path),
                     "kind": path.suffix.lstrip("."),
                     "source": source,
+                    "description": _script_description(path),
                 }
             )
     return {"count": len(scripts), "directories": directories, "scripts": scripts}
