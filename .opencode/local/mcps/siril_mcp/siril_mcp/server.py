@@ -57,33 +57,105 @@ def _find_siril_cli() -> str | None:
     return None
 
 
-# Directories Siril searches for .ssf scripts (mirrors script_path in
-# config.1.4.ini). Headless siril-cli does NOT apply that search path, so a
-# bare script name must be resolved to an absolute path here.
-SCRIPT_DIRS = (
-    Path("/Applications/Siril.app/Contents/Resources/share/siril/scripts"),
-    Path.home() / "Library/Application Support/org.siril.Siril/scripts",
-    Path.home() / ".siril/scripts",
-    Path.home() / "siril/scripts",
+# Siril's own config lists where it looks for scripts, but headless siril-cli
+# does NOT apply that search path, so a bare script name has to be resolved to
+# an absolute path here. Read from config rather than hard-coding the list, so
+# a directory the operator adds in Siril's preferences is picked up without a
+# code change.
+SYSTEM_SCRIPTS_DIR = Path(
+    "/Applications/Siril.app/Contents/Resources/share/siril/scripts"
 )
+SIRIL_SUPPORT_DIR = Path.home() / "Library/Application Support/org.siril.Siril"
+# Where Siril caches the scripts cloned by "Get Scripts". These sit outside
+# script_path, so Siril does not enable them by default -- but headless
+# siril-cli runs them fine when given an absolute path.
+REPOSITORY_SCRIPTS_DIR = SIRIL_SUPPORT_DIR / "siril-scripts"
+
+
+def _config_script_dirs() -> list[Path]:
+    """Read the ``script_path`` list out of Siril's own config file.
+
+    Returns an empty list when the config is absent or unreadable so callers
+    can fall back to the built-in default instead of failing.
+    """
+    config_dir = SIRIL_SUPPORT_DIR / "siril"
+    for config_file in sorted(config_dir.glob("config*.ini")):
+        try:
+            text = config_file.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        for line in text.splitlines():
+            key, sep, value = line.partition("=")
+            if sep and key.strip() == "script_path":
+                found = [
+                    Path(part.strip()).expanduser()
+                    for part in value.split(";")
+                    if part.strip()
+                ]
+                if found:
+                    return found
+    return []
+
+
+def _script_directories() -> list[tuple[Path, str]]:
+    """Return ``(directory, source)`` pairs scripts can be loaded from.
+
+    ``configured`` entries come from Siril's ``script_path`` and are searched
+    first, so a locally-installed script wins over a repository copy of the
+    same name. ``repository`` is the Get Scripts cache, which Siril leaves
+    disabled but headless siril-cli will still run by absolute path.
+    """
+    ordered: list[tuple[Path, str]] = []
+    seen: set[Path] = set()
+
+    def add(directory: Path, source: str) -> None:
+        key = directory.expanduser()
+        if key in seen:
+            return
+        seen.add(key)
+        ordered.append((key, source))
+
+    for directory in _config_script_dirs():
+        add(directory, "configured")
+    # Always include the bundled directory so the shipped scripts stay reachable
+    # even when the config is missing or edited to empty it.
+    add(SYSTEM_SCRIPTS_DIR, "configured")
+    add(REPOSITORY_SCRIPTS_DIR, "repository")
+    return ordered
+
+
+def _scripts_in(directory: Path) -> list[Path]:
+    """Every ``.ssf``/``.py`` under ``directory``, recursively, stable order.
+
+    Shared by ``list_scripts`` and ``_resolve_script`` so the two can never
+    disagree about what exists: a name the agent reads in one is always
+    resolvable in the other. Recursion matters because the repository cache
+    groups scripts into subfolders (``processing/``, ``RC-Astro/``, ...).
+    """
+    if not directory.is_dir():
+        return []
+    return sorted(
+        path for pattern in ("*.ssf", "*.py") for path in directory.rglob(pattern)
+    )
 
 
 def _resolve_script(script: str) -> str:
     """Return an absolute path for ``script`` so headless siril-cli can find it.
 
-    Absolute paths are used as-is when they exist; otherwise the bundled and
-    user script directories are searched. Falls back to the original string so
-    Siril can still report a helpful error.
+    Absolute paths are used as-is when they exist; otherwise every directory
+    from :func:`_script_directories` is searched in order. Falls back to the
+    original string so Siril can still report a helpful error.
     """
     candidate = Path(script).expanduser()
     if candidate.is_absolute():
         return str(candidate) if candidate.is_file() else script
     if candidate.is_file():
         return str(candidate.resolve())
-    for base in SCRIPT_DIRS:
-        target = base / script
-        if target.is_file():
-            return str(target)
+    wanted = Path(script).name
+    for directory, _source in _script_directories():
+        for path in _scripts_in(directory):
+            if path.name == wanted:
+                return str(path)
     return script
 
 
@@ -196,6 +268,44 @@ def check_directory_status(directory: str | None = None) -> dict:
     if quality is None and not present_subdirs:
         result["targets"] = _scan_targets(work_dir)
     return result
+
+
+@mcp.tool()
+def list_scripts() -> dict:
+    """List the Siril scripts available to run.
+
+    Every ``.ssf`` and ``.py`` file reachable from Siril's configured script
+    directories plus the Get Scripts repository cache. Each entry carries the
+    absolute ``path`` to pass straight to
+    ``run_osc_preprocessing(script=...)``, which headless siril-cli needs
+    because it does not honour Siril's own script search path.
+
+    ``source`` is ``configured`` for directories Siril loads from, and
+    ``repository`` for the cloned cache that Siril leaves disabled but will
+    still run when given an absolute path.
+    """
+    directories: list[dict] = []
+    scripts: list[dict] = []
+    for directory, source in _script_directories():
+        found = _scripts_in(directory)
+        directories.append(
+            {
+                "path": str(directory),
+                "source": source,
+                "exists": directory.is_dir(),
+                "count": len(found),
+            }
+        )
+        for path in found:
+            scripts.append(
+                {
+                    "name": path.name,
+                    "path": str(path),
+                    "kind": path.suffix.lstrip("."),
+                    "source": source,
+                }
+            )
+    return {"count": len(scripts), "directories": directories, "scripts": scripts}
 
 
 @mcp.tool(structured_output=False)
