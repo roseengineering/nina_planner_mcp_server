@@ -598,6 +598,15 @@ Read the 7-day hourly forecast for the observatory site from clearoutside.com â€
         "command": [
           "uv", "run", "--project", ".opencode/local/mcps/nina_planner", "nina-planner"
         ]
+      },
+      "siril-mcp": {
+        "type": "local",
+        "environment": {
+          "ARCHIVE_ROOT": "~/landing"
+        },
+        "command": [
+          "uv", "run", "--project", ".opencode/local/mcps/siril_mcp", "siril-mcp"
+        ]
       }
     }
   }
