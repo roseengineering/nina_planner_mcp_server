@@ -13,6 +13,7 @@ import tempfile
 from collections import Counter
 from collections.abc import Iterator
 from pathlib import Path
+from typing import Literal
 
 from mcp.server.fastmcp import FastMCP
 
@@ -247,22 +248,27 @@ def _first_failure_line(output: str) -> str | None:
 
 
 def _find_outputs(work_dir: Path) -> list[str]:
-    """Check the root working directory and Siril's default 'process/' subfolder."""
-    found = []
+    """Check the root working directory and Siril's default 'process/' subfolder.
+
+    Root outputs come first. ``OSC_Preprocessing.ssf`` writes the final, flipped
+    stack as ``result_<LIVETIME>s.fit`` at the root, while ``process/result.fit``
+    is the intermediate it was made from -- and preview generation renders the
+    first entry, so ordering here decides what an agent actually sees.
+    """
+    found: list[str] = []
+    # The deliverable first: root result_*.fit (result_400s.fit, ...).
+    for match in sorted(glob.glob(str(work_dir / "result_*.fit"))):
+        if os.path.isfile(match) and os.path.getsize(match) > 0:
+            found.append(str(Path(match).relative_to(work_dir)))
     for base in (work_dir, work_dir / "process"):
         if not base.exists():
             continue
         for name in EXPECTED_OUTPUTS:
             candidate = base / name
             if candidate.is_file() and candidate.stat().st_size > 0:
-                found.append(str(candidate.relative_to(work_dir)))
-    # OSC_Preprocessing.ssf also saves the final stack as result_<LIVETIME>s.fit
-    # in the working directory root.
-    for match in glob.glob(str(work_dir / "result_*.fit")):
-        if os.path.isfile(match) and os.path.getsize(match) > 0:
-            rel = str(Path(match).relative_to(work_dir))
-            if rel not in found:
-                found.append(rel)
+                rel = str(candidate.relative_to(work_dir))
+                if rel not in found:
+                    found.append(rel)
     return found
 
 
@@ -331,6 +337,10 @@ def _pipeline_stages(work_dir: Path) -> dict:
         "calibrated_pp_lights": count("pp_light_*.fit"),
         "registered_r_pp_lights": count("r_pp_light_*.fit"),
         "masters_present": masters.is_dir() and any(masters.glob("*.fit")),
+        # All-zero counts mean two different things: never ran, or ran and was
+        # cleaned by clean_working_directory. A result on disk separates them,
+        # so say which rather than making the caller infer it.
+        "intermediates_cleaned": not process.is_dir() and bool(_find_outputs(work_dir)),
     }
 
 
@@ -690,7 +700,11 @@ def _script_description(path: Path) -> str | None:
 
 
 @mcp.tool()
-def list_scripts() -> dict:
+def list_scripts(
+    kind: Literal["ssf", "py"] | None = None,
+    source: Literal["configured", "repository"] | None = None,
+    query: str | None = None,
+) -> dict:
     """List the Siril scripts available to run.
 
     Every ``.ssf`` and ``.py`` file reachable from Siril's configured script
@@ -702,29 +716,44 @@ def list_scripts() -> dict:
     ``source`` is ``configured`` for directories Siril loads from, and
     ``repository`` for the cloned cache that Siril leaves disabled but will
     still run when given an absolute path.
+
+    Filters exist because the unfiltered listing is 116 entries (~49 KB):
+    ``kind`` selects ``ssf`` or ``py``, ``source`` selects where it came from,
+    and ``query`` matches a substring against name and description together
+    (so ``query="preprocessing"`` finds both the .ssf and its description).
+    Directory counts reflect the filter, so they stay consistent with
+    ``count``.
     """
     directories: list[dict] = []
     scripts: list[dict] = []
-    for directory, source in _script_directories():
-        found = _scripts_in(directory)
+    for directory, script_source in _script_directories():
+        entries: list[dict] = []
+        for path in _scripts_in(directory):
+            entry = {
+                "name": path.name,
+                "path": str(path),
+                "kind": path.suffix.lstrip("."),
+                "source": script_source,
+                "description": _script_description(path),
+            }
+            if kind is not None and entry["kind"] != kind:
+                continue
+            if source is not None and entry["source"] != source:
+                continue
+            if query:
+                haystack = f"{entry['name']} {entry.get('description') or ''}".lower()
+                if query.lower() not in haystack:
+                    continue
+            entries.append(entry)
         directories.append(
             {
                 "path": str(directory),
-                "source": source,
+                "source": script_source,
                 "exists": directory.is_dir(),
-                "count": len(found),
+                "count": len(entries),
             }
         )
-        for path in found:
-            scripts.append(
-                {
-                    "name": path.name,
-                    "path": str(path),
-                    "kind": path.suffix.lstrip("."),
-                    "source": source,
-                    "description": _script_description(path),
-                }
-            )
+        scripts.extend(entries)
     return {"count": len(scripts), "directories": directories, "scripts": scripts}
 
 
@@ -754,11 +783,20 @@ def run_osc_preprocessing(
     path whenever there is an output to review. The image itself stays on disk
     for the agent to read.
     """
-    work_dir = Path(directory).expanduser().resolve()
-    if not work_dir.is_dir():
+    # Resolve through the archive exactly as check_directory_status does, so a
+    # bare target name read out of summary.runnable passes straight back
+    # instead of being looked up relative to the process's own cwd.
+    candidate = Path(directory).expanduser()
+    root, root_error = _archive_root(None)
+    if root is None and not candidate.is_absolute():
         return _finish(
-            {"status": "error", "message": f"Directory does not exist: {work_dir}"},
-            work_dir,
+            {"status": "error", "message": root_error}, candidate, [], None, timeout
+        )
+    work_dir = _resolve_working_directory(directory, root)
+    if work_dir is None:
+        return _finish(
+            {"status": "error", "message": f"Directory does not exist: {directory}"},
+            candidate,
             [],
             None,
             timeout,
@@ -775,7 +813,9 @@ def run_osc_preprocessing(
             {
                 "status": "skipped",
                 "message": "Directory already processed. Pass force=True to re-run.",
+                "directory": str(work_dir),
                 "visible_outputs": outputs,
+                "pipeline_stages": _pipeline_stages(work_dir),
                 "light_quality": quality,
                 "warnings": warnings,
             },
@@ -797,6 +837,8 @@ def run_osc_preprocessing(
                         f"{min_stars}; registration would likely fail. "
                         "Pass force=True to run anyway."
                     ),
+                    "directory": str(work_dir),
+                    "pipeline_stages": _pipeline_stages(work_dir),
                     "light_quality": quality,
                     "warnings": warnings,
                 },
@@ -914,6 +956,7 @@ def run_osc_preprocessing(
             "returncode": proc.returncode,
             "log_tail": _tail(output),
             "visible_outputs": outputs,
+            "pipeline_stages": _pipeline_stages(work_dir),
             "light_quality": quality,
             "warnings": warnings,
         }
@@ -930,6 +973,9 @@ def run_osc_preprocessing(
             "returncode": proc.returncode,
             "log_tail": _tail(output),
             "visible_outputs": outputs,
+            # The docstring tells the caller to read this before trusting a
+            # success: m81 reports succeeded on 6 of 100 registered frames.
+            "pipeline_stages": _pipeline_stages(work_dir),
             "light_quality": quality,
             "warnings": warnings,
         },
@@ -940,31 +986,222 @@ def run_osc_preprocessing(
     )
 
 
+@mcp.tool()
+def render_preview(directory: str, fits_file: str | None = None) -> dict:
+    """Render an autostretched PNG of one FITS file in a working directory.
+
+    ``run_osc_preprocessing`` renders ``preview.png`` as a side-effect of a
+    run; this does it on demand for any file, which is what makes a
+    standard-vs-drizzle comparison possible -- render both, then read them
+    side by side.
+
+    ``fits_file`` resolves against the working directory (``result_70s.fit``,
+    ``process/result.fit``) or may be absolute, and defaults to the first
+    entry of the output list, i.e. the final root stack. The PNG is named
+    after its source (``result_70s.png``) so rendering a second file never
+    overwrites the first.
+
+    Renders in ~1s and does not touch the stack itself.
+    """
+    root, root_error = _archive_root(None)
+    candidate = Path(directory).expanduser()
+    if root is None and not candidate.is_absolute():
+        return {"status": "error", "message": root_error}
+    work_dir = _resolve_working_directory(directory, root)
+    if work_dir is None or not _is_working_directory(work_dir):
+        return {"status": "error", "message": f"Not a working directory: {directory}"}
+
+    siril_cli = _find_siril_cli()
+    if not siril_cli:
+        return {
+            "status": "error",
+            "message": "siril-cli not found. Set SIRIL_CLI to its full path.",
+        }
+
+    if fits_file is None:
+        outputs = _find_outputs(work_dir)
+        if not outputs:
+            return {
+                "status": "error",
+                "message": "No output FITS to preview; pass fits_file= explicitly.",
+            }
+        source = work_dir / outputs[0]
+    else:
+        asked = Path(fits_file).expanduser()
+        source = asked if asked.is_absolute() else work_dir / fits_file
+        if not source.is_file():
+            return {"status": "error", "message": f"FITS file not found: {fits_file}"}
+
+    path, error = _render_preview(work_dir, source, siril_cli, 120, source.stem)
+    if path is None:
+        return {"status": "error", "message": error}
+    return {
+        "status": "ok",
+        "preview": path,
+        "source": str(source),
+        "state": _processing_state(work_dir),
+    }
+
+
+@mcp.tool()
+def clean_working_directory(
+    directory: str,
+    include_masters: bool = False,
+    force: bool = False,
+) -> dict:
+    """Delete a target's intermediate Siril work to reclaim disk.
+
+    ``process/`` holds roughly 1.5-2 GB per target: converted symlinks,
+    calibrated ``pp_light_*.fit`` and registered ``r_pp_light_*.fit`` frames.
+    None of it is needed once the stack and preview exist at the root, and
+    across the archive it is the largest consumer of space.
+
+    Safety: only ``process/`` (and ``masters/`` when ``include_masters``) is
+    ever removed, and only from a path verified to be a working directory.
+    ``lights/``, ``darks/``, ``flats/``, ``biases/``, ``manifest.json``,
+    ``plan.json``, ``preview.png`` and the root ``result_*.fit`` are never
+    touched, and the archive root itself is refused outright.
+
+    Refuses a target that has not succeeded unless ``force=True``: ``process/``
+    is the evidence behind ``pipeline_stages``, so deleting it would destroy
+    the ability to diagnose a run that died at registration.
+    """
+    root, root_error = _archive_root(None)
+    candidate = Path(directory).expanduser()
+    if root is None and not candidate.is_absolute():
+        return {"status": "error", "message": root_error}
+    work_dir = _resolve_working_directory(directory, root)
+    if work_dir is None:
+        return {
+            "status": "error",
+            "message": f"Working directory not found: {directory}",
+        }
+    if not _is_working_directory(work_dir):
+        return {
+            "status": "error",
+            "message": (
+                f"Refusing: {work_dir} is not a working directory, so there is "
+                "nothing safe to delete."
+            ),
+        }
+
+    state = _processing_state(work_dir)
+    if state != "succeeded" and not force:
+        return {
+            "status": "error",
+            "state": state,
+            "message": (
+                f"{work_dir.name} is {state}; process/ holds the evidence for "
+                "diagnosing it. Pass force=True to delete anyway."
+            ),
+        }
+
+    targets = [work_dir / "process"]
+    if include_masters:
+        targets.append(work_dir / "masters")
+
+    freed = 0
+    removed: list[str] = []
+    for target in targets:
+        # Only ever a direct child of the working directory: this is what
+        # makes an accidental deletion of the archive itself impossible.
+        if not target.is_dir() or target.parent != work_dir:
+            continue
+        for path in target.rglob("*"):
+            try:
+                freed += path.lstat().st_size
+            except OSError:
+                continue
+        shutil.rmtree(target)
+        removed.append(target.name)
+
+    return {
+        "status": "ok",
+        "removed": removed,
+        "freed_bytes": freed,
+        "freed_mb": round(freed / 1_048_576, 1),
+        "state": _processing_state(work_dir),
+        "visible_outputs": _find_outputs(work_dir),
+    }
+
+
+@mcp.tool()
+def get_siril_status() -> dict:
+    """Report whether this environment can run Siril, without processing anything.
+
+    A read-only health check: which ``siril-cli`` will be used and at what
+    version, whether ``ARCHIVE_ROOT`` resolves, whether Siril's internal
+    Python venv exists (that is what makes ``pyscript`` work), and which
+    script directories are reachable. Worth calling before a long run, and
+    when a failure looks environmental rather than about the data.
+    """
+    cli = _find_siril_cli()
+    version = None
+    if cli:
+        try:
+            proc = subprocess.run(
+                [cli, "--version"], capture_output=True, text=True, timeout=60
+            )
+            lines = [
+                line.strip()
+                for line in ((proc.stdout or "") + (proc.stderr or "")).splitlines()
+                if line.strip()
+            ]
+            # siril-cli prints "Siril is started as macOS application" before
+            # the version line, so match "siril <digits>" rather than "siril".
+            version = next(
+                (line for line in lines if re.match(r"(?i)^siril\s+[\d.]", line)),
+                None,
+            )
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            version = f"unavailable: {exc}"
+
+    root, root_error = _archive_root(None)
+    venv = SIRIL_SUPPORT_DIR / "siril" / "venv"
+    return {
+        "siril_cli": {"found": cli is not None, "path": cli, "version": version},
+        "archive_root": {"path": str(root) if root else None, "error": root_error},
+        "python_venv": {
+            "path": str(venv),
+            "present": venv.is_dir(),
+            "note": "siril-cli builds this on first use; pyscript requires it.",
+        },
+        "script_directories": [
+            {"path": str(path), "source": source, "exists": path.is_dir()}
+            for path, source in _script_directories()
+        ],
+        "environment": {
+            name: os.environ.get(name) for name in ("ARCHIVE_ROOT", "SIRIL_CLI")
+        },
+    }
+
+
 def _tail(text: str, lines: int = 30) -> str:
     """Return the last ``lines`` non-empty lines of Siril output for diagnostics."""
     kept = [ln for ln in text.splitlines() if ln.strip()]
     return "\n".join(kept[-lines:])
 
 
-def _generate_preview(
+def _render_preview(
     work_dir: Path,
-    outputs: list[str],
+    source: Path,
     siril_cli: str,
     timeout: int,
+    name: str = PREVIEW_NAME,
 ) -> tuple[str | None, str | None]:
-    """Autostretch the first output to a PNG for the agent to review.
+    """Autostretch ``source`` into ``<work_dir>/<name>.png``.
 
     Returns ``(path, error)``. Only the path travels back in the tool
-    response; the PNG itself stays on disk for the agent to read or manipulate.
+    response; the PNG itself stays on disk for the agent to read or
+    manipulate. ``name`` lets a second render sit beside the first instead of
+    overwriting it, which is what makes a standard-vs-drizzle comparison
+    possible.
     """
-    if not outputs:
-        return None, "no output image available to preview"
-    source = work_dir / outputs[0]
     if not source.is_file():
-        return None, f"output not found: {outputs[0]}"
+        return None, f"output not found: {source}"
 
-    preview_base = work_dir / PREVIEW_NAME
-    preview_path = work_dir / f"{PREVIEW_NAME}.png"
+    preview_base = work_dir / name
+    preview_path = work_dir / f"{name}.png"
     script = f'requires 1.3.4\nload "{source}"\nautostretch\nsavepng "{preview_base}"\n'
 
     script_path: Path | None = None
@@ -1010,7 +1247,9 @@ def _finish(
     """
     extras: list[str] = []
     if siril_cli and outputs:
-        path, error = _generate_preview(work_dir, outputs, siril_cli, timeout)
+        path, error = _render_preview(
+            work_dir, work_dir / outputs[0], siril_cli, timeout
+        )
         if path:
             result["preview"] = path
             extras.append(path)
