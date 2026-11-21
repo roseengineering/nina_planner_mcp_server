@@ -190,6 +190,44 @@ def _write_pyscript_wrapper(pyscript: str) -> Path:
     return Path(handle.name)
 
 
+def _with_min_pairs(script_path: str, min_pairs: int) -> Path | None:
+    """Copy ``script_path`` with ``-minpairs=`` added to its register command.
+
+    siril-cli exposes no flag for it -- the knob lives inside the .ssf -- so
+    honouring the argument means amending the script. Returns ``None`` when
+    there is no register command to amend, which the caller reports rather
+    than silently dropping the request.
+    """
+    try:
+        lines = (
+            Path(script_path).read_text(encoding="utf-8", errors="replace").splitlines()
+        )
+    except OSError:
+        return None
+    amended: list[str] = []
+    changed = False
+    for line in lines:
+        stripped = line.strip()
+        if stripped.startswith("register "):
+            # Replace any existing -minpairs= so an explicit argument wins
+            # rather than colliding with the script's own value.
+            stripped = re.sub(r"-minpairs=\d+", f"-minpairs={min_pairs}", stripped)
+            if f"-minpairs={min_pairs}" not in stripped:
+                stripped = f"{stripped} -minpairs={min_pairs}"
+            amended.append(stripped)
+            changed = True
+        else:
+            amended.append(line)
+    if not changed:
+        return None
+    handle = tempfile.NamedTemporaryFile(
+        "w", suffix=".ssf", prefix="siril_minpairs_", delete=False
+    )
+    with handle:
+        handle.write("\n".join(amended) + "\n")
+    return Path(handle.name)
+
+
 def _first_failure_line(output: str) -> str | None:
     """The most informative line Siril printed about a failure, if any.
 
@@ -697,12 +735,20 @@ def run_osc_preprocessing(
     force: bool = False,
     timeout: int = 3600,
     min_stars: int = 0,
+    min_pairs: int = 0,
 ) -> list[str]:
     """Run a Siril script headlessly via siril-cli and preview the result.
 
     Defaults to OSC_Preprocessing.ssf on ``directory``. Skips execution if
     already processed unless ``force=True``. Set ``min_stars`` to pre-flight
     skip targets whose ImageMetaData.csv shows too few stars to register.
+
+    ``min_pairs`` lowers how many star pairs each frame needs against the
+    registration reference; Siril drops frames below it. It rescues sparse
+    fields that die at "Not enough star pairs" -- m81 needed ``min_pairs=4``
+    -- but fewer registered frames means a shallower stack, so read
+    ``pipeline_stages`` in the result before trusting a success. Applies to
+    .ssf scripts only.
 
     Returns the structured result as JSON text, followed by the preview PNG's
     path whenever there is an output to review. The image itself stays on disk
@@ -776,12 +822,43 @@ def run_osc_preprocessing(
     # absolute path: headless siril-cli does not honour script_path, so a bare
     # name fails with "File [...] does not exist".
     resolved = _resolve_script(script)
-    # A .py must be wrapped: -s would parse it as Siril commands and run
-    # nothing at all, then report success.
-    wrapper = (
-        _write_pyscript_wrapper(resolved) if Path(resolved).suffix == ".py" else None
-    )
-    target = str(wrapper) if wrapper else resolved
+    # Temporary scripts this run needs, all removed in the finally below.
+    temporaries: list[Path] = []
+    if min_pairs > 0 and Path(resolved).suffix == ".py":
+        return _finish(
+            {
+                "status": "error",
+                "message": "min_pairs applies to .ssf scripts; a .py cannot be amended.",
+            },
+            work_dir,
+            outputs,
+            siril_cli,
+            timeout,
+        )
+    if Path(resolved).suffix == ".py":
+        # -s parses a .py as Siril commands and runs nothing at all, still
+        # reporting success; the wrapper is what actually invokes it.
+        temporaries.append(_write_pyscript_wrapper(resolved))
+    elif min_pairs > 0:
+        amended = _with_min_pairs(resolved, min_pairs)
+        if amended is None:
+            # Reported rather than ignored: silently dropping the argument
+            # would leave the caller believing a looser floor was applied.
+            return _finish(
+                {
+                    "status": "error",
+                    "message": (
+                        f"min_pairs={min_pairs} was requested but {resolved} "
+                        "has no register command to amend."
+                    ),
+                },
+                work_dir,
+                outputs,
+                siril_cli,
+                timeout,
+            )
+        temporaries.append(amended)
+    target = str(temporaries[0]) if temporaries else resolved
     cmd = [siril_cli, "-d", str(work_dir), "-s", target]
     try:
         proc = subprocess.run(
@@ -814,8 +891,8 @@ def run_osc_preprocessing(
             timeout,
         )
     finally:
-        if wrapper is not None:
-            wrapper.unlink(missing_ok=True)
+        for path in temporaries:
+            path.unlink(missing_ok=True)
 
     output = (proc.stdout or "") + (proc.stderr or "")
     failures = [m for m in FAILURE_MARKERS if m in output]
