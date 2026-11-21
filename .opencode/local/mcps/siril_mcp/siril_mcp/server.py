@@ -1019,10 +1019,14 @@ def _finish(
     return [json.dumps(result, indent=1), *extras]
 
 
-# NINA records per-frame telemetry in lights/ImageMetaData.csv. Across the
-# targets processed so far, registration succeeded at 288 median stars and
-# failed at 3, 9 and 28, so this is a conservative floor for a warning.
-STAR_WARNING_THRESHOLD = 50
+# NINA records per-frame telemetry in lights/ImageMetaData.csv. Set from an
+# empirical sweep of the 12 targets this threshold had been skipping: forcing
+# them through standard -> drizzle -> min_pairs recovered 4, every one of them
+# at 32-43 median stars, while all 8 at 15-33 failed all three. 30 sits below
+# every success and above most failures. The one miss (ngc-1333, 33 stars) is
+# accepted noise: a wrong "ready" costs a visible failed run, while a wrong
+# "faint" silently withholds a stack that would have worked.
+STAR_WARNING_THRESHOLD = 30
 
 # A frame several times brighter than the normal sky background is an
 # obstruction (a lit roof) rather than a faint target: 14 targets sat at
@@ -1086,9 +1090,10 @@ def _quality_warnings(quality: dict | None) -> list[str]:
     stars = quality.get("median_detected_stars")
     if stars is not None and stars < STAR_WARNING_THRESHOLD:
         warnings.append(
-            f"Only {stars:.0f} stars detected per frame (median); Siril's "
-            f"registration typically needs >={STAR_WARNING_THRESHOLD} and may "
-            "abort with 'not enough stars in reference image'."
+            f"Only {stars:.0f} stars detected per frame (median); every target "
+            f"tested below {STAR_WARNING_THRESHOLD} failed registration. Siril "
+            "aborts either with 'not enough stars in reference image' or, more "
+            "commonly, 'Not enough star pairs' when it cannot match frames."
         )
     hfr = quality.get("median_hfr")
     if hfr is not None and hfr > 3.0:
