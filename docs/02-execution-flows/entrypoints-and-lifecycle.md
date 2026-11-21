@@ -141,32 +141,25 @@ sequenceDiagram
 
 ---
 
-## 3. CLI Resolution Order & Invocation Architecture (`run-nina-tools` Convention)
+## 3. CLI Invocation Architecture (run with `uv`)
 
 ### 3.1 Why the `nina-*` Binaries Are Not Assumed on `PATH`
 
 The four console scripts declared in `.opencode/local/mcps/nina_planner/pyproject.toml:58-63` (`nina-planner`, `nina-archive`, `nina-pin-id`, `nina-purge`) are installed into the local MCP virtual environment (`.opencode/local/mcps/nina_planner/.venv/bin/` on POSIX/WSL/macOS, or `.venv/Scripts/` on native Windows) when `make install_uv` runs (`makefile:116-119`), rather than into a global system or user `PATH`. Calling a bare `nina-archive` in a subshell typically exits `127` (`command not found`).
 
-### 3.2 Four-Branch Resolution Chain (`.agents/skills/run-nina-tools/SKILL.md:19-55`)
+### 3.2 Single Invocation Form (`uv run --project`)
 
-Every agent workflow that invokes `nina-archive`, `nina-purge`, or `nina-pin-id` resolves the executable **once, before the first command in the flow**, using a strict first-match-wins branch chain:
+Agent workflows that invoke `nina-archive`, `nina-purge`, or `nina-pin-id` run them through `uv`, which resolves the project environment itself:
 
-```mermaid
-flowchart TD
-    Start(["Resolve CLI `<tool>`\n(nina-archive / nina-purge / nina-pin-id)"]) --> B1{"Branch 1:\n`[ -x .opencode/local/mcps/nina_planner/.venv/bin/<tool> ]`?"}
-    B1 -- "Yes (executable)" --> UseVenv["Use `.opencode/local/mcps/nina_planner/.venv/bin/<tool>`\n• Exact checkout version\n• Offline-ready (no `uv` needed at runtime;\n  shebang invokes `.venv/bin/python`)"]
-    B1 -- "No" --> B2{"Branch 2:\n`command -v uv >/dev/null`?"}
-    B2 -- "Yes (`uv` installed)" --> UseUv["Use `uv run --project .opencode/local/mcps/nina_planner <tool>`\n• Exact checkout version\n• Works when `.venv` is absent"]
-    B2 -- "No" --> B3{"Branch 3:\n`command -v <tool> >/dev/null`?"}
-    B3 -- "Yes (found on PATH)" --> UsePath["Emit warning to stderr:\n`⚠ using the PATH copy of <tool> — may not be this checkout's version`\nUse `<tool>`"]
-    B3 -- "No" --> B4["Branch 4: STOP (exit 1)\nReport missing `.venv`, `uv`, and `PATH` binary.\nOffer remedies (`make install_uv`, `brew install uv`,\nor copy `.venv` from another host).\nNever improvise `pip install -e`."]
+```bash
+uv run --project .opencode/local/mcps/nina_planner <tool> [args…]
 ```
 
-- **Why resolve once up-front (`SKILL.md:54`):** Resolving all required binaries (`RUN_ARCHIVE`, `RUN_PURGE`, `RUN_PIN`) before running the first step prevents a flow from switching execution branches mid-flight (for example, if `make clean` removes `.venv` between `nina-archive` and `nina-purge`, which could otherwise cause `nina-purge` to run against a different code version than `nina-archive`).
+`uv run --project` supplies the project's environment — whether or not `.venv` is present — and always runs this checkout's code, so there is no `.venv` binary lookup, no PATH copy, and no version skew between the archived build and the purged build. If `uv` is unavailable the agent stops and reports it (remedies: `brew install uv`, or `make install_uv` to build `.venv` for manual use). One form for every call keeps a mid-flow environment change from switching builds between `nina-archive` and `nina-purge`.
 
 ### 3.3 Process Environment Forwarding (`NINA_ENDPOINT` & `NINA_DRIVE_MOUNT`)
 
-Unlike the running `nina-planner` MCP server—which receives its `environment` block from `.opencode/opencode.json` at launch—standalone CLI processes spawned from a shell inherit only the shell's environment and read **no config file of their own** (`.agents/skills/run-nina-tools/SKILL.md:56-72`):
+Unlike the running `nina-planner` MCP server—which receives its `environment` block from `.opencode/opencode.json` at launch—standalone CLI processes spawned from a shell inherit only the shell's environment and read **no config file of their own** (`.agents/skills/archive-lifecycle/SKILL.md`):
 
 | Environment Variable | Read By | Default When Unset | Operational Impact on CLIs (`nina-archive`, `nina-purge`, `scripts/gen_sequence.py`) |
 |---|---|---|---|
@@ -176,7 +169,7 @@ Unlike the running `nina-planner` MCP server—which receives its `environment` 
 To guarantee that CLI runs see the exact same N.I.N.A. endpoint and drive mount as the live MCP server, the agent first calls the `get_nina_settings()` MCP tool (`tools/plans.py:1215-1238`) to inspect the MCP server's own `os.environ` and prefixes every CLI invocation with any set variables:
 
 ```bash
-NINA_ENDPOINT=… NINA_DRIVE_MOUNT=… $RUN_ARCHIVE --dest "$DEST" --dry-run
+NINA_ENDPOINT=… NINA_DRIVE_MOUNT=… uv run --project .opencode/local/mcps/nina_planner nina-archive --dest "$DEST" --dry-run
 ```
 
 ### 3.4 Why `makefile:156-175` Passes `--project-dir $(abspath .)`
@@ -204,4 +197,4 @@ purge: install_uv
 2. **Default discovery root:** Both `archive.run()` (`archive.py:931-936`) and `purge.run()` (`purge.py:768-773`) resolve their plan discovery directory as `Path(args.project_dir).expanduser() if args.project_dir else config.PROJECT_DIR`.
 3. **Preventing wrong-directory discovery:** When `make archive` or `make purge` executes `cd .opencode/local/mcps/nina_planner`, `Path.cwd()` inside Python is `.opencode/local/mcps/nina_planner/`—where `nina_planner/` and `pyproject.toml` live, **not** the repository root (`/Users/george/share/nina/main`) where the user's observation plans (`plans/*.json` or `*.json`) and `.archive/` reside.
 4. **`$(abspath .)` and `$(abspath $(ARCHIVE_DEST))` evaluated by `make` before `cd`:** GNU Make expands `$(abspath .)` and `$(abspath $(ARCHIVE_DEST))` against the repository root *before* spawning the recipe shell that runs `cd $(DIRNAME)`. Passing `--project-dir /Users/george/share/nina/main` and `--dest /Users/george/share/nina/main/.archive` anchors both plan discovery and archive/manifest storage to the workspace root while letting `.opencode/local/mcps/nina_planner` supply the Python package and `.venv` interpreter.
-5. **Contrast with `run-nina-tools` direct execution:** When the agent invokes `.opencode/local/mcps/nina_planner/.venv/bin/nina-archive` or `uv run --project .opencode/local/mcps/nina_planner nina-archive` directly from the workspace root without `cd`, `Path.cwd()` is already `/Users/george/share/nina/main`, so `config.PROJECT_DIR` automatically points to the workspace root even when `--project-dir` is omitted.
+5. **Contrast with direct `uv run` execution:** When the agent runs `uv run --project .opencode/local/mcps/nina_planner nina-archive` directly from the workspace root without `cd`, `Path.cwd()` is already `/Users/george/share/nina/main`, so `config.PROJECT_DIR` automatically points to the workspace root even when `--project-dir` is omitted.

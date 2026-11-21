@@ -21,7 +21,7 @@
 
 ### 1.1 Inbound Callers
 - **CLI Entrypoint:** Invoked as `nina-purge` (`pyproject.toml:62`) or `python -m nina_planner.purge` (`purge.py:1090-1091`).
-- **Agent Skills:** Invoked by `.agents/skills/archive-lifecycle/` and `.agents/skills/run-nina-tools/`.
+- **Agent Skills:** Invoked by `.agents/skills/archive-lifecycle/` (run via `uv run --project .opencode/local/mcps/nina_planner`).
 - **Automated Test Suite:** `.opencode/local/mcps/nina_planner/tests/test_purge.py` (1,220 lines, 8 test classes).
 
 ### 1.2 Outbound Imports

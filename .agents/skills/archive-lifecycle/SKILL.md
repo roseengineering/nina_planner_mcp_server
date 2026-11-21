@@ -7,7 +7,14 @@ description: Archive completed plans, upload the archive to the user's cloud sto
 
 Run these in order. Stop at any failure. Do not skip a step.
 
-The `nina-archive` / `nina-purge` CLIs are **not on PATH** — resolve them first with the `run-nina-tools` skill (`.venv/bin` → `uv run --project` → PATH → stop), then use the resolved command below.
+The `nina-archive` / `nina-purge` CLIs are **not on PATH** — run every one of them through `uv`, from the project root:
+
+```bash
+uv run --project .opencode/local/mcps/nina_planner nina-archive --dest "$DEST" --dry-run
+uv run --project .opencode/local/mcps/nina_planner nina-purge --dest "$DEST"
+```
+
+Every bare `nina-archive …` / `nina-purge …` command in the steps below means `uv run --project .opencode/local/mcps/nina_planner <command>`. If `uv` is missing, stop and tell the user (`brew install uv`).
 
 ## 0. Settings
 
@@ -16,7 +23,7 @@ Call `get_nina_settings()`. It reports the MCP server's **own environment** — 
 - `NINA_ARCHIVE_DEST` — local archive folder (call it `DEST`).
 - `NINA_UPLOAD_CMD` — uploads `DEST` to cloud storage (gcloud, rclone, aws ...).
 - `NINA_VERIFY_CMD` — confirms the upload is complete.
-- `NINA_ENDPOINT` / `NINA_DRIVE_MOUNT` — N.I.N.A. connection and imaging-root mapping. They do not gate `ready`, but the CLIs **do** read them from their own process environment (the endpoint to fetch the site profile, the drive mapping to turn the profile's `Z:\…` path into a local one) — so pass every set value through on each invocation: `NINA_ENDPOINT=… NINA_DRIVE_MOUNT=… $RUN_ARCHIVE …` (per the `run-nina-tools` skill).
+- `NINA_ENDPOINT` / `NINA_DRIVE_MOUNT` — N.I.N.A. connection and imaging-root mapping. They do not gate `ready`, but the CLIs **do** read them from their own process environment (the endpoint to fetch the site profile, the drive mapping to turn the profile's `Z:\…` path into a local one) — so pass every set value through on each invocation: `NINA_ENDPOINT=… NINA_DRIVE_MOUNT=… uv run --project .opencode/local/mcps/nina_planner nina-archive …`.
 
 If the tool call itself errors, fall back to reading the `environment` block of `.opencode/opencode.json` (the `nina-planner` MCP entry) — a file snapshot, not the running server's env.
 
