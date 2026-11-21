@@ -42,7 +42,9 @@ SIRIL_CLI_CANDIDATES = (
 )
 
 # Substrings that mark a failed batch run, used as a secondary signal alongside
-# siril-cli's exit status.
+# siril-cli's exit status. GPS_Preprocess.py catches its own exceptions and
+# prints "**** ERROR *** ..." instead of letting them reach the log as a
+# Traceback, so its marker is listed here too.
 FAILURE_MARKERS = (
     "Script execution failed",
     "Exiting batch processing",
@@ -50,6 +52,7 @@ FAILURE_MARKERS = (
     "Unknown command",
     "not compatible with this version",
     'The "requires" command is missing',
+    "**** ERROR ***",
 )
 
 # Lines Siril prints when a script fails. siril-cli exits 0 and still logs
@@ -213,7 +216,9 @@ def _resolve_script(script: str) -> str:
     return script
 
 
-def _write_pyscript_wrapper(pyscript: str) -> Path:
+def _write_pyscript_wrapper(
+    pyscript: str, script_args: str | list[str] | None = None
+) -> Path:
     """Wrap a ``.py`` in the two-line .ssf that makes Siril actually run it.
 
     siril-cli's ``-s`` executes Siril *command* scripts: a .py handed to it
@@ -221,12 +226,28 @@ def _write_pyscript_wrapper(pyscript: str) -> Path:
     nothing. Issuing ``pyscript`` from a wrapper is the only way to get Python
     to run inside Siril. The path is quoted because Siril's script directories
     live under "Application Support".
+
+    ``script_args`` are appended after the quoted path: pyscript passes every
+    following token to the script as its argument vector (Siril's documented
+    ``pyscript [-async] scriptname.py [script_argv]``), which is how a script
+    that would otherwise open a GUI -- ``GPS_Preprocess.py`` launches its Qt
+    dialog when ``len(sys.argv) == 1`` -- is told to run headless instead.
+    A list is joined with spaces; an element containing spaces is quoted.
     """
+    if isinstance(script_args, list):
+        rendered = " ".join(
+            f'"{arg}"' if " " in arg else arg for arg in script_args if arg
+        )
+    else:
+        rendered = (script_args or "").strip()
     handle = tempfile.NamedTemporaryFile(
         "w", suffix=".ssf", prefix="siril_pyscript_", delete=False
     )
     with handle:
-        handle.write(f'requires 1.3.4\npyscript "{pyscript}"\n')
+        line = f'requires 1.3.4\npyscript "{pyscript}"'
+        if rendered:
+            line += f" {rendered}"
+        handle.write(line + "\n")
     return Path(handle.name)
 
 
@@ -293,21 +314,33 @@ def _find_outputs(work_dir: Path) -> list[str]:
     stack as ``result_<LIVETIME>s.fit`` at the root, while ``process/result.fit``
     is the intermediate it was made from -- and preview generation renders the
     first entry, so ordering here decides what an agent actually sees.
+
+    Any ``.fit(s)`` at the root counts, not only ``result_*``: other scripts
+    name their deliverable differently (``GPS_Preprocess.py`` writes
+    ``<object>_b...-f...-<LIVETIME>s.fit``), and a root-level stack is never an
+    intermediate -- masters live in ``masters/`` and calibrated/registered
+    frames in ``process/``.
     """
     found: list[str] = []
+
+    def add(match: str) -> None:
+        if os.path.isfile(match) and os.path.getsize(match) > 0:
+            rel = str(Path(match).relative_to(work_dir))
+            if rel not in found:
+                found.append(rel)
+
     # The deliverable first: root result_*.fit (result_400s.fit, ...).
     for match in sorted(glob.glob(str(work_dir / "result_*.fit"))):
-        if os.path.isfile(match) and os.path.getsize(match) > 0:
-            found.append(str(Path(match).relative_to(work_dir)))
+        add(match)
+    # Then every other stack a script left at the root (GPS_Preprocess.py, ...).
+    for pattern in ("*.fit", "*.fits"):
+        for match in sorted(glob.glob(str(work_dir / pattern))):
+            add(match)
     for base in (work_dir, work_dir / "process"):
         if not base.exists():
             continue
         for name in EXPECTED_OUTPUTS:
-            candidate = base / name
-            if candidate.is_file() and candidate.stat().st_size > 0:
-                rel = str(candidate.relative_to(work_dir))
-                if rel not in found:
-                    found.append(rel)
+            add(str(base / name))
     return found
 
 
@@ -374,7 +407,11 @@ def _pipeline_stages(work_dir: Path) -> dict:
     return {
         "converted_lights": count("light_*.fit"),
         "calibrated_pp_lights": count("pp_light_*.fit"),
-        "registered_r_pp_lights": count("r_pp_light_*.fit"),
+        # GPS_Preprocess.py with -bg registers the background-extracted
+        # sequence instead, so the plain r_pp_light_* name never appears on
+        # that path -- without this a successful run would read as 0 registered.
+        "registered_r_pp_lights": count("r_pp_light_*.fit")
+        + count("r_bkg_pp_light_*.fit"),
         "masters_present": masters.is_dir() and any(masters.glob("*.fit")),
         # All-zero counts mean two different things: never ran, or ran and was
         # cleaned by clean_working_directory. A result on disk separates them,
@@ -804,6 +841,7 @@ def run_osc_preprocessing(
     timeout: int = 3600,
     min_stars: int = 0,
     min_pairs: int = 0,
+    script_args: str | list[str] | None = None,
 ) -> list[str]:
     """Run a Siril script headlessly via siril-cli and preview the result.
 
@@ -817,6 +855,15 @@ def run_osc_preprocessing(
     -- but fewer registered frames means a shallower stack, so read
     ``pipeline_stages`` in the result before trusting a success. Applies to
     .ssf scripts only.
+
+    ``script_args`` are passed to a .py script as its argument vector (a
+    string like "-ps -z 1 -f 20" or a list of tokens). This is how a script
+    that would otherwise open its GUI runs headless: ``GPS_Preprocess.py``
+    launches a Qt dialog when given no arguments, but with e.g.
+    ``script="GPS_Preprocess.py", script_args="-ps -bg -z 1 -f 20"`` it runs
+    its platesolve-mosaic pipeline (seqplatesolve -> seqapplyreg -framing=max
+    -> stack -maximize -feather) from the command line. Applies to .py
+    scripts only; an .ssf takes no arguments.
 
     Returns the structured result as JSON text, followed by the preview PNG's
     path whenever there is an output to review. The image itself stays on disk
@@ -916,10 +963,27 @@ def run_osc_preprocessing(
             siril_cli,
             timeout,
         )
+    if script_args and Path(resolved).suffix != ".py":
+        # siril-cli's -s takes no script arguments, so an .ssf cannot receive
+        # them -- reported rather than dropped, so the caller does not believe
+        # a configured pipeline ran.
+        return _finish(
+            {
+                "status": "error",
+                "message": (
+                    "script_args applies to .py scripts; siril-cli passes no "
+                    "arguments to an .ssf."
+                ),
+            },
+            work_dir,
+            outputs,
+            siril_cli,
+            timeout,
+        )
     if Path(resolved).suffix == ".py":
         # -s parses a .py as Siril commands and runs nothing at all, still
         # reporting success; the wrapper is what actually invokes it.
-        temporaries.append(_write_pyscript_wrapper(resolved))
+        temporaries.append(_write_pyscript_wrapper(resolved, script_args))
     elif min_pairs > 0:
         amended = _with_min_pairs(resolved, min_pairs)
         if amended is None:
