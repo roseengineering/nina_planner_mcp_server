@@ -35,6 +35,9 @@ SIRIL_CLI_CANDIDATES = (
     "/Applications/Siril.app/Contents/MacOS/siril-cli",
     "/usr/local/bin/siril-cli",
     "/opt/homebrew/bin/siril-cli",
+    # Windows default install location; harmless on other platforms since
+    # is_file() simply returns False for it there.
+    r"C:\Program Files\Siril\bin\siril-cli.exe",
 )
 
 # Substrings that mark a failed batch run, used as a secondary signal alongside
