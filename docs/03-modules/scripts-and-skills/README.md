@@ -24,7 +24,6 @@ flowchart TD
     subgraph SkillsDir[".agents/skills/ (Agent Skill Definitions & Utilities)"]
         S_COND["site-conditions/SKILL.md"]
         FETCH_PY["site-conditions/fetch_conditions.py\n(817 lines)"]
-        S_RUN["run-nina-tools/SKILL.md"]
         S_ARCH["archive-lifecycle/SKILL.md"]
         S_LOOP["night-loop/SKILL.md"]
         S_SAFE["safety-interrupt-recovery/SKILL.md"]
@@ -58,8 +57,7 @@ flowchart TD
     S_COND -->|"instructs agent to run"| FETCH_PY
     FETCH_PY -->|"GET ?view=current|midnight|midday"| CLEAR_OUT
 
-    S_RUN -->|"resolves .venv -> uv run -> PATH"| CLI_TOOLS
-    S_ARCH -->|"orchestrates via run-nina-tools"| CLI_TOOLS
+    S_ARCH -->|"runs via uv run --project"| CLI_TOOLS
     S_LOOP -->|"orchestrates"| MCP
     S_SAFE -->|"orchestrates"| MCP
     S_QUAL -->|"orchestrates"| MCP
@@ -125,8 +123,7 @@ The Observatory Controller agent (`.opencode/rules/AGENTS.md`) loads task-specif
 | Skill ID | File Path | Companion Script / Tools Used | Architectural Role |
 |---|---|---|---|
 | `site-conditions` | `.agents/skills/site-conditions/SKILL.md` | `.agents/skills/site-conditions/fetch_conditions.py`, `get_site_profile`, `get_site_equipment_status`, `sun_times`, `moon_times` | Fetches and parses the 7-day hourly forecast from `clearoutside.com` (cloud cover, wind, precip probability, temperature, dew point, dew-point spread, frost flag, Bortle/SQM, astro-dark window). **Advisory only** — never overrides `safety_monitor.is_safe`. |
-| `run-nina-tools` | `.agents/skills/run-nina-tools/SKILL.md` | `nina-archive`, `nina-purge`, `nina-pin-id`, `nina-planner`, `get_nina_settings`, `get_nina_status` | Resolves CLI binaries that are not installed on global `PATH` using a strict 4-branch precedence chain: (1) `.opencode/local/mcps/nina_planner/.venv/bin/<tool>`, (2) `uv run --project .opencode/local/mcps/nina_planner <tool>`, (3) `<tool>` on `PATH` (with version warning), (4) stop. Passes `NINA_ENDPOINT` and `NINA_DRIVE_MOUNT` from `get_nina_settings()`. |
-| `archive-lifecycle` | `.agents/skills/archive-lifecycle/SKILL.md` | `get_nina_settings`, `nina-archive`, `NINA_UPLOAD_CMD`, `NINA_VERIFY_CMD`, `nina-purge` | Human-gated 5-stage workflow: (0) inspect `get_nina_settings()`, (1) dry-run then checksum archive of completed plans via `nina-archive`, (2) user-confirmed cloud upload, (3) upload verification via `NINA_VERIFY_CMD`, (4) two-phase imaging-root cleanup via `nina-purge --apply` (quarantine) and `nina-purge --purge` (delete), (5) local archive folder cleanup preserving `archive-index.jsonl`. |
+| `archive-lifecycle` | `.agents/skills/archive-lifecycle/SKILL.md` | `get_nina_settings`, `nina-archive`, `NINA_UPLOAD_CMD`, `NINA_VERIFY_CMD`, `nina-purge` | Human-gated 5-stage workflow: (0) inspect `get_nina_settings()`, (1) dry-run then checksum archive of completed plans via `nina-archive` (run with `uv run --project .opencode/local/mcps/nina_planner`), (2) user-confirmed cloud upload, (3) upload verification via `NINA_VERIFY_CMD`, (4) two-phase imaging-root cleanup via `nina-purge --apply` (quarantine) and `nina-purge --purge` (delete), (5) local archive folder cleanup preserving `archive-index.jsonl`. |
 | `night-loop` | `.agents/skills/night-loop/SKILL.md` | `target_altitudes`, `best_targets`, `sun_times`, `write_plan_file`, `get_plan_progress`, `load_sequence`, `start_sequence`, `stop_sequence`, `get_sequence_state` | Multi-target scheduling loop triggered by interval checks or `RUN-FINISHED` wakes. Evaluates `PLAN.md` candidates against `above_floor`, sequences single-pointing or pane-by-pane mosaic runs, logs `plan_id` tokens to `PROGRESS.md`, and generates `report_<YYYY-MM-DD>.md` at end-of-night. |
 | `safety-interrupt-recovery` | `.agents/skills/safety-interrupt-recovery/SKILL.md` | `get_nina_status`, `start_nina`, `get_site_equipment_status`, `get_sequence_state`, `get_site_profile`, `load_sequence`, `start_sequence`, `get_events`, `get_logs` | Handles safety interrupts and interval checks: verifies N.I.N.A. liveness, enforces `is_safe=false` and weather gates on sky-dependent steps (while allowing roof-closed `dark`/`bias` runs), and ensures the mount is parked via `load_sequence()` + `start_sequence()` when idle or unsafe. |
 | `frame-quality-diagnostics` | `.agents/skills/frame-quality-diagnostics/SKILL.md` | `get_frame_stats`, `get_events`, `get_logs`, `get_plan_progress`, `audit_plans` | Diagnoses autofocus R² failures (sweep span vs. star count), separates cirrus scatter (high HFR + high σ) from extinction (low HFR + falling stars) and dither/recenter settles, handles `QUALITY-WATCHDOG` wakes, and cross-checks `mode=full` re-shoots via `audit_plans`. |

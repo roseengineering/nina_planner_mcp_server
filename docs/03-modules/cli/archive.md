@@ -17,7 +17,7 @@
 - **CLI Entrypoint:** Invoked as `nina-archive` (`pyproject.toml:60`) or `python -m nina_planner.archive` (`archive.py:1203-1204`).
 - **Internal Python Callers:**
   - `nina_planner/purge.py:96-105` imports `_MANIFEST_NAME`, `ArchiveError`, `_folder_name`, `_human_bytes`, `_inside`, `_looks_like_plan_file`, `_progress_facts`, and `_select_frames`.
-- **Agent Skills:** Invoked by `.agents/skills/archive-lifecycle/` and `.agents/skills/run-nina-tools/`.
+- **Agent Skills:** Invoked by `.agents/skills/archive-lifecycle/` (run via `uv run --project .opencode/local/mcps/nina_planner`).
 - **Automated Test Suite:** `.opencode/local/mcps/nina_planner/tests/test_archive.py` (1,932 lines, 11 test classes).
 
 ### 1.2 Outbound Imports

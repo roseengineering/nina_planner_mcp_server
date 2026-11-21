@@ -15,7 +15,7 @@
 
 ### 1.1 Inbound Callers
 - **CLI Entrypoint:** Invoked as `nina-pin-id` via `pyproject.toml:61` or `python -m nina_planner.pin_id` (`pin_id.py:165-166`).
-- **Agent Skills:** Invoked via `.agents/skills/run-nina-tools/` workflow when pinning a plan before editing.
+- **Agent Skills:** No skill invokes it; run it directly with `uv run --project .opencode/local/mcps/nina_planner nina-pin-id` when pinning a plan before editing.
 - **Automated Test Suite:** `.opencode/local/mcps/nina_planner/tests/test_pin_id.py` (`PinBase`, `PinCliTest`, `PinAcceptanceTest`, lines `1-368`).
 
 ### 1.2 Outbound Imports
