@@ -1025,6 +1025,25 @@ def _quality_warnings(quality: dict | None) -> list[str]:
 
 
 # Siril failure signatures mapped to an explanation plus a suggested fix.
+# Registration saw stars but could not pair enough of them between frames. Siril
+# logs this in two phrasings -- "Not enough star pairs" per image, then "No
+# image was registered to the reference" at the end -- so both are listed.
+# This is the failure mode ImageMetaData.csv cannot predict: Siril counts
+# Gaussian-profile stars on the calibrated frame, which runs 4-6x below NINA's
+# detected_stars taken from the raw one, so 103 can still mean ~19 in Siril.
+_PAIRING_EXPLANATION = (
+    "Registration found stars but could not pair enough of them between frames "
+    "for Global Star Alignment. Siril counts Gaussian-profile stars on the "
+    "calibrated frame, which runs 4-6x below NINA's detected_stars from the "
+    "raw frame, so a healthy-looking star count can still leave Siril starved."
+)
+_PAIRING_FIX = (
+    "Retry with OSC_Preprocessing_BayerDrizzle.ssf, which skips -debayer and "
+    "keeps star centroids precise enough to pair; it recovered m1 and "
+    "ngc-1499. If it still fails the field is genuinely sparse -- re-shoot "
+    "higher in the sky or accept the target."
+)
+
 _DIAGNOSES = (
     (
         "not enough stars in reference image",
@@ -1032,6 +1051,16 @@ _DIAGNOSES = (
         "few detectable stars for Global Star Alignment.",
         "Check lights/ImageMetaData.csv median_detected_stars; re-shoot the "
         "target higher in the sky or with longer exposures.",
+    ),
+    (
+        "no image was registered to the reference",
+        _PAIRING_EXPLANATION,
+        _PAIRING_FIX,
+    ),
+    (
+        "not enough star pairs",
+        _PAIRING_EXPLANATION,
+        _PAIRING_FIX,
     ),
     (
         "does not exist (from CWD",
