@@ -65,7 +65,7 @@ run_osc_preprocessing(
     directory="<mosaic folder>",
     script="GPS_Preprocess.py",
     script_args="-c -ps -bg -z 1 -f 20",
-    timeout=7200,          # plate-solving is per-frame and online; mosaics are slow
+    timeout=7200,          # per-frame solve + drizzle; a 40-frame target ran in 18s with local catalogues, mosaics are much larger
     min_stars=30,
     force=<True if a prior run left a root result_*.fit>,
 )
@@ -121,14 +121,55 @@ alternative but ignores your calibration frames entirely.
 | symptom | cause / fix |
 |---|---|
 | `status: failed`, message `**** ERROR ***` | GPS catches its own exceptions and prints only this marker — the real error is in `log_tail` (e.g. `KeyError: 'FOCALLEN'` means the header lacks focal length; pass `-ps <mm>` to override). |
-| plate solve fails or crawls | `seqplatesolve … -catalog=nomad -nocache` forces **remote** NOMAD, one query per frame — internet required, local Gaia catalogs are *not* used by this script. No network → no mosaic. |
-| `siril-cli timed out` | raise `timeout` (mosaics × online solve × drizzle; 7200+ is normal). |
+| `…unable to retrieve the remote catalogue from tapvizier…` / `did not solve` | `seqplatesolve … -catalog=nomad -nocache` queries **remote** NOMAD per frame when no local catalogue is installed — see §6. Install local catalogues and re-run; solved frames show `Fetched … from Tycho-2+NOMAD catalogue` (local) instead of a VizieR URL. |
+| `siril-cli timed out` | raise `timeout` (mosaics × per-frame solve × drizzle; 7200+ is normal). With local catalogues a 40-frame target solves in seconds. |
 | `script_args applies to .ssf scripts` | you passed args to an `.ssf` — siril-cli's `-s` cannot forward them; only `.py` scripts take `script_args`. |
 | `min_pairs applies to .ssf scripts` | same in reverse; with `-ps` pairing is irrelevant anyway. |
 | `status: skipped` | a root result already exists → pass `force=True` (and keep `-c` to rebuild intermediates). |
 | memory pressure / very slow stack | drizzle + `maximize` holds every pane-sized frame; expected for large grids. Consider processing on the workstation rather than remotely. |
 
-## 6. After it works
+## 6. Install local catalogues once (makes solving offline and fast)
+
+Siril's own error text recommends this, and it is the difference between a
+solve that needs the internet per frame and one that does not. The catalog
+choice happens *inside the solver*: with `-catalog=nomad` (GPS's hardcoded
+flag) Siril redirects to the local KStars catalogue **only if all four
+KStars files are readable** (`local_kstars_available()` checks namedstars,
+unnamedstars, deepstars, USNO-NOMAD — source: `astrometry_solver.c`
+`local catalogues if available`); the automatic/`gaia` path redirects to the
+local Gaia file when *that* exists (`catalogue_gaia_astro`). One file without
+the others changes nothing — verified: with only USNO-NOMAD installed,
+`-catalog=nomad` still went remote.
+
+`Siril_Catalog_Installer.py` is a Qt GUI (opens a dialog, exits 0 without
+one) — install headless by downloading the files yourself (checksummed
+against the published sums) and pointing Siril's config at them:
+
+```bash
+K=~/.local/share/kstars; mkdir -p "$K" && cd "$K"
+B=https://free-astro.org/download/kstars-siril-catalogues
+for f in namedstars.dat unnamedstars.dat deepstars.dat USNO-NOMAD-1e8.dat; do
+  curl -LO "$B/$f.xz" && xz -dk "$f.xz"      # 31KB + 664KB + 27MB + 1GB
+done
+# Gaia DR3 astrometry extract (2.6 GB decompressed) for the automatic path:
+curl -LO https://zenodo.org/records/14692304/files/siril_cat_healpix8_astro.dat.bz2
+bunzip2 -k siril_cat_healpix8_astro.dat.bz2
+```
+
+Verify each file against its published SHA1
+(`free-astro.org/download/kstars-siril-catalogues/sha1sums.txt`; the Zenodo
+`.sha256sum` sits beside the archive), then set the four `catalogue_*` keys in
+`<support>/siril/config.1.4.ini` to those absolute paths (Siril writes the
+same keys itself via `set "core.catalogue_nomad=…"` — edit while Siril is not
+running). Restart nothing; siril-cli reads the config per invocation.
+
+**Proof of effect:** before installing, `seqplatesolve -catalog=nomad`
+returned `unable to retrieve the remote catalogue`; after all four files were
+in place the identical command logged `Fetched 2886 stars from Tycho-2+NOMAD
+catalogue` and solved 38/38 frames with the VizieR endpoint still unreachable
+(`http=000`).
+
+## 7. After it works
 
 - `clean_working_directory(directory=…)` reclaims the multi-GB `process/`
   tree — safe only once the root stack is verified (it refuses a
