@@ -38,7 +38,7 @@ One HTML page, thumbnails, click-through to full resolution. Weakest-first, so
 the marginal targets most worth a human eye sort to the top.
 
 ```bash
-python3 .agents/skills/siril-preview-review/build_gallery.py
+uv run --with pillow python .agents/skills/siril-preview-review/build_gallery.py
 open /private/var/folders/rx/b7znqd3d0ts9gn2lb151n4300000gn/T/opencode/gallery/index.html
 ```
 
@@ -52,8 +52,9 @@ open /private/var/folders/rx/b7znqd3d0ts9gn2lb151n4300000gn/T/opencode/gallery/i
 | `--json` | entry list instead of writing a gallery |
 
 Cost: thumbnails run ~0.7 MB total against 458 MB of originals. Requires
-Pillow — use the `python3` that has `PIL`, not the siril-mcp venv (which does
-not carry it).
+Pillow — run it through `uv run --with pillow python …` (see Caveats: the
+system `/usr/bin/python3` may be as old as 3.9, and the siril-mcp venv does
+not carry PIL).
 
 ### 2. Inspect one — ask me to look at it
 
@@ -82,16 +83,34 @@ Any script or tool that needs the bytes: `<target>/preview.png`, or the
 `preview` field that `check_directory_status` and `list_working_directories`
 already return as an absolute path.
 
+For numeric work on the frames, always run through **uv** — the system
+`/usr/bin/python3` may be as old as 3.9:
+
+- **PNG previews** need Pillow: `uv run --with pillow python …`
+- **uncompressed `result_*.fit`** — readable with a small numpy header/data
+  parser: `uv run --with numpy python …` (no astropy needed for plain 2-D/3-D
+  FITS)
+- **`.fits.fz` raw frames** (fpack-compressed) — a plain parser cannot read
+  them. Prefer unpacking with Siril, which needs no new dependencies:
+  `load "<frame>"` then `save "unpacked.fit"`. Alternatively
+  `uv run --with astropy python …` — astropy is not installed system-wide,
+  and uv's ephemeral `--with` leaves the environment untouched (ask the user
+  before any permanent `pip install`).
+
 ### 5. Compare two results (standard vs BayerDrizzle)
 
 Only `ngc-1907` currently has both — `result_70s.fit` (standard) and
 `result_drizzle_70s.fit`. Read both previews side by side, or compare the
-`.fit` files numerically. Standard remains the default script; drizzle is a
-rescue for sparse fields, and the two measured **0.965 correlation** — close,
-but background differs ~1.5×.
+`.fit` files numerically (how-to in option 4). Standard remains the default
+script; drizzle is a rescue for sparse fields, and the two measured **0.965
+correlation** — close, but background differs ~1.5×.
 
 ## Caveats
 
+- **Run every Python invocation through uv** — `uv run --with <pkg> python …`
+  — rather than bare `python3`: `/usr/bin/python3` may be as old as 3.9.
+  `uv` supplies a current interpreter plus the package in one shot and leaves
+  the system environment alone.
 - **A preview says nothing about a target that never succeeded.** The 23
   without one are the failed and skipped targets; use `list_working_directories()`
   for those, not this skill.
