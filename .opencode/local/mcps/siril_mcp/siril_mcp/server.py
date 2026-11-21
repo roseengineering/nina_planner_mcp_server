@@ -9,6 +9,7 @@ import re
 import shutil
 import statistics
 import subprocess
+import sys
 import tempfile
 from collections import Counter
 from collections.abc import Iterator
@@ -79,11 +80,45 @@ def _find_siril_cli() -> str | None:
 # does NOT apply that search path, so a bare script name has to be resolved to
 # an absolute path here. Read from config rather than hard-coding the list, so
 # a directory the operator adds in Siril's preferences is picked up without a
-# code change.
-SYSTEM_SCRIPTS_DIR = Path(
-    "/Applications/Siril.app/Contents/Resources/share/siril/scripts"
-)
-SIRIL_SUPPORT_DIR = Path.home() / "Library/Application Support/org.siril.Siril"
+# code change. The bundled directory differs per OS (Siril's preferences
+# documents each default), so it is selected at import time.
+if os.name == "nt":
+    # Windows: scripts ship in <install>\scripts, config in %APPDATA% (GLib's
+    # user-config dir). Both install roots and both AppData roots are probed
+    # because portable/32-bit installs and LOCALAPPDATA-only setups exist.
+    _support_candidates = [
+        Path(root) / "org.siril.Siril"
+        for root in (os.environ.get("APPDATA"), os.environ.get("LOCALAPPDATA"))
+        if root
+    ] or [Path.home() / "AppData" / "Roaming" / "org.siril.Siril"]
+    SIRIL_SUPPORT_DIR = next(
+        (path for path in _support_candidates if path.is_dir()),
+        _support_candidates[0],
+    )
+    _install_roots = [
+        Path(root) / "Siril"
+        for root in (
+            os.environ.get("ProgramFiles"),
+            os.environ.get("ProgramFiles(x86)"),
+        )
+        if root
+    ] or [Path(r"C:\Program Files\Siril")]
+    SYSTEM_SCRIPTS_DIRS = tuple(root / "scripts" for root in _install_roots)
+elif sys.platform == "darwin":
+    SYSTEM_SCRIPTS_DIRS = (
+        Path("/Applications/Siril.app/Contents/Resources/share/siril/scripts"),
+    )
+    SIRIL_SUPPORT_DIR = Path.home() / "Library/Application Support/org.siril.Siril"
+else:
+    # GNU/Linux: both documented defaults, since packagers use either.
+    SYSTEM_SCRIPTS_DIRS = (
+        Path("/usr/share/siril/scripts"),
+        Path("/usr/local/share/siril/scripts"),
+    )
+    SIRIL_SUPPORT_DIR = (
+        Path(os.environ.get("XDG_CONFIG_HOME") or Path.home() / ".config")
+        / "org.siril.Siril"
+    )
 # Where Siril caches the scripts cloned by "Get Scripts". These sit outside
 # script_path, so Siril does not enable them by default -- but headless
 # siril-cli runs them fine when given an absolute path.
@@ -135,9 +170,10 @@ def _script_directories() -> list[tuple[Path, str]]:
 
     for directory in _config_script_dirs():
         add(directory, "configured")
-    # Always include the bundled directory so the shipped scripts stay reachable
-    # even when the config is missing or edited to empty it.
-    add(SYSTEM_SCRIPTS_DIR, "configured")
+    # Always include the bundled directory (or directories) so the shipped
+    # scripts stay reachable even when the config is missing or edited empty.
+    for directory in SYSTEM_SCRIPTS_DIRS:
+        add(directory, "configured")
     add(REPOSITORY_SCRIPTS_DIR, "repository")
     return ordered
 
