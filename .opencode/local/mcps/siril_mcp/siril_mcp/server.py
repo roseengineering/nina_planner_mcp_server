@@ -31,6 +31,9 @@ EXPECTED_OUTPUTS = (
 # savepng writes <name>.png for a target of <name>, into the working directory.
 PREVIEW_NAME = "preview"
 
+# Content-aware crop script shipped in Siril's Get Scripts repository cache.
+AUTOCROP_SCRIPT = "Autocrop.py"
+
 # siril-cli locations to try, in order, when SIRIL_CLI is not set.
 SIRIL_CLI_CANDIDATES = (
     "/Applications/Siril.app/Contents/MacOS/siril-cli",
@@ -287,6 +290,187 @@ def _with_min_pairs(script_path: str, min_pairs: int) -> Path | None:
     with handle:
         handle.write("\n".join(amended) + "\n")
     return Path(handle.name)
+
+
+def _output_signatures(
+    work_dir: Path, outputs: list[str]
+) -> dict[str, tuple[int, int]]:
+    """Capture size and mtime for each output before a script runs.
+
+    The snapshot lets the autocrop step identify the file the run actually
+    changed when a force re-run leaves older stacks beside it.
+    """
+    signatures: dict[str, tuple[int, int]] = {}
+    for relative in outputs:
+        try:
+            stat = (work_dir / relative).stat()
+        except OSError:
+            continue
+        signatures[relative] = (stat.st_mtime_ns, stat.st_size)
+    return signatures
+
+
+def _select_autocrop_output(
+    work_dir: Path,
+    outputs: list[str],
+    before: dict[str, tuple[int, int]],
+) -> str | None:
+    """Choose the output the current run created or rewrote.
+
+    ``_find_outputs`` sorts root ``result_*.fit`` files first, which is right
+    for previewing but can select an older root stack after a force run. A
+    changed file wins; when nothing changed (a script that only re-used an
+    existing stack), fall back to the normal first output.
+    """
+    changed = [
+        relative
+        for relative in outputs
+        if _output_signatures(work_dir, [relative]).get(relative)
+        != before.get(relative)
+    ]
+    if changed:
+        return changed[0]
+    return outputs[0] if outputs else None
+
+
+def _write_autocrop_wrapper(source: Path, autocrop_script: str, temp_dir: Path) -> Path:
+    """Write the .ssf that loads ``source`` and runs ``Autocrop.py``.
+
+    The crop script saves beside Siril's current working directory, so the
+    wrapper explicitly changes into a private directory first. That keeps the
+    temporary ``*_autocrop.fit`` out of the archive's output discovery and
+    lets the caller atomically replace the original stack afterwards.
+    """
+    handle = tempfile.NamedTemporaryFile(
+        "w", suffix=".ssf", prefix="siril_autocrop_", delete=False
+    )
+    with handle:
+        handle.write(
+            "requires 1.3.4\n"
+            f'cd "{temp_dir}"\n'
+            f'load "{source}"\n'
+            f'pyscript "{autocrop_script}"\n'
+        )
+    return Path(handle.name)
+
+
+def _autocrop_output(
+    work_dir: Path,
+    output: Path,
+    siril_cli: str,
+    timeout: int,
+) -> dict:
+    """Crop ``output`` with Siril's ``Autocrop.py`` and replace it in place.
+
+    ``pyscript`` blocks by default when called from an .ssf, so the wrapper
+    finishes before this function looks for the crop. The cropped file is
+    moved over the original only after it exists and the command succeeded,
+    leaving the uncropped stack untouched on any failure.
+    """
+    autocrop_script = _resolve_script(AUTOCROP_SCRIPT)
+    if not Path(autocrop_script).is_file():
+        return {
+            "status": "error",
+            "message": (
+                f"{AUTOCROP_SCRIPT} was not found in Siril's script "
+                "directories; set autocrop=False to skip cropping."
+            ),
+        }
+
+    try:
+        temp_dir = Path(tempfile.mkdtemp(prefix=".siril_autocrop_", dir=str(work_dir)))
+    except OSError as exc:
+        return {
+            "status": "error",
+            "message": f"could not create an autocrop workspace: {exc}",
+        }
+
+    wrapper: Path | None = None
+    try:
+        try:
+            wrapper = _write_autocrop_wrapper(output, autocrop_script, temp_dir)
+        except OSError as exc:
+            return {
+                "status": "error",
+                "message": f"could not write the autocrop script: {exc}",
+            }
+
+        try:
+            proc = subprocess.run(
+                [siril_cli, "-d", str(work_dir), "-s", str(wrapper)],
+                capture_output=True,
+                text=True,
+                timeout=timeout,
+                cwd=str(work_dir),
+            )
+        except subprocess.TimeoutExpired:
+            return {
+                "status": "error",
+                "message": f"autocrop timed out after {timeout}s",
+            }
+        except OSError as exc:
+            return {
+                "status": "error",
+                "message": f"failed to launch siril-cli for autocrop: {exc}",
+            }
+
+        combined = (proc.stdout or "") + (proc.stderr or "")
+        candidates = sorted(
+            (
+                path
+                for path in temp_dir.iterdir()
+                if path.is_file()
+                and path.suffix.lower() in {".fit", ".fits", ".fts"}
+                and "_autocrop" in path.stem
+                and path.stat().st_size > 0
+            ),
+            key=lambda path: path.name,
+        )
+        if not candidates:
+            candidates = sorted(
+                (
+                    path
+                    for path in temp_dir.iterdir()
+                    if path.is_file()
+                    and path.suffix.lower() in {".fit", ".fits", ".fts"}
+                    and path.stat().st_size > 0
+                ),
+                key=lambda path: path.name,
+            )
+
+        if proc.returncode != 0 or not candidates:
+            failures = [marker for marker in FAILURE_MARKERS if marker in combined]
+            if failures:
+                message = failures[0]
+            elif proc.returncode != 0:
+                message = f"autocrop exited with status {proc.returncode}"
+            else:
+                message = "Autocrop.py produced no output FITS"
+            return {
+                "status": "error",
+                "message": message,
+                "returncode": proc.returncode,
+                "log_tail": _tail(combined, 10),
+            }
+
+        try:
+            os.replace(candidates[-1], output)
+        except OSError as exc:
+            return {
+                "status": "error",
+                "message": f"could not replace {output} with the cropped stack: {exc}",
+                "log_tail": _tail(combined, 10),
+            }
+
+        return {
+            "status": "ok",
+            "output": str(output),
+            "script": autocrop_script,
+        }
+    finally:
+        if wrapper is not None:
+            wrapper.unlink(missing_ok=True)
+        shutil.rmtree(temp_dir, ignore_errors=True)
 
 
 def _first_failure_line(output: str) -> str | None:
@@ -842,6 +1026,7 @@ def run_osc_preprocessing(
     min_stars: int = 0,
     min_pairs: int = 0,
     script_args: str | list[str] | None = None,
+    autocrop: bool = True,
 ) -> list[str]:
     """Run a Siril script headlessly via siril-cli and preview the result.
 
@@ -864,6 +1049,13 @@ def run_osc_preprocessing(
     its platesolve-mosaic pipeline (seqplatesolve -> seqapplyreg -framing=max
     -> stack -maximize -feather) from the command line. Applies to .py
     scripts only; an .ssf takes no arguments.
+
+    After a successful run, the final output is passed through Siril's
+    content-aware ``Autocrop.py`` and replaced with the cropped stack, so
+    ``result_*.fit`` no longer contains stacked border artifacts. The
+    uncropped intermediate under ``process/`` is left alone. Set
+    ``autocrop=False`` only when that script is unavailable or the original
+    dimensions must be preserved.
 
     Returns the structured result as JSON text, followed by the preview PNG's
     path whenever there is an output to review. The image itself stays on disk
@@ -1004,6 +1196,7 @@ def run_osc_preprocessing(
             )
         temporaries.append(amended)
     target = str(temporaries[0]) if temporaries else resolved
+    before_outputs = _output_signatures(work_dir, outputs)
     cmd = [siril_cli, "-d", str(work_dir), "-s", target]
     try:
         proc = subprocess.run(
@@ -1068,6 +1261,54 @@ def run_osc_preprocessing(
             result["diagnosis"] = diagnosis
         return _finish(result, work_dir, outputs, siril_cli, timeout)
 
+    # Crop only the file this run changed, then replace it in place. Doing it
+    # before _finish means preview.png shows the same cropped image the caller
+    # will find in result_*.fit. The selected path is also the preview source,
+    # so a GPS-named stack is not hidden behind an older root result.
+    preview_output = (
+        _select_autocrop_output(work_dir, outputs, before_outputs) if outputs else None
+    )
+    if not outputs:
+        autocrop_result: dict = {
+            "status": "skipped",
+            "reason": "no output to crop",
+        }
+    elif not autocrop:
+        autocrop_result = {"status": "skipped", "reason": "autocrop=False"}
+    elif preview_output is None:
+        autocrop_result = {
+            "status": "skipped",
+            "reason": "no output to crop",
+        }
+    else:
+        autocrop_result = _autocrop_output(
+            work_dir,
+            work_dir / preview_output,
+            siril_cli,
+            timeout,
+        )
+        if autocrop_result.get("status") != "ok":
+            return _finish(
+                {
+                    "status": "failed",
+                    "stage": "autocrop",
+                    "message": autocrop_result.get("message", "autocrop failed"),
+                    "returncode": autocrop_result.get("returncode"),
+                    "log_tail": autocrop_result.get("log_tail", _tail(output)),
+                    "autocrop": autocrop_result,
+                    "visible_outputs": outputs,
+                    "pipeline_stages": _pipeline_stages(work_dir),
+                    "light_quality": quality,
+                    "warnings": warnings,
+                },
+                work_dir,
+                outputs,
+                siril_cli,
+                timeout,
+                preview_output,
+            )
+        outputs = _find_outputs(work_dir)
+
     return _finish(
         {
             "status": "succeeded" if outputs else "completed_without_expected_output",
@@ -1076,6 +1317,7 @@ def run_osc_preprocessing(
             "returncode": proc.returncode,
             "log_tail": _tail(output),
             "visible_outputs": outputs,
+            "autocrop": autocrop_result,
             # The docstring tells the caller to read this before trusting a
             # success: m81 reports succeeded on 6 of 100 registered frames.
             "pipeline_stages": _pipeline_stages(work_dir),
@@ -1086,6 +1328,7 @@ def run_osc_preprocessing(
         outputs,
         siril_cli,
         timeout,
+        preview_output,
     )
 
 
@@ -1341,17 +1584,21 @@ def _finish(
     outputs: list[str],
     siril_cli: str | None,
     timeout: int,
+    preview_output: str | None = None,
 ) -> list[str]:
     """Render the preview when there is an image, then shape the tool reply.
 
     The reply is the structured result as JSON text followed by the preview
     PNG's path. The image itself is never shipped back — the agent reads the
-    file when it wants to look.
+    file when it wants to look. ``preview_output`` names the output the run
+    actually changed when it is not the first entry in ``outputs`` (a GPS
+    stack beside an older ``result_*.fit``).
     """
     extras: list[str] = []
     if siril_cli and outputs:
+        source_relative = preview_output if preview_output in outputs else outputs[0]
         path, error = _render_preview(
-            work_dir, work_dir / outputs[0], siril_cli, timeout
+            work_dir, work_dir / source_relative, siril_cli, timeout
         )
         if path:
             result["preview"] = path
