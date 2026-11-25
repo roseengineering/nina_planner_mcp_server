@@ -1,8 +1,0 @@
-# Virtual environments and packaging artifacts
-.venv/
-*.egg-info/
-__pycache__/
-
-# Tool caches
-.mypy_cache/
-.ruff_cache/
