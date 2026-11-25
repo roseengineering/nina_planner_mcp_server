@@ -11,6 +11,7 @@ import statistics
 import subprocess
 import sys
 import tempfile
+from array import array
 from collections import Counter
 from collections.abc import Iterator
 from pathlib import Path
@@ -30,6 +31,24 @@ EXPECTED_OUTPUTS = (
 
 # savepng writes <name>.png for a target of <name>, into the working directory.
 PREVIEW_NAME = "preview"
+
+# Gate for the autocrop step. Autocrop.py was written for ``framing=max``
+# stacks, whose registration leaves empty borders: it thresholds an
+# autostretched copy at its 95th percentile, so on an ordinary stack with a
+# dark sky background it instead crops to the brightest object's largest
+# inscribed rectangle -- measured on M42, 1080x1920 -> 279x301 (4% of the area
+# kept) with 0.00% zero-valued pixels, i.e. no border at all. The decision is
+# therefore taken from the data rather than from the script's name.
+#
+# A stack is only worth cropping when this share of its pixels carries no
+# signal whatsoever: that is the signature of a rotation/framing=max border.
+# Normal sky background, however dark, sits well above it.
+EMPTY_BORDER_MIN_FRACTION = 0.01
+
+# Backstop for a crop that the pre-check allowed but that still throws most of
+# the image away. Refused rather than applied, so an unexpected stack cannot
+# silently lose its field the way M42 did.
+MIN_CROP_KEEP_FRACTION = 0.25
 
 # Content-aware crop script shipped in Siril's Get Scripts repository cache.
 AUTOCROP_SCRIPT = "Autocrop.py"
@@ -254,14 +273,25 @@ def _write_pyscript_wrapper(
     return Path(handle.name)
 
 
-def _with_min_pairs(script_path: str, min_pairs: int) -> Path | None:
-    """Copy ``script_path`` with ``-minpairs=`` added to its register command.
+def _with_register_options(
+    script_path: str,
+    min_pairs: int = 0,
+    framing: str | None = None,
+) -> Path | None:
+    """Copy ``script_path`` with registration options applied to its register step.
 
-    siril-cli exposes no flag for it -- the knob lives inside the .ssf -- so
-    honouring the argument means amending the script. Returns ``None`` when
-    there is no register command to amend, which the caller reports rather
-    than silently dropping the request.
+    siril-cli exposes neither knob as a flag, so honouring them means amending
+    the script. ``-minpairs=`` is appended to the existing ``register`` command.
+    Siril's ``-framing=`` lives on ``seqapplyreg``, not on ``register`` --
+    ``register`` rejects it with "Unknown parameter" -- so framing needs a line
+    of its own inserted directly after the register step, re-applying the
+    just-computed transforms with the requested framing.
+
+    Returns ``None`` when nothing could be amended, which the caller reports
+    rather than silently dropping the request.
     """
+    if min_pairs <= 0 and not framing:
+        return None
     try:
         lines = (
             Path(script_path).read_text(encoding="utf-8", errors="replace").splitlines()
@@ -273,19 +303,26 @@ def _with_min_pairs(script_path: str, min_pairs: int) -> Path | None:
     for line in lines:
         stripped = line.strip()
         if stripped.startswith("register "):
-            # Replace any existing -minpairs= so an explicit argument wins
-            # rather than colliding with the script's own value.
-            stripped = re.sub(r"-minpairs=\d+", f"-minpairs={min_pairs}", stripped)
-            if f"-minpairs={min_pairs}" not in stripped:
-                stripped = f"{stripped} -minpairs={min_pairs}"
+            if min_pairs > 0:
+                # Replace any existing -minpairs= so an explicit argument wins
+                # rather than colliding with the script's own value.
+                stripped = re.sub(r"-minpairs=\d+", f"-minpairs={min_pairs}", stripped)
+                if f"-minpairs={min_pairs}" not in stripped:
+                    stripped = f"{stripped} -minpairs={min_pairs}"
+                changed = True
             amended.append(stripped)
-            changed = True
-        else:
-            amended.append(line)
+            if framing:
+                parts = stripped.split()
+                if len(parts) < 2:
+                    return None
+                amended.append(f"seqapplyreg {parts[1]} -framing={framing}")
+                changed = True
+            continue
+        amended.append(line)
     if not changed:
         return None
     handle = tempfile.NamedTemporaryFile(
-        "w", suffix=".ssf", prefix="siril_minpairs_", delete=False
+        "w", suffix=".ssf", prefix="siril_register_", delete=False
     )
     with handle:
         handle.write("\n".join(amended) + "\n")
@@ -352,6 +389,129 @@ def _write_autocrop_wrapper(source: Path, autocrop_script: str, temp_dir: Path) 
             f'pyscript "{autocrop_script}"\n'
         )
     return Path(handle.name)
+
+
+def _fits_header(path: Path) -> tuple[dict[str, str], int] | None:
+    """Read a FITS header's simple cards, returning ``(header, data offset)``.
+
+    Only the ``KEYWORD = value`` form is parsed, which covers every field the
+    autocrop gate needs (``BITPIX``, ``NAXIS*``); values are taken before the
+    first ``/`` so trailing comments never leak into them. Returns ``None``
+    for anything that does not look like a FITS file, which callers must
+    treat as "cannot tell" rather than as "no border".
+    """
+    header: dict[str, str] = {}
+    offset = 0
+    try:
+        with path.open("rb") as handle:
+            while True:
+                block = handle.read(2880)
+                if len(block) < 2880:
+                    return None
+                offset += 2880
+                for start in range(0, 2880, 80):
+                    card = block[start : start + 80].decode("ascii", errors="replace")
+                    key = card[:8].strip()
+                    if key == "END":
+                        return header, offset
+                    if key and "=" in card:
+                        header[key] = card[10:].split("/", 1)[0].strip()
+                if offset > 1_000_000:
+                    return None
+    except OSError:
+        return None
+
+
+def _fits_shape(header: dict[str, str]) -> tuple[int, ...] | None:
+    """Axis lengths from a parsed header, or ``None`` when incomplete."""
+    try:
+        naxis = int(header["NAXIS"])
+        return tuple(int(header[f"NAXIS{axis}"]) for axis in range(1, naxis + 1))
+    except (KeyError, ValueError):
+        return None
+
+
+def _empty_fraction(path: Path, sample_stride: int = 8) -> float | None:
+    """Share of pixels carrying no signal -- the signature of an empty border.
+
+    Samples every ``sample_stride``-th value of an uncompressed FITS so a
+    6 M-pixel stack costs well under a second in the standard library: the
+    server deliberately keeps numpy and astropy out of its dependencies.
+    The threshold is half the sampled median, i.e. below any plausible sky
+    background, so rotation wedges and framing=max borders are counted while
+    ordinary dark background is not.
+
+    Returns ``None`` when the file is not a plain uncompressed FITS -- a
+    caller must then crop as before rather than assume there is no border.
+    """
+    parsed = _fits_header(path)
+    if parsed is None:
+        return None
+    header, data_offset = parsed
+    shape = _fits_shape(header)
+    if not shape:
+        return None
+
+    # BITPIX selects both the dtype and how the bytes are laid out on disk.
+    types = {-32: ("f", 4), 32: ("i", 4), -64: ("d", 8), 16: ("h", 2), 8: ("B", 1)}
+    try:
+        kind, width = types[int(header["BITPIX"])]
+        total = 1
+        for length in shape:
+            total *= length
+    except (KeyError, ValueError):
+        return None
+    if total <= 0:
+        return None
+
+    try:
+        with path.open("rb") as handle:
+            handle.seek(data_offset)
+            raw = handle.read(width * total)
+    except OSError:
+        return None
+    if len(raw) < width * total:
+        return None
+
+    values = array(kind)
+    values.frombytes(raw)
+    if sys.byteorder == "little":
+        # FITS stores numbers big-endian.
+        values.byteswap()
+
+    sample = values[::sample_stride] or values
+    if not sample:
+        return None
+    median = sorted(sample)[len(sample) // 2]
+    if median <= 0:
+        # An all-black frame: nothing to crop either way.
+        return 0.0
+    threshold = median / 2
+    return sum(1 for value in sample if value < threshold) / len(sample)
+
+
+def _crop_keep_fraction(before: Path, after: Path) -> float | None:
+    """Fraction of the field a crop kept, from the two files' headers."""
+    first = _fits_header(before)
+    second = _fits_header(after)
+    if first is None or second is None:
+        return None
+    shape_before = _fits_shape(first[0])
+    shape_after = _fits_shape(second[0])
+    if (
+        not shape_before
+        or not shape_after
+        or len(shape_before) < 2
+        or len(shape_after) < 2
+    ):
+        return None
+    # FITS axis order, not numpy's: NAXIS1 is the width and NAXIS2 the height,
+    # with any channel axis last. (astropy hands back the reverse.)
+    area_before = shape_before[0] * shape_before[1]
+    area_after = shape_after[0] * shape_after[1]
+    if area_before <= 0:
+        return None
+    return area_after / area_before
 
 
 def _autocrop_output(
@@ -451,6 +611,24 @@ def _autocrop_output(
                 "message": message,
                 "returncode": proc.returncode,
                 "log_tail": _tail(combined, 10),
+            }
+
+        # Refuse a crop that would discard most of the field: Autocrop.py's
+        # threshold keys on the brightest content, so on a stack with no empty
+        # border it returns a rectangle around the subject rather than a
+        # border. Returning "skipped" (not "error") leaves the original stack
+        # in place and lets the run finish normally.
+        keep = _crop_keep_fraction(output, candidates[-1])
+        if keep is not None and keep < MIN_CROP_KEEP_FRACTION:
+            return {
+                "status": "skipped",
+                "reason": (
+                    f"crop would keep only {keep:.1%} of the field "
+                    f"(minimum {MIN_CROP_KEEP_FRACTION:.0%}); "
+                    "there is no empty border to remove"
+                ),
+                "keep_fraction": round(keep, 4),
+                "output": str(output),
             }
 
         try:
@@ -1027,6 +1205,7 @@ def run_osc_preprocessing(
     min_pairs: int = 0,
     script_args: str | list[str] | None = None,
     autocrop: bool = True,
+    framing: Literal["current", "min", "max", "cog"] | None = None,
 ) -> list[str]:
     """Run a Siril script headlessly via siril-cli and preview the result.
 
@@ -1040,6 +1219,16 @@ def run_osc_preprocessing(
     -- but fewer registered frames means a shallower stack, so read
     ``pipeline_stages`` in the result before trusting a success. Applies to
     .ssf scripts only.
+
+    ``framing`` re-applies registration with one of Siril's framing options,
+    which is the mechanism behind removing field rotation: ``min`` keeps only
+    the area every frame has in common (drops the under-integrated corners an
+    alt-az session produces), ``max`` expands to the bounding box of all frames
+    (leaving empty wedges for the autocrop step to remove), ``current`` keeps
+    the reference framing and ``cog`` centres on the centre of gravity. Off by
+    default because it changes the size of the deliverable -- measured on M42,
+    ``min`` cost 14% of the field for no gain, since that stack had no
+    partial coverage. Applies to .ssf scripts only.
 
     ``script_args`` are passed to a .py script as its argument vector (a
     string like "-ps -z 1 -f 20" or a list of tokens). This is how a script
@@ -1056,6 +1245,13 @@ def run_osc_preprocessing(
     uncropped intermediate under ``process/`` is left alone. Set
     ``autocrop=False`` only when that script is unavailable or the original
     dimensions must be preserved.
+
+    Cropping is skipped, with the stack left intact, when the data shows
+    there is no empty border to remove (under 1% of pixels carrying no
+    signal) or when the crop would keep less than a quarter of the field --
+    ``Autocrop.py``'s threshold keys on the brightest content, so on a normal
+    stack it otherwise trims to the subject rather than to a border. Both are
+    reported in ``autocrop.reason``.
 
     Returns the structured result as JSON text, followed by the preview PNG's
     path whenever there is an output to review. The image itself stays on disk
@@ -1144,11 +1340,19 @@ def run_osc_preprocessing(
     resolved = _resolve_script(script)
     # Temporary scripts this run needs, all removed in the finally below.
     temporaries: list[Path] = []
-    if min_pairs > 0 and Path(resolved).suffix == ".py":
+    if (min_pairs > 0 or framing) and Path(resolved).suffix == ".py":
+        knobs = ", ".join(
+            name
+            for name, requested in (
+                ("min_pairs", min_pairs > 0),
+                ("framing", bool(framing)),
+            )
+            if requested
+        )
         return _finish(
             {
                 "status": "error",
-                "message": "min_pairs applies to .ssf scripts; a .py cannot be amended.",
+                "message": f"{knobs} applies to .ssf scripts; a .py cannot be amended.",
             },
             work_dir,
             outputs,
@@ -1176,16 +1380,25 @@ def run_osc_preprocessing(
         # -s parses a .py as Siril commands and runs nothing at all, still
         # reporting success; the wrapper is what actually invokes it.
         temporaries.append(_write_pyscript_wrapper(resolved, script_args))
-    elif min_pairs > 0:
-        amended = _with_min_pairs(resolved, min_pairs)
+    elif min_pairs > 0 or framing:
+        amended = _with_register_options(resolved, min_pairs, framing)
         if amended is None:
             # Reported rather than ignored: silently dropping the argument
-            # would leave the caller believing a looser floor was applied.
+            # would leave the caller believing a looser floor, or a different
+            # framing, was applied.
+            requested = ", ".join(
+                part
+                for part in (
+                    f"min_pairs={min_pairs}" if min_pairs > 0 else "",
+                    f"framing={framing}" if framing else "",
+                )
+                if part
+            )
             return _finish(
                 {
                     "status": "error",
                     "message": (
-                        f"min_pairs={min_pairs} was requested but {resolved} "
+                        f"{requested} was requested but {resolved} "
                         "has no register command to amend."
                     ),
                 },
@@ -1281,33 +1494,51 @@ def run_osc_preprocessing(
             "reason": "no output to crop",
         }
     else:
-        autocrop_result = _autocrop_output(
-            work_dir,
-            work_dir / preview_output,
-            siril_cli,
-            timeout,
-        )
-        if autocrop_result.get("status") != "ok":
-            return _finish(
-                {
-                    "status": "failed",
-                    "stage": "autocrop",
-                    "message": autocrop_result.get("message", "autocrop failed"),
-                    "returncode": autocrop_result.get("returncode"),
-                    "log_tail": autocrop_result.get("log_tail", _tail(output)),
-                    "autocrop": autocrop_result,
-                    "visible_outputs": outputs,
-                    "pipeline_stages": _pipeline_stages(work_dir),
-                    "light_quality": quality,
-                    "warnings": warnings,
-                },
+        # Gate the crop on the data: a stack with no empty border has nothing
+        # for Autocrop.py to remove, and running it anyway trims to the
+        # brightest subject instead (see EMPTY_BORDER_MIN_FRACTION).
+        empty = _empty_fraction(work_dir / preview_output)
+        if empty is not None and empty < EMPTY_BORDER_MIN_FRACTION:
+            autocrop_result = {
+                "status": "skipped",
+                "reason": (
+                    f"no empty border to remove ({empty:.2%} of pixels carry "
+                    f"no signal; {EMPTY_BORDER_MIN_FRACTION:.0%} required)"
+                ),
+                "empty_fraction": round(empty, 5),
+            }
+        else:
+            autocrop_result = _autocrop_output(
                 work_dir,
-                outputs,
+                work_dir / preview_output,
                 siril_cli,
                 timeout,
-                preview_output,
             )
-        outputs = _find_outputs(work_dir)
+            # "skipped" is the backstop declining a runaway crop -- the stack
+            # stays as it is and the run still succeeds. Only a real error
+            # fails the run.
+            if autocrop_result.get("status") == "error":
+                return _finish(
+                    {
+                        "status": "failed",
+                        "stage": "autocrop",
+                        "message": autocrop_result.get("message", "autocrop failed"),
+                        "returncode": autocrop_result.get("returncode"),
+                        "log_tail": autocrop_result.get("log_tail", _tail(output)),
+                        "autocrop": autocrop_result,
+                        "visible_outputs": outputs,
+                        "pipeline_stages": _pipeline_stages(work_dir),
+                        "light_quality": quality,
+                        "warnings": warnings,
+                    },
+                    work_dir,
+                    outputs,
+                    siril_cli,
+                    timeout,
+                    preview_output,
+                )
+        if autocrop_result.get("status") == "ok":
+            outputs = _find_outputs(work_dir)
 
     return _finish(
         {
@@ -1386,6 +1617,267 @@ def render_preview(directory: str, fits_file: str | None = None) -> dict:
         "preview": path,
         "source": str(source),
         "state": _processing_state(work_dir),
+    }
+
+
+# Siril's own GraXpert interface, shipped in the Get Scripts repository cache.
+# It needs an image already loaded -- bare, it fails with "No image or sequence
+# loaded" -- and it writes nothing: apply_blend() pushes the denoised pixels
+# back into Siril's current image, so the wrapper has to save them itself.
+GRAXPERT_SCRIPT = "GraXpert-AI.py"
+
+
+# Output name for a denoised sibling stack: result_70s.fit ->
+# result_denoised_70s.fit, result.fit -> result_denoised.fit. Anything else
+# keeps its own name with a suffix, so an oddly named deliverable still lands
+# somewhere obvious beside its source.
+def _denoised_name(source: Path) -> str:
+    stem = source.stem
+    if stem == "result":
+        new_stem = "result_denoised"
+    elif stem.startswith("result_"):
+        new_stem = "result_denoised_" + stem[len("result_") :]
+    else:
+        new_stem = f"{stem}_denoised"
+    return new_stem + (source.suffix or ".fit")
+
+
+def _graxpert_denoise_models() -> list[Path]:
+    """Locate every ``model.onnx`` under GraXpert's model directories.
+
+    The directory layout is appdirs' ``user_data_dir(appname="GraXpert")``,
+    which differs per platform; the script reads the same location, so this
+    only exists to fail with a clear message before Siril is launched rather
+    than with the script's own "No models found" buried in a log tail.
+    """
+    home = Path.home()
+    candidates = [
+        home / "Library" / "Application Support" / "GraXpert" / "denoise-ai-models",
+        home / ".local" / "share" / "GraXpert" / "denoise-ai-models",
+    ]
+    appdata = os.environ.get("APPDATA")
+    if appdata:
+        candidates.append(Path(appdata) / "GraXpert" / "denoise-ai-models")
+
+    models: list[Path] = []
+    for directory in candidates:
+        if directory.is_dir():
+            models.extend(sorted(directory.glob("*/model.onnx")))
+    return models
+
+
+@mcp.tool()
+def denoise_stack(
+    directory: str,
+    fits_file: str | None = None,
+    strength: float = 0.5,
+    gpu: bool = True,
+    force: bool = False,
+    timeout: int = 3600,
+) -> dict:
+    """Denoise a stacked FITS with GraXpert AI, writing a sibling file.
+
+    Runs Siril's ``GraXpert-AI.py -denoise`` through a generated wrapper that
+    does ``load`` -> ``pyscript`` -> ``save``, because the script needs an
+    image already loaded and never writes one itself. The original stack is
+    never touched: ``result_70s.fit`` becomes ``result_denoised_70s.fit``.
+
+    ``fits_file`` resolves against the working directory and defaults to the
+    first output, i.e. the final root stack. ``strength`` blends denoised with
+    original (0.5 matches both the script default and GraXpert's stored
+    preference). ``gpu=False`` forces CPU inference with ``-nogpu`` -- needed
+    on a host whose GPU cannot compile the model, where the GPU attempt fails
+    with an ONNX Runtime ``model.mil`` error before falling back.
+
+    Denoising is linear-in, linear-out; pair the result with
+    ``render_preview(fits_file=...)`` to see it stretched. Requires the model
+    to be downloaded first -- checked here so a missing model reads as one
+    message rather than a Siril log tail.
+    """
+    root, root_error = _archive_root(None)
+    candidate = Path(directory).expanduser()
+    if root is None and not candidate.is_absolute():
+        return {"status": "error", "message": root_error}
+    work_dir = _resolve_working_directory(directory, root)
+    if work_dir is None:
+        return {"status": "error", "message": f"Directory does not exist: {directory}"}
+    if not _is_working_directory(work_dir):
+        return {"status": "error", "message": f"Not a working directory: {directory}"}
+
+    siril_cli = _find_siril_cli()
+    if not siril_cli:
+        return {
+            "status": "error",
+            "message": "siril-cli not found. Set SIRIL_CLI to its full path.",
+        }
+
+    quality = _read_light_quality(work_dir)
+    warnings = _quality_warnings(quality)
+
+    outputs = _find_outputs(work_dir)
+    if fits_file is None:
+        if not outputs:
+            return {
+                "status": "error",
+                "message": (
+                    "No stack to denoise; pass fits_file= explicitly, and run "
+                    "run_osc_preprocessing first if the target is unprocessed."
+                ),
+            }
+        source = work_dir / outputs[0]
+    else:
+        asked = Path(fits_file).expanduser()
+        source = asked if asked.is_absolute() else work_dir / asked
+        if not source.is_file():
+            return {"status": "error", "message": f"FITS file not found: {fits_file}"}
+
+    output = work_dir / _denoised_name(source)
+    if output.is_file() and not force:
+        return {
+            "status": "skipped",
+            "message": "Already denoised. Pass force=True to re-run.",
+            "directory": str(work_dir),
+            "input": str(source),
+            "output": str(output),
+            "light_quality": quality,
+            "warnings": warnings,
+        }
+
+    models = _graxpert_denoise_models()
+    if not models:
+        return {
+            "status": "error",
+            "message": (
+                "GraXpert denoise model not downloaded. Download it once from "
+                "GraXpert or from Siril's GraXpert-AI.py Model Manager, which "
+                "populate the denoise-ai-models directory this script reads."
+            ),
+        }
+
+    graxpert_script = _resolve_script(GRAXPERT_SCRIPT)
+    if not Path(graxpert_script).is_file():
+        return {
+            "status": "error",
+            "message": (f"{GRAXPERT_SCRIPT} not found in Siril's script directories."),
+        }
+
+    # save appends its own extension, so the wrapper names the stem and the
+    # file is moved onto the intended name afterwards -- that keeps the exact
+    # ``result_denoised_<LIVETIME>s.fit`` the caller expects regardless of
+    # which suffix Siril chose.
+    save_base = output.with_suffix("")
+    denoise_args = f"-denoise -strength {strength}" + ("" if gpu else " -nogpu")
+    script = (
+        "requires 1.4.0\n"
+        f'load "{source}"\n'
+        f'pyscript "{graxpert_script}" {denoise_args}\n'
+        f'save "{save_base}"\n'
+    )
+
+    wrapper: Path | None = None
+    try:
+        try:
+            with tempfile.NamedTemporaryFile(
+                "w", suffix=".ssf", prefix="siril_denoise_", delete=False
+            ) as handle:
+                handle.write(script)
+                wrapper = Path(handle.name)
+        except OSError as exc:
+            return {
+                "status": "error",
+                "message": f"could not write the denoise script: {exc}",
+            }
+
+        try:
+            proc = subprocess.run(
+                [siril_cli, "-d", str(work_dir), "-s", str(wrapper)],
+                capture_output=True,
+                text=True,
+                timeout=timeout,
+                cwd=str(work_dir),
+            )
+        except subprocess.TimeoutExpired:
+            return {
+                "status": "error",
+                "message": f"denoise timed out after {timeout}s",
+                "input": str(source),
+            }
+        except OSError as exc:
+            return {
+                "status": "error",
+                "message": f"failed to launch siril-cli for denoise: {exc}",
+            }
+    finally:
+        if wrapper is not None:
+            wrapper.unlink(missing_ok=True)
+
+    combined = (proc.stdout or "") + (proc.stderr or "")
+
+    # Siril may have written <stem>.fit, <stem>.fits or <stem> itself.
+    written = [
+        path
+        for path in (
+            output,
+            save_base.with_suffix(".fit"),
+            save_base.with_suffix(".fits"),
+            save_base.with_suffix(".fts"),
+            save_base,
+        )
+        if path.is_file() and path.stat().st_size > 0
+    ]
+    if written and written[0] != output:
+        try:
+            os.replace(written[0], output)
+        except OSError as exc:
+            return {
+                "status": "error",
+                "message": f"could not move {written[0]} to {output}: {exc}",
+                "log_tail": _tail(combined, 10),
+            }
+
+    failures = [marker for marker in FAILURE_MARKERS if marker in combined]
+    python_failed = bool(_FAILURE_LINE.search(combined))
+    if proc.returncode != 0 or not output.is_file() or (failures or python_failed):
+        if failures:
+            message = failures[0]
+        elif python_failed:
+            message = _first_failure_line(combined) or "the script reported an error"
+        elif proc.returncode != 0:
+            message = f"siril-cli exited with status {proc.returncode}"
+        else:
+            message = "GraXpert produced no output FITS"
+        result = {
+            "status": "failed",
+            "message": message,
+            "returncode": proc.returncode,
+            "log_tail": _tail(combined),
+            "input": str(source),
+            "light_quality": quality,
+            "warnings": warnings,
+        }
+        diagnosis = _diagnose(combined, quality)
+        if diagnosis:
+            result["diagnosis"] = diagnosis
+        if "model.mil" in combined or "Failed to create MLModel" in combined:
+            result["suggested_fix"] = (
+                "GPU inference could not compile the model on this host; "
+                "retry with gpu=False to force the CPU execution provider."
+            )
+        return result
+
+    return {
+        "status": "succeeded",
+        "directory": str(work_dir),
+        "script": graxpert_script,
+        "input": str(source),
+        "output": str(output),
+        "strength": strength,
+        "gpu": gpu,
+        "model": str(models[-1].parent.name),
+        "returncode": proc.returncode,
+        "log_tail": _tail(combined),
+        "light_quality": quality,
+        "warnings": warnings,
     }
 
 
