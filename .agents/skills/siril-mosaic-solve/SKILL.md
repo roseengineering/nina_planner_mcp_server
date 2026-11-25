@@ -101,17 +101,19 @@ alternative but ignores your calibration frames entirely.
    `r_bkg_pp_light_*`, which the counter includes). A large gap means frames
    failed the solve or were filtered out.
 2. **`visible_outputs`**: GPS writes `<OBJECT…>_b…-z1-f20-<LIVETIME>s.fit`
-   to the directory **root** — it never matches `result_*`. If the folder
-   also holds an old `result_*.fit`, the auto-preview renders *that* one
-   (root `result_*` sorts first), so render the stitch explicitly:
+   to the directory **root** — it never matches `result_*`. The automatic
+   preview follows the output the run changed (and that output is
+   autocropped), but render the stitch explicitly when comparing it with an
+   older root `result_*.fit`:
 
    ```python
    render_preview(directory=…, fits_file="<the GPS-named .fit>")   # → <name>.png
    ```
 
-   then `read` the PNG: check the full requested footprint is present, seams
-   are feathered rather than hard-edged, and no pane is missing (compare
-   against `cols × rows` in `plan.json`).
+   then `read` the PNG: check the full requested footprint is present, the
+   stacked border has been removed by autocrop, seams are feathered rather
+   than hard-edged, and no pane is missing (compare against `cols × rows` in
+   `plan.json`).
 3. **`preview_error` ≠ run failure.** Siril cannot display images beyond
    32768 px per side; a very large mosaic stack can exist and still fail the
    PNG render. `visible_outputs` + a file size > 0 is the truth there.
