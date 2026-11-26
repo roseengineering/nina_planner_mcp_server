@@ -340,6 +340,46 @@ def _with_register_options(
     return Path(handle.name)
 
 
+def _pointing_count(work_dir: Path) -> int | None:
+    """Read the archived pointing count, preferring the safe multi-pane case.
+
+    The archive manifest records the count at archive time and ``plan.json``
+    carries the pointings themselves. If both exist but disagree, the larger
+    value wins so a stale single-pointing record cannot trigger ``framing=min``
+    across a mosaic.
+    """
+    counts: list[int] = []
+    for name in ("manifest.json", "plan.json"):
+        try:
+            payload = json.loads((work_dir / name).read_text(encoding="utf-8"))
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+            continue
+        if not isinstance(payload, dict):
+            continue
+        if name == "manifest.json":
+            count = payload.get("pointing_count")
+            if isinstance(count, int) and not isinstance(count, bool) and count > 0:
+                counts.append(count)
+        else:
+            pointings = payload.get("pointings")
+            if isinstance(pointings, list) and pointings:
+                counts.append(len(pointings))
+    return max(counts) if counts else None
+
+
+def _effective_framing(
+    script: str,
+    work_dir: Path,
+    requested: str | None,
+) -> tuple[str | None, bool]:
+    """Resolve framing, defaulting the bundled single-pointing script to min."""
+    if requested is not None:
+        return requested, False
+    if script != "OSC_Preprocessing.ssf" or _pointing_count(work_dir) != 1:
+        return None, False
+    return "min", True
+
+
 def _output_signatures(
     work_dir: Path, outputs: list[str]
 ) -> dict[str, tuple[int, int]]:
@@ -1232,15 +1272,15 @@ def run_osc_preprocessing(
     ``pipeline_stages`` in the result before trusting a success. Applies to
     .ssf scripts only.
 
-    ``framing`` re-applies registration with one of Siril's framing options,
-    which is the mechanism behind removing field rotation: ``min`` keeps only
-    the area every frame has in common (drops the under-integrated corners an
-    alt-az session produces), ``max`` expands to the bounding box of all frames
-    (leaving empty wedges for the autocrop step to remove), ``current`` keeps
-    the reference framing and ``cog`` centres on the centre of gravity. Off by
-    default because it changes the size of the deliverable -- measured on M42,
-    ``min`` cost 14% of the field for no gain, since that stack had no
-    partial coverage. Applies to .ssf scripts only.
+    ``framing`` explicitly re-applies registration with one of Siril's framing
+    options: ``min`` keeps only the area every frame has in common, ``max``
+    expands to the bounding box of all frames, ``current`` keeps the reference
+    framing, and ``cog`` centres on the centre of gravity. When omitted for
+    the bundled ``OSC_Preprocessing.ssf``, it defaults to ``min`` only when
+    ``manifest.json`` or ``plan.json`` confirms a single-pointing target.
+    Mosaics (more than one pointing), unknown pointing counts, and custom
+    scripts keep their script framing. Pass ``framing="current"`` to opt out
+    on a single-pointing target. Applies to .ssf scripts only.
 
     The bundled ``OSC_Preprocessing.ssf`` includes Siril's ``-output_norm``
     option, which affinely remaps nonzero stack pixels using that stack's
@@ -1358,14 +1398,19 @@ def run_osc_preprocessing(
     # absolute path: headless siril-cli does not honour script_path, so a bare
     # name fails with "File [...] does not exist".
     resolved = _resolve_script(script)
+    effective_framing, automatic_framing = _effective_framing(script, work_dir, framing)
+    is_default_osc_script = (
+        script == "OSC_Preprocessing.ssf"
+        and Path(resolved).name == "OSC_Preprocessing.ssf"
+    )
     # Temporary scripts this run needs, all removed in the finally below.
     temporaries: list[Path] = []
-    if (min_pairs > 0 or framing) and Path(resolved).suffix == ".py":
+    if (min_pairs > 0 or effective_framing) and Path(resolved).suffix == ".py":
         knobs = ", ".join(
             name
             for name, requested in (
                 ("min_pairs", min_pairs > 0),
-                ("framing", bool(framing)),
+                ("framing", bool(effective_framing)),
             )
             if requested
         )
@@ -1401,18 +1446,16 @@ def run_osc_preprocessing(
         # reporting success; the wrapper is what actually invokes it.
         temporaries.append(_write_pyscript_wrapper(resolved, script_args))
     else:
-        drop_output_norm = (
-            Path(resolved).name == "OSC_Preprocessing.ssf" and not preserve_output_norm
-        )
+        drop_output_norm = is_default_osc_script and not preserve_output_norm
         amended = None
-        if min_pairs > 0 or framing or drop_output_norm:
+        if min_pairs > 0 or effective_framing or drop_output_norm:
             amended = _with_register_options(
                 resolved,
                 min_pairs,
-                framing,
+                effective_framing,
                 drop_output_norm=drop_output_norm,
             )
-        if amended is None and (min_pairs > 0 or framing):
+        if amended is None and (min_pairs > 0 or effective_framing):
             # Reported rather than ignored: silently dropping the argument
             # would leave the caller believing a looser floor, or a different
             # framing, was applied.
@@ -1420,7 +1463,7 @@ def run_osc_preprocessing(
                 part
                 for part in (
                     f"min_pairs={min_pairs}" if min_pairs > 0 else "",
-                    f"framing={framing}" if framing else "",
+                    f"framing={effective_framing}" if effective_framing else "",
                 )
                 if part
             )
@@ -1580,6 +1623,8 @@ def run_osc_preprocessing(
             "log_tail": _tail(output),
             "visible_outputs": outputs,
             "autocrop": autocrop_result,
+            "framing": effective_framing,
+            "framing_auto_selected": automatic_framing,
             # The docstring tells the caller to read this before trusting a
             # success: m81 reports succeeded on 6 of 100 registered frames.
             "pipeline_stages": _pipeline_stages(work_dir),
