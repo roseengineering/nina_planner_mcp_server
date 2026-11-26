@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import subprocess
 from pathlib import Path
 
@@ -70,8 +71,13 @@ def test_render_preview_reports_missing_source_and_missing_png(
 def test_denoise_stack_writes_sibling_and_forces_cpu_when_requested(
     tmp_path: Path, monkeypatch
 ) -> None:
-    """Denoising writes a sibling stack and passes the CPU option."""
+    """Denoising writes a sibling, uses the explicit raw input, and preserves it."""
     target = _target(tmp_path, monkeypatch)
+    source = target / "result_60s.fit"
+    source_bytes = source.read_bytes()
+    raw_preview = target / "preview.png"
+    raw_preview.write_bytes(b"raw preview")
+    preview_bytes = raw_preview.read_bytes()
     graxpert = tmp_path / "GraXpert-AI.py"
     graxpert.write_text("# fake script\n", encoding="utf-8")
     monkeypatch.setattr(server, "_find_siril_cli", lambda: "siril-cli")
@@ -92,14 +98,19 @@ def test_denoise_stack_writes_sibling_and_forces_cpu_when_requested(
 
     monkeypatch.setattr(server.subprocess, "run", run)
 
-    result = server.denoise_stack("target", strength=0.3, gpu=False)
+    result = server.denoise_stack(
+        "target", fits_file="result_60s.fit", strength=0.3, gpu=False
+    )
 
     assert result["status"] == "succeeded"
     assert result["output"] == str(target / "result_denoised_60s.fit")
     assert result["strength"] == 0.3
     assert result["gpu"] is False
     assert result["model"] == "v1"
+    assert 'load "' + str(source) + '"' in wrapper_text[0]
     assert "-denoise -strength 0.3 -nogpu" in wrapper_text[0]
+    assert source.read_bytes() == source_bytes
+    assert raw_preview.read_bytes() == preview_bytes
 
 
 def test_denoise_stack_skips_existing_output_and_handles_missing_model(
@@ -118,6 +129,186 @@ def test_denoise_stack_skips_existing_output_and_handles_missing_model(
     missing = server.denoise_stack("target")
     assert missing["status"] == "error"
     assert "model not downloaded" in missing["message"]
+
+
+def test_denoise_stack_regenerates_stale_sibling(tmp_path: Path, monkeypatch) -> None:
+    """A denoised sibling older than its source is regenerated."""
+    target = _target(tmp_path, monkeypatch)
+    source = target / "result_60s.fit"
+    output = target / "result_denoised_60s.fit"
+    output.write_bytes(b"stale")
+    os.utime(source, ns=(2_000_000_000, 2_000_000_000))
+    os.utime(output, ns=(1_000_000_000, 1_000_000_000))
+
+    graxpert = tmp_path / "GraXpert-AI.py"
+    graxpert.write_text("# fake script\n", encoding="utf-8")
+    monkeypatch.setattr(server, "_find_siril_cli", lambda: "siril-cli")
+    monkeypatch.setattr(
+        server, "_graxpert_denoise_models", lambda: [tmp_path / "model.onnx"]
+    )
+    monkeypatch.setattr(server, "_resolve_script", lambda _name: str(graxpert))
+    calls: list[list[str]] = []
+
+    def run(command, **_kwargs):
+        calls.append(command)
+        output.write_bytes(b"fresh")
+        return subprocess.CompletedProcess(
+            args=[], returncode=0, stdout="done", stderr=""
+        )
+
+    monkeypatch.setattr(server.subprocess, "run", run)
+
+    result = server.denoise_stack("target")
+
+    assert result["status"] == "succeeded"
+    assert result["output"] == str(output)
+    assert output.read_bytes() == b"fresh"
+    assert len(calls) == 1
+
+
+def test_denoise_stack_fails_if_stale_sibling_is_not_refreshed(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """A successful no-op rerun must not report an old sibling as current."""
+    target = _target(tmp_path, monkeypatch)
+    source = target / "result_60s.fit"
+    output = target / "result_denoised_60s.fit"
+    output.write_bytes(b"stale")
+    os.utime(source, ns=(2_000_000_000, 2_000_000_000))
+    os.utime(output, ns=(1_000_000_000, 1_000_000_000))
+
+    graxpert = tmp_path / "GraXpert-AI.py"
+    graxpert.write_text("# fake script\n", encoding="utf-8")
+    monkeypatch.setattr(server, "_find_siril_cli", lambda: "siril-cli")
+    monkeypatch.setattr(
+        server, "_graxpert_denoise_models", lambda: [tmp_path / "model.onnx"]
+    )
+    monkeypatch.setattr(server, "_resolve_script", lambda _name: str(graxpert))
+    calls: list[list[str]] = []
+
+    def run(command, **_kwargs):
+        calls.append(command)
+        return subprocess.CompletedProcess(
+            args=[], returncode=0, stdout="done", stderr=""
+        )
+
+    monkeypatch.setattr(server.subprocess, "run", run)
+
+    result = server.denoise_stack("target")
+
+    assert result["status"] == "failed"
+    assert "did not refresh" in result["message"]
+    assert output.read_bytes() == b"stale"
+    assert len(calls) == 1
+
+
+def test_denoise_stack_fails_if_refreshed_output_is_still_stale(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """A changed output still fails if its timestamp predates the source."""
+    target = _target(tmp_path, monkeypatch)
+    source = target / "result_60s.fit"
+    output = target / "result_denoised_60s.fit"
+    output.write_bytes(b"stale")
+    os.utime(source, ns=(2_000_000_000, 2_000_000_000))
+    os.utime(output, ns=(1_000_000_000, 1_000_000_000))
+
+    graxpert = tmp_path / "GraXpert-AI.py"
+    graxpert.write_text("# fake script\n", encoding="utf-8")
+    monkeypatch.setattr(server, "_find_siril_cli", lambda: "siril-cli")
+    monkeypatch.setattr(
+        server, "_graxpert_denoise_models", lambda: [tmp_path / "model.onnx"]
+    )
+    monkeypatch.setattr(server, "_resolve_script", lambda _name: str(graxpert))
+
+    def run(_command, **_kwargs):
+        output.write_bytes(b"refreshed but stale")
+        os.utime(output, ns=(1_500_000_000, 1_500_000_000))
+        return subprocess.CompletedProcess(
+            args=[], returncode=0, stdout="done", stderr=""
+        )
+
+    monkeypatch.setattr(server.subprocess, "run", run)
+
+    result = server.denoise_stack("target")
+
+    assert result["status"] == "failed"
+    assert "older than its source" in result["message"]
+    assert output.read_bytes() == b"refreshed but stale"
+
+
+def test_denoise_stack_default_never_selects_denoised_sibling(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """Default excludes denoised siblings; callers can explicitly select raw."""
+    target = _target(tmp_path, monkeypatch, stack=False)
+    denoised = target / "result_denoised_60s.fit"
+    denoised.write_bytes(b"previous denoised output")
+    monkeypatch.setattr(server, "_find_siril_cli", lambda: "siril-cli")
+
+    result = server.denoise_stack("target")
+
+    assert result["status"] == "error"
+    assert "No stack to denoise" in result["message"]
+
+    raw = target / "selected_raw.fit"
+    raw.write_bytes(b"raw stack")
+    graxpert = tmp_path / "GraXpert-AI.py"
+    graxpert.write_text("# fake script\n", encoding="utf-8")
+    monkeypatch.setattr(
+        server, "_graxpert_denoise_models", lambda: [tmp_path / "model.onnx"]
+    )
+    monkeypatch.setattr(server, "_resolve_script", lambda _name: str(graxpert))
+    wrapper_text: list[str] = []
+
+    def run(command, **_kwargs):
+        wrapper_text.append(Path(command[-1]).read_text(encoding="utf-8"))
+        (target / "selected_raw_denoised.fit").write_bytes(b"fresh denoised")
+        return subprocess.CompletedProcess(
+            args=[], returncode=0, stdout="done", stderr=""
+        )
+
+    monkeypatch.setattr(server.subprocess, "run", run)
+    selected = server.denoise_stack("target", fits_file="selected_raw.fit")
+
+    assert selected["status"] == "succeeded"
+    assert 'load "' + str(raw) + '"' in wrapper_text[0]
+
+
+def test_denoise_stack_force_regenerates_current_sibling(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """force=True reruns even when the sibling is newer than its source."""
+    target = _target(tmp_path, monkeypatch)
+    source = target / "result_60s.fit"
+    output = target / "result_denoised_60s.fit"
+    output.write_bytes(b"current")
+    os.utime(source, ns=(1_000_000_000, 1_000_000_000))
+    os.utime(output, ns=(2_000_000_000, 2_000_000_000))
+
+    graxpert = tmp_path / "GraXpert-AI.py"
+    graxpert.write_text("# fake script\n", encoding="utf-8")
+    monkeypatch.setattr(server, "_find_siril_cli", lambda: "siril-cli")
+    monkeypatch.setattr(
+        server, "_graxpert_denoise_models", lambda: [tmp_path / "model.onnx"]
+    )
+    monkeypatch.setattr(server, "_resolve_script", lambda _name: str(graxpert))
+    calls: list[list[str]] = []
+
+    def run(command, **_kwargs):
+        calls.append(command)
+        output.write_bytes(b"forced")
+        return subprocess.CompletedProcess(
+            args=[], returncode=0, stdout="done", stderr=""
+        )
+
+    monkeypatch.setattr(server.subprocess, "run", run)
+
+    result = server.denoise_stack("target", force=True)
+
+    assert result["status"] == "succeeded"
+    assert output.read_bytes() == b"forced"
+    assert len(calls) == 1
 
 
 def test_clean_working_directory_preserves_inputs_and_requires_force_for_partial(

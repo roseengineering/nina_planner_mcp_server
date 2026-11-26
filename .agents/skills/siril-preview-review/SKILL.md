@@ -39,13 +39,30 @@ exactly that one.
 
 ### 1. Gallery — scan everything (default for "show me the previews")
 
-One HTML page, thumbnails, click-through to full resolution. Weakest-first, so
-the marginal targets most worth a human eye sort to the top.
+For user-facing visual review, denoise each selected stack before building or
+displaying its review preview. Work through targets sequentially: identify the
+exact root stack, call `denoise_stack(directory=…, fits_file=…)`, then call
+`render_preview(directory=…, fits_file=<returned output>)`. Build the denoised
+gallery only after those steps; it reads the rendered denoised PNG sidecars and
+never creates them or substitutes a raw preview. Report progress and targets
+that could not be denoised.
+
+The gallery is weakest-first, so the marginal targets most worth a human eye
+sort to the top. To build it from denoised previews, add `--denoised`:
 
 ```bash
-uv run --with pillow python .agents/skills/siril-preview-review/build_gallery.py
-open /private/var/folders/rx/b7znqd3d0ts9gn2lb151n4300000gn/T/opencode/gallery/index.html
+GALLERY_OUT="/path/chosen/for/this/review"
+uv run --with pillow python .agents/skills/siril-preview-review/build_gallery.py \
+  --denoised --out "$GALLERY_OUT"
+open "$GALLERY_OUT/index.html"
 ```
+
+Choose a writable output directory for the current request (use a directory
+the caller specified, or select a session-specific location) and pass it with
+`--out`; do not rely on the script's default output path. Use the command above
+after the sequential denoise-and-render pass. Omitting `--denoised` preserves
+the original raw-preview gallery and is for explicit raw review or technical
+checks only.
 
 | flag | effect |
 |---|---|
@@ -55,6 +72,24 @@ open /private/var/folders/rx/b7znqd3d0ts9gn2lb151n4300000gn/T/opencode/gallery/i
 | `--archive-root PATH` | default `$ARCHIVE_ROOT`, else `~/landing` |
 | `--out DIR` | where `index.html` and `thumbs/` go |
 | `--json` | entry list instead of writing a gallery |
+| `--denoised` | include only rendered denoised-preview sidecars; missing or ambiguous pairs are reported, never replaced with raw previews |
+
+Use the exact stack from `check_directory_status(...).visible_outputs`.
+If more than one root stack exists (for example, standard and BayerDrizzle),
+ask which one for a single-image review and pass it explicitly to
+`denoise_stack`; do not rely on its default stack selection. For a batch
+gallery, process the chosen stack(s) one at a time, and include each
+successfully rendered denoised pair. A target with no successful stack has
+nothing to denoise or preview.
+
+On `denoise_stack` status `succeeded`, use its returned `output`; on `skipped`,
+reuse that returned existing output. Then render that exact FITS and display
+the returned `preview` PNG. The raw stack and `preview.png` are preserved.
+If the model or script is unavailable, denoising fails, or times out, report
+that clearly and do not present the raw preview as denoised; offer the raw
+preview only as an explicit alternative. If GPU inference fails with a known
+ONNX/CoreML/model-compilation error, retry once with `gpu=False` and report the
+CPU fallback.
 
 Cost: thumbnails run ~0.7 MB total against 458 MB of originals. Requires
 Pillow — run it through `uv run --with pillow python …` (see Caveats: the
@@ -64,11 +99,15 @@ not carry PIL).
 ### 2. Inspect one — ask me to look at it
 
 Best when the user names a target or asks *"did X come out okay?"*. The `read`
-tool renders images, so read the preview and describe what is actually in it:
-star density, whether the field is empty, gradients, obvious obstruction.
+tool renders images, so first denoise the explicitly selected root stack and
+render that denoised FITS with `render_preview`; then read the returned PNG and
+describe what is actually in it: star density, whether the field is empty,
+gradients, obvious obstruction.
 
 ```text
-read  ~/landing/soyuz/<target>/preview.png
+denoise_stack(directory="…", fits_file="result_….fit")
+render_preview(directory="…", fits_file="<denoise_stack output>")
+read  <render_preview preview>
 ```
 
 Pair it with `check_directory_status(directory=…)` so the description can be
@@ -102,13 +141,20 @@ For numeric work on the frames, always run through **uv** — the system
   and uv's ephemeral `--with` leaves the environment untouched (ask the user
   before any permanent `pip install`).
 
+Use raw `preview.png` for technical checks where denoising could conceal
+artifacts, including mosaic seam/coverage verification, framing/registration
+diagnosis, and frame-quality diagnostics. Do not denoise those checks.
+
 ### 5. Compare two results (standard vs BayerDrizzle)
 
 Only `ngc-1907` currently has both — `result_70s.fit` (standard) and
-`result_drizzle_70s.fit`. Read both previews side by side, or compare the
-`.fit` files numerically (how-to in option 4). Standard remains the default
-script; drizzle is a rescue for sparse fields, and the two measured **0.965
-correlation** — close, but background differs ~1.5×.
+`result_drizzle_70s.fit`. For a technical comparison, compare the raw stacks or
+their raw previews; the measured **0.965 correlation** and ~1.5× background
+difference refer to the raw results. For a user-facing visual comparison,
+denoise both explicitly selected stacks with the same strength and GPU/CPU
+settings, render each returned denoised FITS, and compare those two denoised
+previews. Never compare one raw preview against one denoised preview. Standard
+remains the default script; drizzle is a rescue for sparse fields.
 
 ## Caveats
 
