@@ -32,3 +32,24 @@ jobs:
       - name: Tests
         # Live tests (real NINA) are deselected by default via pyproject addopts.
         run: '"$VIRTUAL_ENV/bin/python" -m pytest -q'
+
+  siril-mcp-test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.12", "3.13", "3.14"]
+    defaults:
+      run:
+        working-directory: .opencode/local/mcps/siril_mcp
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v10.3.3
+      - name: Install dependencies
+        run: uv sync --no-install-project --python ${{ matrix.python-version }}
+      - name: Lint
+        run: |
+          .venv/bin/ruff check siril_mcp tests
+          .venv/bin/ruff format --check siril_mcp tests
+      - name: Tests
+        run: .venv/bin/python -m pytest -q
