@@ -655,6 +655,189 @@ the mosaic behavior; diagnose or explicitly account for the `seqapplyreg` +
 dimensions, background level and coverage on one single-pointing alt-az stack
 and one mosaic; keep Autocrop.py's role separate.
 ```
+r_pp_light_00001.fit  median 0.000434   (stock)   vs 0.000426 (control)
+r_pp_light_00137.fit  median 0.000807   (stock)   vs 0.000811 (control)
+pp_light_00001.fit    median 0.000434
+```
+
+**Identical inputs, outputs differing 3.5× — so the difference is produced by
+`stack`, not by registration.** Adding `seqapplyreg` with framing *unchanged*
+already moves the level, which is what isolates the cause away from
+`-framing=min`.
+
+Two further data points:
+
+- The stock path is reproducible: two separate stock runs both gave `0.001543`
+  (15:23 and 18:43). So it is not run-to-run noise.
+- **Absolute noise is unchanged** — sky patch std `1.172e-4` (stock) vs
+  `1.166e-4` (framing=min). The apparent SNR degradation is purely the level
+  shift: predicted `0.0575` from scaling alone, measured `0.0572`.
+
+## 2. Why it matters
+
+- Absolute ADU levels are off by up to **8×** relative to the input frames
+  (no frame's median exceeds ~0.00095, yet the stock stack reports 0.001543).
+  Anything keyed on absolute level — stretch thresholds, background
+  estimation, photometry — is untrustworthy until this is understood.
+- It makes **framing comparisons numerically meaningless**: `min` looked
+  "8× noisier" purely because its background was lower.
+- **Previews hide it**, because `autostretch` normalises. Nobody would notice
+  from looking at the PNGs — which is why it survived to PR review.
+- It is the reason PR #37 shipped `framing` with default off *and* a caveat,
+  rather than a confident recommendation.
+
+## 3. Environment
+
+| Thing | Value |
+|---|---|
+| Siril | 1.4.5, `/Applications/Siril.app/Contents/MacOS/siril-cli` |
+| Stock script (read-only, app bundle) | `/Applications/Siril.app/Contents/Resources/share/siril/scripts/OSC_Preprocessing.ssf` |
+| Relevant lines | `register pp_light` then `stack r_pp_light rej 3 3 -norm=addscale -output_norm -rgb_equal -32b -out=result` |
+| Test target | `~/landing/soyuz/m42_emission-nebula_20261020T233812__plan-b74e9aa2a0de` (137 × 10 s lights, Seestar S30) |
+| Archive root | `ARCHIVE_ROOT=~/landing` — **required** when importing `siril_mcp.server` directly |
+
+**Measurement:** the `siril-mcp` venv has **no numpy and no astropy**. Either
+use `uv run --with numpy --with astropy python …`, or the stdlib helpers that
+already exist in `server.py`: `_fits_header()`, `_fits_shape()`,
+`_empty_fraction()`, `_crop_keep_fraction()`.
+
+**Safety rules for whoever runs this:**
+
+- Never edit the app-bundled `.ssf` — copy it to a temp dir and amend the copy.
+- Always give test stacks a **distinct `-out=` name**. `result_1370s.fit` is
+  the real deliverable and must end the session at **1080 × 1920** with its
+  `preview.png` intact.
+- `process/` is overwritten by every run and is fully regenerable
+  (`run_osc_preprocessing(force=True)` ≈ 40 s). Nothing in it is sacred.
+- Re-run the stock script last, to leave the archive in the default state.
+
+## 4. Hypotheses and the experiment that kills each one
+
+Ranked by how well they fit the evidence.
+
+**H1 — `-output_norm` targets the *reference image*, and `register` vs
+`seqapplyreg` leave a different reference recorded in the `.seq`.**
+*Test:* parse `process/pp_light.seq` (it is a text file) for the reference
+image index after each path; then run `stack` twice on the *same* `r_pp_light`
+frames, once with `-output_norm` and once without. If the level follows the
+reference rather than the flag, this is it.
+*Weakness to check first:* the stock output (0.001543) exceeds **every**
+frame's median (~0.00043–0.00095), so "match the reference frame" cannot by
+itself explain a *higher* output — the rule must involve a scale factor.
+
+**H2 — `-output_norm` means something other than what we assume.**
+*Test:* E7 — stack a synthetic set of uniform frames with a **known** median
+(e.g. all exactly 0.001) and read the output. That pins the semantics in one
+run, with no interpretation needed. Do this first; it is the cheapest and the
+most decisive.
+
+**H3 — `-norm=addscale` computes per-frame scales against a reference, and
+`-output_norm` then rescales the whole stack by a factor derived from it.**
+Note the frames have a real background *gradient* across the session
+(0.000434 → 0.00095), so scale factors are far from 1. *Test:* compute each
+frame's median, derive the predicted output under candidate rules, and compare
+against the observed 0.001543 / 0.000443 / 0.000187.
+
+**H4 — the difference is re-running the script, not `seqapplyreg`.**
+*Test:* repeat stock + `seqapplyreg current` twice. Already half-dead — stock
+run twice gave identical results — but the control has only been run once.
+
+**H5 — undocumented Siril behaviour or a genuine bug.**
+*Test:* grep `siril-cli` (`strings`) and the Siril docs/source for what
+`-output_norm` is documented to do; compare against observed behaviour. If it
+is a Siril bug, the fix is upstream and the local workaround is to drop the
+flag.
+
+## 5. Definition of done
+
+1. Root cause named **with a cited log line or measurement**, not a
+   hypothesis. "Probably" does not close this.
+2. Either a code change in `run_osc_preprocessing`'s stack invocation, or a
+   documented "this is expected, here is why".
+3. A numeric check that would have caught it: for a synthetic stack with a
+   known input median, the output p50 is within a stated tolerance.
+4. Confirm whether the GraXpert denoiser is affected. It blends denoised with
+   original at `strength`, which *should* be level-preserving — verify rather
+   than assume (max |Δ| between input and denoised was `3.79e-04`, consistent
+   with level preservation, but that was measured on the 0.001543 stack only).
+5. `PROGRESS.md` entry + PR (see §6).
+
+## 6. Repo conventions (read before starting)
+
+- **Never edit `/Applications/...` scripts.** Copy to a temp dir.
+- **The pre-commit hook regenerates `README.md`** and re-stages it — expect a
+  stray README change in your commit; that is intended.
+- **The hook skips `siril_mcp` linting** ("outside the linted project"), so
+  run `ruff check` and `mypy` on `server.py` **manually**. Both are currently
+  clean; keep them that way.
+- **PR flow:** branch → push → `gh pr create` → `gh pr checks <n> --watch`
+  (CI runs 3.12 / 3.13 / 3.14) → `gh pr merge <n> --squash --delete-branch`.
+  A squash merge leaves the local branch "not fully merged"; `git branch -D`
+  is correct there.
+- **`PROGRESS.md` header** is host-local ISO-8601 *with* offset:
+  `## 2026-11-25T18:44:21-05:00`, never `…Z`.
+- **The running MCP server predates PR #37** and needs a restart to expose
+  `denoise_stack` and `framing`. Until then, exercise new code by importing
+  `siril_mcp.server` directly (`ARCHIVE_ROOT=~/landing uv run --project
+  .opencode/local/mcps/siril_mcp python -c "…"`).
+- Do not regress what #37 shipped: the autocrop gate
+  (`EMPTY_BORDER_MIN_FRACTION`, `MIN_CROP_KEEP_FRACTION`) and the opt-in
+  `framing` parameter.
+
+## 7. Evidence left on disk
+
+| Artifact | Where |
+|---|---|
+| `result_framingmin_1370s.fit` + `.png` | the M42 target dir — the `framing=min` stack, for level comparison |
+| `result_1370s.fit`, `preview.png` | the M42 target dir — stock deliverable, **1080 × 1920, must stay that way** |
+| `result_denoised_1370s.fit` + `.png` | the M42 target dir — full-field GraXpert denoise |
+| Test scripts | `/private/var/folders/rn/g548jrt55pj2dkwhhh9b3_s40000gn/T/opencode/framingmin/` (temp, may be gone) |
+| Measurement history | `PROGRESS.md` entries at 18:31:37 and 18:44:21 |
+| Context | PR #37 body, section "Not addressed" |
+
+## 8. Open questions
+
+- Is `-output_norm` buying us anything at all? If the answer to H2 shows it is
+  a no-op-or-worse for this pipeline, the simplest fix may be deleting it.
+- Should this be reported upstream to Siril rather than worked around?
+- Does the same interaction affect `GPS_Preprocess.py` runs (they use
+  `seqapplyreg -framing=max` internally), i.e. is the mosaicked deliverable
+  also mislevelled today?
+
+## 9. Open question: should single-pointing runs default to `framing=min`?
+
+**Should every single-pointing / non-mosaic run use `seqapplyreg -framing=min`
+by default, with mosaics keeping a separate explicit policy?**
+
+The operator's intended outcome is narrow and simple: crop away the part of the
+field that not every registered frame covers — alt-az field-rotation edges —
+and nothing content-based. `framing=min` produces exactly the common-overlap
+area; on M42 it yielded **966 × 1847 = 86.0 %** of the 1080 × 1920 frame.
+Note this makes `framing` the *rotation* answer and leaves Autocrop.py for what
+it was written for (real empty wedges on `framing=max` output) — the two should
+not be conflated.
+
+**Three constraints to resolve before changing any default:**
+
+1. **Mosaics.** `min` across separate pointings keeps only their intersection,
+   which can be a tiny region or nothing useful. Identify a mosaic reliably
+   (manifest/plan `pointing_count` — `_find_outputs` already knows the target)
+   and keep mosaic framing explicit rather than applying `min` blindly.
+2. **The level anomaly in §1 is a blocker, not a footnote.** Adding
+   `seqapplyreg` with framing *unchanged* moved the M42 stack median
+   0.001543 → 0.000443 on byte-identical inputs, and `framing=min` moved it
+   further to 0.000187. Making `min` the default would silently rescale every
+   deliverable until §4 is answered. Diagnose it first.
+3. **Coverage semantics.** `min` removes everything outside the common
+   footprint — including legitimate dither/translation losses, not only
+   rotation. Quantify the crop on representative runs before committing.
+
+**Completion criteria:** decide and document the single-pointing default and
+the mosaic behavior; diagnose or explicitly account for the `seqapplyreg` +
+`-output_norm` level change against known-value synthetic data; verify
+dimensions, background level and coverage on one single-pointing alt-az stack
+and one mosaic; keep Autocrop.py's role separate.
+```
 
 ## 📁 Project directory
 
