@@ -1718,6 +1718,33 @@ def _denoised_name(source: Path) -> str:
     return new_stem + (source.suffix or ".fit")
 
 
+def _is_denoised_stack(path: Path) -> bool:
+    """Return whether ``path`` has the sibling name produced by denoising."""
+    stem = path.stem.lower()
+    return (
+        stem == "result_denoised"
+        or stem.startswith("result_denoised_")
+        or stem.endswith("_denoised")
+    )
+
+
+def _file_signature(path: Path) -> tuple[int, int, int, int, int] | None:
+    """Return a stat signature for a nonempty file, or ``None`` if unavailable."""
+    try:
+        info = path.stat()
+    except OSError:
+        return None
+    if not path.is_file() or info.st_size <= 0:
+        return None
+    return (
+        info.st_dev,
+        info.st_ino,
+        info.st_size,
+        info.st_mtime_ns,
+        info.st_ctime_ns,
+    )
+
+
 def _graxpert_denoise_models() -> list[Path]:
     """Locate every ``model.onnx`` under GraXpert's model directories.
 
@@ -1759,8 +1786,10 @@ def denoise_stack(
     never touched: ``result_70s.fit`` becomes ``result_denoised_70s.fit``.
 
     ``fits_file`` resolves against the working directory and defaults to the
-    first output, i.e. the final root stack. ``strength`` blends denoised with
-    original (0.5 matches both the script default and GraXpert's stored
+    first non-denoised output, i.e. the final root stack. Denoised sibling
+    outputs are excluded from default source selection; pass ``fits_file``
+    explicitly to select a particular raw stack. ``strength`` blends denoised
+    with original (0.5 matches both the script default and GraXpert's stored
     preference). ``gpu=False`` forces CPU inference with ``-nogpu`` -- needed
     on a host whose GPU cannot compile the model, where the GPU attempt fails
     with an ONNX Runtime ``model.mil`` error before falling back.
@@ -1790,7 +1819,9 @@ def denoise_stack(
     quality = _read_light_quality(work_dir)
     warnings = _quality_warnings(quality)
 
-    outputs = _find_outputs(work_dir)
+    outputs = [
+        name for name in _find_outputs(work_dir) if not _is_denoised_stack(Path(name))
+    ]
     if fits_file is None:
         if not outputs:
             return {
@@ -1808,10 +1839,19 @@ def denoise_stack(
             return {"status": "error", "message": f"FITS file not found: {fits_file}"}
 
     output = work_dir / _denoised_name(source)
-    if output.is_file() and not force:
+    prior_output_signature = _file_signature(output)
+    output_is_current = False
+    if output.is_file() and prior_output_signature is not None and not force:
+        try:
+            output_is_current = output.stat().st_mtime_ns >= source.stat().st_mtime_ns
+        except OSError:
+            # If either timestamp cannot be read, do not trust a possibly stale
+            # denoised sibling; regenerate it instead.
+            output_is_current = False
+    if output_is_current:
         return {
             "status": "skipped",
-            "message": "Already denoised. Pass force=True to re-run.",
+            "message": "Already denoised and current. Pass force=True to re-run.",
             "directory": str(work_dir),
             "input": str(source),
             "output": str(output),
@@ -1940,6 +1980,36 @@ def denoise_stack(
                 "retry with gpu=False to force the CPU execution provider."
             )
         return result
+
+    output_signature = _file_signature(output)
+    if output_signature is None:
+        return {
+            "status": "failed",
+            "message": "GraXpert produced no nonempty output FITS",
+            "returncode": proc.returncode,
+            "log_tail": _tail(combined),
+            "input": str(source),
+        }
+    if output_signature == prior_output_signature:
+        return {
+            "status": "failed",
+            "message": "GraXpert did not refresh the denoised output FITS",
+            "returncode": proc.returncode,
+            "log_tail": _tail(combined),
+            "input": str(source),
+        }
+    try:
+        output_is_current = output.stat().st_mtime_ns >= source.stat().st_mtime_ns
+    except OSError:
+        output_is_current = False
+    if not output_is_current:
+        return {
+            "status": "failed",
+            "message": "GraXpert output FITS is older than its source stack",
+            "returncode": proc.returncode,
+            "log_tail": _tail(combined),
+            "input": str(source),
+        }
 
     return {
         "status": "succeeded",
