@@ -46,7 +46,7 @@ jobs:
       - uses: actions/checkout@v7
       - uses: astral-sh/setup-uv@v10.3.3
       - name: Install dependencies
-        run: uv sync --frozen --no-install-project --python ${{ matrix.python-version }}
+        run: uv sync --no-install-project --python ${{ matrix.python-version }}
       - name: Lint
         run: |
           .venv/bin/ruff check siril_mcp tests
