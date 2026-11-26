@@ -277,20 +277,22 @@ def _with_register_options(
     script_path: str,
     min_pairs: int = 0,
     framing: str | None = None,
+    drop_output_norm: bool = False,
 ) -> Path | None:
-    """Copy ``script_path`` with registration options applied to its register step.
+    """Copy ``script_path`` with requested registration and stack options.
 
     siril-cli exposes neither knob as a flag, so honouring them means amending
     the script. ``-minpairs=`` is appended to the existing ``register`` command.
     Siril's ``-framing=`` lives on ``seqapplyreg``, not on ``register`` --
     ``register`` rejects it with "Unknown parameter" -- so framing needs a line
     of its own inserted directly after the register step, re-applying the
-    just-computed transforms with the requested framing.
+    just-computed transforms with the requested framing. ``drop_output_norm``
+    removes Siril's final ``-output_norm`` remapping from stack commands.
 
     Returns ``None`` when nothing could be amended, which the caller reports
     rather than silently dropping the request.
     """
-    if min_pairs <= 0 and not framing:
+    if min_pairs <= 0 and not framing and not drop_output_norm:
         return None
     try:
         lines = (
@@ -300,9 +302,18 @@ def _with_register_options(
         return None
     amended: list[str] = []
     changed = False
+    register_seen = False
     for line in lines:
         stripped = line.strip()
+        if drop_output_norm and stripped.startswith("stack "):
+            parts = stripped.split()
+            if "-output_norm" in parts:
+                stripped = " ".join(part for part in parts if part != "-output_norm")
+                changed = True
+                amended.append(stripped)
+                continue
         if stripped.startswith("register "):
+            register_seen = True
             if min_pairs > 0:
                 # Replace any existing -minpairs= so an explicit argument wins
                 # rather than colliding with the script's own value.
@@ -319,10 +330,10 @@ def _with_register_options(
                 changed = True
             continue
         amended.append(line)
-    if not changed:
+    if not changed or ((min_pairs > 0 or framing) and not register_seen):
         return None
     handle = tempfile.NamedTemporaryFile(
-        "w", suffix=".ssf", prefix="siril_register_", delete=False
+        "w", suffix=".ssf", prefix="siril_osc_", delete=False
     )
     with handle:
         handle.write("\n".join(amended) + "\n")
@@ -1206,6 +1217,7 @@ def run_osc_preprocessing(
     script_args: str | list[str] | None = None,
     autocrop: bool = True,
     framing: Literal["current", "min", "max", "cog"] | None = None,
+    preserve_output_norm: bool = False,
 ) -> list[str]:
     """Run a Siril script headlessly via siril-cli and preview the result.
 
@@ -1229,6 +1241,14 @@ def run_osc_preprocessing(
     default because it changes the size of the deliverable -- measured on M42,
     ``min`` cost 14% of the field for no gain, since that stack had no
     partial coverage. Applies to .ssf scripts only.
+
+    The bundled ``OSC_Preprocessing.ssf`` includes Siril's ``-output_norm``
+    option, which affinely remaps nonzero stack pixels using that stack's
+    minimum and maximum. That changes absolute background levels between runs
+    even when their unnormalized backgrounds match, so this tool removes that
+    flag from a temporary copy by default. Set ``preserve_output_norm=True``
+    to keep the bundled script's original normalized-output behavior. Custom
+    scripts are left unchanged.
 
     ``script_args`` are passed to a .py script as its argument vector (a
     string like "-ps -z 1 -f 20" or a list of tokens). This is how a script
@@ -1380,9 +1400,19 @@ def run_osc_preprocessing(
         # -s parses a .py as Siril commands and runs nothing at all, still
         # reporting success; the wrapper is what actually invokes it.
         temporaries.append(_write_pyscript_wrapper(resolved, script_args))
-    elif min_pairs > 0 or framing:
-        amended = _with_register_options(resolved, min_pairs, framing)
-        if amended is None:
+    else:
+        drop_output_norm = (
+            Path(resolved).name == "OSC_Preprocessing.ssf" and not preserve_output_norm
+        )
+        amended = None
+        if min_pairs > 0 or framing or drop_output_norm:
+            amended = _with_register_options(
+                resolved,
+                min_pairs,
+                framing,
+                drop_output_norm=drop_output_norm,
+            )
+        if amended is None and (min_pairs > 0 or framing):
             # Reported rather than ignored: silently dropping the argument
             # would leave the caller believing a looser floor, or a different
             # framing, was applied.
@@ -1407,7 +1437,8 @@ def run_osc_preprocessing(
                 siril_cli,
                 timeout,
             )
-        temporaries.append(amended)
+        if amended is not None:
+            temporaries.append(amended)
     target = str(temporaries[0]) if temporaries else resolved
     before_outputs = _output_signatures(work_dir, outputs)
     cmd = [siril_cli, "-d", str(work_dir), "-s", target]
