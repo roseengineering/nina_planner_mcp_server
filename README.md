@@ -448,47 +448,43 @@ A markdown file at the project root, **edited by the user at any time** (before 
 
 [PLAN.md](./PLAN.md)
 ```markdown PLAN.md
-# Future questions
+# Tonight — catalog-driven
 
-## Does output normalization shift mosaic stack backgrounds?
+The wishlist **is** `best_targets`: call it fresh on each re-selection and
+shoot whatever it returns above the floor. Nothing outside this file gets
+imaged. No editing needed night to night.
 
-When a real multi-pointing mosaic is available, test whether Siril's
-`-output_norm` has the same stack-specific background-level effect in
-`GPS_Preprocess.py`'s `seqapplyreg -framing=max` mosaic path. Compare the
-background p50, extrema, and output coverage/dimensions with output
-normalization enabled and disabled, using distinct output names. Decide
-whether the mosaic path should preserve or remove `-output_norm`.
+## Wishlist policy
 
-This remains unverified because no mosaic dataset was available during the
-M42 investigation.
+- No difficulty filter — take everything that clears the floor.
+- `visible_now` first; else `later_tonight` (`peak_utc`/`peak_alt_deg`) — wait
+  for the peak or shoot a lower-scoring target in the gap.
+- De-dup: a target whose `get_plan_progress` reports `complete` is not
+  re-picked; move down the ranked list.
+- **Full night, not just to midnight** — when generating a run, queue targets
+  to cover the whole night, until darkness ends at dawn (or the enclosure goes
+  unsafe); only then end it.
+- Named targets (below) beat catalog picks.
 
-## Section 9: validate the framing policy
+## Named targets
 
-The chosen policy is ``framing=min`` by default for known single-pointing
-``OSC_Preprocessing.ssf`` runs; callers can pass ``framing="current"`` to opt
-out. Mosaics keep their script-defined framing and never receive automatic
-``min`` across pointings. Validate this policy against both real data shapes:
+_None — catalog only._
 
-1. **Single-pointing alt-az run with measurable rotation:** compare the current
-   framing with `framing=min` on identical registered inputs and distinct
-   output names. Record output dimensions, common-footprint/coverage fraction,
-   background p50, and how much legitimate coverage is lost to dithers or
-   translations—not just rotation wedges.
-2. **Real multi-pointing mosaic:** use a target identified as mosaic from its
-   manifest/plan `pointing_count`. Verify the chosen mosaic framing policy and
-   dimensions; do not apply `min` across pointings automatically. If
-   `GPS_Preprocess.py` uses `-output_norm`, compare its background p50 and
-   extrema with that option disabled as described above.
-3. **Keep cropping roles separate:** verify `Autocrop.py` removes actual
-   empty borders from `framing=max` output, while `framing=min` handles
-   common-overlap framing; do not treat content-based autocrop as a substitute
-   for overlap framing.
+## Plan shape (`write_plan_file`, Seestar S30)
 
-Use the results to confirm or revise the chosen default and document explicit
-mosaic behavior. M42's `framing=min` result retained 86% of the frame despite
-no measurable coverage problem; the operator accepts that crop for the desired
-composition, but the rotation-bearing and mosaic tests are still needed to
-measure their coverage semantics and verify the mosaic guard.
+- Lights: `L`, 10.0 s, 90 frames. Calibration: 20 × `L` flats, 20 × 10.0 s
+  darks, 20 bias.
+- `cooler.on: false`, `batch_size: 10`, `calibration_window_days: 7`,
+  `constraints` from Rules below, `autofocus`/`guiding` as in
+  `plans/m15_..._20261003T112008.json`.
+- `large_for_field` → framing/mosaic care, not a single blind pointing.
+
+## Rules
+
+- min_altitude: 30
+- horizon_offset_degrees: 2
+- tie_break: score (from `best_targets`), then priority, then altitude, then
+  earliest available
 ```
 r_pp_light_00001.fit  median 0.000434   (stock)   vs 0.000426 (control)
 r_pp_light_00137.fit  median 0.000807   (stock)   vs 0.000811 (control)
