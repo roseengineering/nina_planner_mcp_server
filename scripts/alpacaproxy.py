@@ -226,7 +226,7 @@ def main():
     )
     parser.add_argument("--seestar-ip", default="10.0.0.1", help="IP address of the Seestar")
     parser.add_argument("--seestar-port", type=int, default=32323, help="Seestar Alpaca port")
-    parser.add_argument("--listen-host", default="127.0.0.1", help="Local bind IP")
+    parser.add_argument("--listen-host", default="0.0.0.0", help="Local bind IP")
     parser.add_argument("--listen-port", type=int, default=32323, help="Local listen port for N.I.N.A.")
     parser.add_argument("--cooldown-ms", type=int, default=300, help="Minimum delay in ms between upstream requests")
     parser.add_argument("--cache-ttl-ms", type=int, default=2000, help="TTL in ms for cached status GET responses")
