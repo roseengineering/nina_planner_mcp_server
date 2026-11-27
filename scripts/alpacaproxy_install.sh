@@ -52,8 +52,6 @@ elif [ "$1" = "install" ]; then
         <string>--with</string>
         <string>httpx</string>
         <string>alpacaproxy.py</string>
-        <string>--listen-host</string>
-        <string>0.0.0.0</string>
     </array>
 </dict>
 </plist>
