@@ -669,10 +669,6 @@ the mosaic behavior; diagnose or explicitly account for the `seqapplyreg` +
 dimensions, background level and coverage on one single-pointing alt-az stack
 and one mosaic; keep Autocrop.py's role separate.
 ```
-r_pp_light_00001.fit  median 0.000434   (stock)   vs 0.000426 (control)
-r_pp_light_00137.fit  median 0.000807   (stock)   vs 0.000811 (control)
-pp_light_00001.fit    median 0.000434
-```
 
 **Identical inputs, outputs differing 3.5× — so the difference is produced by
 `stack`, not by registration.** Adding `seqapplyreg` with framing *unchanged*
